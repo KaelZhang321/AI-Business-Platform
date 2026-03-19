@@ -1,0 +1,22 @@
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/ai_platform
+    username: ai_platform
+    password: ai_platform_dev
+
+  data:
+    redis:
+      host: localhost
+      port: 6379
+      password: redis_dev
+
+  rabbitmq:
+    host: localhost
+    port: 5672
+    username: admin
+    password: admin_dev
+
+logging:
+  level:
+    com.lzke.ai: DEBUG
+    org.springframework.web: INFO
