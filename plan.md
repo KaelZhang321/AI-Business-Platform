@@ -4,6 +4,15 @@
 
 ---
 
+## 动态UI专项迭代（对齐文档 3.5）
+
+1. `frontend/package.json` 安装 `@json-render/core`, `@json-render/react`, `zod` 并在 `DynamicRenderer` 中落地 `defineCatalog` + `Renderer`（Card/Table/Metric/List/Form/Tag/Chart + actions: view_detail/refresh/export）。
+2. 新建 `frontend/src/components/dynamic-ui/catalog.ts`（或同级文件）抽离组件目录定义，编写 `Renderer` 包装组件（含 loading / fallback 到 Ant Design 逻辑，便于渐进迁移）。
+3. 改造 `DynamicRenderer.tsx`：优先走 json-render 渲染；若 schema 校验失败则输出友好错误并退回手写组件；新增图表、Tag 等示例渲染。
+4. 扩展 `ai-gateway/app/services/dynamic_ui_service.py`：输出符合 catalog schema 的 spec（knowledge→Card+List+actions，query→Card+Metric+Table+Chart, task→List/Form/Tag, task意图支持 actions）。
+5. 验证 SSE 事件 `ui_spec` → 前端 renderer 整体链路（可通过 mock 数据 / 单元测试 `DynamicRenderer`），并在 `frontend/src/types` 中补齐 props 类型（含 actions、Chart option 等）。
+6. 在 `docs/AI业务中台_MVP一期实施文档.md` 或新增补充文档记录最终 json-render 集成方式，确保研发/AI 网关对齐。
+
 ## 阶段一：AI网关核心能力（Python层）
 
 ### 1.1 RAG双路检索引擎 `rag_service.py`

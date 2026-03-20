@@ -1,3 +1,5 @@
+import type { UISpec } from '../components/dynamic-ui/catalog'
+
 // 意图类型 — 对应文档 3.1 意图分类
 export type IntentType = 'chat' | 'knowledge' | 'data_query' | 'task_operation'
 
@@ -9,13 +11,6 @@ export interface ChatMessage {
   uiSpec?: UISpec | null
   sources?: Source[]
   timestamp?: string
-}
-
-// 动态UI规格 — 对应 json-render 组件目录 (文档 3.5.2)
-export interface UISpec {
-  type: 'Card' | 'Table' | 'Metric' | 'List' | 'Form' | 'Tag' | 'Chart'
-  props?: Record<string, unknown>
-  children?: UISpec[]
 }
 
 // 引用来源
