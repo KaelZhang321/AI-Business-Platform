@@ -18,6 +18,7 @@ class ChatRequest(BaseModel):
     conversation_id: str | None = Field(None, description="会话ID，空则新建")
     user_id: str = Field(..., description="用户ID")
     context: dict[str, Any] | None = Field(None, description="上下文信息")
+    stream: bool = Field(True, description="是否开启SSE流式返回")
 
 
 class ChatResponse(BaseModel):
