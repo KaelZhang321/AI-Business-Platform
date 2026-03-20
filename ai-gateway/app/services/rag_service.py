@@ -5,6 +5,8 @@ from elasticsearch import AsyncElasticsearch
 from flagembedding import BGEM3FlagModel, FlagReranker
 from neo4j import AsyncGraphDatabase
 from pymilvus import Collection, connections
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from app.core.config import settings
 from app.models.schemas import KnowledgeResult
@@ -19,6 +21,7 @@ class RAGService:
         self._neo4j_driver = None
         self._embedding_model: BGEM3FlagModel | None = None
         self._reranker: FlagReranker | None = None
+        self._clickhouse_engine: AsyncEngine | None = None
 
     # --- lazy clients -------------------------------------------------
     def _milvus(self) -> Collection:
@@ -50,9 +53,14 @@ class RAGService:
             self._reranker = FlagReranker(settings.reranker_model_name, use_fp16=True)
         return self._reranker
 
+    def _clickhouse(self) -> AsyncEngine:
+        if self._clickhouse_engine is None:
+            self._clickhouse_engine = create_async_engine(settings.clickhouse_url, pool_pre_ping=True, echo=False)
+        return self._clickhouse_engine
+
     # --- public API ---------------------------------------------------
     async def search(self, query: str, top_k: int = 5, doc_types: list[str] | None = None) -> list[KnowledgeResult]:
-        """并行执行向量、关键词、图谱检索并融合排序。"""
+        """并行执行向量、关键词、图谱检索并融合排序，并记录指标。"""
         vector_task = asyncio.create_task(self._vector_search(query, doc_types))
         keyword_task = asyncio.create_task(self._keyword_search(query, doc_types))
         graph_task = asyncio.create_task(self._graph_search(query))
@@ -64,8 +72,13 @@ class RAGService:
             return_exceptions=False,
         )
 
-        merged = self._fuse_results([vector_results, keyword_results, graph_results])
+        merged = self._fuse_results(
+            vector_results,
+            keyword_results,
+            graph_results,
+        )
         reranked = await self._rerank(query, merged, top_k=top_k)
+        await self._record_metrics(query, vector_results, keyword_results, graph_results, reranked)
         return reranked
 
     # --- search backends ----------------------------------------------
@@ -147,16 +160,27 @@ class RAGService:
         return records
 
     # --- fusion & rerank ----------------------------------------------
-    def _fuse_results(self, result_lists: list[list[KnowledgeResult]]) -> list[KnowledgeResult]:
+    def _fuse_results(
+        self,
+        vector_results: list[KnowledgeResult],
+        keyword_results: list[KnowledgeResult],
+        graph_results: list[KnowledgeResult],
+    ) -> list[KnowledgeResult]:
         score_map: dict[str, KnowledgeResult] = {}
-        rr_scores: dict[str, float] = {}
-        for results in result_lists:
+        fused_scores: dict[str, float] = {}
+
+        def update(results: list[KnowledgeResult], weight: float):
             for rank, doc in enumerate(results):
                 doc_id = doc.doc_id
                 if doc_id not in score_map:
                     score_map[doc_id] = doc
-                rr_scores[doc_id] = rr_scores.get(doc_id, 0.0) + 1.0 / (60 + rank + 1)
-        merged = sorted(score_map.items(), key=lambda item: rr_scores[item[0]], reverse=True)
+                fused_scores[doc_id] = fused_scores.get(doc_id, 0.0) + weight / (rank + 1)
+
+        update(vector_results, settings.rag_vector_weight)
+        update(keyword_results, settings.rag_keyword_weight)
+        update(graph_results, settings.rag_graph_weight)
+
+        merged = sorted(score_map.items(), key=lambda item: fused_scores[item[0]], reverse=True)
         return [doc for _, doc in merged]
 
     async def _rerank(self, query: str, results: list[KnowledgeResult], top_k: int) -> list[KnowledgeResult]:
@@ -187,4 +211,28 @@ class RAGService:
             return None
         quoted = ",".join(f"'{doc_type}'" for doc_type in doc_types)
         return f"doc_type in [{quoted}]"
+
+    async def _record_metrics(
+        self,
+        query: str,
+        vector_results: list[KnowledgeResult],
+        keyword_results: list[KnowledgeResult],
+        graph_results: list[KnowledgeResult],
+        reranked: list[KnowledgeResult],
+    ) -> None:
+        engine = self._clickhouse()
+        payload = {
+            "query": query,
+            "vector_hit": len(vector_results),
+            "keyword_hit": len(keyword_results),
+            "graph_hit": len(graph_results),
+            "final_count": len(reranked),
+            "top_ids": [doc.doc_id for doc in reranked],
+        }
+        stmt = text(
+            f"INSERT INTO {settings.clickhouse_rag_table} (query, vector_hit, keyword_hit, graph_hit, final_count, top_ids) "
+            "VALUES (:query, :vector_hit, :keyword_hit, :graph_hit, :final_count, :top_ids)"
+        )
+        async with engine.begin() as conn:
+            await conn.execute(stmt, payload)
 *** End File

@@ -24,6 +24,11 @@ class Settings(BaseSettings):
     elasticsearch_url: str = "http://localhost:9200"
     elasticsearch_index: str = "knowledge_documents"
 
+    # GraphRAG融合权重
+    rag_vector_weight: float = 0.4
+    rag_keyword_weight: float = 0.3
+    rag_graph_weight: float = 0.3
+
     # Ollama
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "qwen2.5:7b"
@@ -36,6 +41,7 @@ class Settings(BaseSettings):
     # ClickHouse
     clickhouse_url: str = "http://localhost:8123"
     clickhouse_db: str = "ai_platform_logs"
+    clickhouse_rag_table: str = "rag_metrics"
 
     # Neo4j
     neo4j_uri: str = "neo4j://localhost:7687"
