@@ -8,6 +8,8 @@ import com.lzke.ai.infrastructure.persistence.mapper.DocumentMapper;
 import com.lzke.ai.interfaces.dto.DocumentVO;
 import com.lzke.ai.interfaces.dto.PageResult;
 import lombok.RequiredArgsConstructor;
+import org.springframework.cache.annotation.CacheEvict;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -18,6 +20,7 @@ public class KnowledgeApplicationService {
 
     private final DocumentMapper documentMapper;
 
+    @CacheEvict(cacheNames = "knowledge:documents", allEntries = true)
     public DocumentVO createDocument(DocumentCreateRequest request) {
         Document doc = new Document();
         doc.setTitle(request.getTitle());
@@ -37,6 +40,7 @@ public class KnowledgeApplicationService {
         return vo;
     }
 
+    @Cacheable(cacheNames = "knowledge:documents", key = "#page + ':' + #size")
     public PageResult<DocumentVO> listDocuments(int page, int size) {
         Page<Document> pageParam = new Page<>(page, size);
         LambdaQueryWrapper<Document> wrapper = new LambdaQueryWrapper<>();

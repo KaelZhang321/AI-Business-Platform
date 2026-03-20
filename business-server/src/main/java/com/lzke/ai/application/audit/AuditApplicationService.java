@@ -8,6 +8,7 @@ import com.lzke.ai.infrastructure.persistence.mapper.AuditLogMapper;
 import com.lzke.ai.interfaces.dto.AuditLogVO;
 import com.lzke.ai.interfaces.dto.PageResult;
 import lombok.RequiredArgsConstructor;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -18,6 +19,7 @@ public class AuditApplicationService {
 
     private final AuditLogMapper auditLogMapper;
 
+    @Cacheable(cacheNames = "audit:logs", key = "#query.userId + ':' + #query.intent + ':' + #query.page + ':' + #query.size")
     public PageResult<AuditLogVO> queryLogs(AuditLogQuery query) {
         Page<AuditLog> pageParam = new Page<>(query.getPage(), query.getSize());
         LambdaQueryWrapper<AuditLog> wrapper = new LambdaQueryWrapper<>();

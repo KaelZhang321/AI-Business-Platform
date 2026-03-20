@@ -31,7 +31,7 @@
                     ▼                           ▼
 ┌─────────────────────────────────┐  ┌─────────────────────────────────┐
 │        AI网关层 (AI Gateway)      │  │     业务编排层 (Business Server)  │
-│   Python/FastAPI + LangChain     │  │      Java/Spring Boot 3         │
+│   Python/FastAPI + LangChain     │  │   Java/Spring Boot 3 单体架构    │
 │         端口: 8000               │  │          端口: 8080              │
 └─────────────────────────────────┘  └─────────────────────────────────┘
           │                                    │
@@ -47,6 +47,22 @@
 ```
 前端(:5173) ──→ AI网关(:8000)     ──→ Ollama / Milvus / ES / ClickHouse
               └→ 业务编排(:8080)   ──→ PostgreSQL / Redis / RabbitMQ
+
+### 业务编排层分层（单体）
+
+```
+business-server/
+├── application/        # 用例编排，含 task/knowledge/audit 等 ApplicationService 与 DTO
+├── domain/             # 领域模型（实体、聚合、领域服务）
+├── interfaces/         # 适配层，REST Controller + ViewObject
+├── infrastructure/
+│   ├── persistence/    # MyBatis-Plus Mapper、数据库实现
+│   └── system/         # ERP/CRM/OA 等外部系统适配器
+└── config/             # MyBatisPlus、Cache、Redis、MQ 等统一配置
+```
+
+- 默认引入 **Caffeine + Redis** 组合缓存（`@EnableCaching`），遵循“先内存、再 Redis、最后数据库”的三级策略。
+- Application 层仅与 DTO/VO 交互，避免 Controller 直接访问 Mapper，满足 Clean Architecture 的依赖流向。
 ```
 
 ## ✨ 核心功能
