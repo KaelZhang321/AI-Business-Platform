@@ -59,3 +59,4 @@ logs/
 coverage/
 htmlcov/
 .coverage
+.gitnexus
