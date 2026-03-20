@@ -1,4 +1,4 @@
-import { useRef, useEffect } from 'react'
+import { useRef } from 'react'
 import { Button, Typography } from 'antd'
 import { CloseOutlined, RobotOutlined } from '@ant-design/icons'
 import {

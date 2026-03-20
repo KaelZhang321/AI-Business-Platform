@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, type ReactElement } from 'react'
 import {
   Alert,
   Button,
@@ -9,6 +9,7 @@ import {
   Input,
   InputNumber,
   List,
+  Table,
   Select,
   Space,
   Spin,
@@ -73,7 +74,7 @@ export default function DynamicRenderer({ spec, loading = false }: DynamicRender
   return <div className="space-y-4">{renderNode(validation.spec)}</div>
 }
 
-function renderNode(node: UISpec): React.ReactElement {
+function renderNode(node: UISpec): ReactElement {
   const { type, props = {}, children } = node
 
   switch (type) {
@@ -257,7 +258,6 @@ function logAction(action: UIAction) {
     window.open(action.url, '_blank', 'noopener')
     return
   }
-  // eslint-disable-next-line no-console
   console.info('UI Action', action)
 }
 
