@@ -15,9 +15,14 @@ class Settings(BaseSettings):
     # Milvus
     milvus_host: str = "localhost"
     milvus_port: int = 19530
+    milvus_collection: str = "knowledge_chunks"
+    milvus_vector_field: str = "embedding"
+    milvus_output_fields: list[str] = ["doc_id", "title", "content", "doc_type", "metadata"]
+    milvus_search_limit: int = 20
 
     # Elasticsearch
     elasticsearch_url: str = "http://localhost:9200"
+    elasticsearch_index: str = "knowledge_documents"
 
     # Ollama
     ollama_base_url: str = "http://localhost:11434"
@@ -31,6 +36,19 @@ class Settings(BaseSettings):
     # ClickHouse
     clickhouse_url: str = "http://localhost:8123"
     clickhouse_db: str = "ai_platform_logs"
+
+    # Neo4j
+    neo4j_uri: str = "neo4j://localhost:7687"
+    neo4j_user: str = "neo4j"
+    neo4j_password: str = "neo4j"
+
+    # Embedding & Reranker
+    embedding_model_name: str = "BAAI/bge-m3"
+    reranker_model_name: str = "BAAI/bge-reranker-large"
+    rag_rerank_limit: int = 8
+
+    # Text2SQL
+    text2sql_default_database: str = "default"
 
     # 外部LLM API
     openai_api_key: str = ""

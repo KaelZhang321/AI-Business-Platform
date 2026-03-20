@@ -1,4 +1,12 @@
+from __future__ import annotations
+
+import json
+
+import asyncpg
+
+from app.core.config import settings
 from app.models.schemas import Text2SQLResponse
+from app.services.dynamic_ui_service import DynamicUIService
 
 
 class Text2SQLService:
@@ -14,6 +22,7 @@ class Text2SQLService:
 
     def __init__(self):
         self._vn = None
+        self._dynamic_ui = DynamicUIService()
 
     def _get_vanna(self):
         """懒加载 Vanna 实例"""
@@ -34,12 +43,24 @@ class Text2SQLService:
 
     async def query(self, question: str, database: str = "default") -> Text2SQLResponse:
         """将自然语言问题转为SQL并执行"""
-        # TODO: 连接目标数据库, 调用 vn.ask()
+        vn = self._get_vanna()
+        sql = vn.ask(question)
+        rows = await self._execute_sql(sql, database)
+        ui_spec = await self._dynamic_ui.generate_ui_spec("query", rows, {"question": question})
         return Text2SQLResponse(
-            sql="SELECT 1",
-            explanation="Vanna.ai Text2SQL 服务初始化中",
-            results=[],
+            sql=sql,
+            explanation=f"自然语言问题 `""{question}`"" 转为 SQL 并执行",
+            results=rows,
+            chart_spec=ui_spec,
         )
+
+    async def _execute_sql(self, sql: str, database: str) -> list[dict]:
+        conn = await asyncpg.connect(dsn=settings.database_url)
+        try:
+            records = await conn.fetch(sql)
+            return [dict(record) for record in records]
+        finally:
+            await conn.close()
 
     async def train(self, training_data: list[dict]) -> dict:
         """训练：导入Schema和问答对"""
