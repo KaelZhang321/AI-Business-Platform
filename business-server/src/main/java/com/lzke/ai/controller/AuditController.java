@@ -1,8 +1,11 @@
 package com.lzke.ai.controller;
 
+import com.lzke.ai.model.dto.AuditLogQuery;
+import com.lzke.ai.model.vo.ApiResponse;
+import com.lzke.ai.model.vo.AuditLogVO;
+import com.lzke.ai.model.vo.PageResult;
 import com.lzke.ai.service.AuditService;
 import lombok.RequiredArgsConstructor;
-import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 @RestController
@@ -13,11 +16,7 @@ public class AuditController {
     private final AuditService auditService;
 
     @GetMapping("/logs")
-    public ResponseEntity<?> queryLogs(
-            @RequestParam(required = false) String userId,
-            @RequestParam(required = false) String action,
-            @RequestParam(defaultValue = "1") int page,
-            @RequestParam(defaultValue = "20") int size) {
-        return ResponseEntity.ok(auditService.queryLogs(userId, action, page, size));
+    public ApiResponse<PageResult<AuditLogVO>> queryLogs(AuditLogQuery query) {
+        return ApiResponse.ok(auditService.queryLogs(query));
     }
 }

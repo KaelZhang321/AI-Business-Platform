@@ -149,7 +149,7 @@ AI网关 → 意图分类（任务查询）
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                        React 18 + TypeScript                     │
+│                        React 19 + TypeScript                     │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                  │
 │  ┌────────────────┐  ┌────────────────┐  ┌────────────────┐  │
@@ -415,10 +415,10 @@ class DynamicUIGenerator:
 |------|----------|------|------|
 | **BI智能问答** | Vanna.ai | 2.0+ | Text-to-SQL + RAG，23k⭐，支持本地模型 |
 | **知识库RAG** | LangChain + Milvus | 0.3+ / 2.3+ | 文档切分→向量化→检索→生成 |
-| **意图分类** | Qwen2.5-7B + Ollama | 2.5 | 本地轻量模型，低延迟 |
-| **本地LLM** | Qwen2.5 + Ollama/vLLM | 2.5 | 国产开源，支持本地部署 |
+| **意图分类** | Qwen3.5-4B + vLLM | 2.5 | 本地轻量模型，低延迟 |
+| **本地LLM** | Qwen3.5 + vLLM | 2.5 | 国产开源，支持本地部署 |
 | **外部LLM** | OpenAI/Claude API | - | 补充高质量生成 |
-| **向量数据库** | Milvus | 2.3+ | 分布式、1TB+支持成熟 |
+| **向量数据库** | Milvus，Chroma | 2.3+ | 分布式、1TB+支持成熟 |
 | **全文搜索** | Elasticsearch | 8.x | 混合检索（向量+关键词） |
 | **Reranker** | BGE-Reranker-v2 | - | 重排精度高 |
 | **Embedding** | BGE-M3 | - | 中文Embedding最优 |
@@ -432,7 +432,7 @@ class DynamicUIGenerator:
 | **MCP协议** | FastMCP | - | Model Context Protocol适配 |
 | **向量客户端** | Milvus Client | 2.3+ | 向量检索 |
 | **ES客户端** | elasticsearch-py | 8.x | 全文检索 |
-| **LLM服务** | vLLM / Ollama | - | 本地模型推理加速 |
+| **LLM服务** | vLLM | - | 本地模型推理加速 |
 
 ### 4.3 Java业务编排层
 
@@ -461,7 +461,6 @@ class DynamicUIGenerator:
 | **状态管理** | Zustand | 4.x | 轻量状态管理 |
 | **服务端状态** | TanStack Query | 5.x | 异步状态管理 |
 | **图表** | ECharts | 5.x | 数据可视化 |
-| **CSS** | Tailwind CSS | 3.x | 原子化CSS |
 | **路由** | React Router | 6.x | 前端路由 |
 
 ### 4.5 基础设施
