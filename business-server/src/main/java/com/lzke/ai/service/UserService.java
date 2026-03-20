@@ -1,0 +1,66 @@
+package com.lzke.ai.service;
+
+import com.lzke.ai.mapper.UserMapper;
+import com.lzke.ai.model.dto.UserPermission;
+import com.lzke.ai.model.entity.User;
+import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpStatus;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.stereotype.Service;
+import org.springframework.web.server.ResponseStatusException;
+
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.UUID;
+
+@Service
+@RequiredArgsConstructor
+public class UserService {
+
+    private static final Map<String, List<String>> ABILITY_MATRIX = Map.of(
+            "admin", List.of("manage:all", "read:all", "update:all"),
+            "user", List.of("read:tasks", "create:conversation", "read:documents"),
+            "viewer", List.of("read:documents")
+    );
+
+    private final UserMapper userMapper;
+    private final PasswordEncoder passwordEncoder;
+
+    public User authenticate(String username, String rawPassword) {
+        var user = userMapper.findByUsername(username).orElseThrow(() ->
+                new ResponseStatusException(HttpStatus.UNAUTHORIZED, "账号不存在"));
+        if (!"active".equalsIgnoreCase(user.getStatus())) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "账号已禁用");
+        }
+        if (user.getPasswordHash() == null || !passwordEncoder.matches(rawPassword, user.getPasswordHash())) {
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "用户名或密码错误");
+        }
+        return user;
+    }
+
+    public Optional<User> findById(UUID id) {
+        return userMapper.findById(id);
+    }
+
+    public SimpleGrantedAuthority mapAuthority(String role) {
+        return new SimpleGrantedAuthority("ROLE_" + role.toUpperCase());
+    }
+
+    public UserPermission buildPermission(User user) {
+        return UserPermission.builder()
+                .id(user.getId())
+                .username(user.getUsername())
+                .displayName(user.getDisplayName())
+                .role(user.getRole())
+                .abilities(ABILITY_MATRIX.getOrDefault(user.getRole(), List.of("read:documents")))
+                .build();
+    }
+
+    public UserPermission buildPermission(UUID userId) {
+        var user = userMapper.findById(userId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "用户不存在"));
+        return buildPermission(user);
+    }
+}

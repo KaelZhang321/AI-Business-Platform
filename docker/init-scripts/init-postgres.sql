@@ -13,6 +13,7 @@ CREATE TABLE users (
     department VARCHAR(100),
     role VARCHAR(50) NOT NULL DEFAULT 'user',
     status VARCHAR(20) NOT NULL DEFAULT 'active',
+    password_hash VARCHAR(255) NOT NULL DEFAULT '',
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
@@ -109,5 +110,5 @@ CREATE INDEX idx_audit_logs_trace ON audit_logs(trace_id);
 CREATE INDEX idx_audit_logs_created ON audit_logs(created_at DESC);
 
 -- 插入默认管理员用户
-INSERT INTO users (username, display_name, department, role)
-VALUES ('admin', '系统管理员', '技术部', 'admin');
+INSERT INTO users (username, display_name, department, role, password_hash)
+VALUES ('admin', '系统管理员', '技术部', 'admin', '$2a$10$wqv0yGZrxhgbf28pQ5e0..lBqFaUG2RglN6E466zvWXTjhFRrM8Dm');

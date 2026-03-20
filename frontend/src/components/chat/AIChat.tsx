@@ -1,5 +1,5 @@
-import { useRef } from 'react'
-import { Button, Typography } from 'antd'
+import { useRef, useState } from 'react'
+import { Alert, Button, List, Space, Tag, Typography, message } from 'antd'
 import { CloseOutlined, RobotOutlined } from '@ant-design/icons'
 import {
   AssistantRuntimeProvider,
@@ -9,6 +9,9 @@ import {
   MessagePrimitive,
 } from '@assistant-ui/react'
 import '@assistant-ui/react/styles/index.css'
+import type { UISpec, Source } from '../../types'
+import DynamicRenderer from '../dynamic-ui/DynamicRenderer'
+import { useAppStore } from '../../stores/useAppStore'
 
 const { Text } = Typography
 
@@ -16,11 +19,14 @@ interface AIChatProps {
   onClose: () => void
 }
 
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || window.location.origin
+
 /**
  * AI对话组件 — 基于 assistant-ui
  * 文档要求: assistant-ui 0.12+ (YC支持，专业AI对话组件)
  */
 export default function AIChat({ onClose }: AIChatProps) {
+  const { currentUser } = useAppStore()
   const messagesRef = useRef([
     {
       role: 'assistant' as const,
@@ -32,10 +38,18 @@ export default function AIChat({ onClose }: AIChatProps) {
       ],
     },
   ])
+  const abortControllerRef = useRef<AbortController | null>(null)
+  const conversationIdRef = useRef<string | null>(null)
+  const bufferRef = useRef('')
+  const [uiSpec, setUiSpec] = useState<UISpec | null>(null)
+  const [sources, setSources] = useState<Source[]>([])
+  const [intent, setIntent] = useState<string | null>(null)
+  const [isStreaming, setIsStreaming] = useState(false)
+  const [, forceRender] = useState(0)
 
   const runtime = useExternalStoreRuntime({
     messages: messagesRef.current,
-    isRunning: false,
+    isRunning: isStreaming,
     onNew: async (message) => {
       const userText =
         message.content
@@ -43,26 +57,129 @@ export default function AIChat({ onClose }: AIChatProps) {
           .map((c) => c.text)
           .join('') || ''
 
-      messagesRef.current = [
-        ...messagesRef.current,
-        { role: 'user' as const, content: [{ type: 'text' as const, text: userText }] },
-      ]
-
-      // TODO: 集成 SSE 流式调用 /api/v1/chat
-      messagesRef.current = [
-        ...messagesRef.current,
-        {
-          role: 'assistant' as const,
-          content: [
-            {
-              type: 'text' as const,
-              text: 'AI网关服务正在开发中，稍后将支持对话、检索和查数功能。',
-            },
-          ],
-        },
-      ]
+      appendMessage({ role: 'user', text: userText })
+      await streamChat(userText)
     },
   })
+
+  const appendMessage = ({ role, text }: { role: 'user' | 'assistant'; text: string }) => {
+    messagesRef.current = [
+      ...messagesRef.current,
+      { role, content: [{ type: 'text' as const, text }] },
+    ]
+    forceRender((tick) => tick + 1)
+  }
+
+  const appendAssistantChunk = (chunk: string) => {
+    if (!chunk) return
+    const nextMessages = [...messagesRef.current]
+    const last = nextMessages[nextMessages.length - 1]
+    if (!last || last.role !== 'assistant') {
+      nextMessages.push({
+        role: 'assistant' as const,
+        content: [{ type: 'text' as const, text: chunk }],
+      })
+    } else {
+      const currentText = last.content?.[0]?.text ?? ''
+      last.content = [{ type: 'text' as const, text: currentText + chunk }]
+    }
+    messagesRef.current = nextMessages
+    forceRender((tick) => tick + 1)
+  }
+
+  const streamChat = async (userText: string) => {
+    abortControllerRef.current?.abort()
+    const controller = new AbortController()
+    abortControllerRef.current = controller
+    setIsStreaming(true)
+    setUiSpec(null)
+    setSources([])
+    setIntent(null)
+
+    try {
+      const body = {
+        message: userText,
+        conversation_id: conversationIdRef.current,
+        user_id: currentUser?.id ?? 'demo-user',
+        stream: true,
+      }
+      const response = await fetch(`${API_BASE_URL}/api/v1/chat?stream=true`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      })
+      if (!response.ok || !response.body) {
+        throw new Error('聊天服务不可用')
+      }
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder('utf-8')
+      bufferRef.current = ''
+
+      while (true) {
+        const { value, done } = await reader.read()
+        if (done) break
+        bufferRef.current += decoder.decode(value, { stream: true })
+        bufferRef.current = processEventBuffer(bufferRef.current)
+      }
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        message.error((error as Error).message || 'AI 对话失败')
+      }
+    } finally {
+      setIsStreaming(false)
+      abortControllerRef.current = null
+    }
+  }
+
+  const processEventBuffer = (buffer: string) => {
+    let remaining = buffer
+    let boundary = remaining.indexOf('\n\n')
+    while (boundary !== -1) {
+      const rawEvent = remaining.slice(0, boundary)
+      remaining = remaining.slice(boundary + 2)
+      handleRawEvent(rawEvent)
+      boundary = remaining.indexOf('\n\n')
+    }
+    return remaining
+  }
+
+  const handleRawEvent = (raw: string) => {
+    let event = 'message'
+    let dataPayload = ''
+    raw.split('\n').forEach((line) => {
+      if (line.startsWith('event:')) {
+        event = line.replace('event:', '').trim()
+      } else if (line.startsWith('data:')) {
+        dataPayload += line.replace('data:', '').trim()
+      }
+    })
+    if (!dataPayload) return
+    try {
+      const parsed = JSON.parse(dataPayload)
+      switch (event) {
+        case 'intent':
+          setIntent(parsed.intent as string)
+          break
+        case 'content':
+          appendAssistantChunk(parsed.text as string)
+          break
+        case 'ui_spec':
+          setUiSpec(parsed as UISpec)
+          break
+        case 'sources':
+          setSources(parsed as Source[])
+          break
+        case 'done':
+          conversationIdRef.current = parsed.conversation_id as string
+          break
+        default:
+          break
+      }
+    } catch {
+      // ignore malformed payload
+    }
+  }
 
   return (
     <div className="flex flex-col h-full">
@@ -112,6 +229,45 @@ export default function AIChat({ onClose }: AIChatProps) {
           </ThreadPrimitive.Root>
         </div>
       </AssistantRuntimeProvider>
+
+      <div className="border-t border-gray-200 p-4 space-y-3">
+        {intent && (
+          <Space>
+            <Text type="secondary">识别意图:</Text>
+            <Tag color="geekblue">{intent}</Tag>
+          </Space>
+        )}
+        {uiSpec && (
+          <div>
+            <Text strong>智能 UI</Text>
+            <DynamicRenderer spec={uiSpec} />
+          </div>
+        )}
+        {sources.length > 0 && (
+          <div>
+            <Text strong>引用来源</Text>
+            <List
+              size="small"
+              dataSource={sources}
+              className="mt-2"
+              renderItem={(item) => (
+                <List.Item>
+                  <List.Item.Meta
+                    title={item.title}
+                    description={
+                      <span className="text-gray-500">
+                        来源: {item.content?.slice(0, 60) ?? '未知'}
+                      </span>
+                    }
+                  />
+                  <Tag>{item.score?.toFixed?.(2) ?? ''}</Tag>
+                </List.Item>
+              )}
+            />
+          </div>
+        )}
+        {isStreaming && <Alert type="info" message="AI正在生成，请稍候..." showIcon />}
+      </div>
     </div>
   )
 }

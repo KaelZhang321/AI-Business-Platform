@@ -55,6 +55,11 @@ class Settings(BaseSettings):
 
     # Text2SQL
     text2sql_default_database: str = "default"
+    text2sql_timeout_seconds: int = 12
+    text2sql_max_rows: int = 200
+
+    # Intent classification
+    intent_confidence_threshold: float = 0.55
 
     # 外部LLM API
     openai_api_key: str = ""

@@ -26,6 +26,9 @@ export default [
         document: 'readonly',
         window: 'readonly',
         console: 'readonly',
+        fetch: 'readonly',
+        AbortController: 'readonly',
+        TextDecoder: 'readonly',
       },
     },
     settings: {

@@ -20,3 +20,9 @@ logging:
   level:
     com.lzke.ai: DEBUG
     org.springframework.web: INFO
+
+app:
+  security:
+    jwt:
+      secret: dev_change_me_super_secret_key_1234567890
+      expiration: 86400000
