@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+
 from elasticsearch import AsyncElasticsearch
 from flagembedding import BGEM3FlagModel, FlagReranker
 from neo4j import AsyncGraphDatabase
@@ -22,6 +24,7 @@ class RAGService:
         self._embedding_model: BGEM3FlagModel | None = None
         self._reranker: FlagReranker | None = None
         self._clickhouse_engine: AsyncEngine | None = None
+        self._logger = logging.getLogger(__name__)
 
     # --- lazy clients -------------------------------------------------
     def _milvus(self) -> Collection:
@@ -220,7 +223,6 @@ class RAGService:
         graph_results: list[KnowledgeResult],
         reranked: list[KnowledgeResult],
     ) -> None:
-        engine = self._clickhouse()
         payload = {
             "query": query,
             "vector_hit": len(vector_results),
@@ -233,6 +235,10 @@ class RAGService:
             f"INSERT INTO {settings.clickhouse_rag_table} (query, vector_hit, keyword_hit, graph_hit, final_count, top_ids) "
             "VALUES (:query, :vector_hit, :keyword_hit, :graph_hit, :final_count, :top_ids)"
         )
-        async with engine.begin() as conn:
-            await conn.execute(stmt, payload)
+        try:
+            engine = self._clickhouse()
+            async with engine.begin() as conn:
+                await conn.execute(stmt, payload)
+        except Exception as exc:  # pragma: no cover - telemetry failures shouldn't break user flow
+            self._logger.warning("Failed to record RAG metrics: %s", exc)
 *** End File
