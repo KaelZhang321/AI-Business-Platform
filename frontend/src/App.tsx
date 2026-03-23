@@ -1,13 +1,22 @@
 import { Routes, Route, Navigate } from 'react-router-dom'
+import { createMongoAbility } from '@casl/ability'
+import type { AppAbility } from './abilities'
 import MainLayout from './layouts/MainLayout'
 import ProtectedRoute from './components/auth/ProtectedRoute'
+import { AbilityContext } from './components/auth/Can'
+import { useAppStore } from './stores/useAppStore'
 import Login from './pages/Login'
 import Workspace from './pages/Workspace'
 import KnowledgeBase from './pages/KnowledgeBase'
 import AuditLog from './pages/AuditLog'
 
+const defaultAbility = createMongoAbility() as AppAbility
+
 function App() {
+  const ability = useAppStore((s) => s.ability)
+
   return (
+    <AbilityContext.Provider value={ability ?? defaultAbility}>
     <Routes>
       <Route path="/login" element={<Login />} />
 
@@ -25,6 +34,7 @@ function App() {
         </Route>
       </Route>
     </Routes>
+    </AbilityContext.Provider>
   )
 }
 

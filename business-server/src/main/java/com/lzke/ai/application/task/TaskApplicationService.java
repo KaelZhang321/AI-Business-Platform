@@ -6,6 +6,7 @@ import com.lzke.ai.interfaces.dto.TaskVO;
 import com.lzke.ai.infrastructure.persistence.mapper.TaskMapper;
 import com.lzke.ai.infrastructure.system.BaseSystemAdapter;
 import lombok.RequiredArgsConstructor;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -23,6 +24,7 @@ public class TaskApplicationService {
     /**
      * 聚合多系统待办任务
      */
+    @Cacheable(cacheNames = "tasks", key = "#query.userId + ':' + #query.page + ':' + #query.size")
     public PageResult<TaskVO> aggregateTasks(TaskAggregateQuery query) {
         List<TaskVO> allTasks = new ArrayList<>();
 
@@ -32,9 +34,12 @@ public class TaskApplicationService {
                 for (Map<String, Object> raw : rawTasks) {
                     TaskVO vo = new TaskVO();
                     vo.setSourceSystem(adapter.getSystemName());
+                    vo.setSourceId(raw.get("sourceId") != null ? raw.get("sourceId").toString() : null);
                     vo.setTitle((String) raw.getOrDefault("title", ""));
+                    vo.setDescription((String) raw.get("description"));
                     vo.setStatus((String) raw.getOrDefault("status", "pending"));
                     vo.setPriority((String) raw.getOrDefault("priority", "normal"));
+                    vo.setDeadline(raw.get("deadline") != null ? raw.get("deadline").toString() : null);
                     vo.setExternalUrl((String) raw.get("externalUrl"));
                     allTasks.add(vo);
                 }

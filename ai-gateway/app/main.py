@@ -1,5 +1,7 @@
+import logging
 from contextlib import asynccontextmanager
 
+import httpx
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -7,12 +9,88 @@ from app.api.routes import chat, knowledge, query
 from app.core.config import settings
 from app.models.schemas import HealthResponse
 
+logger = logging.getLogger(__name__)
+
+# 全局服务连接状态，lifespan 写入，health_check 读取
+_service_status: dict[str, str] = {}
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 启动时初始化资源
+    # ── 启动时：轻量级连接验证 ──────────────────────────
+    logger.info("AI网关启动中 — 验证外部服务连接 ...")
+
+    # 1) Milvus
+    try:
+        from pymilvus import connections, utility
+
+        connections.connect(alias="default", host=settings.milvus_host, port=settings.milvus_port)
+        has = utility.has_collection(settings.milvus_collection)
+        _service_status["milvus"] = "ok" if has else "collection_missing"
+        logger.info("Milvus 连接成功, collection '%s' 存在: %s", settings.milvus_collection, has)
+    except Exception as exc:
+        _service_status["milvus"] = f"error: {exc}"
+        logger.warning("Milvus 连接失败: %s", exc)
+
+    # 2) Elasticsearch
+    es_client = None
+    try:
+        from elasticsearch import AsyncElasticsearch
+
+        es_client = AsyncElasticsearch(settings.elasticsearch_url)
+        exists = await es_client.indices.exists(index=settings.elasticsearch_index)
+        _service_status["elasticsearch"] = "ok" if exists else "index_missing"
+        logger.info("Elasticsearch 连接成功, index '%s' 存在: %s", settings.elasticsearch_index, exists)
+    except Exception as exc:
+        _service_status["elasticsearch"] = f"error: {exc}"
+        logger.warning("Elasticsearch 连接失败: %s", exc)
+
+    # 3) Ollama (LLM) — 轻量 ping
+    ollama_client = httpx.AsyncClient(base_url=settings.ollama_base_url, timeout=5)
+    try:
+        resp = await ollama_client.get("/api/tags")
+        if resp.status_code == 200:
+            _service_status["ollama"] = "ok"
+            logger.info("Ollama 连接成功 (%s)", settings.ollama_base_url)
+        else:
+            _service_status["ollama"] = f"http_{resp.status_code}"
+            logger.warning("Ollama 响应异常: HTTP %s", resp.status_code)
+    except Exception as exc:
+        _service_status["ollama"] = f"error: {exc}"
+        logger.warning("Ollama 连接失败: %s", exc)
+
+    logger.info("AI网关启动完成 — 服务状态: %s", _service_status)
+
     yield
-    # 关闭时清理资源
+
+    # ── 关闭时：释放资源 ────────────────────────────────
+    logger.info("AI网关关闭中 — 释放资源 ...")
+
+    # Elasticsearch
+    if es_client:
+        try:
+            await es_client.close()
+            logger.info("Elasticsearch 客户端已关闭")
+        except Exception as exc:
+            logger.warning("关闭 Elasticsearch 客户端失败: %s", exc)
+
+    # Milvus
+    try:
+        from pymilvus import connections
+
+        connections.disconnect(alias="default")
+        logger.info("Milvus 连接已断开")
+    except Exception as exc:
+        logger.warning("断开 Milvus 连接失败: %s", exc)
+
+    # Ollama httpx client
+    try:
+        await ollama_client.aclose()
+        logger.info("Ollama HTTP 客户端已关闭")
+    except Exception as exc:
+        logger.warning("关闭 Ollama HTTP 客户端失败: %s", exc)
+
+    logger.info("AI网关已关闭")
 
 
 app = FastAPI(
@@ -38,7 +116,7 @@ app.include_router(query.router, prefix="/api/v1", tags=["数据查询"])
 @app.get("/health", response_model=HealthResponse, tags=["系统"])
 async def health_check():
     return HealthResponse(
-        status="ok",
+        status="ok" if all(v == "ok" for v in _service_status.values()) else "degraded",
         version="0.1.0",
-        services={"database": "unchecked", "redis": "unchecked", "milvus": "unchecked"},
+        services=_service_status or {"milvus": "unchecked", "elasticsearch": "unchecked", "ollama": "unchecked"},
     )

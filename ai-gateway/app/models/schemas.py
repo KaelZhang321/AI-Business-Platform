@@ -61,6 +61,20 @@ class Text2SQLResponse(BaseModel):
     chart_spec: dict[str, Any] | None = Field(None, description="可视化图表规格")
 
 
+class TrainItem(BaseModel):
+    question: str = Field(..., description="自然语言问题")
+    sql: str = Field(..., description="对应的SQL语句")
+
+
+class TrainRequest(BaseModel):
+    items: list[TrainItem] = Field(..., description="训练数据列表")
+
+
+class TrainResponse(BaseModel):
+    status: str = "ok"
+    count: int = Field(..., description="训练条目数")
+
+
 class HealthResponse(BaseModel):
     status: str = "ok"
     version: str = "0.1.0"

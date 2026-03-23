@@ -30,7 +30,7 @@ public class CacheConfig {
 
     @Bean
     public CacheManager cacheManager(RedisConnectionFactory factory, Caffeine<Object, Object> caffeine) {
-        var caffeineManager = new CaffeineCacheManager("knowledge:documents", "audit:logs");
+        var caffeineManager = new CaffeineCacheManager("knowledge:documents", "audit:logs", "tasks");
         caffeineManager.setCaffeine(caffeine);
 
         RedisCacheConfiguration redisConfiguration = RedisCacheConfiguration.defaultCacheConfig()
