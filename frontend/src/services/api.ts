@@ -1,16 +1,45 @@
 import axios from 'axios'
 
+const TOKEN_KEY = 'ai_platform_token'
+
 const apiClient = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000',
   timeout: 30000,
   headers: { 'Content-Type': 'application/json' },
 })
 
-const businessClient = axios.create({
+export const businessClient = axios.create({
   baseURL: import.meta.env.VITE_BUSINESS_API_URL || 'http://localhost:8080',
   timeout: 15000,
   headers: { 'Content-Type': 'application/json' },
 })
+
+// JWT interceptor — 为所有请求自动附加 Authorization header
+function attachToken(config: import('axios').InternalAxiosRequestConfig) {
+  const token = localStorage.getItem(TOKEN_KEY)
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`
+  }
+  return config
+}
+
+apiClient.interceptors.request.use(attachToken)
+businessClient.interceptors.request.use(attachToken)
+
+// 401 响应拦截 — 自动清除 token 并跳转登录页
+function handle401(error: unknown) {
+  if (axios.isAxiosError(error) && error.response?.status === 401) {
+    localStorage.removeItem(TOKEN_KEY)
+    // 避免在登录页重复跳转
+    if (window.location.pathname !== '/login') {
+      window.location.href = '/login'
+    }
+  }
+  return Promise.reject(error)
+}
+
+apiClient.interceptors.response.use((r) => r, handle401)
+businessClient.interceptors.response.use((r) => r, handle401)
 
 // AI 网关 API
 export const chatAPI = {
@@ -42,6 +71,6 @@ export const documentAPI = {
 }
 
 export const auditAPI = {
-  logs: (params?: { userId?: string; action?: string; page?: number; size?: number }) =>
+  logs: (params?: { userId?: string; intent?: string; status?: string; page?: number; size?: number }) =>
     businessClient.get('/api/v1/audit/logs', { params }),
 }

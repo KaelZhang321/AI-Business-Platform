@@ -26,7 +26,7 @@ const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || window.location.origin
  * 文档要求: assistant-ui 0.12+ (YC支持，专业AI对话组件)
  */
 export default function AIChat({ onClose }: AIChatProps) {
-  const { currentUser } = useAppStore()
+  const { user } = useAppStore()
   const messagesRef = useRef([
     {
       role: 'assistant' as const,
@@ -100,12 +100,15 @@ export default function AIChat({ onClose }: AIChatProps) {
       const body = {
         message: userText,
         conversation_id: conversationIdRef.current,
-        user_id: currentUser?.id ?? 'demo-user',
+        user_id: user?.id ?? 'demo-user',
         stream: true,
       }
+      const token = localStorage.getItem('ai_platform_token')
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+      if (token) headers['Authorization'] = `Bearer ${token}`
       const response = await fetch(`${API_BASE_URL}/api/v1/chat?stream=true`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify(body),
         signal: controller.signal,
       })

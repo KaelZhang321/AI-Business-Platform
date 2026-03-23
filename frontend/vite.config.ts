@@ -7,6 +7,10 @@ export default defineConfig({
     port: 5173,
     proxy: {
       // 业务编排层接口 → :8080
+      '/api/v1/auth': {
+        target: 'http://localhost:8080',
+        changeOrigin: true,
+      },
       '/api/v1/tasks': {
         target: 'http://localhost:8080',
         changeOrigin: true,
