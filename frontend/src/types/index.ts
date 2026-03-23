@@ -1,4 +1,5 @@
 import type { UISpec } from '../components/dynamic-ui/catalog'
+export type { UISpec }
 
 // 意图类型 — 对应文档 3.1 意图分类
 export type IntentType = 'chat' | 'knowledge' | 'data_query' | 'task_operation'

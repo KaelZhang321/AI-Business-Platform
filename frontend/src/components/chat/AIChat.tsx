@@ -8,8 +8,7 @@ import {
   ComposerPrimitive,
   MessagePrimitive,
 } from '@assistant-ui/react'
-import '@assistant-ui/react/styles/index.css'
-import type { UISpec, Source } from '../../types'
+import type { Source } from '../../types'
 import DynamicRenderer from '../dynamic-ui/DynamicRenderer'
 import { useAppStore } from '../../stores/useAppStore'
 
@@ -19,20 +18,21 @@ interface AIChatProps {
   onClose: () => void
 }
 
+type ChatMsg = {
+  role: 'user' | 'assistant'
+  content: Array<{ type: 'text'; text: string }>
+}
+
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || window.location.origin
 
-/**
- * AI对话组件 — 基于 assistant-ui
- * 文档要求: assistant-ui 0.12+ (YC支持，专业AI对话组件)
- */
 export default function AIChat({ onClose }: AIChatProps) {
   const { user } = useAppStore()
-  const messagesRef = useRef([
+  const messagesRef = useRef<ChatMsg[]>([
     {
-      role: 'assistant' as const,
+      role: 'assistant',
       content: [
         {
-          type: 'text' as const,
+          type: 'text',
           text: '你好！我是AI助手，可以帮你查询待办、搜索知识库、分析数据。请问有什么需要帮助的？',
         },
       ],
@@ -41,7 +41,7 @@ export default function AIChat({ onClose }: AIChatProps) {
   const abortControllerRef = useRef<AbortController | null>(null)
   const conversationIdRef = useRef<string | null>(null)
   const bufferRef = useRef('')
-  const [uiSpec, setUiSpec] = useState<UISpec | null>(null)
+  const [uiSpec, setUiSpec] = useState<unknown>(null)
   const [sources, setSources] = useState<Source[]>([])
   const [intent, setIntent] = useState<string | null>(null)
   const [isStreaming, setIsStreaming] = useState(false)
@@ -50,19 +50,23 @@ export default function AIChat({ onClose }: AIChatProps) {
   const runtime = useExternalStoreRuntime({
     messages: messagesRef.current,
     isRunning: isStreaming,
-    onNew: async (message) => {
+    convertMessage: (msg: ChatMsg) => ({
+      role: msg.role,
+      content: msg.content.map((c) => ({ type: 'text' as const, text: c.text })),
+    }),
+    onNew: async (appendMsg) => {
       const userText =
-        message.content
+        appendMsg.content
           .filter((c): c is { type: 'text'; text: string } => c.type === 'text')
           .map((c) => c.text)
           .join('') || ''
 
-      appendMessage({ role: 'user', text: userText })
+      addMessage({ role: 'user', text: userText })
       await streamChat(userText)
     },
   })
 
-  const appendMessage = ({ role, text }: { role: 'user' | 'assistant'; text: string }) => {
+  const addMessage = ({ role, text }: { role: 'user' | 'assistant'; text: string }) => {
     messagesRef.current = [
       ...messagesRef.current,
       { role, content: [{ type: 'text' as const, text }] },
@@ -75,13 +79,10 @@ export default function AIChat({ onClose }: AIChatProps) {
     const nextMessages = [...messagesRef.current]
     const last = nextMessages[nextMessages.length - 1]
     if (!last || last.role !== 'assistant') {
-      nextMessages.push({
-        role: 'assistant' as const,
-        content: [{ type: 'text' as const, text: chunk }],
-      })
+      nextMessages.push({ role: 'assistant', content: [{ type: 'text', text: chunk }] })
     } else {
       const currentText = last.content?.[0]?.text ?? ''
-      last.content = [{ type: 'text' as const, text: currentText + chunk }]
+      last.content = [{ type: 'text', text: currentText + chunk }]
     }
     messagesRef.current = nextMessages
     forceRender((tick) => tick + 1)
@@ -168,7 +169,7 @@ export default function AIChat({ onClose }: AIChatProps) {
           appendAssistantChunk(parsed.text as string)
           break
         case 'ui_spec':
-          setUiSpec(parsed as UISpec)
+          setUiSpec(parsed)
           break
         case 'sources':
           setSources(parsed as Source[])
@@ -240,12 +241,12 @@ export default function AIChat({ onClose }: AIChatProps) {
             <Tag color="geekblue">{intent}</Tag>
           </Space>
         )}
-        {uiSpec && (
+        {uiSpec != null ? (
           <div>
             <Text strong>智能 UI</Text>
             <DynamicRenderer spec={uiSpec} />
           </div>
-        )}
+        ) : null}
         {sources.length > 0 && (
           <div>
             <Text strong>引用来源</Text>
