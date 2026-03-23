@@ -32,3 +32,10 @@ async def train(request: TrainRequest):
     training_data = [item.model_dump() for item in request.items]
     result = await text2sql_service.train(training_data)
     return TrainResponse(status=result["status"], count=result["count"])
+
+
+@router.post("/query/train-schema", response_model=TrainResponse)
+async def train_from_schema():
+    """从 init-postgres.sql 自动导入表结构到 Vanna 训练"""
+    result = await text2sql_service.train_from_schema()
+    return TrainResponse(status=result["status"], count=result["count"])

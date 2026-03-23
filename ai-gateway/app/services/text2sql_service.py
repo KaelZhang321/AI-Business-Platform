@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
+from pathlib import Path
 
 import asyncpg
 
@@ -95,3 +97,40 @@ class Text2SQLService:
         for item in training_data:
             vn.train(question=item["question"], sql=item["sql"])
         return {"status": "ok", "count": len(training_data)}
+
+    async def train_from_schema(self, sql_file: str | None = None) -> dict:
+        """从 init-postgres.sql 自动导入表结构到 Vanna 训练
+
+        解析 SQL 文件中的 CREATE TABLE 语句，逐条调用 vn.train(ddl=...)。
+        """
+        logger = logging.getLogger(__name__)
+        if sql_file is None:
+            sql_file = str(Path(__file__).resolve().parents[3] / "docker" / "init-scripts" / "init-postgres.sql")
+
+        path = Path(sql_file)
+        if not path.exists():
+            raise FileNotFoundError(f"Schema 文件不存在: {sql_file}")
+
+        content = path.read_text(encoding="utf-8")
+
+        # 提取 CREATE TABLE ... ); 语句块
+        ddl_pattern = re.compile(
+            r"(CREATE\s+TABLE\s+\w+\s*\(.*?\);)",
+            re.IGNORECASE | re.DOTALL,
+        )
+        ddl_statements = ddl_pattern.findall(content)
+
+        if not ddl_statements:
+            return {"status": "ok", "count": 0, "message": "未找到 CREATE TABLE 语句"}
+
+        vn = self._get_vanna()
+        trained = 0
+        for ddl in ddl_statements:
+            try:
+                vn.train(ddl=ddl)
+                trained += 1
+            except Exception as exc:
+                logger.warning("训练 DDL 失败: %s — %s", ddl[:60], exc)
+
+        logger.info("Schema 训练完成: %d/%d 条 DDL", trained, len(ddl_statements))
+        return {"status": "ok", "count": trained, "total": len(ddl_statements)}

@@ -13,6 +13,18 @@ class IntentType(str, Enum):
     TASK = "task"
 
 
+class SSEEvent(BaseModel):
+    """SSE 事件封装"""
+    event_type: str = Field(..., description="事件类型: intent/content/ui_spec/sources/done")
+    data: Any = Field(..., description="事件数据")
+
+
+class IntentResult(BaseModel):
+    """意图分类结果"""
+    intent: IntentType = Field(..., description="识别的意图类型")
+    confidence: float = Field(..., ge=0, le=1, description="置信度")
+
+
 class ChatRequest(BaseModel):
     message: str = Field(..., description="用户输入消息")
     conversation_id: str | None = Field(None, description="会话ID，空则新建")
