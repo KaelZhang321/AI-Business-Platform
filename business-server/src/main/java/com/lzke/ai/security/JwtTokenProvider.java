@@ -8,7 +8,7 @@ import org.springframework.stereotype.Component;
 
 import jakarta.annotation.PostConstruct;
 import java.nio.charset.StandardCharsets;
-import java.security.Key;
+import javax.crypto.SecretKey;
 import java.time.Instant;
 import java.util.Date;
 import java.util.Map;
@@ -20,7 +20,7 @@ public class JwtTokenProvider {
 
     private final JwtProperties properties;
 
-    private Key signingKey;
+    private SecretKey signingKey;
 
     @PostConstruct
     void init() {

@@ -21,6 +21,7 @@ public class User {
     private String department;
     private String role;
     private String status;
+    private String passwordHash;
 
     @TableField(fill = FieldFill.INSERT)
     private OffsetDateTime createdAt;

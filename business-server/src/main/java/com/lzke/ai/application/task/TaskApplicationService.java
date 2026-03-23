@@ -9,6 +9,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 
@@ -45,7 +46,22 @@ public class TaskApplicationService {
             }
         }
 
-        // TODO: 按优先级排序、分页
-        return PageResult.of(allTasks, allTasks.size(), query.getPage(), query.getSize());
+        // 按优先级排序：urgent > high > normal > low
+        Map<String, Integer> priorityOrder = Map.of(
+                "urgent", 0, "high", 1, "normal", 2, "low", 3
+        );
+        allTasks.sort(Comparator.comparingInt(t ->
+                priorityOrder.getOrDefault(t.getPriority(), 99)));
+
+        // 手动分页
+        int page = Math.max(query.getPage(), 1);
+        int size = Math.max(query.getSize(), 10);
+        int fromIndex = (page - 1) * size;
+        int toIndex = Math.min(fromIndex + size, allTasks.size());
+        List<TaskVO> pagedTasks = fromIndex < allTasks.size()
+                ? allTasks.subList(fromIndex, toIndex)
+                : List.of();
+
+        return PageResult.of(pagedTasks, allTasks.size(), page, size);
     }
 }
