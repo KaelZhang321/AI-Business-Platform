@@ -10,7 +10,7 @@
 
 | 层 | 完成度 | 剩余差距 |
 |---|---|---|
-| AI网关 (Python) | ~97% | LLM辅助UI Spec |
+| AI网关 (Python) | ~99% | — |
 | 业务编排 (Java) | ~99% | — |
 | 前端 (React) | ~99% | — |
 | 基础设施 (Docker) | ~99% | — |
@@ -41,7 +41,7 @@
 
 - [x] `ai-gateway/app/services/dynamic_ui_service.py`：根据数据特征自动选择 Chart 类型（柱状图/折线图/饼图），当前后端只生成 bar 而前端已支持 line/pie/scatter/radar
 - [x] `ai-gateway/app/services/dynamic_ui_service.py`：Metric 组件支持 sum/count/avg/min/max 等多种聚合方式（当前仅 mean）
-- [ ] `ai-gateway/app/services/dynamic_ui_service.py`：为 LLM 辅助生成 UI Spec 预留接口（当前全硬编码，架构文档 3.4 设计为 AI 生成）
+- [x] `ai-gateway/app/services/dynamic_ui_service.py`：LLM 辅助生成 UI Spec 接口（`_llm_generate_spec()`，配置 `LLM_UI_SPEC_ENABLED=true` 启用，默认回退规则模式）
 
 ### S2-4. 业务编排 — RabbitMQ 消费者实现（文档 4.3）
 
@@ -259,8 +259,8 @@
 - [ ] **Java**: DocumentProcessListener TODO（文档处理逻辑未实现）
 - [ ] **前端**: AIChat forceRender 反模式
 - [ ] **前端**: Vite alias `'@': '/src'` → `path.resolve(__dirname, './src')`
-- [ ] **前端**: 缺少 ESLint 配置
-- [ ] **前端**: 缺少 aria-label（聊天按钮/表单组件）
+- [x] ~~**前端**: 缺少 ESLint 配置~~ — 已存在 `eslint.config.mjs`（TS/React/a11y/import 插件完整）
+- [x] **前端**: aria-label 补充（AIChat 关闭按钮/输入框/发送按钮）
 
 ---
 
@@ -269,7 +269,7 @@
 - [x] `CLAUDE.md`：React 版本描述从 "React 18" 更新为 "React 19"（实际 package.json 为 `^19.2.4`）
 - [x] `CLAUDE.md`：DynamicRenderer 描述更新为 "json-render + Ant Design 混合渲染"（当前描述为纯自定义）
 - [x] `CLAUDE.md`：Docker 服务数 8→13、数据库表 6→12、Java 包路径 DDD 分层、新增 API 端点/端口/安全/监控描述
-- [ ] 在 `docs/` 下记录 json-render 集成方式（Sprint 1 遗留的 ⏭️ 项）
+- [x] `docs/json-render集成指南.md`：7种组件 + Spec生成 + Action机制 + SSE事件流
 
 ---
 

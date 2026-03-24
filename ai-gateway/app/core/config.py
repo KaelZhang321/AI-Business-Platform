@@ -58,6 +58,9 @@ class Settings(BaseSettings):
     text2sql_timeout_seconds: int = 12
     text2sql_max_rows: int = 200
 
+    # 动态UI
+    llm_ui_spec_enabled: bool = False
+
     # Intent classification
     intent_confidence_threshold: float = 0.55
 

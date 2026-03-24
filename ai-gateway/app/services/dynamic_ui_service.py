@@ -1,18 +1,37 @@
 from __future__ import annotations
 
+import logging
 from statistics import mean
 from typing import Any
 
+from app.core.config import settings
 from app.models.schemas import KnowledgeResult
+
+logger = logging.getLogger(__name__)
 
 
 class DynamicUIService:
-    """根据意图构建 json-render 兼容的 UI Spec"""
+    """根据意图构建 json-render 兼容的 UI Spec。
+
+    支持两种模式：
+    - 规则模式（默认）：基于硬编码模板，根据数据特征自动生成 UI Spec
+    - LLM 模式（实验性）：通过 LLM 生成 UI Spec，需设置 LLM_UI_SPEC_ENABLED=true
+    """
 
     async def generate_ui_spec(self, intent: str, data: Any, context: dict | None = None) -> dict[str, Any] | None:
         if not data:
             return None
 
+        # LLM 模式：启用后优先尝试 LLM 生成，失败时回退到规则模式
+        if settings.llm_ui_spec_enabled:
+            try:
+                spec = await self._llm_generate_spec(intent, data, context)
+                if spec:
+                    return spec
+            except Exception as exc:
+                logger.warning("LLM UI Spec 生成失败，回退规则模式: %s", exc)
+
+        # 规则模式（默认）
         if intent == "knowledge" and isinstance(data, list):
             return self._knowledge_spec(data, context)
 
@@ -21,6 +40,57 @@ class DynamicUIService:
 
         if intent == "task" and isinstance(data, list):
             return self._task_spec(data)
+
+        return None
+
+    async def _llm_generate_spec(self, intent: str, data: Any, context: dict | None) -> dict[str, Any] | None:
+        """通过 LLM 生成 UI Spec（实验性）。
+
+        将数据摘要和意图发送给 LLM，要求返回 json-render 兼容的 JSON Spec。
+        支持的组件类型：Card / Table / Metric / List / Form / Tag / Chart。
+
+        返回 None 表示 LLM 未生成有效 Spec，调用方应回退到规则模式。
+        """
+        import json as _json
+
+        from app.services.llm_service import LLMService
+
+        llm = LLMService()
+
+        # 构造数据摘要（避免发送完整数据给 LLM）
+        if isinstance(data, list):
+            sample = data[:3]
+            data_summary = f"共 {len(data)} 条记录，前3条样例：{_json.dumps(sample, ensure_ascii=False, default=str)[:800]}"
+        else:
+            data_summary = str(data)[:500]
+
+        prompt = (
+            "你是一个 UI 生成器。根据以下信息生成一个 json-render 兼容的 JSON UI Spec。\n"
+            f"意图：{intent}\n"
+            f"上下文：{_json.dumps(context or {}, ensure_ascii=False)}\n"
+            f"数据摘要：{data_summary}\n\n"
+            "可用组件类型：Card, Table, Metric, List, Form, Tag, Chart。\n"
+            "Chart 的 option 遵循 ECharts 格式，支持 bar/line/pie 类型。\n"
+            "请直接返回 JSON，不要包含 markdown 代码块或解释文字。"
+        )
+
+        reply = await llm.chat(messages=[{"role": "user", "content": prompt}])
+        if not reply:
+            return None
+
+        # 尝试从 LLM 回复中提取 JSON
+        cleaned = reply.strip()
+        if cleaned.startswith("```"):
+            # 移除 markdown 代码块
+            lines = cleaned.split("\n")
+            cleaned = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
+
+        try:
+            spec = _json.loads(cleaned)
+            if isinstance(spec, dict) and "type" in spec:
+                return spec
+        except _json.JSONDecodeError:
+            logger.debug("LLM 返回的 UI Spec 不是有效 JSON: %s", cleaned[:200])
 
         return None
 

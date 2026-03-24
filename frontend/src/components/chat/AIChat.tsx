@@ -197,7 +197,7 @@ export default function AIChat({ onClose }: AIChatProps) {
           <RobotOutlined />
           <Text strong>AI 助手</Text>
         </span>
-        <Button type="text" icon={<CloseOutlined />} onClick={onClose} size="small" />
+        <Button type="text" icon={<CloseOutlined />} onClick={onClose} size="small" aria-label="关闭对话" />
       </div>
 
       <AssistantRuntimeProvider runtime={runtime}>
@@ -265,9 +265,10 @@ export default function AIChat({ onClose }: AIChatProps) {
               <ComposerPrimitive.Root className="flex gap-2">
                 <ComposerPrimitive.Input
                   placeholder="输入消息..."
+                  aria-label="聊天输入框"
                   className="flex-1 px-3 py-2 border rounded-lg outline-none focus:border-blue-400"
                 />
-                <ComposerPrimitive.Send className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50">
+                <ComposerPrimitive.Send className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50" aria-label="发送消息">
                   发送
                 </ComposerPrimitive.Send>
               </ComposerPrimitive.Root>
