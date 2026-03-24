@@ -340,7 +340,7 @@ class RAGService:
 
 ```python
 from vanna.ai import VannaAI
-from vanna.postgres import Postgres
+from vanna.mysql import MySQL
 
 class BIQueryService:
     def __init__(self, db_config: dict):
@@ -348,8 +348,8 @@ class BIQueryService:
             model="qwen2.5",
             api_key=os.getenv("API_KEY")
         )
-        self.db = Postgres(**db_config)
-        self.vanna.connect_to_postgres(**db_config)
+        self.db = MySQL(**db_config)
+        self.vanna.connect_to_mysql(**db_config)
     
     def train(self, training_data: List[dict]):
         """训练：导入Schema和样例"""
@@ -579,7 +579,7 @@ class DynamicUIGenerator:
 | type | VARCHAR(50) | 类型(ERP/CRM/OA等) |
 | endpoint | VARCHAR(500) | API地址 |
 | auth_type | VARCHAR(50) | 认证方式 |
-| config | JSONB | 配置信息 |
+| config | JSON | 配置信息 |
 | status | VARCHAR(20) | 状态 |
 | created_at | TIMESTAMP | 创建时间 |
 
@@ -608,7 +608,7 @@ class DynamicUIGenerator:
 | title | VARCHAR(500) | 文档标题 |
 | content | TEXT | 文档内容 |
 | category | VARCHAR(100) | 分类 |
-| tags | JSONB | 标签 |
+| tags | JSON | 标签 |
 | source | VARCHAR(100) | 来源 |
 | chunk_count | INTEGER | 分块数量 |
 | status | VARCHAR(20) | 状态 |
@@ -625,7 +625,7 @@ class DynamicUIGenerator:
 | role | VARCHAR(20) | 角色(user/assistant) |
 | content | TEXT | 内容 |
 | message_type | VARCHAR(50) | 消息类型 |
-| metadata | JSONB | 元数据 |
+| metadata | JSON | 元数据 |
 | created_at | TIMESTAMP | 创建时间 |
 
 #### 4.1.6 调用日志表 (audit_log)
@@ -952,7 +952,7 @@ Response:
 | 向量数据库 | Milvus 2.3+ | |
 | 缓存 | Redis 7.x | |
 | 消息队列 | RabbitMQ 3.12 | |
-| 数据库 | PostgreSQL 15+ | |
+| 数据库 | MySQL 8.0+ | |
 | 日志分析 | ClickHouse | |
 | 部署 | Docker Compose | 开发/测试 |
 

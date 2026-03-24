@@ -38,7 +38,7 @@
           ▼                                    ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                       基础设施层 (Infrastructure)                 │
-│   PostgreSQL │ Redis │ Milvus │ RabbitMQ │ Elasticsearch │ MinIO │
+│     MySQL │ Redis │ Milvus │ RabbitMQ │ Elasticsearch │ MinIO │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -46,7 +46,7 @@
 
 ```
 前端(:5173) ──→ AI网关(:8000)     ──→ Ollama / Milvus / ES / ClickHouse
-              └→ 业务编排(:8080)   ──→ PostgreSQL / Redis / RabbitMQ
+              └→ 业务编排(:8080)   ──→ MySQL / Redis / RabbitMQ
 
 ### 业务编排层分层（单体）
 
@@ -115,7 +115,7 @@ business-server/
 | **缓存** | Redis | 高性能缓存 |
 | **搜索引擎** | Elasticsearch | 全文检索 |
 | **对象存储** | MinIO | S3兼容对象存储 |
-| **数据库** | PostgreSQL | 关系型数据存储 |
+| **数据库** | MySQL | 关系型数据存储 |
 | **分析引擎** | ClickHouse | OLAP数据分析 |
 | **基础设施** | Docker Compose | 容器化编排 |
 
@@ -176,7 +176,7 @@ AI业务中台/
 ├── docker/                            # 基础设施
 │   ├── docker-compose.yml            # 服务编排
 │   └── init-scripts/
-│       └── init-postgres.sql         # 数据库初始化
+│       └── init-mysql.sql            # 数据库初始化
 │
 └── docs/                              # 架构设计文档
     ├── AI业务中台_整体技术架构文档.md
@@ -246,7 +246,7 @@ npm run dev
 | 前端 | 5173 | Web UI |
 | AI网关 | 8000 | LLM推理、RAG |
 | 业务编排 | 8080 | 业务API |
-| PostgreSQL | 5432 | 主数据库 |
+| MySQL | 3306 | 主数据库 |
 | Redis | 6379 | 缓存/会话 |
 | Milvus | 19530 | 向量存储 |
 | RabbitMQ | 5672/15672 | 消息队列 |
@@ -277,7 +277,7 @@ npm run dev
 
 ## 📊 数据库设计
 
-6张核心表存储在 `docker/init-scripts/init-postgres.sql`：
+12张核心表存储在 `docker/init-scripts/init-mysql.sql`：
 
 | 表名 | 用途 |
 |------|------|

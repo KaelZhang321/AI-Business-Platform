@@ -16,7 +16,7 @@ import java.io.IOException;
 import java.util.Map;
 
 /**
- * 审计日志消费者 — 监听 audit.log 队列，双写 PostgreSQL + ClickHouse。
+ * 审计日志消费者 — 监听 audit.log 队列，双写 MySQL + ClickHouse。
  */
 @Slf4j
 @Component
@@ -43,9 +43,9 @@ public class AuditLogListener {
             auditLog.setLatencyMs(getInt(message, "latencyMs"));
             auditLog.setStatus(getString(message, "status", "success"));
 
-            // 写入 PostgreSQL
+            // 写入 MySQL
             auditLogMapper.insert(auditLog);
-            log.debug("审计日志写入PG成功: traceId={}", auditLog.getTraceId());
+            log.debug("审计日志写入MySQL成功: traceId={}", auditLog.getTraceId());
 
             // 写入 ClickHouse (异步、容忍失败)
             analyticsService.insertAuditLog(message);
