@@ -1,36 +1,10 @@
-import axios, { type AxiosError, type InternalAxiosRequestConfig } from 'axios'
+import axios, { type AxiosError, type AxiosInstance, type InternalAxiosRequestConfig } from 'axios'
 import { authService } from './auth'
 import type { AuditLogEntry, KnowledgeDocument, Task } from '../types'
 
 const TOKEN_KEY = 'ai_platform_token'
 
-// ── Axios 客户端 ──────────────────────────────────────────
-
-const apiClient = axios.create({
-  baseURL: import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000',
-  timeout: 30000,
-  headers: { 'Content-Type': 'application/json' },
-})
-
-export const businessClient = axios.create({
-  baseURL: import.meta.env.VITE_BUSINESS_API_URL || 'http://localhost:8080',
-  timeout: 15000,
-  headers: { 'Content-Type': 'application/json' },
-})
-
-// JWT interceptor — 为所有请求自动附加 Authorization header
-function attachToken(config: InternalAxiosRequestConfig) {
-  const token = localStorage.getItem(TOKEN_KEY)
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`
-  }
-  return config
-}
-
-apiClient.interceptors.request.use(attachToken)
-businessClient.interceptors.request.use(attachToken)
-
-// 401 响应拦截 — 使用共享 Promise 消除竞态条件
+// ── 401 刷新 — 共享 Promise 消除竞态 ─────────────────────
 let refreshPromise: Promise<string> | null = null
 
 function redirectToLogin() {
@@ -40,14 +14,14 @@ function redirectToLogin() {
   }
 }
 
-function doRefresh(): Promise<string> {
+function doRefresh(baseURL: string): Promise<string> {
   const refreshToken = authService.getRefreshToken()
   if (!refreshToken) {
     return Promise.reject(new Error('no refresh token'))
   }
   return axios
     .post<{ token: string; expiresIn: number }>(
-      `${businessClient.defaults.baseURL}/api/v1/auth/refresh`,
+      `${baseURL}/api/v1/auth/refresh`,
       null,
       { headers: { Authorization: `Bearer ${refreshToken}` } },
     )
@@ -58,36 +32,68 @@ function doRefresh(): Promise<string> {
     })
 }
 
-async function handle401(error: AxiosError) {
-  const originalRequest = error.config as InternalAxiosRequestConfig & { _retried?: boolean }
-  if (error.response?.status !== 401 || !originalRequest || originalRequest._retried) {
-    if (error.response?.status === 401) redirectToLogin()
-    return Promise.reject(error)
-  }
-  if (originalRequest.url?.includes('/api/v1/auth/refresh')) {
-    redirectToLogin()
-    return Promise.reject(error)
-  }
+// ── Axios 客户端工厂 ─────────────────────────────────────
 
-  originalRequest._retried = true
+function createClient(baseURL: string, timeout = 15_000): AxiosInstance {
+  const client = axios.create({
+    baseURL,
+    timeout,
+    headers: { 'Content-Type': 'application/json' },
+  })
 
-  // 所有并发 401 共享同一个刷新 Promise，避免竞态
-  if (!refreshPromise) {
-    refreshPromise = doRefresh().finally(() => { refreshPromise = null })
-  }
+  // JWT Token 自动注入
+  client.interceptors.request.use((config: InternalAxiosRequestConfig) => {
+    const token = localStorage.getItem(TOKEN_KEY)
+    if (token) {
+      config.headers.Authorization = `Bearer ${token}`
+    }
+    return config
+  })
 
-  try {
-    const newToken = await refreshPromise
-    originalRequest.headers.Authorization = `Bearer ${newToken}`
-    return businessClient(originalRequest)
-  } catch {
-    redirectToLogin()
-    return Promise.reject(error)
-  }
+  // 401 自动刷新
+  client.interceptors.response.use(
+    (r) => r,
+    async (error: AxiosError) => {
+      const originalRequest = error.config as InternalAxiosRequestConfig & { _retried?: boolean }
+      if (error.response?.status !== 401 || !originalRequest || originalRequest._retried) {
+        if (error.response?.status === 401) redirectToLogin()
+        return Promise.reject(error)
+      }
+      if (originalRequest.url?.includes('/api/v1/auth/refresh')) {
+        redirectToLogin()
+        return Promise.reject(error)
+      }
+
+      originalRequest._retried = true
+
+      if (!refreshPromise) {
+        const refreshBase = businessClient.defaults.baseURL as string
+        refreshPromise = doRefresh(refreshBase).finally(() => { refreshPromise = null })
+      }
+
+      try {
+        const newToken = await refreshPromise
+        originalRequest.headers.Authorization = `Bearer ${newToken}`
+        return client(originalRequest)
+      } catch {
+        redirectToLogin()
+        return Promise.reject(error)
+      }
+    },
+  )
+
+  return client
 }
 
-apiClient.interceptors.response.use((r) => r, handle401)
-businessClient.interceptors.response.use((r) => r, handle401)
+const apiClient = createClient(
+  import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000',
+  30_000,
+)
+
+export const businessClient = createClient(
+  import.meta.env.VITE_BUSINESS_API_URL || 'http://localhost:8080',
+  15_000,
+)
 
 // ── 统一响应类型 ──────────────────────────────────────────
 

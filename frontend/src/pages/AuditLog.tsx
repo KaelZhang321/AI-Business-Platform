@@ -97,7 +97,8 @@ export default function AuditLog() {
   const { data, isLoading } = useQuery({
     queryKey: ['auditLogs', filters],
     queryFn: () => auditAPI.logs(filters).then((r) => r.data.data),
-    staleTime: 10_000,
+    staleTime: 5 * 60_000,
+    gcTime: 10 * 60_000,
   })
 
   return (

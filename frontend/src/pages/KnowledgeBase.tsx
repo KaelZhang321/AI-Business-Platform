@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Card, Table, Button, Space, Tag } from 'antd'
+import { Card, Table, Button, Space, Tag, Alert, Spin } from 'antd'
 import { UploadOutlined, SearchOutlined } from '@ant-design/icons'
 import { useQuery } from '@tanstack/react-query'
 import { documentAPI } from '../services/api'
@@ -29,9 +29,10 @@ const columns = [
 export default function KnowledgeBase() {
   const [pagination, setPagination] = useState({ page: 1, size: 20 })
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, error } = useQuery({
     queryKey: ['documents', pagination],
     queryFn: () => documentAPI.list(pagination).then((r) => r.data.data),
+    staleTime: 60_000,
   })
 
   return (
@@ -44,23 +45,33 @@ export default function KnowledgeBase() {
         </Space>
       </div>
 
-      <Card>
-        <Table<KnowledgeDocument>
-          columns={columns}
-          dataSource={data?.records ?? data?.data ?? []}
-          rowKey="id"
-          loading={isLoading}
-          locale={{ emptyText: '暂无文档，请点击上传文档按钮添加' }}
-          pagination={{
-            current: pagination.page,
-            pageSize: pagination.size,
-            total: data?.total ?? 0,
-            showSizeChanger: true,
-            showTotal: (total) => `共 ${total} 条`,
-            onChange: (page, size) => setPagination({ page, size }),
-          }}
+      {error && (
+        <Alert
+          type="warning"
+          message="数据加载失败，显示的可能是缓存数据"
+          className="mb-4"
+          closable
         />
-      </Card>
+      )}
+
+      <Spin spinning={isLoading}>
+        <Card>
+          <Table<KnowledgeDocument>
+            columns={columns}
+            dataSource={data?.records ?? data?.data ?? []}
+            rowKey="id"
+            locale={{ emptyText: '暂无文档，请点击上传文档按钮添加' }}
+            pagination={{
+              current: pagination.page,
+              pageSize: pagination.size,
+              total: data?.total ?? 0,
+              showSizeChanger: true,
+              showTotal: (total) => `共 ${total} 条`,
+              onChange: (page, size) => setPagination({ page, size }),
+            }}
+          />
+        </Card>
+      </Spin>
     </div>
   )
 }

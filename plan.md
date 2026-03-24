@@ -401,10 +401,10 @@
 
 **现状**：无全局 Error Boundary（组件崩溃白屏）、SSE 流无超时/重连、Workspace 页面纯静态。
 
-- [ ] 新建 `frontend/src/components/ErrorBoundary.tsx`：全局错误捕获 + Ant Design Result 降级 UI
-- [ ] `main.tsx`：包裹 `<ErrorBoundary>` 到根组件
-- [ ] `AIChat.tsx`：SSE 流添加 30s 超时 + 友好错误提示（429/503 分类处理）
-- [ ] `Workspace.tsx`：接入 TanStack Query 加载待办/统计真实数据（loading/error/empty 三态）
+- [x] 新建 `frontend/src/components/ErrorBoundary.tsx`：全局错误捕获 + Ant Design Result 降级 UI
+- [x] `main.tsx`：包裹 `<ErrorBoundary>` 到根组件
+- [x] `AIChat.tsx`：SSE 流添加 30s 超时 + 友好错误提示（429/503 分类处理）
+- [x] `Workspace.tsx`：接入 TanStack Query 加载待办/统计真实数据（loading/error/empty 三态）
 
 ### S6-5. Java 性能与可靠性 — P1
 
@@ -420,9 +420,9 @@
 
 **现状**：API 客户端配置不一致、React Query 无 staleTime、KnowledgeBase 页面静态。
 
-- [ ] `services/api.ts`：提取 `createClient()` 工厂函数，统一超时/拦截器/Token 注入
-- [ ] `AuditLog.tsx`：React Query 添加 `staleTime: 5min`、`gcTime: 10min`
-- [ ] `KnowledgeBase.tsx`：接入知识库 API 加载真实数据（同 Workspace 三态处理）
+- [x] `services/api.ts`：提取 `createClient()` 工厂函数，统一超时/拦截器/Token 注入
+- [x] `AuditLog.tsx`：React Query 添加 `staleTime: 5min`、`gcTime: 10min`
+- [x] `KnowledgeBase.tsx`：接入知识库 API 加载真实数据（同 Workspace 三态处理）
 
 ### S6-7. Nginx + Prometheus 运维增强 — P2
 

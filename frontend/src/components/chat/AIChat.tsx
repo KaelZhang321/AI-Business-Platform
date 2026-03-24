@@ -132,7 +132,11 @@ export default function AIChat({ onClose }: AIChatProps) {
         signal: controller.signal,
       })
       if (!response.ok || !response.body) {
-        throw new Error('聊天服务不可用')
+        const status = response.status
+        if (status === 429) throw new Error('请求过于频繁，请稍后再试')
+        if (status === 503) throw new Error('AI 服务暂时不可用，请稍后重试')
+        if (status >= 500) throw new Error(`服务异常 (${status})，请稍后重试`)
+        throw new Error(`请求失败 (${status})`)
       }
       const reader = response.body.getReader()
       const decoder = new TextDecoder('utf-8')
