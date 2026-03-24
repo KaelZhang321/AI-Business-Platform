@@ -264,6 +264,118 @@
 
 ---
 
+## Sprint 5：技术方案落地（基于 docs/04-05 补充/优化方案审查）
+
+> **审查日期**：2026-03-24
+> **审查方法**：12篇技术补充/优化方案逐篇对照代码库，提取 P8 核心平台未落地项
+> **参考文档**：`docs/04_技术补充方案/` (6篇) + `docs/05_技术优化方案/` (6篇)
+
+### S5-1. 统一错误码与异常体系（优化方案10）— P0
+
+**现状**：无统一异常类，Controller 直接抛原生异常，无业务错误码体系。
+
+- [ ] 新建 `business-server/.../exception/BusinessException.java`：业务异常基类，含 code + message
+- [ ] 新建 `business-server/.../exception/ErrorCode.java`：错误码枚举（1000通用/2000认证/3000AI/4000知识库/5000工作流/6000业务规则/7000外部系统）
+- [ ] 新建 `business-server/.../exception/GlobalExceptionHandler.java`：`@RestControllerAdvice` 统一异常处理，返回 `ApiResponse` 格式
+- [ ] AI 网关同步定义 Python 错误码常量，对齐 Java 层码段
+
+### S5-2. Docker 资源限制（优化方案12）— P0
+
+**现状**：docker-compose.yml 所有服务无 mem_limit / cpus 限制，单服务可吞噬宿主机全部资源。
+
+- [ ] `docker/docker-compose.yml`：为所有 13 个服务添加 `deploy.resources.limits`（CPU + 内存上限）
+- [ ] 关键服务资源参考：MySQL 4C16G、Milvus 4C16G、ES 4C8G、Redis 2C4G、Ollama 4C8G
+
+### S5-3. Springdoc / Swagger UI（优化方案10）— P1
+
+**现状**：业务编排层无 API 文档自动生成，AI 网关依赖 FastAPI 内置 `/docs` 已可用。
+
+- [ ] `business-server/pom.xml`：新增 `springdoc-openapi-starter-webmvc-ui` 依赖
+- [ ] `application-dev.yml`：配置 Springdoc 分组（业务API / 管理API）
+- [ ] 所有 Controller 方法补充 `@Operation` / `@Parameter` 注解（渐进式）
+
+### S5-4. Prometheus Exporters + 告警规则（补充方案04）— P1
+
+**现状**：Prometheus/Grafana 已部署，但 exporters 全部注释、无 Grafana Dashboard、无告警规则。
+
+- [ ] `docker/docker-compose.yml`：新增 mysqld-exporter、redis-exporter 服务
+- [ ] `docker/prometheus/prometheus.yml`：取消注释并配置 MySQL/Redis 抓取 job
+- [ ] 新建 `docker/prometheus/alert-rules.yml`：核心告警（MySQL连接>80%、Redis内存>80%、RabbitMQ队列>10000）
+- [ ] 新建 `docker/grafana/dashboards/`：MySQL面板 + Redis面板 + 总览面板（JSON provisioning）
+
+### S5-5. 缓存防护体系（优化方案09）— P1
+
+**现状**：Caffeine + Redis 二级缓存已配置，但无穿透/击穿/雪崩防护。
+
+- [ ] `business-server/pom.xml`：新增 `redisson-spring-boot-starter` 依赖（分布式锁）
+- [ ] 新建 `business-server/.../service/CacheProtectedService.java`：BloomFilter防穿透 + Redisson互斥锁防击穿 + TTL随机化防雪崩
+- [ ] 缓存键命名规范统一：`{产品}:{模块}:{实体}:{ID}` 模式
+
+### S5-6. 缓存失效联动（优化方案09）— P2
+
+**现状**：知识库文档更新后 RAG 缓存不会失效，可能返回过期结果。
+
+- [ ] `business-server/.../config/RabbitMQConfig.java`：新增 `cache.invalidation` 队列
+- [ ] `business-server/.../service/KnowledgeApplicationService.java`：文档创建/更新时发布缓存失效事件
+- [ ] AI 网关监听失效事件，清除对应知识库的 RAG 结果缓存
+
+### S5-7. SSE 统一消息信封（优化方案10）— P2
+
+**现状**：SSE 使用自定义 event 类型（intent/content/ui_spec/done/error），未遵循统一信封规范。
+
+- [ ] 定义统一信封 TypeScript 类型（MessageEnvelope: version/id/traceId/timestamp/source/type/payload）
+- [ ] AI 网关 SSE 输出改造为 STREAM_START / STREAM_CHUNK / STREAM_END / STREAM_ERROR 格式
+- [ ] 前端 SSE 解析层适配新信封格式（向后兼容旧格式）
+
+### S5-8. GraphRAG 图谱查询接入融合（优化方案11）— P2
+
+**现状**：Neo4j 已部署，driver 已预留，但图谱查询未接入 RAG 融合排序，实际仅二路（向量+关键词）。
+
+- [ ] 设计医疗知识图谱 Schema（疾病/药物/症状/检查 实体 + 关系模型）
+- [ ] 导入基础配伍禁忌图谱数据（Cypher LOAD CSV 或脚本）
+- [ ] `ai-gateway/app/services/rag_service.py`：实现 `_graph_search()` 方法，Cypher 查询实体关系
+- [ ] 融合排序器接入图谱结果，三路 RRF（向量0.4 + 关键词0.3 + 图谱0.3）
+- [ ] 意图自适应权重：FACTUAL / RELATIONAL / REASONING 不同配比
+
+### S5-9. Spring AI 引入（补充方案02）— P3
+
+**现状**：Java 层无 AI 框架集成，方案02 推荐 Spring AI 1.0+。
+
+- [ ] `business-server/pom.xml`：新增 `spring-ai-starter` 依赖
+- [ ] 评估 Java 层 AI 能力需求（模型调用/Embedding/Function Calling）
+
+### S5-10. Feature Flag 服务（优化方案12）— P3
+
+**现状**：无功能开关机制，新功能只能全量发布。
+
+- [ ] 新建 `business-server/.../config/FeatureFlags.java`：`@ConfigurationProperties` 绑定 Nacos 动态配置
+- [ ] 支持全局开关 + 用户白名单两种模式
+- [ ] AI 网关同步实现 Python 侧 Feature Flag（从 Nacos 或环境变量读取）
+
+### S5-11. 语义缓存（优化方案09）— P3
+
+**现状**：每次 RAG 检索都触发完整的 Embedding + Milvus + ES + LLM 调用链路，无语义级缓存。
+
+- [ ] AI 网关新增语义缓存层：用户问题 Embedding → Milvus 缓存 Collection 检索（相似度>0.95命中）
+- [ ] 命中则直接返回缓存回答，未命中走正常 RAG+LLM 流程后回写缓存
+- [ ] 缓存与知识库版本绑定，知识库更新时自动失效
+
+---
+
+### 产品线专属（非 P8 核心，记录备忘）
+
+> 以下方案针对其他产品线，当前代码库不涉及，仅记录关键待办。
+
+- [ ] **补充方案01 命名规范**：全团队通知 T-Layer/Tier 命名规范、文档头编号标注
+- [ ] **补充方案03 P3离线模式**：IndexedDB + Service Worker + 本地规则引擎（P3专属）
+- [ ] **补充方案05 WebRTC会诊**：LiveKit Server 部署 + 视频会诊功能（P2 v3.0，Q3-Q4）
+- [ ] **补充方案06 Part A SSO**：Keycloak 24.x 部署 + 8产品 OIDC 集成
+- [ ] **补充方案06 Part B 零容错**：Drools 规则引擎 + 药物三级防护体系（P2/P3专属）
+- [ ] **优化方案07 医疗合规**：DataClassification 四级分类注解、AI可解释性封装、等保三级整改
+- [ ] **优化方案08 P6技术栈**：抽取 @lizkal/shared-* 共享 npm 包、移除 NestJS BFF
+
+---
+
 ## 文档同步（低优先级）
 
 - [x] `CLAUDE.md`：React 版本描述从 "React 18" 更新为 "React 19"（实际 package.json 为 `^19.2.4`）
