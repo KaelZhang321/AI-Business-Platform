@@ -8,12 +8,12 @@
 
 ## 总体完成度
 
-| 层 | Sprint 4 完成度 | 剩余差距 |
+| 层 | 完成度 | 剩余差距 |
 |---|---|---|
-| AI网关 (Python) | ~95% | LLM辅助UI Spec |
-| 业务编排 (Java) | ~97% | — |
+| AI网关 (Python) | ~97% | LLM辅助UI Spec |
+| 业务编排 (Java) | ~99% | — |
 | 前端 (React) | ~99% | — |
-| 基础设施 (Docker) | ~98% | — |
+| 基础设施 (Docker) | ~99% | — |
 
 ---
 
@@ -221,10 +221,54 @@
 
 ---
 
+## 代码质量优化
+
+> **审查日期**：2026-03-24
+> **审查方法**：四层并行审计（AI网关/业务编排/前端/基础设施），共发现83个问题
+
+### 第一轮：CRITICAL 安全与稳定性（已完成）
+
+- [x] **Java 包结构统一**：`model/entity/` → `domain/entity/`、`model/dto/` → `application/dto/`、`mapper/` → `infrastructure/persistence/mapper/`，删除旧目录，MapperScan 收敛为单一路径
+- [x] **XML Mapper namespace 修正**：TaskMapper.xml / DocumentMapper.xml namespace 对齐新包路径
+- [x] **DataPermissionInterceptor SQL注入修复**：字符串拼接 → JSqlParser AST 安全改写 + MetaObject 替代反射
+- [x] **Text2SQL 连接池**：`asyncpg.connect()` 逐次连接 → `asyncpg.create_pool()` 连接池复用
+- [x] **Text2SQL 事件循环阻塞**：Vanna.ai 同步调用 → `asyncio.to_thread()` 包装
+- [x] **Text2SQL 删除未使用 import**：移除 `import json`
+- [x] **前端 401 刷新竞态条件**：可变全局状态 → 共享 Promise 模式，消除并发 401 重复刷新
+
+### 第二轮：数据完整性与配置规范化（已完成）
+
+- [x] **6张新表 Entity 类**：ApiKey / KnowledgeBase / Workflow / WorkflowExecution / Agent / CostLog 对齐 init-postgres.sql 4.1.7-4.1.12
+- [x] **6个 Mapper 接口 + XML**：继承 BaseMapper，namespace 正确
+- [x] **RAGService 命名冲突**：`_neo4j_driver` 字段与方法同名 → 字段 `_neo4j` + 方法 `_neo4j_client()`
+- [x] **RAGService 资源泄漏**：新增 `close()` 方法释放 ES / Neo4j / ClickHouse 连接
+- [x] **main.py 生命周期管理**：lifespan 创建共享 `app.state.rag_service`，shutdown 调用 `close()`
+- [x] **FK ON DELETE 策略**：9处外键补充 CASCADE（conversations/api_keys/workflow_executions）/ SET NULL（tasks/audit_logs/knowledge_bases/workflows/agents/cost_logs）
+- [x] **ClickHouse 密码环境变量化**：硬编码 → `${CLICKHOUSE_PASSWORD:-clickhouse_dev}` 模式
+- [x] **Ollama 健康检查**：docker-compose 新增 healthcheck（curl /api/tags）
+- [x] **Nginx 安全响应头**：X-Frame-Options / X-Content-Type-Options / X-XSS-Protection / Referrer-Policy / Permissions-Policy
+
+### 待办：后续优化（HIGH/MEDIUM）
+
+- [ ] **Python**: ModelRouter/ChatWorkflow httpx 客户端生命周期管理
+- [ ] **Python**: MCP tools 每次调用创建新服务实例 → 共享单例
+- [ ] **Java**: 适配器类重复 helper 方法（firstNonNull/coalesce）→ 提取到 BaseSystemAdapter
+- [ ] **Java**: JwtAuthenticationFilter 静默吞吃所有异常 → 区分认证失败/系统异常
+- [ ] **Java**: PageQuery 缺少 @Min/@Max 验证
+- [ ] **Java**: KnowledgeApplicationService 缺少 @Transactional 边界
+- [ ] **Java**: DocumentProcessListener TODO（文档处理逻辑未实现）
+- [ ] **前端**: AIChat forceRender 反模式
+- [ ] **前端**: Vite alias `'@': '/src'` → `path.resolve(__dirname, './src')`
+- [ ] **前端**: 缺少 ESLint 配置
+- [ ] **前端**: 缺少 aria-label（聊天按钮/表单组件）
+
+---
+
 ## 文档同步（低优先级）
 
 - [x] `CLAUDE.md`：React 版本描述从 "React 18" 更新为 "React 19"（实际 package.json 为 `^19.2.4`）
 - [x] `CLAUDE.md`：DynamicRenderer 描述更新为 "json-render + Ant Design 混合渲染"（当前描述为纯自定义）
+- [x] `CLAUDE.md`：Docker 服务数 8→13、数据库表 6→12、Java 包路径 DDD 分层、新增 API 端点/端口/安全/监控描述
 - [ ] 在 `docs/` 下记录 json-render 集成方式（Sprint 1 遗留的 ⏭️ 项）
 
 ---
@@ -270,7 +314,7 @@
 - ✅ Vite 分层代理
 
 ### 基础设施
-- ✅ Docker Compose 8服务（PostgreSQL/Redis/Milvus/RabbitMQ/ES/MinIO/ClickHouse/Ollama）
-- ✅ PostgreSQL 6张核心表 + 索引 + 默认管理员
+- ✅ Docker Compose 13服务（PostgreSQL/Redis/Milvus/RabbitMQ/ES/MinIO/ClickHouse/Ollama/Neo4j/Prometheus/Grafana/Nginx/Nacos）
+- ✅ PostgreSQL 12张表 + 索引 + FK ON DELETE 策略 + 默认管理员
 
 </details>
