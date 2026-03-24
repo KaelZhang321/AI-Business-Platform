@@ -21,6 +21,7 @@ from app.services.dynamic_ui_service import DynamicUIService
 from app.services.intent_classifier import IntentClassifier
 from app.services.llm_service import LLMService
 from app.services.rag_service import RAGService
+from app.services.semantic_cache import SemanticCacheService
 from app.services.text2sql_service import Text2SQLService
 
 logger = logging.getLogger(__name__)
@@ -46,12 +47,14 @@ class ChatWorkflow:
         text2sql_service: Text2SQLService | None = None,
         dynamic_ui: DynamicUIService | None = None,
         llm_service: LLMService | None = None,
+        semantic_cache: SemanticCacheService | None = None,
     ) -> None:
         self._intent_classifier = intent_classifier or IntentClassifier()
         self._rag_service = rag_service or RAGService()
         self._text2sql_service = text2sql_service or Text2SQLService()
         self._dynamic_ui = dynamic_ui or DynamicUIService()
         self._llm_service = llm_service or LLMService()
+        self._semantic_cache = semantic_cache or SemanticCacheService()
         self._http = httpx.AsyncClient(timeout=15)
         self._graph = self._build_graph()
 
@@ -136,12 +139,31 @@ class ChatWorkflow:
 
     async def _handle_knowledge(self, state: ChatState) -> dict[str, Any]:
         req = ChatRequest(**state["request"])
+
+        # S5-11: 语义缓存 — 命中则直接返回
+        cache_hit = await self._semantic_cache.lookup(req.message)
+        if cache_hit:
+            logger.info("语义缓存命中 (similarity=%.4f)", cache_hit.similarity)
+            return {
+                "response_text": cache_hit.answer,
+                "ui_spec": cache_hit.ui_spec,
+                "sources": cache_hit.sources,
+            }
+
         results = await self._rag_service.search(req.message)
         if results:
             summary_lines = [f"- {item.title}: {item.content[:150]}" for item in results[:3]]
             response_text = "\n".join(summary_lines)
             ui_spec = await self._dynamic_ui.generate_ui_spec("knowledge", results)
             sources = [item.model_dump() for item in results]
+
+            # S5-11: 写入语义缓存
+            await self._semantic_cache.store(
+                question=req.message,
+                answer=response_text,
+                sources=sources,
+                ui_spec=ui_spec,
+            )
         else:
             response_text = "未从知识库中检索到相关内容。"
             ui_spec = None

@@ -79,6 +79,18 @@ class Settings(BaseSettings):
     # RabbitMQ（缓存失效监听）
     rabbitmq_url: str = "amqp://admin:admin_dev@localhost:5672/"
 
+    # Feature Flags（本地模式，key=flag名, value=bool）
+    feature_flags: dict[str, bool] = {
+        "semantic-cache": False,
+        "spring-ai": False,
+    }
+
+    # 语义缓存（S5-11）
+    semantic_cache_enabled: bool = False
+    semantic_cache_similarity_threshold: float = 0.95
+    semantic_cache_ttl_hours: int = 24
+    semantic_cache_max_size: int = 10000
+
     model_config = {"env_file": ".env", "extra": "ignore"}
 
 

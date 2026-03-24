@@ -1,5 +1,6 @@
 package com.lzke.ai.config;
 
+import com.lzke.ai.config.FeatureFlagProperties;
 import com.lzke.ai.security.JwtAuthenticationFilter;
 import com.lzke.ai.security.JwtProperties;
 import lombok.RequiredArgsConstructor;
@@ -24,7 +25,7 @@ import java.util.List;
 
 @Configuration
 @EnableMethodSecurity
-@EnableConfigurationProperties(JwtProperties.class)
+@EnableConfigurationProperties({JwtProperties.class, FeatureFlagProperties.class})
 @RequiredArgsConstructor
 public class SecurityConfig {
 
@@ -42,7 +43,8 @@ public class SecurityConfig {
                                 "/api/v1/auth/refresh",
                                 "/api/v1/auth/me",
                                 "/actuator/**",
-                                "/health"
+                                "/health",
+                                "/api/v1/feature-flags/**"
                         ).permitAll()
                         .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                         .anyRequest().authenticated()

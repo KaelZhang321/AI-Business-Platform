@@ -68,3 +68,15 @@ app:
     url: jdbc:clickhouse://localhost:8123/ai_platform_logs
     username: default
     password: ""
+  feature-flags:
+    global-enabled: true
+    flags:
+      semantic-cache:
+        enabled: false
+        description: "AI网关语义缓存（向量相似度命中直接返回）"
+      spring-ai:
+        enabled: false
+        description: "Spring AI 框架集成"
+      graphrag:
+        enabled: true
+        description: "GraphRAG 三路融合检索"

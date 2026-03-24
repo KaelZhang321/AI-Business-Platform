@@ -76,10 +76,22 @@ async def lifespan(app: FastAPI):
     # 将共享服务实例挂载到 app.state，供 route 层按需获取
     app.state.rag_service = RAGService()
 
-    # ── 启动缓存失效监听器（S5-6）────────────────────────
+    # ── 启动缓存失效监听器（S5-6 + S5-11 语义缓存联动）────
     cache_task = None
     try:
-        from app.services.cache_invalidation import start_cache_invalidation_listener
+        from app.services.cache_invalidation import (
+            set_semantic_cache_service,
+            start_cache_invalidation_listener,
+        )
+        from app.services.semantic_cache import SemanticCacheService
+
+        if settings.semantic_cache_enabled:
+            semantic_cache = SemanticCacheService()
+            set_semantic_cache_service(semantic_cache)
+            logger.info("语义缓存服务已初始化 (threshold=%.2f, ttl=%dh)",
+                        settings.semantic_cache_similarity_threshold,
+                        settings.semantic_cache_ttl_hours)
+
         cache_task = asyncio.create_task(start_cache_invalidation_listener())
         logger.info("缓存失效监听器已启动")
     except Exception as exc:

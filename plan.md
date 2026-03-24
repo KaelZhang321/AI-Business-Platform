@@ -331,11 +331,11 @@
 
 **现状**：Neo4j 已部署，driver 已预留，但图谱查询未接入 RAG 融合排序，实际仅二路（向量+关键词）。
 
-- [ ] 设计医疗知识图谱 Schema（疾病/药物/症状/检查 实体 + 关系模型）
-- [ ] 导入基础配伍禁忌图谱数据（Cypher LOAD CSV 或脚本）
-- [ ] `ai-gateway/app/services/rag_service.py`：实现 `_graph_search()` 方法，Cypher 查询实体关系
-- [ ] 融合排序器接入图谱结果，三路 RRF（向量0.4 + 关键词0.3 + 图谱0.3）
-- [ ] 意图自适应权重：FACTUAL / RELATIONAL / REASONING 不同配比
+- [x] 设计医疗知识图谱 Schema（疾病/药物/症状/检查 实体 + 关系模型）
+- [x] 导入基础配伍禁忌图谱数据（Cypher LOAD CSV 或脚本）
+- [x] `ai-gateway/app/services/rag_service.py`：实现 `_graph_search()` 方法，Cypher 查询实体关系
+- [x] 融合排序器接入图谱结果，三路 RRF（向量0.4 + 关键词0.3 + 图谱0.3）
+- [x] 意图自适应权重：FACTUAL / RELATIONAL / REASONING 不同配比
 
 ### S5-9. Spring AI 引入（补充方案02）— P3
 
@@ -348,17 +348,88 @@
 
 **现状**：无功能开关机制，新功能只能全量发布。
 
-- [ ] 新建 `business-server/.../config/FeatureFlags.java`：`@ConfigurationProperties` 绑定 Nacos 动态配置
-- [ ] 支持全局开关 + 用户白名单两种模式
-- [ ] AI 网关同步实现 Python 侧 Feature Flag（从 Nacos 或环境变量读取）
+- [x] 新建 `business-server/.../config/FeatureFlagProperties.java`：`@ConfigurationProperties` 绑定 Nacos 动态配置
+- [x] 新建 `business-server/.../service/FeatureFlagService.java`：全局开关 + 用户白名单两种模式 + Redis 缓存
+- [x] 新建 `business-server/.../interfaces/rest/FeatureFlagController.java`：REST 查询端点
+- [x] AI 网关 `app/services/feature_flags.py`：Python 侧 Feature Flag（本地环境变量 + 远程 HTTP 查询）
 
 ### S5-11. 语义缓存（优化方案09）— P3
 
 **现状**：每次 RAG 检索都触发完整的 Embedding + Milvus + ES + LLM 调用链路，无语义级缓存。
 
-- [ ] AI 网关新增语义缓存层：用户问题 Embedding → Milvus 缓存 Collection 检索（相似度>0.95命中）
-- [ ] 命中则直接返回缓存回答，未命中走正常 RAG+LLM 流程后回写缓存
-- [ ] 缓存与知识库版本绑定，知识库更新时自动失效
+- [x] AI 网关 `app/services/semantic_cache.py`：Milvus 缓存 Collection + Embedding 相似度检索（>0.95命中）
+- [x] `chat_workflow.py` _handle_knowledge 注入缓存：命中直接返回，未命中走 RAG+LLM 后回写
+- [x] `cache_invalidation.py` 联动：知识库更新时同步清除 Milvus 语义缓存
+
+---
+
+## Sprint 6：生产就绪加固（四层代码审计）
+
+> **审查日期**：2026-03-24
+> **审查方法**：四层并行代码审计（AI网关/业务编排/前端/基础设施），共发现52个新问题
+> **重点方向**：安全加固、可靠性提升、性能优化
+
+### S6-1. Java 安全加固 — P0
+
+**现状**：CORS 通配符、URL 拼接注入、文件上传无类型校验、工作流端点无权限验证。
+
+- [ ] `SecurityConfig.java`：CORS `allowedOriginPatterns("*")` → 显式域名白名单
+- [ ] `BaseSystemAdapter.java`：URL 字符串拼接 → `UriComponentsBuilder` 安全构造
+- [ ] `StorageService.java`：文件上传新增白名单校验（pdf/docx/txt/md/csv）+ 大小限制（100MB）
+- [ ] `WorkflowController.java`：deploy/start 端点补充 `@PreAuthorize("hasRole('ADMIN')")` 权限
+
+### S6-2. Docker 安全加固 — P0
+
+**现状**：RabbitMQ/MinIO 管理界面外网暴露、ES 安全认证禁用、多服务弱密码。
+
+- [ ] `docker-compose.yml`：RabbitMQ 移除 `15672` 端口映射（仅内部访问）
+- [ ] `docker-compose.yml`：MinIO 移除 `9001` 端口映射（控制台走 Nginx 代理）
+- [ ] `docker-compose.yml`：ES 启用 `xpack.security.enabled=true` + 环境变量密码
+- [ ] `docker-compose.yml`：Redis 启用 AOF 持久化（`--appendonly yes --appendfsync everysec`）
+- [ ] `docker/.env.example`：补齐所有缺失变量（ES/Nacos/Grafana），密码改为 `<CHANGE_ME>` 占位
+
+### S6-3. AI 网关可靠性提升 — P0
+
+**现状**：DynamicUIService 每次创建新 LLMService 实例、缓存监听无重试、配置无范围校验。
+
+- [ ] `dynamic_ui_service.py`：`_llm_generate_spec` 中 LLMService 改为懒加载单例
+- [ ] `cache_invalidation.py`：新增指数退避重试（最多3次，5/10/20秒间隔）
+- [ ] `config.py`：关键配置添加 `Field(ge=, le=)` 范围约束（权重/阈值/限制数）
+- [ ] `.env.example`：数据库 URL 改为 MySQL 驱动（与 config.py 默认值一致）
+
+### S6-4. 前端 Error Boundary + 流式错误处理 — P0
+
+**现状**：无全局 Error Boundary（组件崩溃白屏）、SSE 流无超时/重连、Workspace 页面纯静态。
+
+- [ ] 新建 `frontend/src/components/ErrorBoundary.tsx`：全局错误捕获 + Ant Design Result 降级 UI
+- [ ] `main.tsx`：包裹 `<ErrorBoundary>` 到根组件
+- [ ] `AIChat.tsx`：SSE 流添加 30s 超时 + 友好错误提示（429/503 分类处理）
+- [ ] `Workspace.tsx`：接入 TanStack Query 加载待办/统计真实数据（loading/error/empty 三态）
+
+### S6-5. Java 性能与可靠性 — P1
+
+**现状**：适配器串行调用、HikariCP 未配置、AuditLogListener 无限重试、日期参数无校验。
+
+- [ ] `TaskApplicationService.java`：适配器串行 → `CompletableFuture` 并行调用
+- [ ] `application-dev.yml`：补充 HikariCP 连接池配置（max=20, min-idle=5）
+- [ ] `AuditLogListener.java`：`basicNack` 无限重试 → 3次重试后进死信队列
+- [ ] `AuditController.java`：日期参数 String → `@DateTimeFormat LocalDate` + 逻辑校验
+- [ ] `application.yml`：移除 `profiles.active: dev` 硬编码，由启动参数指定
+
+### S6-6. 前端 API 层与性能优化 — P1
+
+**现状**：API 客户端配置不一致、React Query 无 staleTime、KnowledgeBase 页面静态。
+
+- [ ] `services/api.ts`：提取 `createClient()` 工厂函数，统一超时/拦截器/Token 注入
+- [ ] `AuditLog.tsx`：React Query 添加 `staleTime: 5min`、`gcTime: 10min`
+- [ ] `KnowledgeBase.tsx`：接入知识库 API 加载真实数据（同 Workspace 三态处理）
+
+### S6-7. Nginx + Prometheus 运维增强 — P2
+
+**现状**：Nginx 无 gzip/日志轮转、Prometheus 告警规则不完整。
+
+- [ ] `nginx.conf`：新增 gzip 压缩 + 增强日志格式（含 request_time/upstream_time）
+- [ ] `alert-rules.yml`：补充容器 CPU/内存、磁盘空间、RabbitMQ 队列深度告警规则
 
 ---
 

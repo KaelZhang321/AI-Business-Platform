@@ -62,7 +62,17 @@ class RAGService:
         return self._clickhouse_engine
 
     # --- public API ---------------------------------------------------
-    async def search(self, query: str, top_k: int = 5, doc_types: list[str] | None = None) -> list[KnowledgeResult]:
+    # 意图自适应权重配比
+    _INTENT_WEIGHTS: dict[str, tuple[float, float, float]] = {
+        # (向量, 关键词, 图谱)
+        "FACTUAL": (0.3, 0.5, 0.2),       # 事实性问题：侧重关键词精确匹配
+        "RELATIONAL": (0.2, 0.2, 0.6),    # 关系性问题：侧重图谱实体关系
+        "REASONING": (0.5, 0.2, 0.3),     # 推理性问题：侧重语义向量
+    }
+
+    async def search(
+        self, query: str, top_k: int = 5, doc_types: list[str] | None = None, query_type: str | None = None,
+    ) -> list[KnowledgeResult]:
         """并行执行向量、关键词、图谱检索并融合排序，并记录指标。"""
         vector_task = asyncio.create_task(self._vector_search(query, doc_types))
         keyword_task = asyncio.create_task(self._keyword_search(query, doc_types))
@@ -75,10 +85,14 @@ class RAGService:
             return_exceptions=False,
         )
 
+        # 意图自适应权重选择
+        weights = self._INTENT_WEIGHTS.get(query_type or "", None)
+
         merged = self._fuse_results(
             vector_results,
             keyword_results,
             graph_results,
+            weights=weights,
         )
         reranked = await self._rerank(query, merged, top_k=top_k)
         await self._record_metrics(query, vector_results, keyword_results, graph_results, reranked)
@@ -139,27 +153,68 @@ class RAGService:
 
     async def _graph_search(self, query: str) -> list[KnowledgeResult]:
         driver = self._neo4j_client()
-        cypher = """
+        records: list[KnowledgeResult] = []
+
+        # 1) 全文索引检索（通用知识）
+        fulltext_cypher = """
         CALL db.index.fulltext.queryNodes('knowledge_index', $query)
         YIELD node, score
-        RETURN node.doc_id AS doc_id, node.title AS title, node.summary AS content,
-               node.type AS doc_type, node.metadata AS metadata, score
+        RETURN labels(node)[0] AS label, node.name AS title, node.description AS content, score
+        LIMIT 10
+        """
+        # 2) 实体关系查询（医疗图谱：疾病→症状/药物/检查）
+        relation_cypher = """
+        MATCH (n)
+        WHERE any(lbl IN labels(n) WHERE lbl IN ['Disease','Medicine','Symptom','Examination'])
+          AND toLower(n.name) CONTAINS toLower($query)
+        OPTIONAL MATCH (n)-[r]->(m)
+        RETURN n.name AS entity, labels(n)[0] AS entity_type,
+               type(r) AS rel, m.name AS related, labels(m)[0] AS related_type,
+               r.reason AS reason, r.severity AS severity
         LIMIT 20
         """
-        records: list[KnowledgeResult] = []
-        async with driver.session() as session:
-            result = await session.run(cypher, query=query)
-            async for record in result:
-                records.append(
-                    KnowledgeResult(
-                        doc_id=record["doc_id"],
-                        title=record["title"],
-                        content=record["content"],
-                        score=float(record["score"]),
-                        doc_type=record["doc_type"] or "graph",
-                        metadata=record.get("metadata") or {},
-                    )
-                )
+        try:
+            async with driver.session() as session:
+                # 全文检索
+                result = await session.run(fulltext_cypher, query=query)
+                async for rec in result:
+                    records.append(KnowledgeResult(
+                        doc_id=f"graph:{rec['label']}:{rec['title']}",
+                        title=rec["title"] or "",
+                        content=rec["content"] or "",
+                        score=float(rec["score"]),
+                        doc_type="graph",
+                        metadata={"source": "fulltext"},
+                    ))
+
+                # 实体关系
+                result2 = await session.run(relation_cypher, query=query)
+                seen = set()
+                async for rec in result2:
+                    entity = rec["entity"]
+                    rel = rec["rel"]
+                    related = rec["related"]
+                    if not rel or not related:
+                        continue
+                    key = f"{entity}-{rel}-{related}"
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    reason = rec.get("reason") or ""
+                    content = f"{entity} —[{rel}]→ {related}"
+                    if reason:
+                        content += f"（{reason}）"
+                    records.append(KnowledgeResult(
+                        doc_id=f"graph:rel:{key}",
+                        title=f"{entity} → {related}",
+                        content=content,
+                        score=0.8,
+                        doc_type="graph",
+                        metadata={"relation": rel, "severity": rec.get("severity") or ""},
+                    ))
+        except Exception as exc:
+            self._logger.warning("Graph search failed: %s", exc)
+
         return records
 
     # --- fusion & rerank ----------------------------------------------
@@ -168,7 +223,11 @@ class RAGService:
         vector_results: list[KnowledgeResult],
         keyword_results: list[KnowledgeResult],
         graph_results: list[KnowledgeResult],
+        weights: tuple[float, float, float] | None = None,
     ) -> list[KnowledgeResult]:
+        w_vec, w_kw, w_graph = weights or (
+            settings.rag_vector_weight, settings.rag_keyword_weight, settings.rag_graph_weight,
+        )
         score_map: dict[str, KnowledgeResult] = {}
         fused_scores: dict[str, float] = {}
 
@@ -179,9 +238,9 @@ class RAGService:
                     score_map[doc_id] = doc
                 fused_scores[doc_id] = fused_scores.get(doc_id, 0.0) + weight / (rank + 1)
 
-        update(vector_results, settings.rag_vector_weight)
-        update(keyword_results, settings.rag_keyword_weight)
-        update(graph_results, settings.rag_graph_weight)
+        update(vector_results, w_vec)
+        update(keyword_results, w_kw)
+        update(graph_results, w_graph)
 
         merged = sorted(score_map.items(), key=lambda item: fused_scores[item[0]], reverse=True)
         return [doc for _, doc in merged]
