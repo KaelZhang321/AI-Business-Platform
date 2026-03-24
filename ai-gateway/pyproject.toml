@@ -17,6 +17,7 @@ dependencies = [
     "fastmcp>=0.4.0",
     # Text2SQL
     "vanna>=0.7.0",
+    "openai>=1.0.0",
     # 数据库 & 存储
     "sqlalchemy>=2.0.0",
     "aiomysql>=0.2.0",

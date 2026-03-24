@@ -60,6 +60,9 @@ class Settings(BaseSettings):
     text2sql_default_database: str = "default"
     text2sql_timeout_seconds: int = 12
     text2sql_max_rows: int = 200
+    text2sql_api_key: str = ""          # ARK / OpenAI API Key（env: TEXT2SQL_API_KEY 或 ARK_API_KEY）
+    text2sql_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
+    text2sql_model: str = "ep-20251108132803-xbb9f"
 
     # 动态UI
     llm_ui_spec_enabled: bool = False

@@ -50,19 +50,26 @@ class Text2SQLService:
         self._pool: aiomysql.Pool | None = None
 
     def _get_vanna(self):
-        """懒加载 Vanna 实例"""
+        """懒加载 Vanna 实例 — 使用 OpenAI 兼容接口（火山引擎 ARK）"""
         if self._vn is None:
-            from vanna.ollama import Ollama
+            from vanna.openai import OpenAI_Chat
             from vanna.milvus import Milvus_VectorStore
 
-            class VannaOllama(Milvus_VectorStore, Ollama):
+            class VannaOpenAI(Milvus_VectorStore, OpenAI_Chat):
                 def __init__(self, config=None):
                     Milvus_VectorStore.__init__(self, config=config)
-                    Ollama.__init__(self, config=config)
+                    OpenAI_Chat.__init__(self, config=config)
 
-            self._vn = VannaOllama(config={
-                "model": "qwen2.5:7b",
-                "ollama_host": settings.ollama_base_url,
+            api_key = settings.text2sql_api_key
+            if not api_key:
+                raise RuntimeError(
+                    "Text2SQL 未配置 API Key，请设置环境变量 TEXT2SQL_API_KEY 或 ARK_API_KEY"
+                )
+
+            self._vn = VannaOpenAI(config={
+                "api_key": api_key,
+                "model": settings.text2sql_model,
+                "base_url": settings.text2sql_base_url,
             })
         return self._vn
 
