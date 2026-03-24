@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import Any, TypedDict
 from uuid import uuid4
 
@@ -95,6 +96,7 @@ class ChatWorkflow:
         event_type: str | None = event.get("event")
         name: str | None = event.get("name")
         state = event.get("data", {}).get("state", {})
+        trace_id = request.conversation_id or ""
 
         if event_type == "on_node_end" and name == "classify":
             intent = state.get("intent", IntentType.CHAT)
@@ -103,19 +105,19 @@ class ChatWorkflow:
                 "intent": intent.value if isinstance(intent, IntentType) else intent,
                 "sub_intent": sub_intent.value if isinstance(sub_intent, SubIntentType) else sub_intent,
             }
-            yield self._sse("intent", payload)
+            yield self._sse("STREAM_START", payload, trace_id)
         elif event_type == "on_node_end" and name in {"knowledge", "query", "task", "chat"}:
             text = state.get("response_text", "")
             if text:
-                yield self._sse("content", {"node": name, "text": text})
+                yield self._sse("STREAM_CHUNK", {"node": name, "text": text}, trace_id)
             if state.get("ui_spec"):
-                yield self._sse("ui_spec", state["ui_spec"])
+                yield self._sse("STREAM_CHUNK", {"ui_spec": state["ui_spec"]}, trace_id)
             if sources := state.get("sources"):
-                yield self._sse("sources", sources)
+                yield self._sse("STREAM_CHUNK", {"sources": sources}, trace_id)
         elif event_type == "on_graph_end":
             final_state = state if state else {}
             response = self._to_response(request, final_state)
-            yield self._sse("done", response.model_dump())
+            yield self._sse("STREAM_END", response.model_dump(), trace_id)
 
     def _initial_state(self, request: ChatRequest) -> ChatState:
         return {
@@ -224,5 +226,15 @@ class ChatWorkflow:
         )
 
     @staticmethod
-    def _sse(event: str, data: Any) -> str:
-        return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+    def _sse(event_type: str, payload: Any, trace_id: str = "") -> str:
+        """统一 SSE 信封格式 — STREAM_START / STREAM_CHUNK / STREAM_END / STREAM_ERROR"""
+        envelope = {
+            "version": "1.0",
+            "id": str(uuid4()),
+            "traceId": trace_id,
+            "timestamp": int(time.time() * 1000),
+            "source": "ai-gateway",
+            "type": event_type,
+            "payload": payload,
+        }
+        return f"event: {event_type}\ndata: {json.dumps(envelope, ensure_ascii=False)}\n\n"

@@ -1,6 +1,8 @@
 package com.lzke.ai.service;
 
 import com.lzke.ai.config.MinIOConfig;
+import com.lzke.ai.exception.BusinessException;
+import com.lzke.ai.exception.ErrorCode;
 import io.minio.*;
 import io.minio.http.Method;
 import lombok.RequiredArgsConstructor;
@@ -37,7 +39,7 @@ public class StorageService {
             log.info("文件上传成功: {}", objectName);
             return objectName;
         } catch (Exception e) {
-            throw new RuntimeException("文件上传失败: " + e.getMessage(), e);
+            throw new BusinessException(ErrorCode.STORAGE_ERROR, "文件上传失败: " + e.getMessage(), e);
         }
     }
 
@@ -48,7 +50,7 @@ public class StorageService {
                     .object(objectName)
                     .build());
         } catch (Exception e) {
-            throw new RuntimeException("文件下载失败: " + e.getMessage(), e);
+            throw new BusinessException(ErrorCode.STORAGE_ERROR, "文件下载失败: " + e.getMessage(), e);
         }
     }
 
@@ -60,7 +62,7 @@ public class StorageService {
                     .build());
             log.info("文件删除成功: {}", objectName);
         } catch (Exception e) {
-            throw new RuntimeException("文件删除失败: " + e.getMessage(), e);
+            throw new BusinessException(ErrorCode.STORAGE_ERROR, "文件删除失败: " + e.getMessage(), e);
         }
     }
 
@@ -73,7 +75,7 @@ public class StorageService {
                     .expiry(2, TimeUnit.HOURS)
                     .build());
         } catch (Exception e) {
-            throw new RuntimeException("生成预签名URL失败: " + e.getMessage(), e);
+            throw new BusinessException(ErrorCode.STORAGE_ERROR, "生成预签名URL失败: " + e.getMessage(), e);
         }
     }
 }

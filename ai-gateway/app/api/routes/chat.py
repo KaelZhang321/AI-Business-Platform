@@ -16,8 +16,8 @@ async def _stream_chat(request: ChatRequest, settings: Settings) -> AsyncGenerat
     """SSE流式输出对话响应"""
     async for chunk in workflow.stream(request):
         yield chunk
-    # LangGraph 的 on_graph_end 事件会输出 done，这里保持兼容备份
-    yield ChatWorkflow._sse("done", {"status": "completed"})
+    # LangGraph 的 on_graph_end 事件会输出 STREAM_END，这里保持兼容备份
+    yield ChatWorkflow._sse("STREAM_END", {"status": "completed"})
 
 
 @router.post("/chat", response_model=ChatResponse)

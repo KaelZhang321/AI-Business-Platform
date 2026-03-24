@@ -45,6 +45,14 @@ public class KnowledgeApplicationService {
                 Map.of("documentId", doc.getId().toString(), "title", doc.getTitle())
         );
 
+        // 发布缓存失效事件（通知 AI 网关清除 RAG 结果缓存）
+        rabbitTemplate.convertAndSend(
+                RabbitMQConfig.EXCHANGE,
+                RabbitMQConfig.CACHE_INVALIDATION_QUEUE,
+                Map.of("type", "knowledge", "documentId", doc.getId().toString(),
+                        "action", "create", "category", doc.getCategory() != null ? doc.getCategory() : "")
+        );
+
         DocumentVO vo = new DocumentVO();
         vo.setId(doc.getId());
         vo.setTitle(doc.getTitle());

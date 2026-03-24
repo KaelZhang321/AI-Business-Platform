@@ -19,6 +19,14 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "4"
+          memory: 16G
+        reservations:
+          cpus: "1"
+          memory: 2G
 
   redis:
     image: redis:7
@@ -34,6 +42,14 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 4G
+        reservations:
+          cpus: "0.5"
+          memory: 512M
 
   milvus:
     image: milvusdb/milvus:v2.3.0
@@ -54,6 +70,14 @@ services:
       interval: 30s
       timeout: 10s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "4"
+          memory: 16G
+        reservations:
+          cpus: "1"
+          memory: 4G
 
   rabbitmq:
     image: rabbitmq:3.12-management
@@ -72,6 +96,14 @@ services:
       interval: 30s
       timeout: 10s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 4G
+        reservations:
+          cpus: "0.5"
+          memory: 512M
 
   elasticsearch:
     image: elasticsearch:8.11.0
@@ -90,6 +122,14 @@ services:
       interval: 30s
       timeout: 10s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "4"
+          memory: 8G
+        reservations:
+          cpus: "1"
+          memory: 1G
 
   minio:
     image: minio/minio
@@ -109,6 +149,14 @@ services:
       interval: 30s
       timeout: 10s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 4G
+        reservations:
+          cpus: "0.5"
+          memory: 512M
 
   clickhouse:
     image: clickhouse/clickhouse-server:23.12
@@ -128,6 +176,14 @@ services:
       interval: 30s
       timeout: 10s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "4"
+          memory: 8G
+        reservations:
+          cpus: "1"
+          memory: 1G
 
   ollama:
     image: ollama/ollama
@@ -142,6 +198,14 @@ services:
       interval: 30s
       timeout: 10s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "4"
+          memory: 8G
+        reservations:
+          cpus: "1"
+          memory: 2G
 
   # ── S4-4: Neo4j 图数据库（GraphRAG 预留）──────────────────
   neo4j:
@@ -161,6 +225,57 @@ services:
       interval: 30s
       timeout: 10s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 4G
+        reservations:
+          cpus: "0.5"
+          memory: 1G
+
+  # ── S5-4: MySQL Exporter ─────────────────────────────
+  mysqld-exporter:
+    image: prom/mysqld-exporter:v0.15.1
+    container_name: ai-platform-mysqld-exporter
+    restart: unless-stopped
+    environment:
+      DATA_SOURCE_NAME: "root:${MYSQL_ROOT_PASSWORD:-ai_platform_dev}@(mysql:3306)/"
+    ports:
+      - "9104:9104"
+    depends_on:
+      mysql:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+        reservations:
+          cpus: "0.1"
+          memory: 64M
+
+  # ── S5-4: Redis Exporter ───────────────────────────────
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.66.0
+    container_name: ai-platform-redis-exporter
+    restart: unless-stopped
+    environment:
+      REDIS_ADDR: "redis://redis:6379"
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-redis_dev}
+    ports:
+      - "9121:9121"
+    depends_on:
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+        reservations:
+          cpus: "0.1"
+          memory: 64M
 
   # ── S4-5: Prometheus 监控 ──────────────────────────────
   prometheus:
@@ -171,12 +286,21 @@ services:
       - "9090:9090"
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alert-rules.yml:/etc/prometheus/alert-rules.yml:ro
       - prometheus_data:/prometheus
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.retention.time=15d"
     depends_on:
       - mysql
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 4G
+        reservations:
+          cpus: "0.5"
+          memory: 512M
 
   # ── S4-5: Grafana 可视化 ───────────────────────────────
   grafana:
@@ -190,8 +314,19 @@ services:
       - "3000:3000"
     volumes:
       - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
     depends_on:
       - prometheus
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 2G
+        reservations:
+          cpus: "0.25"
+          memory: 256M
 
   # ── S4-6: Nginx 反向代理 ───────────────────────────────
   nginx:
@@ -205,6 +340,14 @@ services:
     depends_on:
       - mysql
       - redis
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 1G
+        reservations:
+          cpus: "0.25"
+          memory: 128M
 
   # ── S4-2: Nacos 注册/配置中心 ──────────────────────────
   nacos:
@@ -228,6 +371,14 @@ services:
       interval: 30s
       timeout: 10s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 4G
+        reservations:
+          cpus: "0.5"
+          memory: 1G
 
 volumes:
   mysql_data:

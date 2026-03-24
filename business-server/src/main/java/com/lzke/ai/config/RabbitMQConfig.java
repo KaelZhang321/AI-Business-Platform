@@ -16,6 +16,7 @@ public class RabbitMQConfig {
     public static final String TASK_SYNC_QUEUE = "task.sync";
     public static final String DOCUMENT_PROCESS_QUEUE = "document.process";
     public static final String AUDIT_LOG_QUEUE = "audit.log";
+    public static final String CACHE_INVALIDATION_QUEUE = "cache.invalidation";
 
     @Bean
     public DirectExchange aiPlatformExchange() {
@@ -50,6 +51,16 @@ public class RabbitMQConfig {
     @Bean
     public Binding auditLogBinding(Queue auditLogQueue, DirectExchange aiPlatformExchange) {
         return BindingBuilder.bind(auditLogQueue).to(aiPlatformExchange).with(AUDIT_LOG_QUEUE);
+    }
+
+    @Bean
+    public Queue cacheInvalidationQueue() {
+        return new Queue(CACHE_INVALIDATION_QUEUE, true);
+    }
+
+    @Bean
+    public Binding cacheInvalidationBinding(Queue cacheInvalidationQueue, DirectExchange aiPlatformExchange) {
+        return BindingBuilder.bind(cacheInvalidationQueue).to(aiPlatformExchange).with(CACHE_INVALIDATION_QUEUE);
     }
 
     @Bean

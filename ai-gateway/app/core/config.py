@@ -76,6 +76,9 @@ class Settings(BaseSettings):
     langsmith_project: str = "ai-platform"
     langsmith_tracing: bool = False
 
+    # RabbitMQ（缓存失效监听）
+    rabbitmq_url: str = "amqp://admin:admin_dev@localhost:5672/"
+
     model_config = {"env_file": ".env", "extra": "ignore"}
 
 

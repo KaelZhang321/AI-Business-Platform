@@ -1,6 +1,8 @@
 package com.lzke.ai.aspect;
 
 import com.lzke.ai.annotation.RateLimit;
+import com.lzke.ai.exception.BusinessException;
+import com.lzke.ai.exception.ErrorCode;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -9,11 +11,9 @@ import org.aspectj.lang.annotation.Around;
 import org.aspectj.lang.annotation.Aspect;
 import org.aspectj.lang.reflect.MethodSignature;
 import org.springframework.data.redis.core.StringRedisTemplate;
-import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
 import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.context.request.ServletRequestAttributes;
-import org.springframework.web.server.ResponseStatusException;
 
 import java.time.Duration;
 
@@ -35,7 +35,7 @@ public class RateLimitAspect {
 
         if (count > rateLimit.permits()) {
             log.warn("限流触发: key={}, count={}, limit={}", key, count, rateLimit.permits());
-            throw new ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS,
+            throw new BusinessException(ErrorCode.RATE_LIMITED,
                     String.format("请求过于频繁，请 %d 秒后重试", rateLimit.period()));
         }
 

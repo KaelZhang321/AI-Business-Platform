@@ -274,58 +274,58 @@
 
 **现状**：无统一异常类，Controller 直接抛原生异常，无业务错误码体系。
 
-- [ ] 新建 `business-server/.../exception/BusinessException.java`：业务异常基类，含 code + message
-- [ ] 新建 `business-server/.../exception/ErrorCode.java`：错误码枚举（1000通用/2000认证/3000AI/4000知识库/5000工作流/6000业务规则/7000外部系统）
-- [ ] 新建 `business-server/.../exception/GlobalExceptionHandler.java`：`@RestControllerAdvice` 统一异常处理，返回 `ApiResponse` 格式
-- [ ] AI 网关同步定义 Python 错误码常量，对齐 Java 层码段
+- [x] 新建 `business-server/.../exception/BusinessException.java`：业务异常基类，含 code + message
+- [x] 新建 `business-server/.../exception/ErrorCode.java`：错误码枚举（1000通用/2000认证/3000AI/4000知识库/5000工作流/6000业务规则/7000外部系统）
+- [x] 新建 `business-server/.../exception/GlobalExceptionHandler.java`：`@RestControllerAdvice` 统一异常处理，返回 `ApiResponse` 格式
+- [x] AI 网关同步定义 Python 错误码常量，对齐 Java 层码段
 
 ### S5-2. Docker 资源限制（优化方案12）— P0
 
 **现状**：docker-compose.yml 所有服务无 mem_limit / cpus 限制，单服务可吞噬宿主机全部资源。
 
-- [ ] `docker/docker-compose.yml`：为所有 13 个服务添加 `deploy.resources.limits`（CPU + 内存上限）
-- [ ] 关键服务资源参考：MySQL 4C16G、Milvus 4C16G、ES 4C8G、Redis 2C4G、Ollama 4C8G
+- [x] `docker/docker-compose.yml`：为所有 13 个服务添加 `deploy.resources.limits`（CPU + 内存上限）
+- [x] 关键服务资源参考：MySQL 4C16G、Milvus 4C16G、ES 4C8G、Redis 2C4G、Ollama 4C8G
 
 ### S5-3. Springdoc / Swagger UI（优化方案10）— P1
 
 **现状**：业务编排层无 API 文档自动生成，AI 网关依赖 FastAPI 内置 `/docs` 已可用。
 
-- [ ] `business-server/pom.xml`：新增 `springdoc-openapi-starter-webmvc-ui` 依赖
-- [ ] `application-dev.yml`：配置 Springdoc 分组（业务API / 管理API）
-- [ ] 所有 Controller 方法补充 `@Operation` / `@Parameter` 注解（渐进式）
+- [x] `business-server/pom.xml`：新增 `springdoc-openapi-starter-webmvc-ui` 依赖
+- [x] `application-dev.yml`：配置 Springdoc 分组（业务API / 管理API）
+- [x] 所有 Controller 方法补充 `@Operation` / `@Parameter` 注解（渐进式）
 
 ### S5-4. Prometheus Exporters + 告警规则（补充方案04）— P1
 
 **现状**：Prometheus/Grafana 已部署，但 exporters 全部注释、无 Grafana Dashboard、无告警规则。
 
-- [ ] `docker/docker-compose.yml`：新增 mysqld-exporter、redis-exporter 服务
-- [ ] `docker/prometheus/prometheus.yml`：取消注释并配置 MySQL/Redis 抓取 job
-- [ ] 新建 `docker/prometheus/alert-rules.yml`：核心告警（MySQL连接>80%、Redis内存>80%、RabbitMQ队列>10000）
-- [ ] 新建 `docker/grafana/dashboards/`：MySQL面板 + Redis面板 + 总览面板（JSON provisioning）
+- [x] `docker/docker-compose.yml`：新增 mysqld-exporter、redis-exporter 服务
+- [x] `docker/prometheus/prometheus.yml`：取消注释并配置 MySQL/Redis 抓取 job
+- [x] 新建 `docker/prometheus/alert-rules.yml`：核心告警（MySQL连接>80%、Redis内存>80%、RabbitMQ队列>10000）
+- [x] 新建 `docker/grafana/dashboards/`：MySQL面板 + Redis面板 + 总览面板（JSON provisioning）
 
 ### S5-5. 缓存防护体系（优化方案09）— P1
 
 **现状**：Caffeine + Redis 二级缓存已配置，但无穿透/击穿/雪崩防护。
 
-- [ ] `business-server/pom.xml`：新增 `redisson-spring-boot-starter` 依赖（分布式锁）
-- [ ] 新建 `business-server/.../service/CacheProtectedService.java`：BloomFilter防穿透 + Redisson互斥锁防击穿 + TTL随机化防雪崩
-- [ ] 缓存键命名规范统一：`{产品}:{模块}:{实体}:{ID}` 模式
+- [x] `business-server/pom.xml`：新增 `redisson-spring-boot-starter` 依赖（分布式锁）
+- [x] 新建 `business-server/.../service/CacheProtectedService.java`：BloomFilter防穿透 + Redisson互斥锁防击穿 + TTL随机化防雪崩
+- [x] 缓存键命名规范统一：`{产品}:{模块}:{实体}:{ID}` 模式
 
 ### S5-6. 缓存失效联动（优化方案09）— P2
 
 **现状**：知识库文档更新后 RAG 缓存不会失效，可能返回过期结果。
 
-- [ ] `business-server/.../config/RabbitMQConfig.java`：新增 `cache.invalidation` 队列
-- [ ] `business-server/.../service/KnowledgeApplicationService.java`：文档创建/更新时发布缓存失效事件
-- [ ] AI 网关监听失效事件，清除对应知识库的 RAG 结果缓存
+- [x] `business-server/.../config/RabbitMQConfig.java`：新增 `cache.invalidation` 队列
+- [x] `business-server/.../service/KnowledgeApplicationService.java`：文档创建/更新时发布缓存失效事件
+- [x] AI 网关监听失效事件，清除对应知识库的 RAG 结果缓存
 
 ### S5-7. SSE 统一消息信封（优化方案10）— P2
 
 **现状**：SSE 使用自定义 event 类型（intent/content/ui_spec/done/error），未遵循统一信封规范。
 
-- [ ] 定义统一信封 TypeScript 类型（MessageEnvelope: version/id/traceId/timestamp/source/type/payload）
-- [ ] AI 网关 SSE 输出改造为 STREAM_START / STREAM_CHUNK / STREAM_END / STREAM_ERROR 格式
-- [ ] 前端 SSE 解析层适配新信封格式（向后兼容旧格式）
+- [x] 定义统一信封 TypeScript 类型（MessageEnvelope: version/id/traceId/timestamp/source/type/payload）
+- [x] AI 网关 SSE 输出改造为 STREAM_START / STREAM_CHUNK / STREAM_END / STREAM_ERROR 格式
+- [x] 前端 SSE 解析层适配新信封格式（向后兼容旧格式）
 
 ### S5-8. GraphRAG 图谱查询接入融合（优化方案11）— P2
 

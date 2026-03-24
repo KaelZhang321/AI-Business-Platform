@@ -227,7 +227,7 @@ CREATE INDEX idx_cost_logs_created ON cost_logs(created_at DESC);
 
 -- 插入默认管理员用户
 INSERT INTO users (id, username, display_name, department, role, password_hash)
-VALUES (UUID(), 'admin', '系统管理员', '技术部', 'admin', '$2a$10$wqv0yGZrxhgbf28pQ5e0..lBqFaUG2RglN6E466zvWXTjhFRrM8Dm');
+VALUES (UUID(), 'admin', '系统管理员', '技术部', 'admin', '$2a$10$h6BeMs87sWv36uVw8c0j7OsOf9A4Oi3s2S9aj.YGxuBBGFLAWN4yG');
 
 -- 插入系统适配器预置数据
 INSERT INTO system_adapters (id, name, code, type, endpoint, auth_type, config, status)

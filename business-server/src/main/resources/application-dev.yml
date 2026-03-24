@@ -34,6 +34,20 @@ management:
     tags:
       application: ${spring.application.name:ai-business-server}
 
+# Springdoc / Swagger UI (S5-3)
+springdoc:
+  api-docs:
+    enabled: true
+  swagger-ui:
+    path: /swagger-ui.html
+    tags-sorter: alpha
+    operations-sorter: method
+  group-configs:
+    - group: "业务API"
+      paths-to-match: /api/v1/**
+    - group: "管理API"
+      paths-to-match: /actuator/**
+
 logging:
   level:
     com.lzke.ai: DEBUG

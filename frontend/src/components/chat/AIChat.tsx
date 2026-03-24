@@ -169,21 +169,43 @@ export default function AIChat({ onClose }: AIChatProps) {
     if (!dataPayload) return
     try {
       const parsed = JSON.parse(dataPayload)
-      switch (event) {
+
+      // 统一信封格式（v1.0）：解包 payload
+      const isEnvelope = parsed.version && parsed.type && parsed.payload !== undefined
+      const payload = isEnvelope ? parsed.payload : parsed
+      const eventType = isEnvelope ? parsed.type : event
+
+      switch (eventType) {
+        // 新信封格式
+        case 'STREAM_START':
+          if (payload.intent) setIntent(payload.intent as string)
+          break
+        case 'STREAM_CHUNK':
+          if (payload.text) appendAssistantChunk(payload.text as string)
+          if (payload.ui_spec) setUiSpec(payload.ui_spec)
+          if (payload.sources) setSources(payload.sources as Source[])
+          break
+        case 'STREAM_END':
+          if (payload.conversation_id) conversationIdRef.current = payload.conversation_id as string
+          break
+        case 'STREAM_ERROR':
+          message.error(payload.message || 'AI 服务异常')
+          break
+        // 旧格式向后兼容
         case 'intent':
-          setIntent(parsed.intent as string)
+          setIntent(payload.intent as string)
           break
         case 'content':
-          appendAssistantChunk(parsed.text as string)
+          appendAssistantChunk(payload.text as string)
           break
         case 'ui_spec':
-          setUiSpec(parsed)
+          setUiSpec(payload)
           break
         case 'sources':
-          setSources(parsed as Source[])
+          setSources(payload as Source[])
           break
         case 'done':
-          conversationIdRef.current = parsed.conversation_id as string
+          conversationIdRef.current = payload.conversation_id as string
           break
         default:
           break
