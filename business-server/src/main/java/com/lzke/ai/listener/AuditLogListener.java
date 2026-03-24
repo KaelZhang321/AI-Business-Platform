@@ -52,8 +52,8 @@ public class AuditLogListener {
 
             channel.basicAck(deliveryTag, false);
         } catch (Exception e) {
-            log.error("审计日志写入失败: {}", e.getMessage(), e);
-            channel.basicNack(deliveryTag, false, true);
+            log.error("审计日志写入失败，消息转入死信队列: {}", e.getMessage(), e);
+            channel.basicNack(deliveryTag, false, false);
         }
     }
 

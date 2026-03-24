@@ -1,6 +1,6 @@
 package com.lzke.ai.interfaces.rest;
 
-import com.lzke.ai.application.vo.ApiResponse;
+import com.lzke.ai.interfaces.dto.ApiResponse;
 import com.lzke.ai.service.FeatureFlagService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;

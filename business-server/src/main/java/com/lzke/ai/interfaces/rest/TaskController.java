@@ -8,6 +8,7 @@ import com.lzke.ai.interfaces.dto.PageResult;
 import com.lzke.ai.interfaces.dto.TaskVO;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
 
@@ -22,7 +23,7 @@ public class TaskController {
     @Operation(summary = "聚合查询待办任务", description = "从 ERP/CRM/OA/预约/业务中台/360 等系统聚合待办")
     @GetMapping("/aggregate")
     @RateLimit(permits = 100, period = 60)
-    public ApiResponse<PageResult<TaskVO>> aggregateTasks(TaskAggregateQuery query) {
+    public ApiResponse<PageResult<TaskVO>> aggregateTasks(@Valid TaskAggregateQuery query) {
         return ApiResponse.ok(taskApplicationService.aggregateTasks(query));
     }
 }

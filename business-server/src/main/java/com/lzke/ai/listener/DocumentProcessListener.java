@@ -91,7 +91,7 @@ public class DocumentProcessListener {
             } catch (Exception updateEx) {
                 log.warn("更新文档失败状态异常: {}", updateEx.getMessage());
             }
-            channel.basicNack(deliveryTag, false, true);
+            channel.basicNack(deliveryTag, false, false);
         }
     }
 }

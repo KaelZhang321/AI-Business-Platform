@@ -10,6 +10,7 @@ import com.lzke.ai.service.AnalyticsService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
 
@@ -27,7 +28,7 @@ public class AuditController {
 
     @Operation(summary = "查询审计日志", description = "分页查询审计日志，支持多条件过滤")
     @GetMapping("/logs")
-    public ApiResponse<PageResult<AuditLogVO>> queryLogs(AuditLogQuery query) {
+    public ApiResponse<PageResult<AuditLogVO>> queryLogs(@Valid AuditLogQuery query) {
         return ApiResponse.ok(auditApplicationService.queryLogs(query));
     }
 
