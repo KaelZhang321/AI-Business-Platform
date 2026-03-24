@@ -54,6 +54,10 @@ class ChatWorkflow:
         self._http = httpx.AsyncClient(timeout=15)
         self._graph = self._build_graph()
 
+    async def close(self) -> None:
+        """关闭内部 httpx 客户端。"""
+        await self._http.aclose()
+
     def _build_graph(self):
         graph = StateGraph(ChatState)
         graph.add_node("classify", self._classify_intent)

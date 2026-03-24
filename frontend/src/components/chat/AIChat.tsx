@@ -30,19 +30,21 @@ type ChatMsg = {
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || window.location.origin
 
+const initialMessages: ChatMsg[] = [
+  {
+    role: 'assistant',
+    content: [
+      {
+        type: 'text',
+        text: '你好！我是AI助手，可以帮你查询待办、搜索知识库、分析数据。请问有什么需要帮助的？',
+      },
+    ],
+  },
+]
+
 export default function AIChat({ onClose }: AIChatProps) {
   const { user } = useAppStore()
-  const messagesRef = useRef<ChatMsg[]>([
-    {
-      role: 'assistant',
-      content: [
-        {
-          type: 'text',
-          text: '你好！我是AI助手，可以帮你查询待办、搜索知识库、分析数据。请问有什么需要帮助的？',
-        },
-      ],
-    },
-  ])
+  const [messages, setMessages] = useState<ChatMsg[]>(initialMessages)
   const abortControllerRef = useRef<AbortController | null>(null)
   const conversationIdRef = useRef<string | null>(null)
   const bufferRef = useRef('')
@@ -50,10 +52,9 @@ export default function AIChat({ onClose }: AIChatProps) {
   const [sources, setSources] = useState<Source[]>([])
   const [intent, setIntent] = useState<string | null>(null)
   const [isStreaming, setIsStreaming] = useState(false)
-  const [, forceRender] = useState(0)
 
   const runtime = useExternalStoreRuntime({
-    messages: messagesRef.current,
+    messages,
     isRunning: isStreaming,
     convertMessage: (msg: ChatMsg) => ({
       role: msg.role,
@@ -72,25 +73,27 @@ export default function AIChat({ onClose }: AIChatProps) {
   })
 
   const addMessage = ({ role, text }: { role: 'user' | 'assistant'; text: string }) => {
-    messagesRef.current = [
-      ...messagesRef.current,
+    setMessages((prev) => [
+      ...prev,
       { role, content: [{ type: 'text' as const, text }] },
-    ]
-    forceRender((tick) => tick + 1)
+    ])
   }
 
   const appendAssistantChunk = (chunk: string) => {
     if (!chunk) return
-    const nextMessages = [...messagesRef.current]
-    const last = nextMessages[nextMessages.length - 1]
-    if (!last || last.role !== 'assistant') {
-      nextMessages.push({ role: 'assistant', content: [{ type: 'text', text: chunk }] })
-    } else {
-      const currentText = last.content?.[0]?.text ?? ''
-      last.content = [{ type: 'text', text: currentText + chunk }]
-    }
-    messagesRef.current = nextMessages
-    forceRender((tick) => tick + 1)
+    setMessages((prev) => {
+      const nextMessages = [...prev]
+      const last = nextMessages[nextMessages.length - 1]
+      if (!last || last.role !== 'assistant') {
+        nextMessages.push({ role: 'assistant', content: [{ type: 'text', text: chunk }] })
+      } else {
+        nextMessages[nextMessages.length - 1] = {
+          ...last,
+          content: [{ type: 'text', text: (last.content?.[0]?.text ?? '') + chunk }],
+        }
+      }
+      return nextMessages
+    })
   }
 
   const streamChat = async (userText: string) => {

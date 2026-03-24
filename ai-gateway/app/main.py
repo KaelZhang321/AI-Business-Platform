@@ -78,6 +78,14 @@ async def lifespan(app: FastAPI):
     # ── 关闭时：释放资源 ────────────────────────────────
     logger.info("AI网关关闭中 — 释放资源 ...")
 
+    # ChatWorkflow httpx 客户端
+    try:
+        from app.api.routes.chat import workflow as chat_workflow
+        await chat_workflow.close()
+        logger.info("ChatWorkflow HTTP 客户端已关闭")
+    except Exception as exc:
+        logger.warning("关闭 ChatWorkflow 失败: %s", exc)
+
     # RAGService（Neo4j / ES / ClickHouse）
     try:
         await app.state.rag_service.close()

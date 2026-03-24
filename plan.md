@@ -250,14 +250,14 @@
 
 ### 待办：后续优化（HIGH/MEDIUM）
 
-- [ ] **Python**: ModelRouter/ChatWorkflow httpx 客户端生命周期管理
+- [x] **Python**: ModelRouter/ChatWorkflow httpx 客户端生命周期管理
 - [ ] **Python**: MCP tools 每次调用创建新服务实例 → 共享单例
 - [ ] **Java**: 适配器类重复 helper 方法（firstNonNull/coalesce）→ 提取到 BaseSystemAdapter
-- [ ] **Java**: JwtAuthenticationFilter 静默吞吃所有异常 → 区分认证失败/系统异常
-- [ ] **Java**: PageQuery 缺少 @Min/@Max 验证
-- [ ] **Java**: KnowledgeApplicationService 缺少 @Transactional 边界
-- [ ] **Java**: DocumentProcessListener TODO（文档处理逻辑未实现）
-- [ ] **前端**: AIChat forceRender 反模式
+- [x] **Java**: JwtAuthenticationFilter 静默吞吃所有异常 → 区分认证失败/系统异常
+- [x] **Java**: PageQuery 缺少 @Min/@Max 验证
+- [x] **Java**: KnowledgeApplicationService 缺少 @Transactional 边界
+- [x] **Java**: DocumentProcessListener TODO（文档处理逻辑未实现）
+- [x] **前端**: AIChat forceRender 反模式
 - [ ] **前端**: Vite alias `'@': '/src'` → `path.resolve(__dirname, './src')`
 - [x] ~~**前端**: 缺少 ESLint 配置~~ — 已存在 `eslint.config.mjs`（TS/React/a11y/import 插件完整）
 - [x] **前端**: aria-label 补充（AIChat 关闭按钮/输入框/发送按钮）

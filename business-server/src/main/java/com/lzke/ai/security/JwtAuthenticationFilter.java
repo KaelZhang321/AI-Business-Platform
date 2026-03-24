@@ -1,11 +1,13 @@
 package com.lzke.ai.security;
 
 import com.lzke.ai.service.UserService;
+import io.jsonwebtoken.JwtException;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpHeaders;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -18,6 +20,7 @@ import java.io.IOException;
 import java.util.List;
 import java.util.UUID;
 
+@Slf4j
 @Component
 @RequiredArgsConstructor
 public class JwtAuthenticationFilter extends OncePerRequestFilter {
@@ -44,8 +47,12 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                     authentication.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
                     SecurityContextHolder.getContext().setAuthentication(authentication);
                 }
-            } catch (Exception ignored) {
-                // 非法 token 直接忽略，交由后续过滤器处理
+            } catch (JwtException | IllegalArgumentException e) {
+                // 认证失败（token过期/格式错误/签名无效）— 正常业务场景，不设置认证上下文即可
+                log.debug("Token认证失败: {}", e.getMessage());
+            } catch (Exception e) {
+                // 系统异常（DB查询失败等）— 需要记录以便排查
+                log.error("认证过程发生系统异常", e);
             }
         }
         filterChain.doFilter(request, response);
