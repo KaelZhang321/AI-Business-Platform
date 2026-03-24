@@ -7,40 +7,29 @@ import {
 } from '@ant-design/icons'
 import { useQuery } from '@tanstack/react-query'
 import { taskAPI, documentAPI } from '../services/api'
-
-interface TaskItem {
-  id: string
-  title: string
-  source_system: string
-  priority: string
-  status: string
-}
+import type { Task } from '../types'
 
 export default function Workspace() {
   const {
-    data: taskData,
+    data: taskPage,
     isLoading: taskLoading,
     error: taskError,
   } = useQuery({
     queryKey: ['tasks', 'aggregate'],
-    queryFn: () => taskAPI.aggregate({ page: 1, size: 20 }).then((res) => res.data),
-    staleTime: 30_000,
+    queryFn: () => taskAPI.aggregate({ page: 1, size: 20 }).then((r) => r.data.data),
   })
 
-  const {
-    data: docData,
-    isLoading: docLoading,
-  } = useQuery({
+  const { data: docPage, isLoading: docLoading } = useQuery({
     queryKey: ['documents', 'count'],
-    queryFn: () => documentAPI.list(1, 1).then((res) => res.data),
+    queryFn: () => documentAPI.list({ page: 1, size: 1 }).then((r) => r.data.data),
     staleTime: 60_000,
   })
 
-  const tasks: TaskItem[] = taskData?.data?.records ?? taskData?.data ?? []
-  const totalTasks = taskData?.data?.total ?? tasks.length
+  const tasks: Task[] = taskPage?.records ?? taskPage?.data ?? []
+  const totalTasks = taskPage?.total ?? tasks.length
   const completedTasks = tasks.filter((t) => t.status === 'completed').length
   const pendingTasks = totalTasks - completedTasks
-  const docCount = docData?.data?.total ?? 0
+  const docCount = docPage?.total ?? 0
 
   const loading = taskLoading || docLoading
 
@@ -89,7 +78,7 @@ export default function Workspace() {
               <List.Item>
                 <List.Item.Meta
                   title={item.title}
-                  description={<Tag>{item.source_system}</Tag>}
+                  description={<Tag>{item.sourceSystem}</Tag>}
                 />
                 <Tag color={item.priority === 'high' ? 'red' : item.priority === 'medium' ? 'orange' : 'blue'}>
                   {item.priority}

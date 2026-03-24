@@ -94,7 +94,8 @@ export default function AuditLog() {
 
   const { data, isLoading } = useQuery({
     queryKey: ['auditLogs', filters],
-    queryFn: () => auditAPI.logs(filters).then((res) => res.data.data),
+    queryFn: () => auditAPI.logs(filters).then((r) => r.data.data),
+    staleTime: 10_000,
   })
 
   return (
@@ -141,7 +142,7 @@ export default function AuditLog() {
       <Card>
         <Table<AuditLogEntry>
           columns={columns}
-          dataSource={data?.data ?? []}
+          dataSource={data?.records ?? data?.data ?? []}
           rowKey="id"
           loading={isLoading}
           pagination={{

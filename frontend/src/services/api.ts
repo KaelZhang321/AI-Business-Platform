@@ -1,7 +1,10 @@
 import axios, { type AxiosError, type InternalAxiosRequestConfig } from 'axios'
 import { authService } from './auth'
+import type { AuditLogEntry, KnowledgeDocument, Task } from '../types'
 
 const TOKEN_KEY = 'ai_platform_token'
+
+// ── Axios 客户端 ──────────────────────────────────────────
 
 const apiClient = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000',
@@ -16,7 +19,7 @@ export const businessClient = axios.create({
 })
 
 // JWT interceptor — 为所有请求自动附加 Authorization header
-function attachToken(config: import('axios').InternalAxiosRequestConfig) {
+function attachToken(config: InternalAxiosRequestConfig) {
   const token = localStorage.getItem(TOKEN_KEY)
   if (token) {
     config.headers.Authorization = `Bearer ${token}`
@@ -86,7 +89,24 @@ async function handle401(error: AxiosError) {
 apiClient.interceptors.response.use((r) => r, handle401)
 businessClient.interceptors.response.use((r) => r, handle401)
 
-// AI 网关 API
+// ── 统一响应类型 ──────────────────────────────────────────
+
+export interface PageData<T> {
+  records?: T[]
+  data?: T[]
+  total: number
+  page: number
+  size: number
+}
+
+export interface ApiResult<T> {
+  code: number
+  message: string
+  data: T
+}
+
+// ── AI 网关 API ───────────────────────────────────────────
+
 export const chatAPI = {
   send: (message: string, conversationId?: string) =>
     apiClient.post('/api/v1/chat', { message, conversation_id: conversationId, user_id: 'default' }),
@@ -102,20 +122,21 @@ export const queryAPI = {
     apiClient.post('/api/v1/query/text2sql', { question }),
 }
 
-// 业务编排层 API
+// ── 业务编排层 API ────────────────────────────────────────
+
 export const taskAPI = {
   aggregate: (params?: { userId?: string; status?: string; page?: number; size?: number }) =>
-    businessClient.get('/api/v1/tasks/aggregate', { params }),
+    businessClient.get<ApiResult<PageData<Task>>>('/api/v1/tasks/aggregate', { params }),
 }
 
 export const documentAPI = {
-  list: (page = 1, size = 20) =>
-    businessClient.get('/api/v1/knowledge/documents', { params: { page, size } }),
+  list: (params?: { page?: number; size?: number }) =>
+    businessClient.get<ApiResult<PageData<KnowledgeDocument>>>('/api/v1/knowledge/documents', { params }),
   create: (data: Record<string, unknown>) =>
     businessClient.post('/api/v1/knowledge/documents', data),
 }
 
 export const auditAPI = {
-  logs: (params?: { userId?: string; intent?: string; status?: string; page?: number; size?: number }) =>
-    businessClient.get('/api/v1/audit/logs', { params }),
+  logs: (params?: { userId?: string; intent?: string; status?: string; startDate?: string; endDate?: string; page?: number; size?: number }) =>
+    businessClient.get<ApiResult<PageData<AuditLogEntry>>>('/api/v1/audit/logs', { params }),
 }
