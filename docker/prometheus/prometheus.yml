@@ -19,10 +19,10 @@ scrape_configs:
         labels:
           service: business-server
 
-  # PostgreSQL (可选 — 需部署 postgres_exporter)
-  # - job_name: "postgres"
+  # MySQL (可选 — 需部署 mysqld_exporter)
+  # - job_name: "mysql"
   #   static_configs:
-  #     - targets: ["postgres-exporter:9187"]
+  #     - targets: ["mysqld-exporter:9104"]
 
   # Redis (可选 — 需部署 redis_exporter)
   # - job_name: "redis"

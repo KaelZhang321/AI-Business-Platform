@@ -59,7 +59,7 @@
 - [x] 新建 `business-server/.../adapter/ReservationAdapter.java`：继承 BaseSystemAdapter，对接预约系统 API
 - [x] 新建 `business-server/.../adapter/BizCenterAdapter.java`：继承 BaseSystemAdapter，对接业务中台 API
 - [x] 新建 `business-server/.../adapter/System360Adapter.java`：继承 BaseSystemAdapter，对接360系统 API
-- [x] `docker/init-scripts/init-postgres.sql`：`system_adapters` 表补充6条预置数据
+- [x] `docker/init-scripts/init-mysql.sql`：`system_adapters` 表补充6条预置数据
 
 ### S2-6. 业务编排 — JWT Token 刷新机制
 
@@ -122,7 +122,7 @@
 
 ### S3-5. 业务编排 — ClickHouse 审计日志分析（文档 4.3 / 5.3）
 
-**现状**：审计日志仅存于 PostgreSQL，未流向 ClickHouse 做分析查询。
+**现状**：审计日志仅存于 MySQL，未流向 ClickHouse 做分析查询。
 
 - [x] `business-server/pom.xml`：新增 `clickhouse-jdbc` 依赖
 - [x] 新建 `business-server/.../config/ClickHouseConfig.java`：ClickHouse 数据源配置
@@ -213,11 +213,11 @@
 
 **现状**：6张核心表已建，但架构文档核心数据模型中还有多个实体未建表。
 
-- [x] `docker/init-scripts/init-postgres.sql`：新增 `api_keys` 表（应用级密钥管理，含 rate_limit/permissions/expires_at）
-- [x] `docker/init-scripts/init-postgres.sql`：新增 `knowledge_bases` 表（知识库元数据，含 embedding_model/chunk_strategy 配置）
-- [x] `docker/init-scripts/init-postgres.sql`：新增 `workflows` + `workflow_executions` 表（自定义工作流记录）
-- [x] `docker/init-scripts/init-postgres.sql`：新增 `agents` 表（智能体配置，含 model/system_prompt/tools/temperature）
-- [x] `docker/init-scripts/init-postgres.sql`：新增 `cost_logs` 表（独立成本日志，含 provider/cost_usd）
+- [x] `docker/init-scripts/init-mysql.sql`：新增 `api_keys` 表（应用级密钥管理，含 rate_limit/permissions/expires_at）
+- [x] `docker/init-scripts/init-mysql.sql`：新增 `knowledge_bases` 表（知识库元数据，含 embedding_model/chunk_strategy 配置）
+- [x] `docker/init-scripts/init-mysql.sql`：新增 `workflows` + `workflow_executions` 表（自定义工作流记录）
+- [x] `docker/init-scripts/init-mysql.sql`：新增 `agents` 表（智能体配置，含 model/system_prompt/tools/temperature）
+- [x] `docker/init-scripts/init-mysql.sql`：新增 `cost_logs` 表（独立成本日志，含 provider/cost_usd）
 
 ---
 
@@ -238,7 +238,7 @@
 
 ### 第二轮：数据完整性与配置规范化（已完成）
 
-- [x] **6张新表 Entity 类**：ApiKey / KnowledgeBase / Workflow / WorkflowExecution / Agent / CostLog 对齐 init-postgres.sql 4.1.7-4.1.12
+- [x] **6张新表 Entity 类**：ApiKey / KnowledgeBase / Workflow / WorkflowExecution / Agent / CostLog 对齐 init-mysql.sql 4.1.7-4.1.12
 - [x] **6个 Mapper 接口 + XML**：继承 BaseMapper，namespace 正确
 - [x] **RAGService 命名冲突**：`_neo4j_driver` 字段与方法同名 → 字段 `_neo4j` + 方法 `_neo4j_client()`
 - [x] **RAGService 资源泄漏**：新增 `close()` 方法释放 ES / Neo4j / ClickHouse 连接
@@ -314,7 +314,7 @@
 - ✅ Vite 分层代理
 
 ### 基础设施
-- ✅ Docker Compose 13服务（PostgreSQL/Redis/Milvus/RabbitMQ/ES/MinIO/ClickHouse/Ollama/Neo4j/Prometheus/Grafana/Nginx/Nacos）
-- ✅ PostgreSQL 12张表 + 索引 + FK ON DELETE 策略 + 默认管理员
+- ✅ Docker Compose 13服务（MySQL/Redis/Milvus/RabbitMQ/ES/MinIO/ClickHouse/Ollama/Neo4j/Prometheus/Grafana/Nginx/Nacos）
+- ✅ MySQL 12张表 + 索引 + FK ON DELETE 策略 + 默认管理员
 
 </details>

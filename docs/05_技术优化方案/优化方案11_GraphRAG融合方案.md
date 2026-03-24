@@ -132,7 +132,7 @@
 | 社区生态 | 最大 | 中等 | 小 |
 | 部署复杂度 | 低（单节点） | 高（分布式） | 低（PG扩展） |
 | 数据规模 | 百万节点 | 亿级节点 | 百万节点 |
-| 与现有技术栈兼容 | Java Driver成熟 | — | 复用PostgreSQL |
+| 与现有技术栈兼容 | Java Driver成熟 | — | 需额外引入PostgreSQL |
 | 许可证 | GPL（Community免费） | Apache 2.0 | Apache 2.0 |
 
 **推荐：Neo4j Community Edition**

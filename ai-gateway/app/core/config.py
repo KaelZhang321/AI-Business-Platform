@@ -6,7 +6,7 @@ class Settings(BaseSettings):
     app_debug: bool = True
     app_port: int = 8000
 
-    # PostgreSQL
+    # MySQL
     database_url: str = "mysql+aiomysql://ai_platform:ai_platform_dev@localhost:3306/ai_platform?charset=utf8mb4"
 
     # Redis

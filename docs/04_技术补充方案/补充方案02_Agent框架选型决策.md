@@ -121,7 +121,7 @@
 ├──────────────────────────────────────────────────┤
 │              模型与数据层                          │
 │    DeepSeek V3 / Qwen-Max / WiNGPT / YiduCore   │
-│    Milvus + PostgreSQL + Redis + ES + ClickHouse │
+│    Milvus + MySQL + Redis + ES + ClickHouse      │
 └──────────────────────────────────────────────────┘
 ```
 
