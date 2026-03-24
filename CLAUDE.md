@@ -41,7 +41,7 @@ cd frontend && npm install && npm run dev
 ```
                     ┌→ Nginx(:80) ─────────────────────────────┐
 前端(:5173) ──→ AI网关(:8000)     ──→ Ollama/Milvus/ES/ClickHouse/Neo4j
-             └→ 业务编排(:8080)   ──→ PostgreSQL/Redis/RabbitMQ/Nacos
+             └→ 业务编排(:8080)   ──→ MySQL/Redis/RabbitMQ/Nacos
                     └→ 监控: Prometheus(:9090) + Grafana(:3000)
 ```
 
@@ -82,7 +82,7 @@ Vite 代理分层规则（`vite.config.ts`）：
 | 前端 (Vite) | 5173 |
 | AI网关 (FastAPI) | 8000 |
 | 业务编排 (Spring Boot) | 8080 |
-| PostgreSQL | 5432 |
+| MySQL | 3306 |
 | Redis | 6379 |
 | Milvus | 19530 |
 | RabbitMQ | 5672 / 15672(管理) |
@@ -97,7 +97,7 @@ Vite 代理分层规则（`vite.config.ts`）：
 
 ## Key Technical Decisions
 
-- **数据库Schema**: 12张表定义在 `docker/init-scripts/init-postgres.sql`（users/system_adapters/tasks/documents/conversations/audit_logs/api_keys/knowledge_bases/workflows/workflow_executions/agents/cost_logs），含 FK ON DELETE 策略，严格对齐架构文档 4.1节
+- **数据库Schema**: 12张表定义在 `docker/init-scripts/init-mysql.sql`（users/system_adapters/tasks/documents/conversations/audit_logs/api_keys/knowledge_bases/workflows/workflow_executions/agents/cost_logs），含 FK ON DELETE 策略，严格对齐架构文档 4.1节
 - **RAG策略**: 向量(Milvus BGE-M3) + 关键词(ES BM25) + RRF融合 + BGE-Reranker-v2重排序
 - **Text2SQL**: 基于 Vanna.ai，使用 Ollama 本地推理 + Milvus 向量存储
 - **动态UI**: AI网关返回 JSON Spec，前端通过 `@json-render/react` 0.14 + Ant Design 混合渲染 Card/Table/Metric/List/Form/Tag/Chart 7种组件，catalog.ts 定义 Zod schema + actions

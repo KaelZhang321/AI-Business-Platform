@@ -1,6 +1,6 @@
 spring:
   datasource:
-    url: jdbc:postgresql://localhost:5432/ai_platform
+    url: jdbc:mysql://localhost:3306/ai_platform?useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&characterEncoding=utf8mb4
     username: ai_platform
     password: ai_platform_dev
 

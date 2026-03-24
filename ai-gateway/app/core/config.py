@@ -7,7 +7,7 @@ class Settings(BaseSettings):
     app_port: int = 8000
 
     # PostgreSQL
-    database_url: str = "postgresql+asyncpg://ai_platform:ai_platform_dev@localhost:5432/ai_platform"
+    database_url: str = "mysql+aiomysql://ai_platform:ai_platform_dev@localhost:3306/ai_platform?charset=utf8mb4"
 
     # Redis
     redis_url: str = "redis://:redis_dev@localhost:6379/0"

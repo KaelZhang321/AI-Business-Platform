@@ -22,7 +22,6 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.util.Map;
-import java.util.UUID;
 
 @RestController
 @RequestMapping("/api/v1/auth")
@@ -55,7 +54,7 @@ public class AuthController {
             if (!jwtTokenProvider.isRefreshToken(claims)) {
                 throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "非有效的 refresh token");
             }
-            UUID userId = UUID.fromString(claims.getSubject());
+            String userId = claims.getSubject();
             String username = claims.get("username", String.class);
             String role = claims.get("role", String.class);
             String newAccessToken = jwtTokenProvider.generateToken(userId, username, role);

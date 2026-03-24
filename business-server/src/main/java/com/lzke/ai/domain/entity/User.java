@@ -4,7 +4,6 @@ import com.baomidou.mybatisplus.annotation.*;
 import lombok.Data;
 
 import java.time.OffsetDateTime;
-import java.util.UUID;
 
 /**
  * 用户表 — 对应文档 4.1.1
@@ -13,8 +12,8 @@ import java.util.UUID;
 @TableName("users")
 public class User {
 
-    @TableId
-    private UUID id;
+    @TableId(type = IdType.ASSIGN_UUID)
+    private String id;
 
     private String username;
     private String displayName;

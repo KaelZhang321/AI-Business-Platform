@@ -89,10 +89,10 @@
             <version>${mybatis-plus.version}</version>
         </dependency>
 
-        <!-- PostgreSQL -->
+        <!-- MySQL 8.0 -->
         <dependency>
-            <groupId>org.postgresql</groupId>
-            <artifactId>postgresql</artifactId>
+            <groupId>com.mysql</groupId>
+            <artifactId>mysql-connector-j</artifactId>
             <scope>runtime</scope>
         </dependency>
 

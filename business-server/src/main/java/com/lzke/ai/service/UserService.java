@@ -13,7 +13,6 @@ import org.springframework.web.server.ResponseStatusException;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.UUID;
 
 @Service
 @RequiredArgsConstructor
@@ -40,7 +39,7 @@ public class UserService {
         return user;
     }
 
-    public Optional<User> findById(UUID id) {
+    public Optional<User> findById(String id) {
         return userMapper.findById(id);
     }
 
@@ -58,7 +57,7 @@ public class UserService {
                 .build();
     }
 
-    public UserPermission buildPermission(UUID userId) {
+    public UserPermission buildPermission(String userId) {
         var user = userMapper.findById(userId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "用户不存在"));
         return buildPermission(user);
