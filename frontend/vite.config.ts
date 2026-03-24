@@ -7,6 +7,18 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 export default defineConfig({
   plugins: [react()],
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          'vendor-react': ['react', 'react-dom', 'react-router-dom'],
+          'vendor-antd': ['antd', '@ant-design/icons'],
+          'vendor-charts': ['echarts', 'echarts-for-react'],
+          'vendor-ai': ['@assistant-ui/react', 'react-markdown', 'remark-gfm', 'rehype-highlight', '@tanstack/react-query', 'zustand'],
+        },
+      },
+    },
+  },
   server: {
     port: 5173,
     proxy: {

@@ -21,6 +21,16 @@ groups:
           summary: "MySQL 慢查询频率过高"
           description: "5分钟内慢查询速率: {{ $value | humanize }} /s"
 
+      # MySQL 死锁
+      - alert: MySQLDeadlocks
+        expr: increase(mysql_global_status_innodb_deadlocks[5m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "MySQL 检测到死锁"
+          description: "5分钟内死锁次数: {{ $value }}"
+
       # Redis 内存使用超过 80%
       - alert: RedisMemoryHigh
         expr: redis_memory_used_bytes / redis_memory_max_bytes > 0.8
@@ -40,6 +50,16 @@ groups:
         annotations:
           summary: "Redis 出现连接拒绝"
           description: "5分钟内被拒绝连接数: {{ $value }}"
+
+      # Redis 连接数过高
+      - alert: RedisConnectionsHigh
+        expr: redis_connected_clients / redis_config_maxclients > 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Redis 连接数超过 80%"
+          description: "当前连接数: {{ $value | humanizePercentage }}"
 
   - name: application
     rules:
@@ -63,6 +83,40 @@ groups:
           summary: "AI网关 P95 延迟超过 10s"
           description: "当前 P95 延迟: {{ $value | humanize }}s"
 
+      # 业务编排层 5xx 错误率过高
+      - alert: BusinessServer5xxRate
+        expr: >
+          sum(rate(http_server_requests_seconds_count{job="business-server",status=~"5.."}[5m]))
+          /
+          sum(rate(http_server_requests_seconds_count{job="business-server"}[5m]))
+          > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "业务编排层 5xx 错误率超过 5%"
+          description: "当前 5xx 错误率: {{ $value | humanizePercentage }}"
+
+      # 业务编排层 P95 延迟过高
+      - alert: BusinessServerHighLatency
+        expr: histogram_quantile(0.95, sum(rate(http_server_requests_seconds_bucket{job="business-server"}[5m])) by (le)) > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "业务编排层 P95 延迟超过 5s"
+          description: "当前 P95 延迟: {{ $value | humanize }}s"
+
+      # 业务编排层 JVM 堆内存使用过高
+      - alert: JvmHeapHigh
+        expr: jvm_memory_used_bytes{job="business-server",area="heap"} / jvm_memory_max_bytes{job="business-server",area="heap"} > 0.85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "JVM 堆内存使用超过 85%"
+          description: "当前堆内存使用率: {{ $value | humanizePercentage }}"
+
       # 业务编排层健康检查失败
       - alert: BusinessServerDown
         expr: up{job="business-server"} == 0
@@ -82,3 +136,13 @@ groups:
         annotations:
           summary: "AI网关不可达"
           description: "AI网关服务已宕机超过 1 分钟"
+
+      # HikariCP 连接池活跃连接过高
+      - alert: HikariPoolExhausted
+        expr: hikaricp_connections_active{job="business-server"} / hikaricp_connections_max{job="business-server"} > 0.85
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "HikariCP 连接池使用超过 85%"
+          description: "活跃连接: {{ $value | humanizePercentage }}"

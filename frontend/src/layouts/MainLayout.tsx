@@ -22,7 +22,7 @@ const allMenuItems = [
 export default function MainLayout() {
   const navigate = useNavigate()
   const location = useLocation()
-  const { chatVisible, setChatVisible, user, ability, logout } = useAppStore()
+  const { chatVisible, setChatVisible, user, ability, logout, sidebarCollapsed, toggleSidebar } = useAppStore()
 
   const menuItems = allMenuItems
     .filter((item) => {
@@ -54,10 +54,11 @@ export default function MainLayout() {
 
   return (
     <Layout className="h-screen">
-      <Sider width={200} theme="light" className="border-r border-gray-200">
-        <div className="h-14 flex items-center justify-center border-b border-gray-200">
+      <Sider width={200} theme="light" className="border-r border-gray-200"
+        collapsible collapsed={sidebarCollapsed} onCollapse={toggleSidebar} trigger={null}>
+        <div className="h-14 flex items-center justify-center border-b border-gray-200 cursor-pointer" onClick={toggleSidebar}>
           <RobotOutlined className="text-xl mr-2" />
-          <span className="font-bold text-base">AI业务中台</span>
+          {!sidebarCollapsed && <span className="font-bold text-base">AI业务中台</span>}
         </div>
         <Menu
           mode="inline"
