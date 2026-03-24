@@ -382,11 +382,11 @@
 
 **现状**：RabbitMQ/MinIO 管理界面外网暴露、ES 安全认证禁用、多服务弱密码。
 
-- [ ] `docker-compose.yml`：RabbitMQ 移除 `15672` 端口映射（仅内部访问）
-- [ ] `docker-compose.yml`：MinIO 移除 `9001` 端口映射（控制台走 Nginx 代理）
-- [ ] `docker-compose.yml`：ES 启用 `xpack.security.enabled=true` + 环境变量密码
-- [ ] `docker-compose.yml`：Redis 启用 AOF 持久化（`--appendonly yes --appendfsync everysec`）
-- [ ] `docker/.env.example`：补齐所有缺失变量（ES/Nacos/Grafana），密码改为 `<CHANGE_ME>` 占位
+- [x] `docker-compose.yml`：RabbitMQ 移除 `15672` 端口映射（仅内部访问）
+- [x] `docker-compose.yml`：MinIO 移除 `9001` 端口映射（控制台走 Nginx 代理）
+- [x] `docker-compose.yml`：ES 启用 `xpack.security.enabled=true` + 环境变量密码
+- [x] `docker-compose.yml`：Redis 启用 AOF 持久化（`--appendonly yes --appendfsync everysec`）
+- [x] `docker/.env.example`：补齐所有缺失变量（ES/Nacos/Grafana），密码改为 `<CHANGE_ME>` 占位
 
 ### S6-3. AI 网关可靠性提升 — P0
 
@@ -395,7 +395,7 @@
 - [x] `dynamic_ui_service.py`：`_llm_generate_spec` 中 LLMService 改为懒加载单例
 - [x] `cache_invalidation.py`：新增指数退避重试（最多3次，5/10/20秒间隔）
 - [x] `config.py`：关键配置添加 `Field(ge=, le=)` 范围约束（权重/阈值/限制数）
-- [ ] `.env.example`：数据库 URL 改为 MySQL 驱动（与 config.py 默认值一致）
+- [x] `.env.example`：数据库 URL 改为 MySQL 驱动（与 config.py 默认值一致）
 
 ### S6-4. 前端 Error Boundary + 流式错误处理 — P0
 

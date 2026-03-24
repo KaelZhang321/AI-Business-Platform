@@ -146,3 +146,55 @@ groups:
         annotations:
           summary: "HikariCP 连接池使用超过 85%"
           description: "活跃连接: {{ $value | humanizePercentage }}"
+
+  - name: container-resources
+    rules:
+      # 容器 CPU 使用率超过 85%
+      - alert: ContainerCPUHigh
+        expr: rate(container_cpu_usage_seconds_total[5m]) * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "容器 {{ $labels.name }} CPU 使用率过高"
+          description: "当前 CPU 使用率: {{ $value | humanize }}%"
+
+      # 容器内存使用率超过 85%
+      - alert: ContainerMemoryHigh
+        expr: container_memory_usage_bytes / container_spec_memory_limit_bytes > 0.85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "容器 {{ $labels.name }} 内存使用率过高"
+          description: "当前内存使用率: {{ $value | humanizePercentage }}"
+
+      # 磁盘空间使用超过 85%
+      - alert: DiskSpaceHigh
+        expr: (node_filesystem_size_bytes - node_filesystem_avail_bytes) / node_filesystem_size_bytes > 0.85
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "磁盘 {{ $labels.mountpoint }} 使用率超过 85%"
+          description: "当前磁盘使用率: {{ $value | humanizePercentage }}"
+
+      # RabbitMQ 队列深度过高
+      - alert: RabbitMQQueueDepthHigh
+        expr: rabbitmq_queue_messages > 10000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "RabbitMQ 队列 {{ $labels.queue }} 消息积压"
+          description: "当前队列深度: {{ $value }}"
+
+      # RabbitMQ 消费者为零（队列无消费者处理）
+      - alert: RabbitMQNoConsumers
+        expr: rabbitmq_queue_consumers == 0 and rabbitmq_queue_messages > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "RabbitMQ 队列 {{ $labels.queue }} 无消费者"
+          description: "队列有 {{ $value }} 条消息但无消费者处理"

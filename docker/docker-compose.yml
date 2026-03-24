@@ -88,7 +88,7 @@ services:
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:-admin_dev}
     ports:
       - "127.0.0.1:5672:5672"
-      - "127.0.0.1:15672:15672"
+      # 管理界面仅通过 Nginx 代理访问，不外网暴露
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
     healthcheck:
@@ -144,7 +144,7 @@ services:
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin_dev}
     ports:
       - "127.0.0.1:9000:9000"
-      - "127.0.0.1:9001:9001"
+      # 控制台仅通过 Nginx 代理访问，不外网暴露
     volumes:
       - minio_data:/data
     healthcheck:

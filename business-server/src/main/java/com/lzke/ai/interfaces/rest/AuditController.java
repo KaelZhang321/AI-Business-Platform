@@ -12,8 +12,10 @@ import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.web.bind.annotation.*;
 
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
 
@@ -36,23 +38,23 @@ public class AuditController {
     @GetMapping("/analytics/by-intent")
     @RateLimit(permits = 60, period = 60)
     public ApiResponse<List<Map<String, Object>>> analyticsByIntent(
-            @Parameter(description = "起始日期 yyyy-MM-dd") @RequestParam String startDate,
-            @Parameter(description = "结束日期 yyyy-MM-dd") @RequestParam String endDate) {
-        return ApiResponse.ok(analyticsService.statsByIntent(startDate, endDate));
+            @Parameter(description = "起始日期 yyyy-MM-dd") @RequestParam @DateTimeFormat(pattern = "yyyy-MM-dd") LocalDate startDate,
+            @Parameter(description = "结束日期 yyyy-MM-dd") @RequestParam @DateTimeFormat(pattern = "yyyy-MM-dd") LocalDate endDate) {
+        return ApiResponse.ok(analyticsService.statsByIntent(startDate.toString(), endDate.toString()));
     }
 
     @Operation(summary = "按模型统计", description = "ClickHouse 聚合：按模型统计请求量")
     @GetMapping("/analytics/by-model")
     public ApiResponse<List<Map<String, Object>>> analyticsByModel(
-            @Parameter(description = "起始日期 yyyy-MM-dd") @RequestParam String startDate,
-            @Parameter(description = "结束日期 yyyy-MM-dd") @RequestParam String endDate) {
-        return ApiResponse.ok(analyticsService.statsByModel(startDate, endDate));
+            @Parameter(description = "起始日期 yyyy-MM-dd") @RequestParam @DateTimeFormat(pattern = "yyyy-MM-dd") LocalDate startDate,
+            @Parameter(description = "结束日期 yyyy-MM-dd") @RequestParam @DateTimeFormat(pattern = "yyyy-MM-dd") LocalDate endDate) {
+        return ApiResponse.ok(analyticsService.statsByModel(startDate.toString(), endDate.toString()));
     }
 
     @Operation(summary = "按小时统计", description = "ClickHouse 聚合：按小时统计请求量")
     @GetMapping("/analytics/by-hour")
     public ApiResponse<List<Map<String, Object>>> analyticsByHour(
-            @Parameter(description = "日期 yyyy-MM-dd") @RequestParam String date) {
-        return ApiResponse.ok(analyticsService.statsByHour(date));
+            @Parameter(description = "日期 yyyy-MM-dd") @RequestParam @DateTimeFormat(pattern = "yyyy-MM-dd") LocalDate date) {
+        return ApiResponse.ok(analyticsService.statsByHour(date.toString()));
     }
 }
