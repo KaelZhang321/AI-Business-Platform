@@ -1,8 +1,9 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Form, Input, Button, Card, message } from 'antd'
-import { UserOutlined, LockOutlined, RobotOutlined } from '@ant-design/icons'
+import { Form, Input, Button, Card, Divider, message } from 'antd'
+import { UserOutlined, LockOutlined, RobotOutlined, SafetyCertificateOutlined } from '@ant-design/icons'
 import { useAppStore } from '../stores/useAppStore'
+import { authService } from '../services/auth'
 
 export default function Login() {
   const navigate = useNavigate()
@@ -43,6 +44,18 @@ export default function Login() {
             </Button>
           </Form.Item>
         </Form>
+        {authService.isSSOEnabled() && (
+          <>
+            <Divider plain>或</Divider>
+            <Button
+              block
+              icon={<SafetyCertificateOutlined />}
+              onClick={() => authService.loginWithSSO()}
+            >
+              企业SSO登录
+            </Button>
+          </>
+        )}
       </Card>
     </div>
   )

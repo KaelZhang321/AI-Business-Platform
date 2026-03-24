@@ -1,4 +1,4 @@
-package com.lzke.ai.model.dto;
+package com.lzke.ai.application.dto;
 
 import jakarta.validation.constraints.NotBlank;
 import lombok.Data;

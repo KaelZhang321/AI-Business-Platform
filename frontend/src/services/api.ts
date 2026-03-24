@@ -1,4 +1,5 @@
-import axios from 'axios'
+import axios, { type AxiosError, type InternalAxiosRequestConfig } from 'axios'
+import { authService } from './auth'
 
 const TOKEN_KEY = 'ai_platform_token'
 
@@ -26,16 +27,60 @@ function attachToken(config: import('axios').InternalAxiosRequestConfig) {
 apiClient.interceptors.request.use(attachToken)
 businessClient.interceptors.request.use(attachToken)
 
-// 401 响应拦截 — 自动清除 token 并跳转登录页
-function handle401(error: unknown) {
-  if (axios.isAxiosError(error) && error.response?.status === 401) {
-    localStorage.removeItem(TOKEN_KEY)
-    // 避免在登录页重复跳转
-    if (window.location.pathname !== '/login') {
-      window.location.href = '/login'
-    }
+// 401 响应拦截 — 使用共享 Promise 消除竞态条件
+let refreshPromise: Promise<string> | null = null
+
+function redirectToLogin() {
+  authService.logout()
+  if (window.location.pathname !== '/login') {
+    window.location.href = '/login'
   }
-  return Promise.reject(error)
+}
+
+function doRefresh(): Promise<string> {
+  const refreshToken = authService.getRefreshToken()
+  if (!refreshToken) {
+    return Promise.reject(new Error('no refresh token'))
+  }
+  return axios
+    .post<{ token: string; expiresIn: number }>(
+      `${businessClient.defaults.baseURL}/api/v1/auth/refresh`,
+      null,
+      { headers: { Authorization: `Bearer ${refreshToken}` } },
+    )
+    .then((res) => {
+      const newToken = res.data.token
+      authService.setToken(newToken)
+      return newToken
+    })
+}
+
+async function handle401(error: AxiosError) {
+  const originalRequest = error.config as InternalAxiosRequestConfig & { _retried?: boolean }
+  if (error.response?.status !== 401 || !originalRequest || originalRequest._retried) {
+    if (error.response?.status === 401) redirectToLogin()
+    return Promise.reject(error)
+  }
+  if (originalRequest.url?.includes('/api/v1/auth/refresh')) {
+    redirectToLogin()
+    return Promise.reject(error)
+  }
+
+  originalRequest._retried = true
+
+  // 所有并发 401 共享同一个刷新 Promise，避免竞态
+  if (!refreshPromise) {
+    refreshPromise = doRefresh().finally(() => { refreshPromise = null })
+  }
+
+  try {
+    const newToken = await refreshPromise
+    originalRequest.headers.Authorization = `Bearer ${newToken}`
+    return businessClient(originalRequest)
+  } catch {
+    redirectToLogin()
+    return Promise.reject(error)
+  }
 }
 
 apiClient.interceptors.response.use((r) => r, handle401)

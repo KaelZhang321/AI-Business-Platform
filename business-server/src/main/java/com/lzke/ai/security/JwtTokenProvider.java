@@ -32,7 +32,19 @@ public class JwtTokenProvider {
         Instant expiry = now.plusMillis(properties.getExpiration());
         return Jwts.builder()
                 .subject(userId.toString())
-                .claims(Map.of("username", username, "role", role))
+                .claims(Map.of("username", username, "role", role, "type", "access"))
+                .issuedAt(Date.from(now))
+                .expiration(Date.from(expiry))
+                .signWith(signingKey)
+                .compact();
+    }
+
+    public String generateRefreshToken(UUID userId, String username, String role) {
+        Instant now = Instant.now();
+        Instant expiry = now.plusMillis(properties.getExpiration() * 7); // 7倍于access token
+        return Jwts.builder()
+                .subject(userId.toString())
+                .claims(Map.of("username", username, "role", role, "type", "refresh"))
                 .issuedAt(Date.from(now))
                 .expiration(Date.from(expiry))
                 .signWith(signingKey)
@@ -45,5 +57,9 @@ public class JwtTokenProvider {
                 .build()
                 .parseSignedClaims(token)
                 .getPayload();
+    }
+
+    public boolean isRefreshToken(Claims claims) {
+        return "refresh".equals(claims.get("type", String.class));
     }
 }

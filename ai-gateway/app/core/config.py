@@ -61,9 +61,17 @@ class Settings(BaseSettings):
     # Intent classification
     intent_confidence_threshold: float = 0.55
 
+    # 业务编排层
+    business_server_url: str = "http://localhost:8080"
+
     # 外部LLM API
     openai_api_key: str = ""
     openai_base_url: str = ""
+
+    # LangSmith 可观测性
+    langsmith_api_key: str = ""
+    langsmith_project: str = "ai-platform"
+    langsmith_tracing: bool = False
 
     model_config = {"env_file": ".env", "extra": "ignore"}
 

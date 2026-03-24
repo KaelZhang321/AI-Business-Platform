@@ -1,5 +1,6 @@
 package com.lzke.ai.interfaces.rest;
 
+import com.lzke.ai.annotation.RateLimit;
 import com.lzke.ai.application.dto.TaskAggregateQuery;
 import com.lzke.ai.application.task.TaskApplicationService;
 import com.lzke.ai.interfaces.dto.ApiResponse;
@@ -16,6 +17,7 @@ public class TaskController {
     private final TaskApplicationService taskApplicationService;
 
     @GetMapping("/aggregate")
+    @RateLimit(permits = 100, period = 60)
     public ApiResponse<PageResult<TaskVO>> aggregateTasks(TaskAggregateQuery query) {
         return ApiResponse.ok(taskApplicationService.aggregateTasks(query));
     }

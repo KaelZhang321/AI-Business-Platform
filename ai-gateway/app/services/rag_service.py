@@ -20,7 +20,7 @@ class RAGService:
     def __init__(self):
         self._milvus_collection: Collection | None = None
         self._es: AsyncElasticsearch | None = None
-        self._neo4j_driver = None
+        self._neo4j = None
         self._embedding_model: BGEM3FlagModel | None = None
         self._reranker: FlagReranker | None = None
         self._clickhouse_engine: AsyncEngine | None = None
@@ -38,13 +38,13 @@ class RAGService:
             self._es = AsyncElasticsearch(settings.elasticsearch_url)
         return self._es
 
-    def _neo4j_driver(self):
-        if self._neo4j_driver is None:
-            self._neo4j_driver = AsyncGraphDatabase.driver(
+    def _neo4j_client(self):
+        if self._neo4j is None:
+            self._neo4j = AsyncGraphDatabase.driver(
                 settings.neo4j_uri,
                 auth=(settings.neo4j_user, settings.neo4j_password),
             )
-        return self._neo4j_driver
+        return self._neo4j
 
     def _embedder(self) -> BGEM3FlagModel:
         if self._embedding_model is None:
@@ -138,7 +138,7 @@ class RAGService:
         return hits
 
     async def _graph_search(self, query: str) -> list[KnowledgeResult]:
-        driver = self._neo4j_driver()
+        driver = self._neo4j_client()
         cypher = """
         CALL db.index.fulltext.queryNodes('knowledge_index', $query)
         YIELD node, score
@@ -241,4 +241,15 @@ class RAGService:
                 await conn.execute(stmt, payload)
         except Exception as exc:  # pragma: no cover - telemetry failures shouldn't break user flow
             self._logger.warning("Failed to record RAG metrics: %s", exc)
-*** End File
+
+    async def close(self) -> None:
+        """释放所有外部连接资源，由 FastAPI lifespan 在关闭时调用。"""
+        if self._es:
+            await self._es.close()
+            self._logger.info("RAGService: Elasticsearch 客户端已关闭")
+        if self._neo4j:
+            await self._neo4j.close()
+            self._logger.info("RAGService: Neo4j 驱动已关闭")
+        if self._clickhouse_engine:
+            await self._clickhouse_engine.dispose()
+            self._logger.info("RAGService: ClickHouse 引擎已释放")

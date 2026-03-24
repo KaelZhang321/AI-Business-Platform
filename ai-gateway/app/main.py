@@ -1,4 +1,5 @@
 import logging
+import os
 from contextlib import asynccontextmanager
 
 import httpx
@@ -8,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.routes import chat, knowledge, query
 from app.core.config import settings
 from app.models.schemas import HealthResponse
+from app.services.rag_service import RAGService
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +19,13 @@ _service_status: dict[str, str] = {}
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # ── 启动时：LangSmith 初始化 ─────────────────────────
+    if settings.langsmith_tracing and settings.langsmith_api_key:
+        os.environ["LANGCHAIN_TRACING_V2"] = "true"
+        os.environ["LANGCHAIN_API_KEY"] = settings.langsmith_api_key
+        os.environ["LANGCHAIN_PROJECT"] = settings.langsmith_project
+        logger.info("LangSmith tracing 已启用, project=%s", settings.langsmith_project)
+
     # ── 启动时：轻量级连接验证 ──────────────────────────
     logger.info("AI网关启动中 — 验证外部服务连接 ...")
 
@@ -61,10 +70,19 @@ async def lifespan(app: FastAPI):
 
     logger.info("AI网关启动完成 — 服务状态: %s", _service_status)
 
+    # 将共享服务实例挂载到 app.state，供 route 层按需获取
+    app.state.rag_service = RAGService()
+
     yield
 
     # ── 关闭时：释放资源 ────────────────────────────────
     logger.info("AI网关关闭中 — 释放资源 ...")
+
+    # RAGService（Neo4j / ES / ClickHouse）
+    try:
+        await app.state.rag_service.close()
+    except Exception as exc:
+        logger.warning("关闭 RAGService 失败: %s", exc)
 
     # Elasticsearch
     if es_client:
@@ -112,6 +130,11 @@ app.include_router(chat.router, prefix="/api/v1", tags=["对话"])
 app.include_router(knowledge.router, prefix="/api/v1", tags=["知识库"])
 app.include_router(query.router, prefix="/api/v1", tags=["数据查询"])
 
+# MCP Server 路由
+from app.mcp.server import mcp_server  # noqa: E402
+
+app.mount("/mcp", mcp_server.sse_app())
+
 
 @app.get("/health", response_model=HealthResponse, tags=["系统"])
 async def health_check():
@@ -120,3 +143,35 @@ async def health_check():
         version="0.1.0",
         services=_service_status or {"milvus": "unchecked", "elasticsearch": "unchecked", "ollama": "unchecked"},
     )
+
+
+# ── S4-5: Prometheus /metrics 端点 ─────────────────────────
+from prometheus_client import (  # noqa: E402
+    Counter,
+    Histogram,
+    generate_latest,
+    CONTENT_TYPE_LATEST,
+)
+from starlette.responses import Response  # noqa: E402
+
+REQUEST_COUNT = Counter("ai_gateway_requests_total", "Total requests", ["method", "endpoint", "status"])
+REQUEST_LATENCY = Histogram("ai_gateway_request_latency_seconds", "Request latency", ["endpoint"])
+
+
+@app.middleware("http")
+async def prometheus_middleware(request, call_next):
+    import time
+
+    start = time.perf_counter()
+    response = await call_next(request)
+    elapsed = time.perf_counter() - start
+
+    endpoint = request.url.path
+    REQUEST_COUNT.labels(method=request.method, endpoint=endpoint, status=response.status_code).inc()
+    REQUEST_LATENCY.labels(endpoint=endpoint).observe(elapsed)
+    return response
+
+
+@app.get("/metrics", tags=["系统"])
+async def metrics():
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)

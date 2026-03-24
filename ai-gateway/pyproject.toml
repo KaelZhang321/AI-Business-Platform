@@ -24,6 +24,9 @@ dependencies = [
     "pymilvus>=2.4.0",
     "elasticsearch>=8.11.0",
     "neo4j>=5.18.0",
+    # 可观测性
+    "langsmith>=0.1.0",
+    "prometheus-client>=0.21.0",
     # HTTP & 流式
     "httpx>=0.28.0",
     "sse-starlette>=2.1.0",

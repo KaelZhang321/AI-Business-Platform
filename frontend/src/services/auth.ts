@@ -2,6 +2,7 @@ import { jwtDecode } from 'jwt-decode'
 import { businessClient } from './api'
 
 const TOKEN_KEY = 'ai_platform_token'
+const REFRESH_TOKEN_KEY = 'ai_platform_refresh_token'
 
 export interface JwtPayload {
   sub: string
@@ -19,6 +20,7 @@ export interface UserPermission {
 
 export interface LoginResponse {
   token: string
+  refreshToken: string
   expiresIn: number
   user: UserPermission
 }
@@ -31,6 +33,9 @@ export const authService = {
     )
     const loginData = res.data.data
     localStorage.setItem(TOKEN_KEY, loginData.token)
+    if (loginData.refreshToken) {
+      localStorage.setItem(REFRESH_TOKEN_KEY, loginData.refreshToken)
+    }
     return loginData
   },
 
@@ -43,6 +48,15 @@ export const authService = {
 
   logout() {
     localStorage.removeItem(TOKEN_KEY)
+    localStorage.removeItem(REFRESH_TOKEN_KEY)
+  },
+
+  getRefreshToken(): string | null {
+    return localStorage.getItem(REFRESH_TOKEN_KEY)
+  },
+
+  setToken(token: string) {
+    localStorage.setItem(TOKEN_KEY, token)
   },
 
   getToken(): string | null {
@@ -58,5 +72,21 @@ export const authService = {
     } catch {
       return false
     }
+  },
+
+  /** SSO/Keycloak 登录 — 重定向到 Keycloak 授权端点 */
+  loginWithSSO() {
+    const keycloakUrl = import.meta.env.VITE_KEYCLOAK_URL
+    const realm = import.meta.env.VITE_KEYCLOAK_REALM || 'ai-platform'
+    const clientId = import.meta.env.VITE_KEYCLOAK_CLIENT_ID || 'ai-platform-frontend'
+    const redirectUri = encodeURIComponent(`${window.location.origin}/sso/callback`)
+    window.location.href =
+      `${keycloakUrl}/realms/${realm}/protocol/openid-connect/auth` +
+      `?client_id=${clientId}&response_type=code&scope=openid&redirect_uri=${redirectUri}`
+  },
+
+  /** SSO 是否已配置启用 */
+  isSSOEnabled(): boolean {
+    return !!import.meta.env.VITE_KEYCLOAK_URL
   },
 }

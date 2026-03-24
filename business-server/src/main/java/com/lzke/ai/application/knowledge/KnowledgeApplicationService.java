@@ -7,18 +7,22 @@ import com.lzke.ai.domain.entity.Document;
 import com.lzke.ai.infrastructure.persistence.mapper.DocumentMapper;
 import com.lzke.ai.interfaces.dto.DocumentVO;
 import com.lzke.ai.interfaces.dto.PageResult;
+import com.lzke.ai.config.RabbitMQConfig;
 import lombok.RequiredArgsConstructor;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.cache.annotation.Cacheable;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
+import java.util.Map;
 
 @Service
 @RequiredArgsConstructor
 public class KnowledgeApplicationService {
 
     private final DocumentMapper documentMapper;
+    private final RabbitTemplate rabbitTemplate;
 
     @CacheEvict(cacheNames = "knowledge:documents", allEntries = true)
     public DocumentVO createDocument(DocumentCreateRequest request) {
@@ -31,6 +35,13 @@ public class KnowledgeApplicationService {
         doc.setStatus("pending");
         doc.setChunkCount(0);
         documentMapper.insert(doc);
+
+        // 发送文档处理消息到 MQ（异步触发分块/向量化）
+        rabbitTemplate.convertAndSend(
+                RabbitMQConfig.EXCHANGE,
+                RabbitMQConfig.DOCUMENT_PROCESS_QUEUE,
+                Map.of("documentId", doc.getId().toString(), "title", doc.getTitle())
+        );
 
         DocumentVO vo = new DocumentVO();
         vo.setId(doc.getId());

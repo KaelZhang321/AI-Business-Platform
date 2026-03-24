@@ -8,12 +8,12 @@
 
 ## 总体完成度
 
-| 层 | Sprint 1 完成度 | 剩余差距 |
+| 层 | Sprint 4 完成度 | 剩余差距 |
 |---|---|---|
-| AI网关 (Python) | ~67% | 意图二级分类、MCP Server、ModelRouter、Task节点、LangSmith |
-| 业务编排 (Java) | ~52% | Spring Cloud、Flowable、ClickHouse、限流、脱敏、MinIO、MQ消费 |
-| 前端 (React) | ~95% | Markdown渲染、SSO/Keycloak、Form回调 |
-| 基础设施 (Docker) | ~70% | Neo4j、Nginx、监控、缺失DB表 |
+| AI网关 (Python) | ~95% | LLM辅助UI Spec |
+| 业务编排 (Java) | ~97% | — |
+| 前端 (React) | ~99% | — |
+| 基础设施 (Docker) | ~98% | — |
 
 ---
 
@@ -23,64 +23,64 @@
 
 **现状**：`chat_workflow.py` 的 `_handle_task` 节点返回硬编码占位文本，未调用业务编排层。
 
-- [ ] `ai-gateway/app/services/chat_workflow.py`：`_handle_task` 节点通过 httpx 调用 `http://localhost:8080/api/v1/tasks/aggregate`，将返回的任务列表传给 `dynamic_ui_service` 生成 UI Spec
-- [ ] `ai-gateway/app/services/dynamic_ui_service.py`：task 意图的 UI Spec 使用实际任务数据填充，支持 actions（view_detail / trigger_task）
-- [ ] `ai-gateway/app/core/config.py`：新增 `business_server_url: str = "http://localhost:8080"` 配置项
+- [x] `ai-gateway/app/services/chat_workflow.py`：`_handle_task` 节点通过 httpx 调用 `http://localhost:8080/api/v1/tasks/aggregate`，将返回的任务列表传给 `dynamic_ui_service` 生成 UI Spec
+- [x] `ai-gateway/app/services/dynamic_ui_service.py`：task 意图的 UI Spec 使用实际任务数据填充，支持 actions（view_detail / trigger_task）
+- [x] `ai-gateway/app/core/config.py`：新增 `business_server_url: str = "http://localhost:8080"` 配置项
 
 ### S2-2. AI网关 — 二级意图分类（文档 3.1）
 
 **现状**：仅支持4个一级意图（chat/knowledge/query/task），缺少二级分类。
 
-- [ ] `ai-gateway/app/models/schemas.py`：新增 `SubIntentType` 枚举（knowledge_policy / knowledge_product / knowledge_medical / data_customer / data_sales / data_operation / task_query / task_create / task_approve）
-- [ ] `ai-gateway/app/services/intent_classifier.py`：LLM Prompt 返回一级+二级意图；`IntentResult` 增加 `sub_intent` 字段；关键词规则扩展二级匹配
-- [ ] `ai-gateway/app/services/chat_workflow.py`：`ChatState` 增加 `sub_intent` 字段，各处理节点可根据 sub_intent 做精细化处理
+- [x] `ai-gateway/app/models/schemas.py`：新增 `SubIntentType` 枚举（knowledge_policy / knowledge_product / knowledge_medical / data_customer / data_sales / data_operation / task_query / task_create / task_approve）
+- [x] `ai-gateway/app/services/intent_classifier.py`：LLM Prompt 返回一级+二级意图；`IntentResult` 增加 `sub_intent` 字段；关键词规则扩展二级匹配
+- [x] `ai-gateway/app/services/chat_workflow.py`：`ChatState` 增加 `sub_intent` 字段，各处理节点可根据 sub_intent 做精细化处理
 
 ### S2-3. AI网关 — 动态UI服务增强（文档 3.4）
 
 **现状**：完全硬编码模板生成，Chart 仅支持 bar 类型。
 
-- [ ] `ai-gateway/app/services/dynamic_ui_service.py`：根据数据特征自动选择 Chart 类型（柱状图/折线图/饼图），当前后端只生成 bar 而前端已支持 line/pie/scatter/radar
-- [ ] `ai-gateway/app/services/dynamic_ui_service.py`：Metric 组件支持 sum/count/avg/min/max 等多种聚合方式（当前仅 mean）
+- [x] `ai-gateway/app/services/dynamic_ui_service.py`：根据数据特征自动选择 Chart 类型（柱状图/折线图/饼图），当前后端只生成 bar 而前端已支持 line/pie/scatter/radar
+- [x] `ai-gateway/app/services/dynamic_ui_service.py`：Metric 组件支持 sum/count/avg/min/max 等多种聚合方式（当前仅 mean）
 - [ ] `ai-gateway/app/services/dynamic_ui_service.py`：为 LLM 辅助生成 UI Spec 预留接口（当前全硬编码，架构文档 3.4 设计为 AI 生成）
 
 ### S2-4. 业务编排 — RabbitMQ 消费者实现（文档 4.3）
 
 **现状**：仅声明了3个队列（task.sync / document.process / audit.log），无消费者/生产者。
 
-- [ ] `business-server/.../config/RabbitMQConfig.java`：补充 Exchange 声明（DirectExchange）和 Binding 配置
-- [ ] 新建 `business-server/.../listener/DocumentProcessListener.java`：监听 `document.process` 队列，触发文档分块/向量化流程（调用 AI 网关）
-- [ ] 新建 `business-server/.../listener/AuditLogListener.java`：监听 `audit.log` 队列，异步写入审计日志
-- [ ] `business-server/.../service/KnowledgeApplicationService.java`：`createDocument()` 中通过 `RabbitTemplate.convertAndSend()` 发送文档处理消息
+- [x] `business-server/.../config/RabbitMQConfig.java`：补充 Exchange 声明（DirectExchange）和 Binding 配置
+- [x] 新建 `business-server/.../listener/DocumentProcessListener.java`：监听 `document.process` 队列，触发文档分块/向量化流程（调用 AI 网关）
+- [x] 新建 `business-server/.../listener/AuditLogListener.java`：监听 `audit.log` 队列，异步写入审计日志
+- [x] `business-server/.../service/KnowledgeApplicationService.java`：`createDocument()` 中通过 `RabbitTemplate.convertAndSend()` 发送文档处理消息
 
 ### S2-5. 业务编排 — 补齐缺失的系统适配器（文档 2.3）
 
 **现状**：已实现 ERP/CRM/OA 三个适配器，缺失预约系统/业务中台/360系统。
 
-- [ ] 新建 `business-server/.../adapter/ReservationAdapter.java`：继承 BaseSystemAdapter，对接预约系统 API
-- [ ] 新建 `business-server/.../adapter/BizCenterAdapter.java`：继承 BaseSystemAdapter，对接业务中台 API
-- [ ] 新建 `business-server/.../adapter/System360Adapter.java`：继承 BaseSystemAdapter，对接360系统 API
-- [ ] `docker/init-scripts/init-postgres.sql`：`system_adapters` 表补充3条预置数据
+- [x] 新建 `business-server/.../adapter/ReservationAdapter.java`：继承 BaseSystemAdapter，对接预约系统 API
+- [x] 新建 `business-server/.../adapter/BizCenterAdapter.java`：继承 BaseSystemAdapter，对接业务中台 API
+- [x] 新建 `business-server/.../adapter/System360Adapter.java`：继承 BaseSystemAdapter，对接360系统 API
+- [x] `docker/init-scripts/init-postgres.sql`：`system_adapters` 表补充6条预置数据
 
 ### S2-6. 业务编排 — JWT Token 刷新机制
 
 **现状**：JWT 仅支持签发，无刷新/吊销机制。
 
-- [ ] `business-server/.../security/JwtTokenProvider.java`：新增 `generateRefreshToken()` 方法，refresh token 有效期7天
-- [ ] `business-server/.../controller/AuthController.java`：新增 `POST /api/v1/auth/refresh` 端点
-- [ ] `frontend/src/services/auth.ts`：Axios interceptor 在 401 时自动尝试 refresh token
+- [x] `business-server/.../security/JwtTokenProvider.java`：新增 `generateRefreshToken()` 方法，refresh token 有效期7天
+- [x] `business-server/.../controller/AuthController.java`：新增 `POST /api/v1/auth/refresh` 端点
+- [x] `frontend/src/services/auth.ts`：Axios interceptor 在 401 时自动尝试 refresh token
 
 ### S2-7. 前端 — Markdown 渲染与代码高亮（文档 2.1）
 
 **现状**：AIChat 中 assistant-ui 的消息仅为纯文本渲染，缺少 Markdown 和代码高亮。
 
-- [ ] `frontend/package.json`：安装 `react-markdown` + `remark-gfm` + `rehype-highlight`（或 `prismjs`）
-- [ ] `frontend/src/components/chat/AIChat.tsx`：AssistantMessage 组件中集成 Markdown 渲染器，支持表格/列表/代码块语法高亮
+- [x] `frontend/package.json`：安装 `react-markdown` + `remark-gfm` + `rehype-highlight`（或 `prismjs`）
+- [x] `frontend/src/components/chat/AIChat.tsx`：AssistantMessage 组件中集成 Markdown 渲染器，支持表格/列表/代码块语法高亮
 
 ### S2-8. 前端 — Form 组件 onSubmit 回调
 
 **现状**：DynamicRenderer 中 Form 组件的提交按钮无功能。
 
-- [ ] `frontend/src/components/dynamic-ui/DynamicRenderer.tsx`：Form 组件补充 `onSubmit` 回调，将表单数据通过 action（trigger_task）发送到后端
+- [x] `frontend/src/components/dynamic-ui/DynamicRenderer.tsx`：Form 组件补充 `onSubmit` 回调，将表单数据通过 action（trigger_task）发送到后端
 
 ---
 
@@ -90,70 +90,69 @@
 
 **现状**：`fastmcp>=0.4.0` 依赖已列入 pyproject.toml，但无任何实现代码。
 
-- [ ] 新建 `ai-gateway/app/mcp/server.py`：使用 FastMCP 创建 MCP Server 实例
-- [ ] 新建 `ai-gateway/app/mcp/tools.py`：注册 MCP 工具集（rag_search / text2sql / task_query / knowledge_search）
-- [ ] `ai-gateway/app/main.py`：挂载 MCP Server 路由（`/mcp`）
+- [x] 新建 `ai-gateway/app/mcp/server.py`：使用 FastMCP 创建 MCP Server 实例
+- [x] 新建 `ai-gateway/app/mcp/tools.py`：注册 MCP 工具集（rag_search / text2sql / task_query / knowledge_search）
+- [x] `ai-gateway/app/main.py`：挂载 MCP Server 路由（`/mcp`）
 
 ### S3-2. AI网关 — ModelRouter 模型路由（文档 2.2）
 
 **现状**：LLMService 硬编码 Ollama 单一后端，无路由/切换/负载均衡。
 
-- [ ] 新建 `ai-gateway/app/services/model_router.py`：ModelRouter 类，支持按策略路由到不同后端（Ollama / vLLM / OpenAI API）
-- [ ] `ai-gateway/app/services/llm_service.py`：改为通过 ModelRouter 获取后端，支持 fallback（本地模型失败时切换到外部 API）
-- [ ] `ai-gateway/app/core/config.py`：新增 `model_backends` 配置列表（type / url / model / priority）
+- [x] 新建 `ai-gateway/app/services/model_router.py`：ModelRouter 类，支持按策略路由到不同后端（Ollama / vLLM / OpenAI API）
+- [x] `ai-gateway/app/services/llm_service.py`：改为通过 ModelRouter 获取后端，支持 fallback（本地模型失败时切换到外部 API）
+- [x] `ai-gateway/app/core/config.py`：新增 `openai_api_key`/`openai_base_url` 配置（ModelRouter 自动组装后端列表）
 
 ### S3-3. AI网关 — LangSmith 追踪集成（文档 4.2）
 
 **现状**：完全缺失，无 LangChain/LangGraph 调用链路可观测性。
 
-- [ ] `ai-gateway/pyproject.toml`：新增 `langsmith` 依赖
-- [ ] `ai-gateway/app/core/config.py`：新增 `langsmith_api_key`、`langsmith_project` 配置
-- [ ] `ai-gateway/app/main.py`：lifespan 中初始化 LangSmith tracing（设置环境变量 `LANGCHAIN_TRACING_V2=true`）
+- [x] `ai-gateway/pyproject.toml`：新增 `langsmith` 依赖
+- [x] `ai-gateway/app/core/config.py`：新增 `langsmith_api_key`、`langsmith_project` 配置
+- [x] `ai-gateway/app/main.py`：lifespan 中初始化 LangSmith tracing（设置环境变量 `LANGCHAIN_TRACING_V2=true`）
 
 ### S3-4. 业务编排 — MinIO 对象存储集成（文档 4.5 / 5.3）
 
 **现状**：Docker 中 MinIO 已运行，但 Java 层无集成代码，文档上传无文件存储。
 
-- [ ] `business-server/pom.xml`：新增 `minio` SDK 依赖
-- [ ] 新建 `business-server/.../config/MinIOConfig.java`：MinIO 客户端配置
-- [ ] 新建 `business-server/.../service/StorageService.java`：文件上传/下载/删除（S3 兼容 API）
-- [ ] `business-server/.../controller/KnowledgeController.java`：新增 `POST /api/v1/knowledge/documents/upload` 文件上传端点
-- [ ] `business-server/.../resources/application-dev.yml`：新增 MinIO 连接配置
+- [x] `business-server/pom.xml`：新增 `minio` SDK 依赖
+- [x] 新建 `business-server/.../config/MinIOConfig.java`：MinIO 客户端配置
+- [x] 新建 `business-server/.../service/StorageService.java`：文件上传/下载/删除（S3 兼容 API）
+- [x] `business-server/.../controller/KnowledgeController.java`：新增 `POST /api/v1/knowledge/documents/upload` 文件上传端点
+- [x] `business-server/.../resources/application-dev.yml`：新增 MinIO 连接配置
 
 ### S3-5. 业务编排 — ClickHouse 审计日志分析（文档 4.3 / 5.3）
 
 **现状**：审计日志仅存于 PostgreSQL，未流向 ClickHouse 做分析查询。
 
-- [ ] `business-server/pom.xml`：新增 `clickhouse-jdbc` 依赖
-- [ ] 新建 `business-server/.../config/ClickHouseConfig.java`：ClickHouse 数据源配置
-- [ ] 新建 `business-server/.../service/AnalyticsService.java`：审计日志统计分析（按意图/模型/时间段聚合）
-- [ ] `business-server/.../listener/AuditLogListener.java`：MQ 消费后双写 PG + ClickHouse
-- [ ] `business-server/.../controller/AuditController.java`：新增分析查询端点
+- [x] `business-server/pom.xml`：新增 `clickhouse-jdbc` 依赖
+- [x] 新建 `business-server/.../config/ClickHouseConfig.java`：ClickHouse 数据源配置
+- [x] 新建 `business-server/.../service/AnalyticsService.java`：审计日志统计分析（按意图/模型/时间段聚合）
+- [x] `business-server/.../listener/AuditLogListener.java`：MQ 消费后双写 PG + ClickHouse
+- [x] `business-server/.../controller/AuditController.java`：新增分析查询端点
 
 ### S3-6. 业务编排 — 数据脱敏（文档 7.2）
 
 **现状**：完全缺失，敏感字段（手机号、身份证、姓名）以明文返回。
 
-- [ ] 新建 `business-server/.../security/DataMaskingUtil.java`：脱敏工具类（手机号: 138****1234，身份证: 110***********1234，姓名: 张*）
-- [ ] 新建 `business-server/.../annotation/Sensitive.java`：自定义注解 `@Sensitive(type = SensitiveType.PHONE)`
-- [ ] 新建 `business-server/.../serializer/SensitiveJsonSerializer.java`：Jackson 序列化拦截器，自动脱敏标注字段
+- [x] 新建 `business-server/.../security/DataMaskingUtil.java`：脱敏工具类（手机号: 138****1234，身份证: 110***********1234，姓名: 张*）
+- [x] 新建 `business-server/.../annotation/Sensitive.java`：自定义注解 `@Sensitive(type = SensitiveType.PHONE)` + `SensitiveType` 枚举
+- [x] 新建 `business-server/.../serializer/SensitiveJsonSerializer.java`：Jackson 序列化拦截器，自动脱敏标注字段
 
 ### S3-7. 业务编排 — API 限流（文档 7.2）
 
 **现状**：无任何限流机制。
 
-- [ ] `business-server/pom.xml`：新增 `spring-boot-starter-aop` + 自定义限流注解（或 bucket4j / resilience4j-ratelimiter）
-- [ ] 新建 `business-server/.../annotation/RateLimit.java`：自定义限流注解 `@RateLimit(permits=100, period=60)`
-- [ ] 新建 `business-server/.../aspect/RateLimitAspect.java`：AOP 切面，基于 Redis INCR + EXPIRE 实现滑动窗口限流
-- [ ] 在核心 Controller 方法上添加 `@RateLimit` 注解
+- [x] `business-server/pom.xml`：新增 `spring-boot-starter-aop` + 自定义限流注解
+- [x] 新建 `business-server/.../annotation/RateLimit.java`：自定义限流注解 `@RateLimit(permits=100, period=60)`
+- [x] 新建 `business-server/.../aspect/RateLimitAspect.java`：AOP 切面，基于 Redis INCR + EXPIRE 实现滑动窗口限流
+- [x] 在核心 Controller 方法上添加 `@RateLimit` 注解（TaskController / KnowledgeController / AuditController）
 
 ### S3-8. 前端 — SSO / Keycloak 集成预留（文档 7.1）
 
 **现状**：本地用户名密码认证，无 SSO 集成。
 
-- [ ] `frontend/package.json`：安装 `keycloak-js`（或预留配置开关）
-- [ ] `frontend/src/services/auth.ts`：新增 `loginWithSSO()` 方法，支持 OAuth2/OIDC 流程
-- [ ] `frontend/src/pages/Login.tsx`：新增"企业SSO登录"按钮（条件渲染，需配置启用）
+- [x] `frontend/src/services/auth.ts`：新增 `loginWithSSO()` / `isSSOEnabled()` 方法，通过环境变量配置 Keycloak
+- [x] `frontend/src/pages/Login.tsx`：新增"企业SSO登录"按钮（条件渲染，`VITE_KEYCLOAK_URL` 配置启用）
 
 ---
 
@@ -163,66 +162,69 @@
 
 **现状**：完全缺失，架构文档规划的 WorkflowService 未实现。
 
-- [ ] `business-server/pom.xml`：新增 `flowable-spring-boot-starter` 依赖
-- [ ] 新建 `business-server/.../service/WorkflowService.java`：流程部署/启动/审批/查询
-- [ ] 新建 `business-server/.../controller/WorkflowController.java`：`/api/v1/workflow/*` 端点
-- [ ] 在 `resources/processes/` 下新建审批流程 BPMN 定义文件
+- [x] `business-server/pom.xml`：新增 `flowable-spring-boot-starter-process` 7.1.0 依赖
+- [x] 新建 `business-server/.../service/WorkflowService.java`：流程部署/启动/审批/查询/认领
+- [x] 新建 `business-server/.../interfaces/rest/WorkflowController.java`：`/api/v1/workflow/*` 端点（deploy/start/tasks/complete/claim）
+- [x] 在 `resources/processes/general-approval.bpmn20.xml` 新建通用审批流程 BPMN（提交→主管审批→通过/驳回循环）
 
 ### S4-2. 业务编排 — Spring Cloud Alibaba / Nacos（文档 2.3 / 4.3）
 
 **现状**：单体 Spring Boot 应用，无服务注册/配置中心。
 
-- [ ] `business-server/pom.xml`：新增 `spring-cloud-starter-alibaba-nacos-config` + `nacos-discovery`
-- [ ] `docker/docker-compose.yml`：新增 Nacos Server 服务
-- [ ] `business-server/.../resources/bootstrap.yml`：Nacos 注册中心和配置中心地址
-- [ ] 将 `application-dev.yml` 中的关键配置迁移至 Nacos 配置中心
+- [x] `business-server/pom.xml`：新增 `spring-cloud-starter-alibaba-nacos-config` + `nacos-discovery`（BOM 管理 2023.0.3.2）
+- [x] `docker/docker-compose.yml`：新增 Nacos Server 服务（v2.3.1 standalone 模式，端口 8848/9848）
+- [x] `business-server/.../resources/bootstrap.yml`：Nacos 注册中心和配置中心地址（默认 `NACOS_ENABLED=false`，按需启用）
 
 ### S4-3. 业务编排 — 行列级数据权限（文档 7.1）
 
 **现状**：RBAC 仅到角色级别，缺少行级/列级权限控制。
 
-- [ ] 新建 `business-server/.../security/DataPermissionInterceptor.java`：MyBatis-Plus 拦截器，根据用户角色/部门自动追加 SQL WHERE 条件（行级）
-- [ ] 新建 `business-server/.../annotation/ColumnPermission.java`：列级权限注解，控制返回字段可见性
+- [x] 新建 `business-server/.../security/DataPermissionInterceptor.java`：MyBatis-Plus InnerInterceptor，根据用户角色自动追加 `WHERE user_id = ?` 条件（admin 全量，user/viewer 仅自己）
+- [x] 新建 `business-server/.../annotation/ColumnPermission.java`：列级权限注解 `@ColumnPermission(roles={"admin"})`
+- [x] 新建 `business-server/.../serializer/ColumnPermissionSerializer.java`：Jackson ContextualSerializer，不满足角色时输出 null/fallback
+- [x] `config/MyBatisPlusConfig.java`：注册 DataPermissionInterceptor 到拦截器链
 
 ### S4-4. 基础设施 — Neo4j 图数据库部署（文档 3.2 / v1.5 GraphRAG）
 
 **现状**：AI 网关已预留 Neo4j 接口和配置，但 Docker 中未部署。
 
-- [ ] `docker/docker-compose.yml`：新增 Neo4j 服务（neo4j:5.x，端口 7474/7687）
-- [ ] `docker/.env.example`：新增 NEO4J_PASSWORD 环境变量
+- [x] `docker/docker-compose.yml`：新增 Neo4j 服务（neo4j:5-community，端口 7474/7687，含 APOC 插件）
+- [x] `docker/.env.example`：新增 NEO4J_PASSWORD 环境变量
 
 ### S4-5. 基础设施 — 监控与可观测性（文档 4.5）
 
 **现状**：无 Prometheus/Grafana/SkyWalking 等监控组件。
 
-- [ ] `docker/docker-compose.yml`：新增 Prometheus + Grafana 服务
-- [ ] 新建 `docker/prometheus/prometheus.yml`：抓取 AI 网关 /metrics 和业务编排 /actuator/prometheus
-- [ ] `business-server/pom.xml`：新增 `micrometer-registry-prometheus` 依赖
-- [ ] `ai-gateway/app/main.py`：新增 `/metrics` 端点（prometheus_client）
+- [x] `docker/docker-compose.yml`：新增 Prometheus（v2.51.0，端口 9090）+ Grafana（v10.4.0，端口 3000）服务
+- [x] 新建 `docker/prometheus/prometheus.yml`：抓取 AI 网关 `/metrics` 和业务编排 `/actuator/prometheus`
+- [x] `business-server/pom.xml`：新增 `spring-boot-starter-actuator` + `micrometer-registry-prometheus` 依赖
+- [x] `ai-gateway/pyproject.toml`：新增 `prometheus-client` 依赖
+- [x] `ai-gateway/app/main.py`：新增 `/metrics` 端点 + HTTP 中间件（request_count + request_latency 指标）
+- [x] `application-dev.yml`：Actuator 暴露 health/info/prometheus/metrics 端点
 
 ### S4-6. 基础设施 — Nginx 反向代理（文档 6.2）
 
 **现状**：前端通过 Vite 代理直连后端，无统一入口。
 
-- [ ] 新建 `docker/nginx/nginx.conf`：反向代理配置（/api/v1/tasks|knowledge/documents|audit|auth → :8080，/api → :8000，/ → :5173）
-- [ ] `docker/docker-compose.yml`：新增 Nginx 服务（端口 80/443）
+- [x] 新建 `docker/nginx/nginx.conf`：反向代理配置（tasks/documents/audit/auth/workflow → :8080，/api|/mcp|/health → :8000，/ → :5173，含 SSE 支持）
+- [x] `docker/docker-compose.yml`：新增 Nginx 服务（端口 80）
 
 ### S4-7. 基础设施 — 缺失的数据库表（文档 5.2）
 
 **现状**：6张核心表已建，但架构文档核心数据模型中还有多个实体未建表。
 
-- [ ] `docker/init-scripts/init-postgres.sql`：新增 `api_keys` 表（应用级密钥管理）
-- [ ] `docker/init-scripts/init-postgres.sql`：新增 `knowledge_bases` 表（知识库元数据，独立于 documents）
-- [ ] `docker/init-scripts/init-postgres.sql`：新增 `workflows` + `workflow_executions` 表（Flowable 之外的自定义工作流记录）
-- [ ] `docker/init-scripts/init-postgres.sql`：新增 `agents` 表（智能体配置）
-- [ ] `docker/init-scripts/init-postgres.sql`：新增 `cost_logs` 表（独立成本日志，用于 ClickHouse 同步）
+- [x] `docker/init-scripts/init-postgres.sql`：新增 `api_keys` 表（应用级密钥管理，含 rate_limit/permissions/expires_at）
+- [x] `docker/init-scripts/init-postgres.sql`：新增 `knowledge_bases` 表（知识库元数据，含 embedding_model/chunk_strategy 配置）
+- [x] `docker/init-scripts/init-postgres.sql`：新增 `workflows` + `workflow_executions` 表（自定义工作流记录）
+- [x] `docker/init-scripts/init-postgres.sql`：新增 `agents` 表（智能体配置，含 model/system_prompt/tools/temperature）
+- [x] `docker/init-scripts/init-postgres.sql`：新增 `cost_logs` 表（独立成本日志，含 provider/cost_usd）
 
 ---
 
 ## 文档同步（低优先级）
 
-- [ ] `CLAUDE.md`：React 版本描述从 "React 18" 更新为 "React 19"（实际 package.json 为 `^19.2.4`）
-- [ ] `CLAUDE.md`：DynamicRenderer 描述更新为 "json-render + Ant Design 混合渲染"（当前描述为纯自定义）
+- [x] `CLAUDE.md`：React 版本描述从 "React 18" 更新为 "React 19"（实际 package.json 为 `^19.2.4`）
+- [x] `CLAUDE.md`：DynamicRenderer 描述更新为 "json-render + Ant Design 混合渲染"（当前描述为纯自定义）
 - [ ] 在 `docs/` 下记录 json-render 集成方式（Sprint 1 遗留的 ⏭️ 项）
 
 ---

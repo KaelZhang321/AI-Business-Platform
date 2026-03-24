@@ -1,22 +1,34 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Literal, TypedDict
+import logging
+from typing import Any, TypedDict
 from uuid import uuid4
 
+import httpx
 from langgraph.graph import END, StateGraph
 
-from app.models.schemas import ChatRequest, ChatResponse, IntentType
+from app.core.config import settings
+from app.models.schemas import (
+    ChatRequest,
+    ChatResponse,
+    IntentResult,
+    IntentType,
+    SubIntentType,
+)
 from app.services.dynamic_ui_service import DynamicUIService
 from app.services.intent_classifier import IntentClassifier
 from app.services.llm_service import LLMService
 from app.services.rag_service import RAGService
 from app.services.text2sql_service import Text2SQLService
 
+logger = logging.getLogger(__name__)
+
 
 class ChatState(TypedDict, total=False):
     request: dict[str, Any]
     intent: IntentType | None
+    sub_intent: SubIntentType | None
     response_text: str
     ui_spec: dict[str, Any] | None
     sources: list[dict[str, Any]]
@@ -39,6 +51,7 @@ class ChatWorkflow:
         self._text2sql_service = text2sql_service or Text2SQLService()
         self._dynamic_ui = dynamic_ui or DynamicUIService()
         self._llm_service = llm_service or LLMService()
+        self._http = httpx.AsyncClient(timeout=15)
         self._graph = self._build_graph()
 
     def _build_graph(self):
@@ -81,7 +94,11 @@ class ChatWorkflow:
 
         if event_type == "on_node_end" and name == "classify":
             intent = state.get("intent", IntentType.CHAT)
-            payload = {"intent": intent.value if isinstance(intent, IntentType) else intent}
+            sub_intent = state.get("sub_intent", SubIntentType.GENERAL)
+            payload = {
+                "intent": intent.value if isinstance(intent, IntentType) else intent,
+                "sub_intent": sub_intent.value if isinstance(sub_intent, SubIntentType) else sub_intent,
+            }
             yield self._sse("intent", payload)
         elif event_type == "on_node_end" and name in {"knowledge", "query", "task", "chat"}:
             text = state.get("response_text", "")
@@ -100,6 +117,7 @@ class ChatWorkflow:
         return {
             "request": request.model_dump(),
             "intent": None,
+            "sub_intent": None,
             "response_text": "",
             "ui_spec": None,
             "sources": [],
@@ -107,8 +125,8 @@ class ChatWorkflow:
 
     async def _classify_intent(self, state: ChatState) -> dict[str, Any]:
         req = ChatRequest(**state["request"])
-        intent = await self._intent_classifier.classify(req.message, req.context)
-        return {"intent": intent}
+        result: IntentResult = await self._intent_classifier.classify(req.message, req.context)
+        return {"intent": result.intent, "sub_intent": result.sub_intent}
 
     async def _handle_knowledge(self, state: ChatState) -> dict[str, Any]:
         req = ChatRequest(**state["request"])
@@ -132,12 +150,48 @@ class ChatWorkflow:
         return {"response_text": result.explanation, "ui_spec": ui_spec, "sources": sources}
 
     async def _handle_task(self, state: ChatState) -> dict[str, Any]:
+        """调用业务编排层获取用户待办任务。"""
         req = ChatRequest(**state["request"])
-        return {
-            "response_text": f"任务中心暂未开放自动操作，请前往工作台手动处理（用户 {req.user_id}）。",
-            "ui_spec": None,
-            "sources": [],
-        }
+        tasks: list[dict[str, Any]] = []
+        try:
+            url = f"{settings.business_server_url}/api/v1/tasks/aggregate"
+            token = None
+            if req.context and isinstance(req.context, dict):
+                token = req.context.get("token")
+            headers: dict[str, str] = {}
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+            resp = await self._http.get(
+                url,
+                params={"userId": req.user_id, "page": 1, "size": 20},
+                headers=headers,
+            )
+            if resp.status_code == 200:
+                body = resp.json()
+                data = body.get("data", body)
+                if isinstance(data, dict) and "records" in data:
+                    tasks = data["records"]
+                elif isinstance(data, list):
+                    tasks = data
+        except Exception as exc:
+            logger.warning("Failed to fetch tasks from business server: %s", exc)
+
+        if tasks:
+            count = len(tasks)
+            response_text = f"为您查询到 {count} 条待办任务："
+            for i, t in enumerate(tasks[:5], 1):
+                title = t.get("title", "未命名任务")
+                status = t.get("status", "")
+                source = t.get("sourceSystem", "")
+                response_text += f"\n{i}. [{source}] {title}（{status}）"
+            if count > 5:
+                response_text += f"\n...还有 {count - 5} 条"
+            ui_spec = await self._dynamic_ui.generate_ui_spec("task", tasks)
+        else:
+            response_text = "暂无待办任务，您的待办清单是空的。"
+            ui_spec = None
+
+        return {"response_text": response_text, "ui_spec": ui_spec, "sources": []}
 
     async def _handle_chat(self, state: ChatState) -> dict[str, Any]:
         req = ChatRequest(**state["request"])

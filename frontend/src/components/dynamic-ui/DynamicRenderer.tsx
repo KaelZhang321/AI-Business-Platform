@@ -1,4 +1,4 @@
-import { useMemo, type ReactNode } from 'react'
+import { createContext, useCallback, useContext, useMemo, type ReactNode } from 'react'
 import {
   Alert,
   Button,
@@ -28,6 +28,7 @@ import {
   catalog,
   normalizeSpec,
   type UISpec,
+  type UIAction,
   type ListItem,
 } from './catalog'
 
@@ -36,6 +37,11 @@ echarts.use([
   GridComponent, TooltipComponent, LegendComponent, TitleComponent, DatasetComponent,
   CanvasRenderer,
 ])
+
+// ── Action Context ──
+
+export type ActionHandler = (action: UIAction, payload?: Record<string, unknown>) => void
+const ActionContext = createContext<ActionHandler | null>(null)
 
 // ── json-render 组件注册 ──
 
@@ -135,16 +141,28 @@ const JsonRenderUI = createRenderer(catalog, {
   Form: ({ element }: ComponentRenderProps<{
     fields: Array<{ name: string; label: string; type: string; required?: boolean; placeholder?: string; options?: Array<{ label: string; value: string }> }>
     submitLabel?: string
-  }>) => (
-    <Form layout="vertical">
-      {element.props.fields?.map((field) => (
-        <Form.Item key={field.name} label={field.label} required={field.required}>
-          {renderFormField(field)}
-        </Form.Item>
-      ))}
-      <Button type="primary">{element.props.submitLabel ?? '提交'}</Button>
-    </Form>
-  ),
+  }>) => {
+    const onAction = useContext(ActionContext)
+    const [form] = Form.useForm()
+    const handleFinish = (values: Record<string, unknown>) => {
+      onAction?.({ type: 'trigger_task', label: element.props.submitLabel ?? '提交', params: values }, values)
+    }
+    return (
+      <Form form={form} layout="vertical" onFinish={handleFinish}>
+        {element.props.fields?.map((field) => (
+          <Form.Item
+            key={field.name}
+            name={field.name}
+            label={field.label}
+            rules={field.required ? [{ required: true, message: `请输入${field.label}` }] : undefined}
+          >
+            {renderFormField(field)}
+          </Form.Item>
+        ))}
+        <Button type="primary" htmlType="submit">{element.props.submitLabel ?? '提交'}</Button>
+      </Form>
+    )
+  },
 
   Tag: ({ element }: ComponentRenderProps<{ label: string; color?: string }>) => (
     <Tag color={element.props.color ?? 'blue'}>{element.props.label}</Tag>
@@ -168,13 +186,28 @@ const JsonRenderUI = createRenderer(catalog, {
 interface DynamicRendererProps {
   spec: UISpec | unknown | null | undefined
   loading?: boolean
+  onAction?: ActionHandler
 }
 
-export default function DynamicRenderer({ spec, loading = false }: DynamicRendererProps) {
+export default function DynamicRenderer({ spec, loading = false, onAction }: DynamicRendererProps) {
   const normalizedSpec = useMemo(() => {
     if (!spec) return null
     return normalizeSpec(spec)
   }, [spec])
+
+  const handleAction: ActionHandler = useCallback(
+    (action, payload) => {
+      if (onAction) {
+        onAction(action, payload)
+        return
+      }
+      // 默认行为
+      if (action.type === 'open_link' && action.url) {
+        window.open(action.url, '_blank')
+      }
+    },
+    [onAction],
+  )
 
   if (!spec) return null
 
@@ -198,9 +231,11 @@ export default function DynamicRenderer({ spec, loading = false }: DynamicRender
   }
 
   return (
-    <div className="space-y-4">
-      <JsonRenderUI spec={normalizedSpec} />
-    </div>
+    <ActionContext.Provider value={handleAction}>
+      <div className="space-y-4">
+        <JsonRenderUI spec={normalizedSpec} />
+      </div>
+    </ActionContext.Provider>
   )
 }
 

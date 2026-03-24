@@ -1,8 +1,8 @@
 package com.lzke.ai.service;
 
-import com.lzke.ai.mapper.UserMapper;
-import com.lzke.ai.model.dto.UserPermission;
-import com.lzke.ai.model.entity.User;
+import com.lzke.ai.infrastructure.persistence.mapper.UserMapper;
+import com.lzke.ai.application.dto.UserPermission;
+import com.lzke.ai.domain.entity.User;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;

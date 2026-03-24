@@ -5,7 +5,7 @@ import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
 @SpringBootApplication
-@MapperScan({"com.lzke.ai.mapper", "com.lzke.ai.infrastructure.persistence.mapper"})
+@MapperScan("com.lzke.ai.infrastructure.persistence.mapper")
 public class AiBusinessApplication {
 
     public static void main(String[] args) {

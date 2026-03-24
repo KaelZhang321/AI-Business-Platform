@@ -10,7 +10,7 @@ AI业务中台 — 企业级AI平台，三层架构：React 前端 → Python AI
 
 ```
 AI业务中台/
-├── frontend/          # React 18 + Vite 5 + TypeScript 5 + Ant Design 5 + Tailwind CSS
+├── frontend/          # React 19 + Vite 5 + TypeScript 5 + Ant Design 5 + Tailwind CSS
 ├── ai-gateway/        # Python 3.11+ / FastAPI + LangChain 0.3 + LangGraph 0.2
 ├── business-server/   # Java 17 / Spring Boot 3.3.6 + MyBatis-Plus 3.5.9
 ├── docker/            # Docker Compose 基础设施编排（8个服务）
@@ -86,8 +86,8 @@ Vite 代理分层规则（`vite.config.ts`）：
 - **数据库Schema**: 6张核心表定义在 `docker/init-scripts/init-postgres.sql`，字段命名和结构严格对齐 `docs/AI业务中台_整体技术架构文档.md` 4.1节
 - **RAG策略**: 向量(Milvus BGE-M3) + 关键词(ES BM25) + RRF融合 + BGE-Reranker-v2重排序
 - **Text2SQL**: 基于 Vanna.ai，使用 Ollama 本地推理 + Milvus 向量存储
-- **动态UI**: AI网关返回 JSON Spec，前端通过自定义 `DynamicRenderer` 组件渲染 Card/Table/Metric/List/Form/Tag/Chart（后续 Sprint 集成 `@json-render/react`，当前需 React 19）
-- **适配器模式**: `BaseSystemAdapter` 抽象基类，子类实现 `fetchTasks()` / `executeAction()` 对接外部系统（ERP/CRM/OA）
+- **动态UI**: AI网关返回 JSON Spec，前端通过 `@json-render/react` 0.14 + Ant Design 混合渲染 Card/Table/Metric/List/Form/Tag/Chart 7种组件，catalog.ts 定义 Zod schema + actions
+- **适配器模式**: `BaseSystemAdapter` 抽象基类，子类实现 `fetchTasks()` / `executeAction()` 对接外部系统（ERP/CRM/OA/预约/业务中台/360）
 - **前端状态**: Zustand 4.x 全局状态 + TanStack Query 5.x 服务端状态
 - **Java数据层**: MyBatis-Plus 3.5.9 BaseMapper + 分页拦截器(PaginationInnerInterceptor) + 自动填充(MetaObjectHandler)
 - **统一响应**: 业务编排层所有接口使用 `ApiResponse<T>` 封装，分页使用 `PageResult<T>`
@@ -112,7 +112,7 @@ Vite 代理分层规则（`vite.config.ts`）：
 
 - **JDK 17 必须**: Lombok 1.18.36 不兼容 JDK 23+，`pom.xml` 已配置 `maven-compiler-plugin` annotationProcessorPaths
 - **MyBatis-Plus 3.5.9**: 分页插件需要 `mybatis-plus-jsqlparser` 独立依赖
-- **React 18**: `@json-render/react` 需 React 19，当前已移除，使用自定义 DynamicRenderer
+- **React 19**: 已升级至 React 19，`@json-render/react` 0.14 已集成
 
 ## Reference Documents
 

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import re
 from pathlib import Path
@@ -31,6 +30,7 @@ class Text2SQLService:
     def __init__(self):
         self._vn = None
         self._dynamic_ui = DynamicUIService()
+        self._pool: asyncpg.Pool | None = None
 
     def _get_vanna(self):
         """懒加载 Vanna 实例"""
@@ -52,7 +52,7 @@ class Text2SQLService:
     async def query(self, question: str, database: str = "default") -> Text2SQLResponse:
         """将自然语言问题转为SQL并执行"""
         vn = self._get_vanna()
-        sql = vn.ask(question)
+        sql = await asyncio.to_thread(vn.ask, question)
         sanitized_sql = self._sanitize_sql(sql)
         rows = await self._execute_sql(sanitized_sql, database)
         ui_spec = await self._dynamic_ui.generate_ui_spec("query", rows, {"question": question})
@@ -63,16 +63,19 @@ class Text2SQLService:
             chart_spec=ui_spec,
         )
 
+    async def _get_pool(self) -> asyncpg.Pool:
+        if self._pool is None:
+            self._pool = await asyncpg.create_pool(dsn=settings.database_url, min_size=1, max_size=5)
+        return self._pool
+
     async def _execute_sql(self, sql: str, database: str) -> list[dict]:
-        conn = await asyncpg.connect(dsn=settings.database_url)
-        try:
+        pool = await self._get_pool()
+        async with pool.acquire() as conn:
             records = await asyncio.wait_for(
                 conn.fetch(sql),
                 timeout=settings.text2sql_timeout_seconds,
             )
             return [dict(record) for record in records]
-        finally:
-            await conn.close()
 
     def _sanitize_sql(self, sql: str) -> str:
         if not sql:
@@ -95,7 +98,7 @@ class Text2SQLService:
         """训练：导入Schema和问答对"""
         vn = self._get_vanna()
         for item in training_data:
-            vn.train(question=item["question"], sql=item["sql"])
+            await asyncio.to_thread(vn.train, question=item["question"], sql=item["sql"])
         return {"status": "ok", "count": len(training_data)}
 
     async def train_from_schema(self, sql_file: str | None = None) -> dict:
@@ -127,7 +130,7 @@ class Text2SQLService:
         trained = 0
         for ddl in ddl_statements:
             try:
-                vn.train(ddl=ddl)
+                await asyncio.to_thread(vn.train, ddl=ddl)
                 trained += 1
             except Exception as exc:
                 logger.warning("训练 DDL 失败: %s — %s", ddl[:60], exc)

@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL"
+             xmlns:flowable="http://flowable.org/bpmn"
+             targetNamespace="http://lzke.com/ai/workflow">
+
+    <process id="generalApproval" name="通用审批流程" isExecutable="true">
+
+        <!-- 开始事件 -->
+        <startEvent id="start" name="发起审批"/>
+
+        <!-- 提交人填写 -->
+        <sequenceFlow id="flow1" sourceRef="start" targetRef="submitTask"/>
+
+        <userTask id="submitTask" name="提交申请"
+                  flowable:assignee="${initiator}">
+            <documentation>申请人提交审批内容</documentation>
+        </userTask>
+
+        <!-- 主管审批 -->
+        <sequenceFlow id="flow2" sourceRef="submitTask" targetRef="managerApproval"/>
+
+        <userTask id="managerApproval" name="主管审批"
+                  flowable:candidateGroups="manager">
+            <documentation>部门主管审批</documentation>
+        </userTask>
+
+        <!-- 排他网关：审批结果 -->
+        <sequenceFlow id="flow3" sourceRef="managerApproval" targetRef="approvalGateway"/>
+
+        <exclusiveGateway id="approvalGateway" name="审批结果"/>
+
+        <!-- 通过 → 结束 -->
+        <sequenceFlow id="flow4" sourceRef="approvalGateway" targetRef="approvedEnd">
+            <conditionExpression>${approved == true}</conditionExpression>
+        </sequenceFlow>
+
+        <!-- 驳回 → 回到提交 -->
+        <sequenceFlow id="flow5" sourceRef="approvalGateway" targetRef="submitTask">
+            <conditionExpression>${approved == false}</conditionExpression>
+        </sequenceFlow>
+
+        <endEvent id="approvedEnd" name="审批通过"/>
+
+    </process>
+</definitions>

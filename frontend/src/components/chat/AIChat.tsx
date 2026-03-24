@@ -8,8 +8,13 @@ import {
   ComposerPrimitive,
   MessagePrimitive,
 } from '@assistant-ui/react'
+import Markdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
+import rehypeHighlight from 'rehype-highlight'
+import 'highlight.js/styles/github.css'
 import type { Source } from '../../types'
 import DynamicRenderer from '../dynamic-ui/DynamicRenderer'
+import type { UIAction } from '../dynamic-ui/catalog'
 import { useAppStore } from '../../stores/useAppStore'
 
 const { Text } = Typography
@@ -211,7 +216,44 @@ export default function AIChat({ onClose }: AIChatProps) {
                   AssistantMessage: () => (
                     <MessagePrimitive.Root className="mb-3 flex justify-start">
                       <div className="inline-block px-3 py-2 rounded-lg max-w-[85%] bg-gray-100 text-gray-800">
-                        <MessagePrimitive.Content />
+                        <MessagePrimitive.Content
+                          components={{
+                            Text: ({ text }) => (
+                              <Markdown
+                                remarkPlugins={[remarkGfm]}
+                                rehypePlugins={[rehypeHighlight]}
+                                components={{
+                                  pre: ({ children }) => (
+                                    <pre className="overflow-x-auto rounded bg-gray-800 p-3 text-sm my-2">
+                                      {children}
+                                    </pre>
+                                  ),
+                                  code: ({ children, className }) =>
+                                    className ? (
+                                      <code className={className}>{children}</code>
+                                    ) : (
+                                      <code className="bg-gray-200 px-1 rounded text-sm">{children}</code>
+                                    ),
+                                  table: ({ children }) => (
+                                    <table className="border-collapse border border-gray-300 my-2 w-full text-sm">
+                                      {children}
+                                    </table>
+                                  ),
+                                  th: ({ children }) => (
+                                    <th className="border border-gray-300 bg-gray-50 px-2 py-1 text-left">
+                                      {children}
+                                    </th>
+                                  ),
+                                  td: ({ children }) => (
+                                    <td className="border border-gray-300 px-2 py-1">{children}</td>
+                                  ),
+                                }}
+                              >
+                                {text}
+                              </Markdown>
+                            ),
+                          }}
+                        />
                       </div>
                     </MessagePrimitive.Root>
                   ),
@@ -244,7 +286,21 @@ export default function AIChat({ onClose }: AIChatProps) {
         {uiSpec != null ? (
           <div>
             <Text strong>智能 UI</Text>
-            <DynamicRenderer spec={uiSpec} />
+            <DynamicRenderer
+              spec={uiSpec}
+              onAction={(action: UIAction, payload?: Record<string, unknown>) => {
+                if (action.type === 'trigger_task' && payload) {
+                  const summary = Object.entries(payload)
+                    .map(([k, v]) => `${k}: ${v}`)
+                    .join(', ')
+                  streamChat(`请帮我创建任务：${summary}`)
+                } else if (action.type === 'view_detail' && action.params?.id) {
+                  streamChat(`查看任务详情：${action.params.id}`)
+                } else if (action.type === 'open_link' && action.url) {
+                  window.open(action.url, '_blank')
+                }
+              }}
+            />
           </div>
         ) : null}
         {sources.length > 0 && (

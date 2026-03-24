@@ -113,9 +113,9 @@ services:
     container_name: ai-platform-clickhouse
     restart: unless-stopped
     environment:
-      CLICKHOUSE_DB: ai_platform_logs
-      CLICKHOUSE_USER: default
-      CLICKHOUSE_PASSWORD: clickhouse_dev
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB:-ai_platform_logs}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-default}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-clickhouse_dev}
     ports:
       - "8123:8123"
       - "9009:9000"
@@ -135,6 +135,97 @@ services:
       - "11434:11434"
     volumes:
       - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:11434/api/tags || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # ── S4-4: Neo4j 图数据库（GraphRAG 预留）──────────────────
+  neo4j:
+    image: neo4j:5-community
+    container_name: ai-platform-neo4j
+    restart: unless-stopped
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-neo4j_dev}
+      NEO4J_PLUGINS: '["apoc"]'
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - neo4j_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -u neo4j -p ${NEO4J_PASSWORD:-neo4j_dev} 'RETURN 1' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # ── S4-5: Prometheus 监控 ──────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: ai-platform-prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=15d"
+    depends_on:
+      - postgres
+
+  # ── S4-5: Grafana 可视化 ───────────────────────────────
+  grafana:
+    image: grafana/grafana:10.4.0
+    container_name: ai-platform-grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin_dev}
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+
+  # ── S4-6: Nginx 反向代理 ───────────────────────────────
+  nginx:
+    image: nginx:1.25-alpine
+    container_name: ai-platform-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - postgres
+      - redis
+
+  # ── S4-2: Nacos 注册/配置中心 ──────────────────────────
+  nacos:
+    image: nacos/nacos-server:v2.3.1
+    container_name: ai-platform-nacos
+    restart: unless-stopped
+    environment:
+      MODE: standalone
+      SPRING_DATASOURCE_PLATFORM: ""
+      NACOS_AUTH_ENABLE: "true"
+      NACOS_AUTH_TOKEN: ${NACOS_AUTH_TOKEN:-c2VjcmV0VG9rZW5Gb3JOYWNvc0RldkVudmlyb25tZW50}
+      NACOS_AUTH_IDENTITY_KEY: serverIdentity
+      NACOS_AUTH_IDENTITY_VALUE: security
+    ports:
+      - "8848:8848"
+      - "9848:9848"
+    volumes:
+      - nacos_data:/home/nacos/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8848/nacos/actuator/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
 
 volumes:
   postgres_data:
@@ -145,3 +236,7 @@ volumes:
   minio_data:
   clickhouse_data:
   ollama_data:
+  neo4j_data:
+  prometheus_data:
+  grafana_data:
+  nacos_data:

@@ -71,19 +71,8 @@ class DynamicUIService:
             column: [value for value in (row.get(column) for row in rows) if isinstance(value, (int, float))]
             for column in columns
         }
-        metrics = [
-            {
-                "type": "Metric",
-                "props": {
-                    "label": column,
-                    "value": f"{mean(values):.2f}",
-                    "format": "number",
-                },
-            }
-            for column, values in numeric_fields.items()
-            if values
-        ][:3]
 
+        metrics = self._build_metrics(numeric_fields)
         chart_spec = self._build_chart(columns, rows, numeric_fields)
 
         children: list[dict[str, Any]] = []
@@ -125,6 +114,11 @@ class DynamicUIService:
                 "status": task.get("status", "pending"),
                 "tags": [
                     {"label": task.get("priority", "普通"), "color": self._priority_color(task.get("priority", ""))},
+                    *(
+                        [{"label": task.get("sourceSystem", ""), "color": "cyan"}]
+                        if task.get("sourceSystem")
+                        else []
+                    ),
                 ],
                 "assignee": task.get("owner"),
                 "dueDate": task.get("deadline"),
@@ -136,7 +130,10 @@ class DynamicUIService:
             "props": {
                 "title": "最新待办",
                 "subtitle": f"共 {len(items)} 条待办",
-                "actions": [{"type": "refresh", "label": "刷新待办"}],
+                "actions": [
+                    {"type": "refresh", "label": "刷新待办"},
+                    {"type": "trigger_task", "label": "批量处理"},
+                ],
             },
             "children": [
                 {
@@ -150,7 +147,8 @@ class DynamicUIService:
                                 "options": [
                                     {"label": "全部", "value": "all"},
                                     {"label": "待处理", "value": "pending"},
-                                    {"label": "进行中", "value": "processing"},
+                                    {"label": "进行中", "value": "in_progress"},
+                                    {"label": "已完成", "value": "completed"},
                                 ],
                             },
                             {
@@ -158,9 +156,12 @@ class DynamicUIService:
                                 "label": "来源系统",
                                 "type": "select",
                                 "options": [
+                                    {"label": "全部", "value": "all"},
                                     {"label": "ERP", "value": "erp"},
                                     {"label": "CRM", "value": "crm"},
                                     {"label": "OA", "value": "oa"},
+                                    {"label": "预约系统", "value": "reservation"},
+                                    {"label": "360系统", "value": "system360"},
                                 ],
                             },
                         ],
@@ -170,9 +171,45 @@ class DynamicUIService:
                 {
                     "type": "List",
                     "props": {"title": "任务列表", "items": items, "emptyText": "暂无待办"},
-                }
+                },
             ],
         }
+
+    # ── 指标构建 ──
+
+    @staticmethod
+    def _build_metrics(numeric_fields: dict[str, list[float]]) -> list[dict[str, Any]]:
+        """为数值字段生成多种聚合指标（sum/avg/count）。"""
+        metrics: list[dict[str, Any]] = []
+        for column, values in numeric_fields.items():
+            if not values:
+                continue
+            total = sum(values)
+            avg = mean(values)
+            count = len(values)
+
+            # 根据值的分布选择最有意义的聚合方式
+            if count > 1 and total != avg:
+                # 有多行数据，展示合计
+                metrics.append({
+                    "type": "Metric",
+                    "props": {"label": f"{column} (合计)", "value": f"{total:,.2f}", "format": "number"},
+                })
+                metrics.append({
+                    "type": "Metric",
+                    "props": {"label": f"{column} (均值)", "value": f"{avg:,.2f}", "format": "number"},
+                })
+            else:
+                metrics.append({
+                    "type": "Metric",
+                    "props": {"label": column, "value": f"{total:,.2f}", "format": "number"},
+                })
+
+            if len(metrics) >= 4:
+                break
+        return metrics
+
+    # ── 图表构建 ──
 
     def _build_chart(
         self,
@@ -193,33 +230,104 @@ class DynamicUIService:
         if not any(isinstance(v, (int, float)) for v in values):
             return None
 
-        option = {
-            "tooltip": {"trigger": "axis"},
-            "legend": {"data": [first_numeric]},
-            "xAxis": {"type": "category", "data": categories},
-            "yAxis": {"type": "value"},
-            "series": [
-                {
-                    "name": first_numeric,
-                    "type": "bar",
-                    "data": values,
-                }
-            ],
-        }
+        chart_kind = self._detect_chart_type(categories, values, rows)
+        option = self._build_chart_option(chart_kind, categories, values, first_numeric)
+
         return {
             "type": "Chart",
             "props": {
-                "title": f"{first_numeric} 趋势",
-                "kind": "bar",
+                "title": f"{first_numeric} 分布",
+                "kind": chart_kind,
                 "option": option,
             },
         }
 
     @staticmethod
+    def _detect_chart_type(
+        categories: list[str],
+        values: list[Any],
+        rows: list[dict[str, Any]],
+    ) -> str:
+        """根据数据特征自动选择最合适的图表类型。"""
+        num_categories = len(set(categories))
+        num_rows = len(rows)
+
+        # 类别较少（<=6）且数据行数较少 → 饼图
+        if num_categories <= 6 and num_rows <= 10:
+            return "pie"
+
+        # 类别是时间序列特征（包含年/月/日/季等关键词） → 折线图
+        time_keywords = ["年", "月", "日", "季", "周", "2024", "2025", "2026", "Q1", "Q2", "Q3", "Q4"]
+        if any(any(kw in cat for kw in time_keywords) for cat in categories[:3]):
+            return "line"
+
+        # 默认柱状图
+        return "bar"
+
+    @staticmethod
+    def _build_chart_option(
+        kind: str,
+        categories: list[str],
+        values: list[Any],
+        series_name: str,
+    ) -> dict[str, Any]:
+        """根据图表类型生成 ECharts option。"""
+        if kind == "pie":
+            return {
+                "tooltip": {"trigger": "item"},
+                "legend": {"orient": "vertical", "left": "left"},
+                "series": [
+                    {
+                        "name": series_name,
+                        "type": "pie",
+                        "radius": "60%",
+                        "data": [
+                            {"name": cat, "value": val}
+                            for cat, val in zip(categories, values)
+                            if isinstance(val, (int, float))
+                        ],
+                    }
+                ],
+            }
+
+        if kind == "line":
+            return {
+                "tooltip": {"trigger": "axis"},
+                "legend": {"data": [series_name]},
+                "xAxis": {"type": "category", "data": categories},
+                "yAxis": {"type": "value"},
+                "series": [
+                    {
+                        "name": series_name,
+                        "type": "line",
+                        "data": values,
+                        "smooth": True,
+                    }
+                ],
+            }
+
+        # bar (default)
+        return {
+            "tooltip": {"trigger": "axis"},
+            "legend": {"data": [series_name]},
+            "xAxis": {"type": "category", "data": categories},
+            "yAxis": {"type": "value"},
+            "series": [
+                {
+                    "name": series_name,
+                    "type": "bar",
+                    "data": values,
+                }
+            ],
+        }
+
+    @staticmethod
     def _priority_color(priority: str) -> str:
         priority_value = (priority or "").lower()
-        if priority_value.startswith("h"):
+        if priority_value in ("urgent", "紧急"):
             return "red"
-        if priority_value.startswith("l"):
+        if priority_value in ("high", "高"):
+            return "volcano"
+        if priority_value in ("low", "低"):
             return "blue"
         return "orange"

@@ -1,0 +1,21 @@
+spring:
+  application:
+    name: ai-business-server
+  cloud:
+    nacos:
+      # 服务发现
+      discovery:
+        server-addr: ${NACOS_SERVER_ADDR:localhost:8848}
+        namespace: ${NACOS_NAMESPACE:}
+        enabled: ${NACOS_ENABLED:false}
+      # 配置中心
+      config:
+        server-addr: ${NACOS_SERVER_ADDR:localhost:8848}
+        namespace: ${NACOS_NAMESPACE:}
+        file-extension: yml
+        enabled: ${NACOS_ENABLED:false}
+        # 共享配置
+        shared-configs:
+          - data-id: common.yml
+            group: DEFAULT_GROUP
+            refresh: true

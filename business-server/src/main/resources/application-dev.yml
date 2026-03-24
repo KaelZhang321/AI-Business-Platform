@@ -16,13 +16,41 @@ spring:
     username: admin
     password: admin_dev
 
+# Flowable 工作流引擎 (S4-1)
+flowable:
+  database-schema-update: true
+  async-executor-activate: true
+
+# Actuator + Prometheus (S4-5)
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  metrics:
+    export:
+      prometheus:
+        enabled: true
+    tags:
+      application: ${spring.application.name:ai-business-server}
+
 logging:
   level:
     com.lzke.ai: DEBUG
     org.springframework.web: INFO
+    org.flowable: INFO
 
 app:
   security:
     jwt:
       secret: dev_change_me_super_secret_key_1234567890
       expiration: 86400000
+  minio:
+    endpoint: http://localhost:9000
+    access-key: minioadmin
+    secret-key: minioadmin_dev
+    bucket: ai-platform-docs
+  clickhouse:
+    url: jdbc:clickhouse://localhost:8123/ai_platform_logs
+    username: default
+    password: ""
