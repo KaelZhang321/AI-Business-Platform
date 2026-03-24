@@ -23,15 +23,18 @@ def _get_http_client() -> httpx.AsyncClient:
 
 
 def _get_rag_service():
-    """从 FastAPI app.state 获取共享 RAGService，回退为新建实例。"""
+    """从 FastAPI app.state 获取共享 RAGService，回退为缓存单例。"""
     try:
         from app.main import app
         if hasattr(app.state, "rag_service"):
             return app.state.rag_service
     except Exception:
         pass
-    from app.services.rag_service import RAGService
-    return RAGService()
+    # 回退：缓存到函数属性，避免每次调用创建新实例
+    if not hasattr(_get_rag_service, "_fallback"):
+        from app.services.rag_service import RAGService
+        _get_rag_service._fallback = RAGService()
+    return _get_rag_service._fallback
 
 
 def _get_text2sql_service():
