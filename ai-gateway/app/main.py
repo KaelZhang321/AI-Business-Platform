@@ -49,7 +49,10 @@ async def lifespan(app: FastAPI):
     try:
         from elasticsearch import AsyncElasticsearch
 
-        es_client = AsyncElasticsearch(settings.elasticsearch_url)
+        es_client = AsyncElasticsearch(
+            settings.elasticsearch_url,
+            basic_auth=(settings.elasticsearch_username, settings.elasticsearch_password),
+        )
         exists = await es_client.indices.exists(index=settings.elasticsearch_index)
         _service_status["elasticsearch"] = "ok" if exists else "index_missing"
         logger.info("Elasticsearch 连接成功, index '%s' 存在: %s", settings.elasticsearch_index, exists)

@@ -23,6 +23,8 @@ class Settings(BaseSettings):
 
     # Elasticsearch
     elasticsearch_url: str = "http://localhost:9200"
+    elasticsearch_username: str = "elastic"
+    elasticsearch_password: str = "elastic_dev"
     elasticsearch_index: str = "knowledge_documents"
 
     # GraphRAG融合权重

@@ -35,7 +35,10 @@ class RAGService:
 
     def _es_client(self) -> AsyncElasticsearch:
         if self._es is None:
-            self._es = AsyncElasticsearch(settings.elasticsearch_url)
+            self._es = AsyncElasticsearch(
+                settings.elasticsearch_url,
+                basic_auth=(settings.elasticsearch_username, settings.elasticsearch_password),
+            )
         return self._es
 
     def _neo4j_client(self):

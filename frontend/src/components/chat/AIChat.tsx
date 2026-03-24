@@ -105,6 +105,16 @@ export default function AIChat({ onClose }: AIChatProps) {
     setSources([])
     setIntent(null)
 
+    // 首字节超时 60s，读取间隔超时 30s
+    const FIRST_BYTE_TIMEOUT = 60_000
+    const READ_TIMEOUT = 30_000
+
+    const scheduleTimeout = (ms: number, reason: string) => {
+      return setTimeout(() => controller.abort(reason), ms)
+    }
+
+    let timer = scheduleTimeout(FIRST_BYTE_TIMEOUT, 'AI 响应超时，请重试')
+
     try {
       const body = {
         message: userText,
@@ -130,15 +140,21 @@ export default function AIChat({ onClose }: AIChatProps) {
 
       while (true) {
         const { value, done } = await reader.read()
+        clearTimeout(timer)
         if (done) break
+        timer = scheduleTimeout(READ_TIMEOUT, 'AI 响应中断，请重试')
         bufferRef.current += decoder.decode(value, { stream: true })
         bufferRef.current = processEventBuffer(bufferRef.current)
       }
     } catch (error) {
       if (!controller.signal.aborted) {
         message.error((error as Error).message || 'AI 对话失败')
+      } else {
+        const reason = typeof controller.signal.reason === 'string' ? controller.signal.reason : 'AI 对话超时'
+        message.warning(reason)
       }
     } finally {
+      clearTimeout(timer)
       setIsStreaming(false)
       abortControllerRef.current = null
     }

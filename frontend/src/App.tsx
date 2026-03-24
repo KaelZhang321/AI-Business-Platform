@@ -3,6 +3,7 @@ import { createMongoAbility } from '@casl/ability'
 import type { AppAbility } from './abilities'
 import MainLayout from './layouts/MainLayout'
 import ProtectedRoute from './components/auth/ProtectedRoute'
+import ErrorBoundary from './components/ErrorBoundary'
 import { AbilityContext } from './components/auth/Can'
 import { useAppStore } from './stores/useAppStore'
 import Login from './pages/Login'
@@ -16,6 +17,7 @@ function App() {
   const ability = useAppStore((s) => s.ability)
 
   return (
+    <ErrorBoundary>
     <AbilityContext.Provider value={ability ?? defaultAbility}>
     <Routes>
       <Route path="/login" element={<Login />} />
@@ -35,6 +37,7 @@ function App() {
       </Route>
     </Routes>
     </AbilityContext.Provider>
+    </ErrorBoundary>
   )
 }
 
