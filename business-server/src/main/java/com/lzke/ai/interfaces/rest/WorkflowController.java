@@ -7,6 +7,7 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -22,6 +23,7 @@ public class WorkflowController {
 
     @Operation(summary = "部署流程定义")
     @PostMapping("/deploy")
+    @PreAuthorize("hasRole('ADMIN')")
     @RateLimit(permits = 10, period = 60)
     public ApiResponse<Map<String, Object>> deploy(@RequestParam String resourceName) {
         return ApiResponse.ok(workflowService.deployProcess(resourceName));
@@ -35,6 +37,7 @@ public class WorkflowController {
 
     @Operation(summary = "启动流程实例")
     @PostMapping("/start")
+    @PreAuthorize("hasAnyRole('ADMIN', 'USER')")
     @RateLimit(permits = 50, period = 60)
     public ApiResponse<Map<String, Object>> startProcess(
             @RequestParam String processDefinitionKey,

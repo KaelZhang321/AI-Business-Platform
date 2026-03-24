@@ -52,34 +52,47 @@ def invalidate_semantic_cache(kb_version: int | None = None) -> int:
 
 
 async def start_cache_invalidation_listener() -> None:
-    """启动 RabbitMQ 消费者，监听 cache.invalidation 队列。"""
-    try:
-        connection = await aio_pika.connect_robust(settings.rabbitmq_url)
-        channel = await connection.channel()
-        queue = await channel.declare_queue("cache.invalidation", durable=True)
+    """启动 RabbitMQ 消费者，监听 cache.invalidation 队列（含指数退避重试）。"""
+    max_retries = 3
+    retry_delays = [5, 10, 20]  # 秒
 
-        async with queue.iterator() as queue_iter:
-            async for message in queue_iter:
-                async with message.process():
-                    try:
-                        body = json.loads(message.body.decode())
-                        event_type = body.get("type", "")
-                        action = body.get("action", "")
-                        category = body.get("category", "")
+    for attempt in range(max_retries + 1):
+        try:
+            connection = await aio_pika.connect_robust(settings.rabbitmq_url)
+            channel = await connection.channel()
+            queue = await channel.declare_queue("cache.invalidation", durable=True)
 
-                        if event_type == "knowledge":
-                            # 1. 清除内存 RAG 缓存
-                            cleared_rag = invalidate_rag_cache(category or None)
-                            # 2. 清除 Milvus 语义缓存
-                            kb_version = body.get("kb_version")
-                            cleared_sc = invalidate_semantic_cache(kb_version)
-                            logger.info(
-                                "缓存失效: type=%s, action=%s, category=%s, "
-                                "rag_cleared=%d, semantic_cache_cleared=%d",
-                                event_type, action, category,
-                                cleared_rag, cleared_sc,
-                            )
-                    except Exception as exc:
-                        logger.warning("处理缓存失效消息失败: %s", exc)
-    except Exception as exc:
-        logger.warning("缓存失效监听器启动失败（RabbitMQ 不可用）: %s", exc)
+            if attempt > 0:
+                logger.info("缓存失效监听器重连成功（第%d次重试）", attempt)
+
+            async with queue.iterator() as queue_iter:
+                async for message in queue_iter:
+                    async with message.process():
+                        try:
+                            body = json.loads(message.body.decode())
+                            event_type = body.get("type", "")
+                            action = body.get("action", "")
+                            category = body.get("category", "")
+
+                            if event_type == "knowledge":
+                                cleared_rag = invalidate_rag_cache(category or None)
+                                kb_version = body.get("kb_version")
+                                cleared_sc = invalidate_semantic_cache(kb_version)
+                                logger.info(
+                                    "缓存失效: type=%s, action=%s, category=%s, "
+                                    "rag_cleared=%d, semantic_cache_cleared=%d",
+                                    event_type, action, category,
+                                    cleared_rag, cleared_sc,
+                                )
+                        except Exception as exc:
+                            logger.warning("处理缓存失效消息失败: %s", exc)
+        except Exception as exc:
+            if attempt < max_retries:
+                delay = retry_delays[attempt]
+                logger.warning(
+                    "缓存失效监听器连接失败，%d秒后重试 (%d/%d): %s",
+                    delay, attempt + 1, max_retries, exc,
+                )
+                await asyncio.sleep(delay)
+            else:
+                logger.error("缓存失效监听器启动失败，已达最大重试次数: %s", exc)

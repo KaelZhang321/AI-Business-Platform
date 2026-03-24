@@ -373,10 +373,10 @@
 
 **现状**：CORS 通配符、URL 拼接注入、文件上传无类型校验、工作流端点无权限验证。
 
-- [ ] `SecurityConfig.java`：CORS `allowedOriginPatterns("*")` → 显式域名白名单
-- [ ] `BaseSystemAdapter.java`：URL 字符串拼接 → `UriComponentsBuilder` 安全构造
-- [ ] `StorageService.java`：文件上传新增白名单校验（pdf/docx/txt/md/csv）+ 大小限制（100MB）
-- [ ] `WorkflowController.java`：deploy/start 端点补充 `@PreAuthorize("hasRole('ADMIN')")` 权限
+- [x] `SecurityConfig.java`：CORS `allowedOriginPatterns("*")` → 显式域名白名单
+- [x] `BaseSystemAdapter.java`：URL 字符串拼接 → `UriComponentsBuilder` 安全构造
+- [x] `StorageService.java`：文件上传新增白名单校验（pdf/docx/txt/md/csv）+ 大小限制（100MB）
+- [x] `WorkflowController.java`：deploy/start 端点补充 `@PreAuthorize` 权限
 
 ### S6-2. Docker 安全加固 — P0
 
@@ -392,9 +392,9 @@
 
 **现状**：DynamicUIService 每次创建新 LLMService 实例、缓存监听无重试、配置无范围校验。
 
-- [ ] `dynamic_ui_service.py`：`_llm_generate_spec` 中 LLMService 改为懒加载单例
-- [ ] `cache_invalidation.py`：新增指数退避重试（最多3次，5/10/20秒间隔）
-- [ ] `config.py`：关键配置添加 `Field(ge=, le=)` 范围约束（权重/阈值/限制数）
+- [x] `dynamic_ui_service.py`：`_llm_generate_spec` 中 LLMService 改为懒加载单例
+- [x] `cache_invalidation.py`：新增指数退避重试（最多3次，5/10/20秒间隔）
+- [x] `config.py`：关键配置添加 `Field(ge=, le=)` 范围约束（权重/阈值/限制数）
 - [ ] `.env.example`：数据库 URL 改为 MySQL 驱动（与 config.py 默认值一致）
 
 ### S6-4. 前端 Error Boundary + 流式错误处理 — P0

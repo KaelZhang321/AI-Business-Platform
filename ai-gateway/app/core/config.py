@@ -1,3 +1,4 @@
+from pydantic import Field
 from pydantic_settings import BaseSettings
 
 
@@ -18,16 +19,16 @@ class Settings(BaseSettings):
     milvus_collection: str = "knowledge_chunks"
     milvus_vector_field: str = "embedding"
     milvus_output_fields: list[str] = ["doc_id", "title", "content", "doc_type", "metadata"]
-    milvus_search_limit: int = 20
+    milvus_search_limit: int = Field(20, ge=1, le=100)
 
     # Elasticsearch
     elasticsearch_url: str = "http://localhost:9200"
     elasticsearch_index: str = "knowledge_documents"
 
     # GraphRAG融合权重
-    rag_vector_weight: float = 0.4
-    rag_keyword_weight: float = 0.3
-    rag_graph_weight: float = 0.3
+    rag_vector_weight: float = Field(0.4, ge=0.0, le=1.0)
+    rag_keyword_weight: float = Field(0.3, ge=0.0, le=1.0)
+    rag_graph_weight: float = Field(0.3, ge=0.0, le=1.0)
 
     # Ollama
     ollama_base_url: str = "http://localhost:11434"
@@ -62,7 +63,7 @@ class Settings(BaseSettings):
     llm_ui_spec_enabled: bool = False
 
     # Intent classification
-    intent_confidence_threshold: float = 0.55
+    intent_confidence_threshold: float = Field(0.55, ge=0.0, le=1.0)
 
     # 业务编排层
     business_server_url: str = "http://localhost:8080"
