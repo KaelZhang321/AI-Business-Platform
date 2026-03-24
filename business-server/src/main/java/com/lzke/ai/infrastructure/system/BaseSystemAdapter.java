@@ -388,4 +388,25 @@ public abstract class BaseSystemAdapter {
     public int getFailureCount() {
         return failureCount.get();
     }
+
+    // ==================== 子类共享工具方法 ====================
+
+    /**
+     * 从 Map 中按优先级取第一个非 null 值
+     */
+    protected Object coalesce(Map<String, Object> map, String... keys) {
+        for (String key : keys) {
+            Object val = map.get(key);
+            if (val != null) return val;
+        }
+        return null;
+    }
+
+    /**
+     * 从 Map 中按优先级取第一个非 null 值并转为 String
+     */
+    protected String getString(Map<String, Object> map, String... keys) {
+        Object val = coalesce(map, keys);
+        return val != null ? val.toString() : null;
+    }
 }

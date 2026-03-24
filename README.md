@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Java](https://img.shields.io/badge/Java-17-blue.svg)](https://www.oracle.com/java/)
 [![Python](https://img.shields.io/badge/Python-3.11+-green.svg)](https://www.python.org/)
-[![React](https://img.shields.io/badge/React-18-cyan.svg)](https://reactjs.org/)
+[![React](https://img.shields.io/badge/React-19-cyan.svg)](https://react.dev/)
 
 ## 🎯 项目简介
 
@@ -23,7 +23,7 @@
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                         前端层 (Frontend)                        │
-│              React 18 + Vite + TypeScript + Ant Design          │
+│              React 19 + Vite + TypeScript + Ant Design          │
 │                         端口: 5173                                │
 └─────────────────────────────────────────────────────────────────┘
                                   │
@@ -102,7 +102,7 @@ business-server/
 
 | 层级 | 技术选型 | 说明 |
 |------|---------|------|
-| **前端** | React 18 + Vite 5 + TypeScript 5 | 现代前端工程化 |
+| **前端** | React 19 + Vite 5 + TypeScript 5 | 现代前端工程化 |
 | **UI框架** | Ant Design 5 + Tailwind CSS | 企业级组件库 |
 | **状态管理** | Zustand | 轻量级状态管理 |
 | **AI网关** | Python 3.11+ / FastAPI | 高性能异步API |

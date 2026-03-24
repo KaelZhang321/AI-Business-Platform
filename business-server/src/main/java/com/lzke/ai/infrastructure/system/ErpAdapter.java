@@ -100,18 +100,4 @@ public class ErpAdapter extends BaseSystemAdapter {
         };
     }
 
-    // ==================== 工具方法 ====================
-
-    private Object coalesce(Map<String, Object> map, String... keys) {
-        for (String key : keys) {
-            Object val = map.get(key);
-            if (val != null) return val;
-        }
-        return null;
-    }
-
-    private String getString(Map<String, Object> map, String... keys) {
-        Object val = coalesce(map, keys);
-        return val != null ? val.toString() : null;
-    }
 }
