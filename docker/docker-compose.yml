@@ -226,6 +226,7 @@ services:
       - "80:80"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - frontend_dist:/usr/share/nginx/html:ro
     depends_on:
       - mysql
       - redis
@@ -247,3 +248,9 @@ volumes:
   clickhouse_data:
   ollama_data:
   neo4j_data:
+  frontend_dist:
+
+networks:
+  default:
+    name: ai-platform-net
+    driver: bridge
