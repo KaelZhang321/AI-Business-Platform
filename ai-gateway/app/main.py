@@ -196,7 +196,7 @@ app.include_router(knowledge.router, prefix="/api/v1", tags=["知识库"])
 app.include_router(query.router, prefix="/api/v1", tags=["数据查询"])
 
 # MCP Server 路由
-from app.mcp.server import mcp_server  # noqa: E402
+from app.mcp_server.server import mcp_server  # noqa: E402
 
 app.mount("/mcp", mcp_server.sse_app())
 

@@ -6,7 +6,7 @@ import logging
 
 from fastmcp import FastMCP
 
-from app.mcp.tools import register_tools
+from app.mcp_server.tools import register_tools
 
 logger = logging.getLogger(__name__)
 
