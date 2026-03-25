@@ -85,7 +85,7 @@ class ChatWorkflow:
     async def stream(self, request: ChatRequest):
         initial_state = self._initial_state(request)
         async for event in self._graph.astream_events(initial_state, version="v1"):
-            yield from self._convert_event(request, event)
+            yield self._convert_event(request, event)
 
     def _convert_event(self, request: ChatRequest, event: dict[str, Any]):
         event_type: str | None = event.get("event")
