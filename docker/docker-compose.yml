@@ -240,3 +240,7 @@ volumes:
   prometheus_data:
   grafana_data:
   nacos_data:
+
+networks:
+  default:
+    name: ai-platform-net
