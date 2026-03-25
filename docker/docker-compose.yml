@@ -1,3 +1,9 @@
+# ═══════════════════════════════════════════════════════════
+# AI业务中台 — 本地基础设施（9 服务）
+# 云服务替代：RabbitMQ / Prometheus / Grafana / Nacos
+# 应用层配置保留，连接地址指向云服务器
+# ═══════════════════════════════════════════════════════════
+
 services:
   mysql:
     image: mysql:8.0
@@ -78,32 +84,6 @@ services:
         reservations:
           cpus: "1"
           memory: 4G
-
-  rabbitmq:
-    image: rabbitmq:3.12-management
-    container_name: ai-platform-rabbitmq
-    restart: unless-stopped
-    environment:
-      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER:-admin}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:-admin_dev}
-    ports:
-      - "127.0.0.1:5672:5672"
-      # 管理界面仅通过 Nginx 代理访问，不外网暴露
-    volumes:
-      - rabbitmq_data:/var/lib/rabbitmq
-    healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-    deploy:
-      resources:
-        limits:
-          cpus: "2"
-          memory: 4G
-        reservations:
-          cpus: "0.5"
-          memory: 512M
 
   elasticsearch:
     image: elasticsearch:8.11.0
@@ -210,7 +190,7 @@ services:
           cpus: "1"
           memory: 2G
 
-  # ── S4-4: Neo4j 图数据库（GraphRAG 预留）──────────────────
+  # ── Neo4j 图数据库（GraphRAG）────────────────────────────
   neo4j:
     image: neo4j:5-community
     container_name: ai-platform-neo4j
@@ -237,101 +217,7 @@ services:
           cpus: "0.5"
           memory: 1G
 
-  # ── S5-4: MySQL Exporter ─────────────────────────────
-  mysqld-exporter:
-    image: prom/mysqld-exporter:v0.15.1
-    container_name: ai-platform-mysqld-exporter
-    restart: unless-stopped
-    environment:
-      DATA_SOURCE_NAME: "root:${MYSQL_ROOT_PASSWORD:-ai_platform_dev}@(mysql:3306)/"
-    ports:
-      - "127.0.0.1:9104:9104"
-    depends_on:
-      mysql:
-        condition: service_healthy
-    deploy:
-      resources:
-        limits:
-          cpus: "0.5"
-          memory: 256M
-        reservations:
-          cpus: "0.1"
-          memory: 64M
-
-  # ── S5-4: Redis Exporter ───────────────────────────────
-  redis-exporter:
-    image: oliver006/redis_exporter:v1.66.0
-    container_name: ai-platform-redis-exporter
-    restart: unless-stopped
-    environment:
-      REDIS_ADDR: "redis://redis:6379"
-      REDIS_PASSWORD: ${REDIS_PASSWORD:-redis_dev}
-    ports:
-      - "127.0.0.1:9121:9121"
-    depends_on:
-      redis:
-        condition: service_healthy
-    deploy:
-      resources:
-        limits:
-          cpus: "0.5"
-          memory: 256M
-        reservations:
-          cpus: "0.1"
-          memory: 64M
-
-  # ── S4-5: Prometheus 监控 ──────────────────────────────
-  prometheus:
-    image: prom/prometheus:v2.51.0
-    container_name: ai-platform-prometheus
-    restart: unless-stopped
-    ports:
-      - "127.0.0.1:9090:9090"
-    volumes:
-      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - ./prometheus/alert-rules.yml:/etc/prometheus/alert-rules.yml:ro
-      - prometheus_data:/prometheus
-    command:
-      - "--config.file=/etc/prometheus/prometheus.yml"
-      - "--storage.tsdb.retention.time=15d"
-    depends_on:
-      - mysql
-    deploy:
-      resources:
-        limits:
-          cpus: "2"
-          memory: 4G
-        reservations:
-          cpus: "0.5"
-          memory: 512M
-
-  # ── S4-5: Grafana 可视化 ───────────────────────────────
-  grafana:
-    image: grafana/grafana:10.4.0
-    container_name: ai-platform-grafana
-    restart: unless-stopped
-    environment:
-      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin_dev}
-    ports:
-      - "127.0.0.1:3000:3000"
-    volumes:
-      - grafana_data:/var/lib/grafana
-      - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
-      - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
-      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
-    depends_on:
-      - prometheus
-    deploy:
-      resources:
-        limits:
-          cpus: "1"
-          memory: 2G
-        reservations:
-          cpus: "0.25"
-          memory: 256M
-
-  # ── S4-6: Nginx 反向代理 ───────────────────────────────
+  # ── Nginx 反向代理 ───────────────────────────────────────
   nginx:
     image: nginx:1.25-alpine
     container_name: ai-platform-nginx
@@ -352,47 +238,12 @@ services:
           cpus: "0.25"
           memory: 128M
 
-  # ── S4-2: Nacos 注册/配置中心 ──────────────────────────
-  nacos:
-    image: nacos/nacos-server:v2.3.1
-    container_name: ai-platform-nacos
-    restart: unless-stopped
-    environment:
-      MODE: standalone
-      SPRING_DATASOURCE_PLATFORM: ""
-      NACOS_AUTH_ENABLE: "true"
-      NACOS_AUTH_TOKEN: ${NACOS_AUTH_TOKEN:-c2VjcmV0VG9rZW5Gb3JOYWNvc0RldkVudmlyb25tZW50}
-      NACOS_AUTH_IDENTITY_KEY: serverIdentity
-      NACOS_AUTH_IDENTITY_VALUE: security
-    ports:
-      - "127.0.0.1:8848:8848"
-      - "127.0.0.1:9848:9848"
-    volumes:
-      - nacos_data:/home/nacos/data
-    healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8848/nacos/actuator/health || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-    deploy:
-      resources:
-        limits:
-          cpus: "2"
-          memory: 4G
-        reservations:
-          cpus: "0.5"
-          memory: 1G
-
 volumes:
   mysql_data:
   redis_data:
   milvus_data:
-  rabbitmq_data:
   es_data:
   minio_data:
   clickhouse_data:
   ollama_data:
   neo4j_data:
-  prometheus_data:
-  grafana_data:
-  nacos_data:
