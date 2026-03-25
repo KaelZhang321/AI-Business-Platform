@@ -410,11 +410,11 @@
 
 **现状**：适配器串行调用、HikariCP 未配置、AuditLogListener 无限重试、日期参数无校验。
 
-- [ ] `TaskApplicationService.java`：适配器串行 → `CompletableFuture` 并行调用
-- [ ] `application-dev.yml`：补充 HikariCP 连接池配置（max=20, min-idle=5）
-- [ ] `AuditLogListener.java`：`basicNack` 无限重试 → 3次重试后进死信队列
-- [ ] `AuditController.java`：日期参数 String → `@DateTimeFormat LocalDate` + 逻辑校验
-- [ ] `application.yml`：移除 `profiles.active: dev` 硬编码，由启动参数指定
+- [x] `TaskApplicationService.java`：适配器串行 → `CompletableFuture` 并行调用
+- [x] `application-dev.yml`：补充 HikariCP 连接池配置（max=20, min-idle=5）
+- [x] `AuditLogListener.java`：`basicNack` 无限重试 → 3次重试后进死信队列
+- [x] `AuditController.java`：日期参数 String → `@DateTimeFormat LocalDate` + 逻辑校验
+- [x] `application.yml`：移除 `profiles.active: dev` 硬编码，由启动参数指定
 
 ### S6-6. 前端 API 层与性能优化 — P1
 
@@ -428,8 +428,8 @@
 
 **现状**：Nginx 无 gzip/日志轮转、Prometheus 告警规则不完整。
 
-- [ ] `nginx.conf`：新增 gzip 压缩 + 增强日志格式（含 request_time/upstream_time）
-- [ ] `alert-rules.yml`：补充容器 CPU/内存、磁盘空间、RabbitMQ 队列深度告警规则
+- [x] `nginx.conf`：新增 gzip 压缩 + 增强日志格式（含 request_time/upstream_time）
+- [x] `alert-rules.yml`：补充容器 CPU/内存、磁盘空间、RabbitMQ 队列深度告警规则
 
 ---
 
