@@ -341,7 +341,7 @@ class RAGPipeline:
 ```python
 # Vanna.ai集成设计
 from vanna.ai import VannaAI
-from vanna.postgres import Postgres
+from vanna.mysql import MySQL
 
 class BIQueryService:
     """
@@ -357,7 +357,7 @@ class BIQueryService:
             model="qwen2.5",  # 本地Qwen2.5
             api_key=os.getenv("API_KEY")
         )
-        self.vanna.connect_to_postgres(**db_config)
+        self.vanna.connect_to_mysql(**db_config)
     
     def train(self, training_data: List[dict]):
         """训练：导入Schema和问答对"""
@@ -444,7 +444,7 @@ class DynamicUIGenerator:
 | **缓存** | Caffeine（L1本地）+ Redis（L2分布式） | 7.x | 三级缓存体系：L1 JVM本地缓存（Caffeine）+ L2分布式缓存（Redis）+ 语义缓存（Milvus向量相似度），详见优化方案09 |
 | **消息队列** | RabbitMQ | 3.12 | 异步任务处理 |
 | **工作流** | Flowable | 6.x | BPMN工作流引擎 |
-| **数据库** | PostgreSQL | 15+ | 业务数据存储 |
+| **数据库** | MySQL | 8.0+ | 业务数据存储 |
 | **日志分析** | ClickHouse | 23.x | 调用日志、成本分析 |
 | **API网关** | Spring Cloud Gateway | 4.x | 统一接入、限流、鉴权 |
 
@@ -496,7 +496,7 @@ class DynamicUIGenerator:
 │       │              │              │              │                 │
 │       ▼              ▼              ▼              ▼                 │
 │  ┌─────────────────────────────────────────────────────────┐       │
-│  │                      PostgreSQL                          │       │
+│  │                        MySQL                              │       │
 │  │         (用户数据 + 业务数据 + 元数据)                   │       │
 │  └─────────────────────────────────────────────────────────┘       │
 │                              │                                      │
@@ -567,14 +567,14 @@ class DynamicUIGenerator:
 
 | 数据类型 | 存储方案 | 保留策略 |
 |---------|---------|---------|
-| 业务元数据（用户、角色、知识库） | PostgreSQL | 永久保留，每日备份 |
+| 业务元数据（用户、角色、知识库） | MySQL | 永久保留，每日备份 |
 | 向量数据 | Milvus | 永久保留，随文档更新重建 |
 | 审计日志 | ClickHouse | 保留12个月，按月分区 |
 | API调用日志 | ClickHouse | 保留6个月，按周分区 |
 | 文档原始文件 | MinIO/OSS | 永久保留，低频存储 |
-| 会话数据 | PostgreSQL + Redis | PostgreSQL保留3个月，Redis缓存1周 |
+| 会话数据 | MySQL + Redis | MySQL保留3个月，Redis缓存1周 |
 | 缓存数据 | Redis | TTL自动过期（默认1小时） |
-| 工作流执行日志 | PostgreSQL | 保留6个月 |
+| 工作流执行日志 | MySQL | 保留6个月 |
 
 ---
 
@@ -619,7 +619,7 @@ class DynamicUIGenerator:
 │                         数据层                                        │
 │                                                                       │
 │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐        │
-│  │PostgreSQL│  │   Redis  │  │  Milvus  │  │ RabbitMQ │        │
+│  │  MySQL   │  │   Redis  │  │  Milvus  │  │ RabbitMQ │        │
 │  │主从(2节点)│  │ 哨兵(3节点)│  │集群(3节点)│  │镜像(2节点)│        │
 │  └──────────┘  └──────────┘  └──────────┘  └──────────┘        │
 │                                                                       │

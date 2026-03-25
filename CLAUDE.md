@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-AI业务中台 — 企业级AI平台，三层架构：React 前端 → Python AI网关 → Java 业务编排层，底层 Docker Compose 基础设施（13个服务）。
+AI业务中台 — 企业级AI平台，三层架构：React 前端 → Python AI网关 → Java 业务编排层，底层 Docker Compose 本地基础设施（9个服务）+ 云服务（RabbitMQ/Prometheus/Grafana/Nacos）。
 
 ## Repository Structure
 
@@ -41,8 +41,8 @@ cd frontend && npm install && npm run dev
 ```
                     ┌→ Nginx(:80) ─────────────────────────────┐
 前端(:5173) ──→ AI网关(:8000)     ──→ Ollama/Milvus/ES/ClickHouse/Neo4j
-             └→ 业务编排(:8080)   ──→ PostgreSQL/Redis/RabbitMQ/Nacos
-                    └→ 监控: Prometheus(:9090) + Grafana(:3000)
+             └→ 业务编排(:8080)   ──→ MySQL/Redis/☁RabbitMQ/☁Nacos
+                    └→ 监控: ☁Prometheus + ☁Grafana（云服务）
 ```
 
 Vite 代理分层规则（`vite.config.ts`）：
@@ -82,24 +82,24 @@ Vite 代理分层规则（`vite.config.ts`）：
 | 前端 (Vite) | 5173 |
 | AI网关 (FastAPI) | 8000 |
 | 业务编排 (Spring Boot) | 8080 |
-| PostgreSQL | 5432 |
+| MySQL | 3306 |
 | Redis | 6379 |
 | Milvus | 19530 |
-| RabbitMQ | 5672 / 15672(管理) |
 | Elasticsearch | 9200 |
-| MinIO | 9000 / 9001(控制台) |
+| MinIO | 9000 |
 | ClickHouse | 8123 |
 | Ollama | 11434 |
 | Neo4j | 7474 / 7687 |
-| Prometheus | 9090 |
-| Grafana | 3000 |
-| Nacos | 8848 / 9848 |
+| ☁ RabbitMQ | 云服务（应用配置指向云地址） |
+| ☁ Prometheus | 云服务（复用整体监控系统） |
+| ☁ Grafana | 云服务（复用整体监控系统） |
+| ☁ Nacos | 云服务（应用配置指向云地址） |
 
 ## Key Technical Decisions
 
-- **数据库Schema**: 12张表定义在 `docker/init-scripts/init-postgres.sql`（users/system_adapters/tasks/documents/conversations/audit_logs/api_keys/knowledge_bases/workflows/workflow_executions/agents/cost_logs），含 FK ON DELETE 策略，严格对齐架构文档 4.1节
+- **数据库Schema**: 12张表定义在 `docker/init-scripts/init-mysql.sql`（users/system_adapters/tasks/documents/conversations/audit_logs/api_keys/knowledge_bases/workflows/workflow_executions/agents/cost_logs），含 FK ON DELETE 策略，严格对齐架构文档 4.1节
 - **RAG策略**: 向量(Milvus BGE-M3) + 关键词(ES BM25) + RRF融合 + BGE-Reranker-v2重排序
-- **Text2SQL**: 基于 Vanna.ai，使用 Ollama 本地推理 + Milvus 向量存储
+- **Text2SQL**: 基于 Vanna.ai，使用火山引擎 ARK（OpenAI 兼容接口）推理 + Milvus 向量存储
 - **动态UI**: AI网关返回 JSON Spec，前端通过 `@json-render/react` 0.14 + Ant Design 混合渲染 Card/Table/Metric/List/Form/Tag/Chart 7种组件，catalog.ts 定义 Zod schema + actions
 - **适配器模式**: `BaseSystemAdapter` 抽象基类，子类实现 `fetchTasks()` / `executeAction()` 对接外部系统（ERP/CRM/OA/预约/业务中台/360）
 - **前端状态**: Zustand 4.x 全局状态 + TanStack Query 5.x 服务端状态

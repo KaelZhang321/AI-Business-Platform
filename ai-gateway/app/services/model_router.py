@@ -31,6 +31,11 @@ class ModelBackend:
             self._client = httpx.AsyncClient(base_url=self.base_url, timeout=120)
         return self._client
 
+    async def close(self) -> None:
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
+
 
 class ModelRouter:
     """按优先级选择后端，支持 fallback。"""
@@ -132,6 +137,11 @@ class ModelRouter:
                 delta = chunk.get("choices", [{}])[0].get("delta", {}).get("content")
                 if delta:
                     yield delta
+
+    async def close(self) -> None:
+        """关闭所有后端的 httpx 客户端。"""
+        for backend in self._backends:
+            await backend.close()
 
     @staticmethod
     def _build_headers(backend: ModelBackend) -> dict[str, str]:

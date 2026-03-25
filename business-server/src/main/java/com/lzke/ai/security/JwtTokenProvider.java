@@ -12,7 +12,6 @@ import javax.crypto.SecretKey;
 import java.time.Instant;
 import java.util.Date;
 import java.util.Map;
-import java.util.UUID;
 
 @Component
 @RequiredArgsConstructor
@@ -27,11 +26,11 @@ public class JwtTokenProvider {
         this.signingKey = Keys.hmacShaKeyFor(properties.getSecret().getBytes(StandardCharsets.UTF_8));
     }
 
-    public String generateToken(UUID userId, String username, String role) {
+    public String generateToken(String userId, String username, String role) {
         Instant now = Instant.now();
         Instant expiry = now.plusMillis(properties.getExpiration());
         return Jwts.builder()
-                .subject(userId.toString())
+                .subject(userId)
                 .claims(Map.of("username", username, "role", role, "type", "access"))
                 .issuedAt(Date.from(now))
                 .expiration(Date.from(expiry))
@@ -39,11 +38,11 @@ public class JwtTokenProvider {
                 .compact();
     }
 
-    public String generateRefreshToken(UUID userId, String username, String role) {
+    public String generateRefreshToken(String userId, String username, String role) {
         Instant now = Instant.now();
         Instant expiry = now.plusMillis(properties.getExpiration() * 7); // 7倍于access token
         return Jwts.builder()
-                .subject(userId.toString())
+                .subject(userId)
                 .claims(Map.of("username", username, "role", role, "type", "refresh"))
                 .issuedAt(Date.from(now))
                 .expiration(Date.from(expiry))

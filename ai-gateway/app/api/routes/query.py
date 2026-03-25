@@ -36,6 +36,6 @@ async def train(request: TrainRequest):
 
 @router.post("/query/train-schema", response_model=TrainResponse)
 async def train_from_schema():
-    """从 init-postgres.sql 自动导入表结构到 Vanna 训练"""
+    """从 init-mysql.sql 自动导入表结构到 Vanna 训练"""
     result = await text2sql_service.train_from_schema()
     return TrainResponse(status=result["status"], count=result["count"])

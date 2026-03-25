@@ -1,5 +1,6 @@
 package com.lzke.ai.config;
 
+import com.lzke.ai.config.FeatureFlagProperties;
 import com.lzke.ai.security.JwtAuthenticationFilter;
 import com.lzke.ai.security.JwtProperties;
 import lombok.RequiredArgsConstructor;
@@ -24,7 +25,7 @@ import java.util.List;
 
 @Configuration
 @EnableMethodSecurity
-@EnableConfigurationProperties(JwtProperties.class)
+@EnableConfigurationProperties({JwtProperties.class, FeatureFlagProperties.class})
 @RequiredArgsConstructor
 public class SecurityConfig {
 
@@ -42,7 +43,8 @@ public class SecurityConfig {
                                 "/api/v1/auth/refresh",
                                 "/api/v1/auth/me",
                                 "/actuator/**",
-                                "/health"
+                                "/health",
+                                "/api/v1/feature-flags/**"
                         ).permitAll()
                         .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                         .anyRequest().authenticated()
@@ -64,7 +66,8 @@ public class SecurityConfig {
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         var configuration = new CorsConfiguration();
-        configuration.setAllowedOriginPatterns(List.of("*"));
+        configuration.setAllowedOriginPatterns(List.of(
+                "http://localhost:5173", "http://localhost:3000", "http://localhost:80"));
         configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
         configuration.setAllowedHeaders(List.of("*"));
         configuration.setAllowCredentials(true);

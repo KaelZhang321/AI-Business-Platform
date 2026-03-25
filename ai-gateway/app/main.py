@@ -1,13 +1,16 @@
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
 
 import httpx
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.api.routes import chat, knowledge, query
 from app.core.config import settings
+from app.core.error_codes import BusinessError, ErrorCode
 from app.models.schemas import HealthResponse
 from app.services.rag_service import RAGService
 
@@ -46,7 +49,10 @@ async def lifespan(app: FastAPI):
     try:
         from elasticsearch import AsyncElasticsearch
 
-        es_client = AsyncElasticsearch(settings.elasticsearch_url)
+        es_client = AsyncElasticsearch(
+            settings.elasticsearch_url,
+            basic_auth=(settings.elasticsearch_username, settings.elasticsearch_password),
+        )
         exists = await es_client.indices.exists(index=settings.elasticsearch_index)
         _service_status["elasticsearch"] = "ok" if exists else "index_missing"
         logger.info("Elasticsearch 连接成功, index '%s' 存在: %s", settings.elasticsearch_index, exists)
@@ -73,10 +79,44 @@ async def lifespan(app: FastAPI):
     # 将共享服务实例挂载到 app.state，供 route 层按需获取
     app.state.rag_service = RAGService()
 
+    # ── 启动缓存失效监听器（S5-6 + S5-11 语义缓存联动）────
+    cache_task = None
+    try:
+        from app.services.cache_invalidation import (
+            set_semantic_cache_service,
+            start_cache_invalidation_listener,
+        )
+        from app.services.semantic_cache import SemanticCacheService
+
+        if settings.semantic_cache_enabled:
+            semantic_cache = SemanticCacheService()
+            set_semantic_cache_service(semantic_cache)
+            logger.info("语义缓存服务已初始化 (threshold=%.2f, ttl=%dh)",
+                        settings.semantic_cache_similarity_threshold,
+                        settings.semantic_cache_ttl_hours)
+
+        cache_task = asyncio.create_task(start_cache_invalidation_listener())
+        logger.info("缓存失效监听器已启动")
+    except Exception as exc:
+        logger.warning("缓存失效监听器启动失败: %s", exc)
+
     yield
 
     # ── 关闭时：释放资源 ────────────────────────────────
     logger.info("AI网关关闭中 — 释放资源 ...")
+
+    # 缓存失效监听器
+    if cache_task and not cache_task.done():
+        cache_task.cancel()
+        logger.info("缓存失效监听器已取消")
+
+    # ChatWorkflow httpx 客户端
+    try:
+        from app.api.routes.chat import workflow as chat_workflow
+        await chat_workflow.close()
+        logger.info("ChatWorkflow HTTP 客户端已关闭")
+    except Exception as exc:
+        logger.warning("关闭 ChatWorkflow 失败: %s", exc)
 
     # RAGService（Neo4j / ES / ClickHouse）
     try:
@@ -125,6 +165,31 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(BusinessError)
+async def business_error_handler(request: Request, exc: BusinessError):
+    status = _error_code_to_http_status(exc.error_code)
+    return JSONResponse(
+        status_code=status,
+        content={"code": exc.code, "message": exc.detail, "data": None},
+    )
+
+
+@app.exception_handler(ValueError)
+async def value_error_handler(request: Request, exc: ValueError):
+    return JSONResponse(
+        status_code=400,
+        content={"code": ErrorCode.BAD_REQUEST.code, "message": str(exc), "data": None},
+    )
+
+
+def _error_code_to_http_status(ec: ErrorCode) -> int:
+    if ec.code < 2000:
+        return 400
+    if ec.code < 3000:
+        return 401
+    return 500
 
 app.include_router(chat.router, prefix="/api/v1", tags=["对话"])
 app.include_router(knowledge.router, prefix="/api/v1", tags=["知识库"])

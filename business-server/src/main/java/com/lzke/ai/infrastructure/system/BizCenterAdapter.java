@@ -20,21 +20,21 @@ public class BizCenterAdapter extends BaseSystemAdapter {
     @Override
     protected Map<String, Object> mapTaskFields(Map<String, Object> raw) {
         Map<String, Object> mapped = new HashMap<>();
-        mapped.put("sourceId", firstNonNull(raw, "task_id", "biz_id", "id"));
-        mapped.put("title", firstNonNull(raw, "task_name", "title"));
-        mapped.put("description", firstNonNull(raw, "detail", "description"));
-        mapped.put("status", mapStatus(String.valueOf(firstNonNull(raw, "task_status", "status"))));
-        mapped.put("priority", mapPriority(String.valueOf(firstNonNull(raw, "priority", "level"))));
-        mapped.put("deadline", firstNonNull(raw, "due_date", "deadline"));
-        mapped.put("externalUrl", firstNonNull(raw, "link", "url"));
+        mapped.put("sourceId", coalesce(raw, "task_id", "biz_id", "id"));
+        mapped.put("title", coalesce(raw, "task_name", "title"));
+        mapped.put("description", coalesce(raw, "detail", "description"));
+        mapped.put("status", mapStatus(String.valueOf(coalesce(raw, "task_status", "status"))));
+        mapped.put("priority", mapPriority(String.valueOf(coalesce(raw, "priority", "level"))));
+        mapped.put("deadline", coalesce(raw, "due_date", "deadline"));
+        mapped.put("externalUrl", coalesce(raw, "link", "url"));
         return mapped;
     }
 
     @Override
     protected Map<String, Object> mapActionResponse(Map<String, Object> raw) {
         Map<String, Object> mapped = new HashMap<>();
-        mapped.put("result", firstNonNull(raw, "result", "code"));
-        mapped.put("message", firstNonNull(raw, "message", "msg"));
+        mapped.put("result", coalesce(raw, "result", "code"));
+        mapped.put("message", coalesce(raw, "message", "msg"));
         mapped.put("data", raw.get("data"));
         return mapped;
     }
@@ -57,13 +57,5 @@ public class BizCenterAdapter extends BaseSystemAdapter {
             case "低", "low", "P3" -> "low";
             default -> "normal";
         };
-    }
-
-    private Object firstNonNull(Map<String, Object> map, String... keys) {
-        for (String key : keys) {
-            Object val = map.get(key);
-            if (val != null) return val;
-        }
-        return null;
     }
 }

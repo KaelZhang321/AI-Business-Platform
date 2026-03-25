@@ -2,6 +2,9 @@ global:
   scrape_interval: 15s
   evaluation_interval: 15s
 
+rule_files:
+  - /etc/prometheus/alert-rules.yml
+
 scrape_configs:
   # AI网关 (FastAPI + prometheus_client)
   - job_name: "ai-gateway"
@@ -19,12 +22,16 @@ scrape_configs:
         labels:
           service: business-server
 
-  # PostgreSQL (可选 — 需部署 postgres_exporter)
-  # - job_name: "postgres"
-  #   static_configs:
-  #     - targets: ["postgres-exporter:9187"]
+  # MySQL Exporter
+  - job_name: "mysql"
+    static_configs:
+      - targets: ["mysqld-exporter:9104"]
+        labels:
+          service: mysql
 
-  # Redis (可选 — 需部署 redis_exporter)
-  # - job_name: "redis"
-  #   static_configs:
-  #     - targets: ["redis-exporter:9121"]
+  # Redis Exporter
+  - job_name: "redis"
+    static_configs:
+      - targets: ["redis-exporter:9121"]
+        labels:
+          service: redis

@@ -4,8 +4,9 @@ import asyncio
 import logging
 import re
 from pathlib import Path
+from urllib.parse import urlparse, parse_qs
 
-import asyncpg
+import aiomysql
 
 from app.core.config import settings
 from app.models.schemas import Text2SQLResponse
@@ -15,6 +16,22 @@ _SQL_WRITE_OPERATORS = re.compile(
     r"\b(insert|update|delete|drop|alter|create|grant|revoke|truncate|call|merge)\b",
     re.IGNORECASE,
 )
+
+
+def _parse_mysql_url(url: str) -> dict:
+    """从 SQLAlchemy 风格 URL 解析 MySQL 连接参数。"""
+    # mysql+aiomysql://user:pass@host:port/db?charset=utf8mb4
+    cleaned = re.sub(r"^mysql\+\w+://", "mysql://", url)
+    parsed = urlparse(cleaned)
+    params = parse_qs(parsed.query)
+    return {
+        "host": parsed.hostname or "localhost",
+        "port": parsed.port or 3306,
+        "user": parsed.username or "root",
+        "password": parsed.password or "",
+        "db": (parsed.path or "/").lstrip("/") or "ai_platform",
+        "charset": params.get("charset", ["utf8mb4"])[0],
+    }
 
 
 class Text2SQLService:
@@ -30,22 +47,29 @@ class Text2SQLService:
     def __init__(self):
         self._vn = None
         self._dynamic_ui = DynamicUIService()
-        self._pool: asyncpg.Pool | None = None
+        self._pool: aiomysql.Pool | None = None
 
     def _get_vanna(self):
-        """懒加载 Vanna 实例"""
+        """懒加载 Vanna 实例 — 使用 OpenAI 兼容接口（火山引擎 ARK）"""
         if self._vn is None:
-            from vanna.ollama import Ollama
+            from vanna.openai import OpenAI_Chat
             from vanna.milvus import Milvus_VectorStore
 
-            class VannaOllama(Milvus_VectorStore, Ollama):
+            class VannaOpenAI(Milvus_VectorStore, OpenAI_Chat):
                 def __init__(self, config=None):
                     Milvus_VectorStore.__init__(self, config=config)
-                    Ollama.__init__(self, config=config)
+                    OpenAI_Chat.__init__(self, config=config)
 
-            self._vn = VannaOllama(config={
-                "model": "qwen2.5:7b",
-                "ollama_host": settings.ollama_base_url,
+            api_key = settings.text2sql_api_key
+            if not api_key:
+                raise RuntimeError(
+                    "Text2SQL 未配置 API Key，请设置环境变量 TEXT2SQL_API_KEY 或 ARK_API_KEY"
+                )
+
+            self._vn = VannaOpenAI(config={
+                "api_key": api_key,
+                "model": settings.text2sql_model,
+                "base_url": settings.text2sql_base_url,
             })
         return self._vn
 
@@ -63,19 +87,26 @@ class Text2SQLService:
             chart_spec=ui_spec,
         )
 
-    async def _get_pool(self) -> asyncpg.Pool:
+    async def _get_pool(self) -> aiomysql.Pool:
         if self._pool is None:
-            self._pool = await asyncpg.create_pool(dsn=settings.database_url, min_size=1, max_size=5)
+            conn_params = _parse_mysql_url(settings.database_url)
+            self._pool = await aiomysql.create_pool(
+                minsize=1,
+                maxsize=5,
+                **conn_params,
+            )
         return self._pool
 
     async def _execute_sql(self, sql: str, database: str) -> list[dict]:
         pool = await self._get_pool()
         async with pool.acquire() as conn:
-            records = await asyncio.wait_for(
-                conn.fetch(sql),
-                timeout=settings.text2sql_timeout_seconds,
-            )
-            return [dict(record) for record in records]
+            async with conn.cursor(aiomysql.DictCursor) as cursor:
+                await asyncio.wait_for(
+                    cursor.execute(sql),
+                    timeout=settings.text2sql_timeout_seconds,
+                )
+                rows = await cursor.fetchall()
+                return [dict(row) for row in rows]
 
     def _sanitize_sql(self, sql: str) -> str:
         if not sql:
@@ -102,13 +133,13 @@ class Text2SQLService:
         return {"status": "ok", "count": len(training_data)}
 
     async def train_from_schema(self, sql_file: str | None = None) -> dict:
-        """从 init-postgres.sql 自动导入表结构到 Vanna 训练
+        """从 init-mysql.sql 自动导入表结构到 Vanna 训练
 
         解析 SQL 文件中的 CREATE TABLE 语句，逐条调用 vn.train(ddl=...)。
         """
         logger = logging.getLogger(__name__)
         if sql_file is None:
-            sql_file = str(Path(__file__).resolve().parents[3] / "docker" / "init-scripts" / "init-postgres.sql")
+            sql_file = str(Path(__file__).resolve().parents[3] / "docker" / "init-scripts" / "init-mysql.sql")
 
         path = Path(sql_file)
         if not path.exists():

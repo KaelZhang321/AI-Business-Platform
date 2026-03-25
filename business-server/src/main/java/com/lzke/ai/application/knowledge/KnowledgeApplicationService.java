@@ -13,6 +13,7 @@ import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.cache.annotation.Cacheable;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 import java.util.Map;
@@ -24,6 +25,7 @@ public class KnowledgeApplicationService {
     private final DocumentMapper documentMapper;
     private final RabbitTemplate rabbitTemplate;
 
+    @Transactional
     @CacheEvict(cacheNames = "knowledge:documents", allEntries = true)
     public DocumentVO createDocument(DocumentCreateRequest request) {
         Document doc = new Document();
@@ -41,6 +43,14 @@ public class KnowledgeApplicationService {
                 RabbitMQConfig.EXCHANGE,
                 RabbitMQConfig.DOCUMENT_PROCESS_QUEUE,
                 Map.of("documentId", doc.getId().toString(), "title", doc.getTitle())
+        );
+
+        // 发布缓存失效事件（通知 AI 网关清除 RAG 结果缓存）
+        rabbitTemplate.convertAndSend(
+                RabbitMQConfig.EXCHANGE,
+                RabbitMQConfig.CACHE_INVALIDATION_QUEUE,
+                Map.of("type", "knowledge", "documentId", doc.getId().toString(),
+                        "action", "create", "category", doc.getCategory() != null ? doc.getCategory() : "")
         );
 
         DocumentVO vo = new DocumentVO();

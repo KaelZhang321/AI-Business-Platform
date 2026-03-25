@@ -11,6 +11,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.*;
 import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestTemplate;
+import org.springframework.web.util.UriComponentsBuilder;
 
 import java.time.Instant;
 import java.util.*;
@@ -107,7 +108,9 @@ public abstract class BaseSystemAdapter {
 
             // 4. 构建请求URL
             String tasksPath = (String) config.getOrDefault("tasksPath", "/api/tasks");
-            String url = adapterConfig.getEndpoint() + tasksPath + "?userId=" + userId;
+            String url = UriComponentsBuilder.fromUriString(adapterConfig.getEndpoint() + tasksPath)
+                    .queryParam("userId", userId)
+                    .build().toUriString();
 
             // 5. 构建请求头（含认证信息）
             HttpHeaders headers = buildAuthHeaders(adapterConfig, config);

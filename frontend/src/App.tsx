@@ -1,22 +1,32 @@
+import { lazy, Suspense } from 'react'
 import { Routes, Route, Navigate } from 'react-router-dom'
+import { Spin } from 'antd'
 import { createMongoAbility } from '@casl/ability'
 import type { AppAbility } from './abilities'
 import MainLayout from './layouts/MainLayout'
 import ProtectedRoute from './components/auth/ProtectedRoute'
+import ErrorBoundary from './components/ErrorBoundary'
 import { AbilityContext } from './components/auth/Can'
 import { useAppStore } from './stores/useAppStore'
-import Login from './pages/Login'
-import Workspace from './pages/Workspace'
-import KnowledgeBase from './pages/KnowledgeBase'
-import AuditLog from './pages/AuditLog'
+
+const Login = lazy(() => import('./pages/Login'))
+const Workspace = lazy(() => import('./pages/Workspace'))
+const KnowledgeBase = lazy(() => import('./pages/KnowledgeBase'))
+const AuditLog = lazy(() => import('./pages/AuditLog'))
 
 const defaultAbility = createMongoAbility() as AppAbility
+
+const PageFallback = (
+  <div className="h-64 flex items-center justify-center"><Spin size="large" /></div>
+)
 
 function App() {
   const ability = useAppStore((s) => s.ability)
 
   return (
+    <ErrorBoundary>
     <AbilityContext.Provider value={ability ?? defaultAbility}>
+    <Suspense fallback={PageFallback}>
     <Routes>
       <Route path="/login" element={<Login />} />
 
@@ -34,7 +44,9 @@ function App() {
         </Route>
       </Route>
     </Routes>
+    </Suspense>
     </AbilityContext.Provider>
+    </ErrorBoundary>
   )
 }
 
