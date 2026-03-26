@@ -1,14 +1,4 @@
 spring:
-  main:
-    allow-circular-references: true
-  cloud:
-    nacos:
-      discovery:
-        enabled: false
-        register-enabled: false
-      config:
-        import-check:
-          enabled: false
   datasource:
     url: jdbc:postgresql://${POSTGRES_HOST:ai-platform-postgres}:5432/${POSTGRES_DB:ai_platform}?sslmode=disable
     username: ${POSTGRES_USER:ai_platform}
@@ -47,15 +37,6 @@ management:
   endpoint:
     health:
       show-details: always
-  health:
-    nacos:
-      enabled: false
-    discovery:
-      enabled: false
-    nacosConfig:
-      enabled: false
-    nacosDiscovery:
-      enabled: false
   metrics:
     export:
       prometheus:

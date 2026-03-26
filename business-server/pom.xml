@@ -160,15 +160,7 @@
             <version>${flowable.version}</version>
         </dependency>
 
-        <!-- Spring Cloud Alibaba Nacos (S4-2) -->
-        <dependency>
-            <groupId>com.alibaba.cloud</groupId>
-            <artifactId>spring-cloud-starter-alibaba-nacos-config</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>com.alibaba.cloud</groupId>
-            <artifactId>spring-cloud-starter-alibaba-nacos-discovery</artifactId>
-        </dependency>
+        <!-- Spring Cloud Alibaba Nacos → 通过 Maven profile -Pnacos 按需引入 -->
 
         <!-- Spring Boot Actuator + Prometheus (S4-5) -->
         <dependency>
@@ -232,4 +224,21 @@
             </plugin>
         </plugins>
     </build>
+
+    <profiles>
+        <!-- 云环境 Nacos 注册/配置中心：mvn spring-boot:run -Pnacos -->
+        <profile>
+            <id>nacos</id>
+            <dependencies>
+                <dependency>
+                    <groupId>com.alibaba.cloud</groupId>
+                    <artifactId>spring-cloud-starter-alibaba-nacos-config</artifactId>
+                </dependency>
+                <dependency>
+                    <groupId>com.alibaba.cloud</groupId>
+                    <artifactId>spring-cloud-starter-alibaba-nacos-discovery</artifactId>
+                </dependency>
+            </dependencies>
+        </profile>
+    </profiles>
 </project>
