@@ -12,10 +12,10 @@
 
 本项目是一个**面向企业的AI集成平台**，通过AI技术打通企业内部各业务系统（ERP、CRM、OA、预约、业务中台、360），实现：
 
-- **统一工作台** — 一个界面聚合所有待办事项，6个系统并行拉取
+- **统一工作台** — 一个界面聚合所有待办事项，6 个系统并行拉取
 - **智能问答** — GraphRAG 三路融合检索（向量 + 关键词 + 知识图谱）
-- **自然语言查数** — Text2SQL 自然语言转SQL，自动生成可视化图表
-- **动态UI生成** — AI实时生成 7 种组件（Card/Table/Metric/List/Form/Tag/Chart）
+- **自然语言查数** — Text2SQL 自然语言转 SQL，自动生成可视化图表
+- **动态 UI 生成** — AI 实时生成 7 种组件（Card/Table/Metric/List/Form/Tag/Chart）
 - **工作流审批** — Flowable BPMN 引擎，通用审批流程
 
 ## 技术架构
@@ -32,8 +32,8 @@
 | 层 | 技术栈 | 职责 |
 |----|--------|------|
 | **前端** | React 19 + Vite 5 + Ant Design 5 + Tailwind CSS | AI 对话、动态 UI 渲染（7 种组件）、数据可视化（ECharts） |
-| **AI 网关** | Python 3.11+ / FastAPI + LangChain + LangGraph | 意图分类（4类+9子类）、GraphRAG、Text2SQL、LLM 多后端路由、MCP Server |
-| **业务编排** | Java 17 / Spring Boot 3.3.6 + MyBatis-Plus 3.5.9 | 待办聚合（6系统适配器）、知识库、审计日志+ClickHouse、Flowable 工作流、数据权限 |
+| **AI 网关** | Python 3.11+ / FastAPI + LangChain + LangGraph | 意图分类（4 类 + 9 子类）、GraphRAG、Text2SQL、LLM 多后端路由、MCP Server |
+| **业务编排** | Java 17 / Spring Boot 3.3.6 + MyBatis-Plus 3.5.9 | 待办聚合（6 系统适配器）、知识库、审计日志 + ClickHouse、Flowable 工作流、数据权限 |
 
 ## 核心功能
 
@@ -113,6 +113,9 @@ API 文档：http://localhost:8000/docs
 export JAVA_HOME=/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home
 cd business-server
 mvn spring-boot:run -Dspring-boot.run.profiles=dev
+
+# 如需 Nacos 注册/配置中心（云环境）：
+# mvn spring-boot:run -Pnacos -Dspring-boot.run.profiles=dev
 ```
 
 Swagger 文档：http://localhost:8080/swagger-ui.html
@@ -133,46 +136,60 @@ npm run dev
 AI业务中台/
 ├── frontend/                   # React 前端
 │   ├── src/
-│   │   ├── components/         # AIChat / DynamicRenderer / ErrorBoundary
+│   │   ├── components/         # chat / dynamic-ui / auth / ErrorBoundary
 │   │   ├── pages/              # Workspace / KnowledgeBase / AuditLog / Login
 │   │   ├── services/           # API 客户端（createClient 工厂）+ 认证服务
 │   │   ├── stores/             # Zustand 状态管理
+│   │   ├── abilities/          # CASL 前端权限定义
 │   │   └── types/              # TypeScript 类型定义
 │   └── vite.config.ts          # 分层代理规则
 │
 ├── ai-gateway/                 # Python AI 网关
 │   └── app/
-│       ├── api/routes/         # FastAPI 路由（chat / knowledge / query）
+│       ├── api/                # FastAPI 路由（chat / knowledge / query）
 │       ├── services/           # 核心服务
 │       │   ├── chat_workflow.py       # LangGraph 对话工作流
-│       │   ├── intent_classifier.py   # 意图分类（4类+9子类）
+│       │   ├── intent_classifier.py   # 意图分类（4 类 + 9 子类）
 │       │   ├── rag_service.py         # GraphRAG 三路融合检索
 │       │   ├── text2sql_service.py    # Vanna.ai + ARK OpenAI 接口
-│       │   ├── model_router.py        # 多后端 LLM 路由（Ollama/vLLM/OpenAI）
+│       │   ├── model_router.py        # 多后端 LLM 路由
 │       │   ├── dynamic_ui_service.py  # JSON Spec UI 生成
 │       │   └── semantic_cache.py      # Milvus 语义缓存
-│       ├── mcp/                # MCP Server（FastMCP）
+│       ├── mcp_server/         # MCP Server（FastMCP）
 │       └── core/               # 配置 / 错误码
 │
 ├── business-server/            # Java 业务编排（DDD 分层）
 │   └── src/main/java/com/lzke/ai/
 │       ├── domain/entity/      # 数据库实体（12 张表）
-│       ├── application/        # DTO / VO / 应用服务
+│       ├── application/        # DTO / VO
 │       ├── infrastructure/     # MyBatis-Plus Mapper
 │       ├── service/            # 业务服务
-│       ├── interfaces/rest/    # REST Controller
+│       ├── controller/         # REST Controller
+│       ├── interfaces/rest/    # 接口层
 │       ├── security/           # JWT / RBAC / 数据权限 / 脱敏
-│       ├── listener/           # RabbitMQ 消费者
-│       └── adapter/            # 外部系统适配器（6个）
+│       ├── config/             # SecurityConfig / PasswordEncoderConfig / FlowableConfig
+│       ├── adapter/            # 外部系统适配器（6 个）
+│       ├── annotation/         # @RateLimit / @Sensitive 自定义注解
+│       ├── aspect/             # 限流 / 脱敏 AOP 切面
+│       └── listener/           # RabbitMQ 消费者
 │
 ├── docker/                     # 基础设施
-│   ├── docker-compose.yml      # 9 个本地服务
+│   ├── docker-compose.yml            # 9 个本地服务
+│   ├── docker-compose.ai-gateway.yml # AI 网关容器编排
+│   ├── docker-compose.business-server.yml # 业务编排容器编排
 │   ├── init-scripts/           # MySQL 初始化（12 张表）
 │   ├── nginx/                  # Nginx 反向代理配置
 │   ├── prometheus/             # Prometheus 抓取 + 告警规则
 │   └── grafana/                # Grafana Dashboard 配置
 │
-└── docs/                       # 架构设计文档（50+ 篇）
+└── docs/                       # 项目文档（7 个分类目录）
+    ├── 00_产品全景与价值矩阵/   # 业务需求分析 + 产品价值矩阵
+    ├── 01_产品设计/             # P1-P8 产品线详细设计（每线 4 篇）
+    ├── 02_产品原型/             # 交互原型
+    ├── 03_技术架构方案/         # 整体架构 + MVP 实施 + 集成指南
+    ├── 04_技术补充方案/         # 6 篇补充方案
+    ├── 05_技术优化方案/         # 6 篇优化方案
+    └── 99_其他/                 # 架构审查 + 修改指南
 ```
 
 ## 服务端口
@@ -197,7 +214,7 @@ AI业务中台/
 |------|------|
 | RabbitMQ | 异步消息队列（文档处理/审计日志/缓存失效） |
 | Prometheus + Grafana | 整体监控系统（复用） |
-| Nacos | 服务注册 / 配置中心 |
+| Nacos | 服务注册 / 配置中心（Maven profile `-Pnacos` 按需引入） |
 
 ### 应用服务
 
@@ -243,7 +260,7 @@ AI业务中台/
 | 表名 | 用途 |
 |------|------|
 | `users` | 用户信息与角色 |
-| `system_adapters` | 系统适配器配置（6条预置） |
+| `system_adapters` | 系统适配器配置（6 条预置） |
 | `tasks` | 待办任务（多系统聚合） |
 | `documents` | 知识库文档 |
 | `conversations` | AI 对话历史 |
@@ -284,20 +301,24 @@ AI业务中台/
 |----------|------|
 | `docker/.env` | 基础设施密码（从 `.env.example` 复制） |
 | `ai-gateway/.env` | AI 网关连接地址和 API Key |
-| `business-server/src/main/resources/application-dev.yml` | Spring Boot 开发环境 |
-| `business-server/src/main/resources/bootstrap.yml` | Nacos 配置（默认禁用） |
+| `business-server/src/main/resources/application-dev.yml` | Spring Boot 开发环境（MySQL） |
+| `business-server/src/main/resources/application-docker.yml` | Docker 生产环境（PostgreSQL） |
+| `business-server/src/main/resources/bootstrap.yml` | Nacos 配置（需 `-Pnacos` 构建才生效） |
 | `frontend/vite.config.ts` | API 代理分层规则 |
 
 ## 文档
 
-完整架构设计文档位于 `docs/` 目录：
+完整项目文档位于 `docs/` 目录，按 7 个分类组织：
 
-- `docs/03_技术架构方案/AI业务中台_整体技术架构文档.md` — 核心架构设计（权威参考）
-- `docs/03_技术架构方案/AI业务中台_MVP一期实施文档.md` — MVP 范围与接口规范
-- `docs/03_技术架构方案/json-render集成指南.md` — 动态 UI 渲染集成指南
-- `docs/01_产品设计/` — P1-P8 产品线详细说明与迭代计划
-- `docs/04_技术补充方案/` — 6 篇技术补充方案
-- `docs/05_技术优化方案/` — 5 篇技术优化方案
+| 目录 | 内容 |
+|------|------|
+| `00_产品全景与价值矩阵/` | 业务需求分析报告、产品全景与价值矩阵、行业标准对比 |
+| `01_产品设计/` | P1-P8 产品线详细设计（每线含需求/功能/交互/迭代 4 篇） |
+| `02_产品原型/` | 核心功能交互原型 |
+| `03_技术架构方案/` | 整体技术架构文档（权威参考）、MVP 一期实施文档、json-render 集成指南 |
+| `04_技术补充方案/` | 6 篇：命名规范 / Agent 选型 / 离线模式 / 存储运维 / WebRTC / 统一认证 |
+| `05_技术优化方案/` | 6 篇：医疗合规 / P6 技术栈 / 缓存策略 / API 版本 / GraphRAG / 容量规划 |
+| `99_其他/` | 技术架构审查报告、文档修改执行指南 |
 
 ## License
 
