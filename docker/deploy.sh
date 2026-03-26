@@ -9,10 +9,11 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 COMPOSE_DIR="$SCRIPT_DIR"
+COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-docker}"
 
-RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
+RED='\033[0;31m'
 NC='\033[0m'
 
 log_info()  { echo -e "${GREEN}[INFO]${NC} $1"; }
@@ -37,7 +38,7 @@ deploy_infra() {
     docker compose ps
 }
 
-# ── 2. AI网关 ───────────────────────────────────────────
+# ── 2. AI 网关 ──────────────────────────────────────────
 deploy_gateway() {
     log_info "构建并启动 AI 网关..."
     cd "$COMPOSE_DIR"
@@ -64,35 +65,23 @@ deploy_frontend() {
     log_info "构建前端项目..."
     cd "$PROJECT_DIR/frontend"
 
-    # 安装依赖
     if [ ! -d "node_modules" ]; then
         log_info "安装前端依赖..."
         npm install
     fi
 
-    # 构建
     log_info "执行 npm run build..."
     npm run build
 
-    # 复制到 Docker volume
-    VOLUME_PATH=$(docker volume inspect docker_frontend_dist --format '{{.Mountpoint}}' 2>/dev/null || \
-                  docker volume inspect ai-platform-net_frontend_dist --format '{{.Mountpoint}}' 2>/dev/null || \
-                  echo "")
+    # 通过临时容器复制构建产物到 volume（不依赖宿主机路径）
+    local volume_name="${COMPOSE_PROJECT_NAME}_frontend_dist"
+    log_info "复制前端构建产物到 volume: ${volume_name}"
+    docker run --rm \
+        -v "${volume_name}":/dist \
+        -v "$PROJECT_DIR/frontend/dist":/src:ro \
+        alpine sh -c "rm -rf /dist/* && cp -r /src/* /dist/"
 
-    if [ -z "$VOLUME_PATH" ]; then
-        log_info "创建前端 volume 并复制文件..."
-        # 通过临时容器复制文件到 volume
-        docker run --rm \
-            -v docker_frontend_dist:/dist \
-            -v "$PROJECT_DIR/frontend/dist":/src \
-            alpine sh -c "rm -rf /dist/* && cp -r /src/* /dist/"
-    else
-        log_info "复制前端构建产物到 volume: $VOLUME_PATH"
-        sudo rm -rf "$VOLUME_PATH"/*
-        sudo cp -r "$PROJECT_DIR/frontend/dist"/* "$VOLUME_PATH"/
-    fi
-
-    # 重启 Nginx
+    # 重启 Nginx 加载新文件
     log_info "重启 Nginx..."
     cd "$COMPOSE_DIR"
     docker compose restart nginx
@@ -106,10 +95,12 @@ deploy_all() {
     deploy_gateway
     deploy_business
     deploy_frontend
+    echo ""
     log_info "==============================="
     log_info "  全部服务部署完成!"
-    log_info "  访问: http://$(hostname -I | awk '{print $1}'):80"
+    log_info "  访问: http://localhost:80"
     log_info "==============================="
+    echo ""
     docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" | grep ai-platform
 }
 

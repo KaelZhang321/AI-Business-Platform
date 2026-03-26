@@ -68,13 +68,17 @@ class RAGService:
     # 意图自适应权重配比
     _INTENT_WEIGHTS: dict[str, tuple[float, float, float]] = {
         # (向量, 关键词, 图谱)
-        "FACTUAL": (0.3, 0.5, 0.2),       # 事实性问题：侧重关键词精确匹配
-        "RELATIONAL": (0.2, 0.2, 0.6),    # 关系性问题：侧重图谱实体关系
-        "REASONING": (0.5, 0.2, 0.3),     # 推理性问题：侧重语义向量
+        "FACTUAL": (0.3, 0.5, 0.2),  # 事实性问题：侧重关键词精确匹配
+        "RELATIONAL": (0.2, 0.2, 0.6),  # 关系性问题：侧重图谱实体关系
+        "REASONING": (0.5, 0.2, 0.3),  # 推理性问题：侧重语义向量
     }
 
     async def search(
-        self, query: str, top_k: int = 5, doc_types: list[str] | None = None, query_type: str | None = None,
+        self,
+        query: str,
+        top_k: int = 5,
+        doc_types: list[str] | None = None,
+        query_type: str | None = None,
     ) -> list[KnowledgeResult]:
         """并行执行向量、关键词、图谱检索并融合排序，并记录指标。"""
         vector_task = asyncio.create_task(self._vector_search(query, doc_types))
@@ -104,7 +108,7 @@ class RAGService:
     # --- search backends ----------------------------------------------
     async def _vector_search(self, query: str, doc_types: list[str] | None) -> list[KnowledgeResult]:
         embedder = self._embedder()
-        query_emb = embedder.encode([query])[0]
+        query_emb = embedder.encode([query])["dense_vecs"][0]
         collection = self._milvus()
         results = collection.search(
             data=[query_emb],
@@ -181,14 +185,16 @@ class RAGService:
                 # 全文检索
                 result = await session.run(fulltext_cypher, query=query)
                 async for rec in result:
-                    records.append(KnowledgeResult(
-                        doc_id=f"graph:{rec['label']}:{rec['title']}",
-                        title=rec["title"] or "",
-                        content=rec["content"] or "",
-                        score=float(rec["score"]),
-                        doc_type="graph",
-                        metadata={"source": "fulltext"},
-                    ))
+                    records.append(
+                        KnowledgeResult(
+                            doc_id=f"graph:{rec['label']}:{rec['title']}",
+                            title=rec["title"] or "",
+                            content=rec["content"] or "",
+                            score=float(rec["score"]),
+                            doc_type="graph",
+                            metadata={"source": "fulltext"},
+                        )
+                    )
 
                 # 实体关系
                 result2 = await session.run(relation_cypher, query=query)
@@ -207,14 +213,16 @@ class RAGService:
                     content = f"{entity} —[{rel}]→ {related}"
                     if reason:
                         content += f"（{reason}）"
-                    records.append(KnowledgeResult(
-                        doc_id=f"graph:rel:{key}",
-                        title=f"{entity} → {related}",
-                        content=content,
-                        score=0.8,
-                        doc_type="graph",
-                        metadata={"relation": rel, "severity": rec.get("severity") or ""},
-                    ))
+                    records.append(
+                        KnowledgeResult(
+                            doc_id=f"graph:rel:{key}",
+                            title=f"{entity} → {related}",
+                            content=content,
+                            score=0.8,
+                            doc_type="graph",
+                            metadata={"relation": rel, "severity": rec.get("severity") or ""},
+                        )
+                    )
         except Exception as exc:
             self._logger.warning("Graph search failed: %s", exc)
 
@@ -229,7 +237,9 @@ class RAGService:
         weights: tuple[float, float, float] | None = None,
     ) -> list[KnowledgeResult]:
         w_vec, w_kw, w_graph = weights or (
-            settings.rag_vector_weight, settings.rag_keyword_weight, settings.rag_graph_weight,
+            settings.rag_vector_weight,
+            settings.rag_keyword_weight,
+            settings.rag_graph_weight,
         )
         score_map: dict[str, KnowledgeResult] = {}
         fused_scores: dict[str, float] = {}

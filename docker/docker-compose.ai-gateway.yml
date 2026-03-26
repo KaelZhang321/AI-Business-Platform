@@ -18,8 +18,8 @@ services:
       XDG_CACHE_HOME: /opt/model-cache
     ports:
       - "${AI_GATEWAY_HOST_PORT:-8000}:8000"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    volumes:
+      - ai_gateway_model_cache:/opt/model-cache
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
       interval: 30s
@@ -27,6 +27,9 @@ services:
       retries: 5
       start_period: 45s
     restart: unless-stopped
+
+volumes:
+  ai_gateway_model_cache:
 
 networks:
   default:

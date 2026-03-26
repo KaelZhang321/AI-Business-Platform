@@ -10,7 +10,7 @@ scrape_configs:
   - job_name: "ai-gateway"
     metrics_path: /metrics
     static_configs:
-      - targets: ["host.docker.internal:8000"]
+      - targets: ["ai-platform-ai-gateway:8000"]
         labels:
           service: ai-gateway
 
@@ -18,7 +18,7 @@ scrape_configs:
   - job_name: "business-server"
     metrics_path: /actuator/prometheus
     static_configs:
-      - targets: ["host.docker.internal:8080"]
+      - targets: ["ai-platform-business-server:8080"]
         labels:
           service: business-server
 

@@ -226,10 +226,9 @@ services:
       - "80:80"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/proxy-params.conf:/etc/nginx/proxy-params.conf:ro
+      - ./nginx/proxy-sse.conf:/etc/nginx/proxy-sse.conf:ro
       - frontend_dist:/usr/share/nginx/html:ro
-    depends_on:
-      - mysql
-      - redis
     deploy:
       resources:
         limits:

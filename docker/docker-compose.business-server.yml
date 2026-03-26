@@ -10,7 +10,6 @@ services:
         required: false
     environment:
       SPRING_PROFILES_ACTIVE: docker
-      JAVA_OPTS: "-XX:MaxRAMPercentage=75.0"
     ports:
       - "${BUSINESS_SERVER_HOST_PORT:-8080}:8080"
     healthcheck:

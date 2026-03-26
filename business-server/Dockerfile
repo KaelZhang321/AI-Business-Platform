@@ -2,15 +2,22 @@ FROM maven:3.9-eclipse-temurin-17-alpine AS builder
 
 WORKDIR /build
 
-# 配置Maven阿里云镜像加速
+# 配置 Maven 阿里云镜像加速
 RUN mkdir -p /root/.m2 && \
-    echo '<?xml version="1.0" encoding="UTF-8"?>' > /root/.m2/settings.xml && \
-    echo '<settings><mirrors><mirror>' >> /root/.m2/settings.xml && \
-    echo '<id>aliyun</id><mirrorOf>central</mirrorOf>' >> /root/.m2/settings.xml && \
-    echo '<url>https://maven.aliyun.com/repository/public</url>' >> /root/.m2/settings.xml && \
-    echo '</mirror></mirrors></settings>' >> /root/.m2/settings.xml
+    cat > /root/.m2/settings.xml <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<settings>
+  <mirrors>
+    <mirror>
+      <id>aliyun</id>
+      <mirrorOf>central</mirrorOf>
+      <url>https://maven.aliyun.com/repository/public</url>
+    </mirror>
+  </mirrors>
+</settings>
+EOF
 
-# 先复制pom.xml下载依赖（利用Docker缓存）
+# 先复制 pom.xml 下载依赖（利用 Docker 缓存）
 COPY pom.xml .
 RUN mvn dependency:go-offline -B
 
