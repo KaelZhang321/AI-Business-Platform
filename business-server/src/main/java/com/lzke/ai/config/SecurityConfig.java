@@ -3,10 +3,10 @@ package com.lzke.ai.config;
 import com.lzke.ai.config.FeatureFlagProperties;
 import com.lzke.ai.security.JwtAuthenticationFilter;
 import com.lzke.ai.security.JwtProperties;
-import lombok.RequiredArgsConstructor;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.http.HttpMethod;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.config.annotation.authentication.configuration.AuthenticationConfiguration;
@@ -26,10 +26,13 @@ import java.util.List;
 @Configuration
 @EnableMethodSecurity
 @EnableConfigurationProperties({JwtProperties.class, FeatureFlagProperties.class})
-@RequiredArgsConstructor
 public class SecurityConfig {
 
     private final JwtAuthenticationFilter jwtAuthenticationFilter;
+
+    public SecurityConfig(@Lazy JwtAuthenticationFilter jwtAuthenticationFilter) {
+        this.jwtAuthenticationFilter = jwtAuthenticationFilter;
+    }
 
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {

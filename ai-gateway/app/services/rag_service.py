@@ -4,7 +4,7 @@ import asyncio
 import logging
 
 from elasticsearch import AsyncElasticsearch
-from flagembedding import BGEM3FlagModel, FlagReranker
+from FlagEmbedding import BGEM3FlagModel, FlagReranker
 from neo4j import AsyncGraphDatabase
 from pymilvus import Collection, connections
 from sqlalchemy import text

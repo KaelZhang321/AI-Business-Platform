@@ -24,7 +24,8 @@ public class ClickHouseConfig {
     @Bean(name = "clickHouseDataSource")
     public DataSource clickHouseDataSource() {
         HikariConfig config = new HikariConfig();
-        config.setJdbcUrl(url);
+        String urlWithOptions = url.contains("?") ? url + "&compress=0" : url + "?compress=0";
+        config.setJdbcUrl(urlWithOptions);
         config.setUsername(username);
         config.setPassword(password);
         config.setDriverClassName("com.clickhouse.jdbc.ClickHouseDriver");
