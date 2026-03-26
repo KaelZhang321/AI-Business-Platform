@@ -26,7 +26,7 @@ RUN pip install --no-cache-dir .
 
 # 预下载 BGE Embedding + Reranker 模型到缓存目录
 RUN python -c "\
-from flagembedding import BGEM3FlagModel, FlagReranker; \
+from FlagEmbedding import BGEM3FlagModel, FlagReranker; \
 BGEM3FlagModel('BAAI/bge-m3', use_fp16=False); \
 FlagReranker('BAAI/bge-reranker-large', use_fp16=False)"
 
