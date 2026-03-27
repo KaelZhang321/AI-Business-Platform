@@ -3,17 +3,16 @@ package com.lzke.ai.service;
 import com.lzke.ai.infrastructure.persistence.mapper.UserMapper;
 import com.lzke.ai.application.dto.UserPermission;
 import com.lzke.ai.domain.entity.User;
+import com.lzke.ai.exception.BusinessException;
+import com.lzke.ai.exception.ErrorCode;
 import lombok.RequiredArgsConstructor;
-import org.springframework.http.HttpStatus;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
-import org.springframework.web.server.ResponseStatusException;
 
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.UUID;
 
 @Service
 @RequiredArgsConstructor
@@ -30,17 +29,17 @@ public class UserService {
 
     public User authenticate(String username, String rawPassword) {
         var user = userMapper.findByUsername(username).orElseThrow(() ->
-                new ResponseStatusException(HttpStatus.UNAUTHORIZED, "账号不存在"));
+                new BusinessException(ErrorCode.ACCOUNT_NOT_FOUND));
         if (!"active".equalsIgnoreCase(user.getStatus())) {
-            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "账号已禁用");
+            throw new BusinessException(ErrorCode.ACCOUNT_DISABLED);
         }
         if (user.getPasswordHash() == null || !passwordEncoder.matches(rawPassword, user.getPasswordHash())) {
-            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "用户名或密码错误");
+            throw new BusinessException(ErrorCode.PASSWORD_INCORRECT);
         }
         return user;
     }
 
-    public Optional<User> findById(UUID id) {
+    public Optional<User> findById(String id) {
         return userMapper.findById(id);
     }
 
@@ -58,9 +57,9 @@ public class UserService {
                 .build();
     }
 
-    public UserPermission buildPermission(UUID userId) {
+    public UserPermission buildPermission(String userId) {
         var user = userMapper.findById(userId)
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "用户不存在"));
+                .orElseThrow(() -> new BusinessException(ErrorCode.ACCOUNT_NOT_FOUND));
         return buildPermission(user);
     }
 }

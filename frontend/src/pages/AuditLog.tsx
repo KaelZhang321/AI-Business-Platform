@@ -88,13 +88,17 @@ export default function AuditLog() {
     userId?: string
     intent?: string
     status?: string
+    startDate?: string
+    endDate?: string
     page: number
     size: number
   }>({ page: 1, size: 20 })
 
   const { data, isLoading } = useQuery({
     queryKey: ['auditLogs', filters],
-    queryFn: () => auditAPI.logs(filters).then((res) => res.data.data),
+    queryFn: () => auditAPI.logs(filters).then((r) => r.data.data),
+    staleTime: 5 * 60_000,
+    gcTime: 10 * 60_000,
   })
 
   return (
@@ -134,14 +138,27 @@ export default function AuditLog() {
               { label: '超时', value: 'timeout' },
             ]}
           />
-          <RangePicker />
+          <RangePicker
+            onChange={(dates) => {
+              if (dates && dates[0] && dates[1]) {
+                setFilters((f) => ({
+                  ...f,
+                  startDate: dates[0]!.format('YYYY-MM-DD'),
+                  endDate: dates[1]!.format('YYYY-MM-DD'),
+                  page: 1,
+                }))
+              } else {
+                setFilters((f) => ({ ...f, startDate: undefined, endDate: undefined, page: 1 }))
+              }
+            }}
+          />
         </Space>
       </Card>
 
       <Card>
         <Table<AuditLogEntry>
           columns={columns}
-          dataSource={data?.data ?? []}
+          dataSource={data?.records ?? data?.data ?? []}
           rowKey="id"
           loading={isLoading}
           pagination={{

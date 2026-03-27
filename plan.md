@@ -59,7 +59,7 @@
 - [x] 新建 `business-server/.../adapter/ReservationAdapter.java`：继承 BaseSystemAdapter，对接预约系统 API
 - [x] 新建 `business-server/.../adapter/BizCenterAdapter.java`：继承 BaseSystemAdapter，对接业务中台 API
 - [x] 新建 `business-server/.../adapter/System360Adapter.java`：继承 BaseSystemAdapter，对接360系统 API
-- [x] `docker/init-scripts/init-postgres.sql`：`system_adapters` 表补充6条预置数据
+- [x] `docker/init-scripts/init-mysql.sql`：`system_adapters` 表补充6条预置数据
 
 ### S2-6. 业务编排 — JWT Token 刷新机制
 
@@ -122,7 +122,7 @@
 
 ### S3-5. 业务编排 — ClickHouse 审计日志分析（文档 4.3 / 5.3）
 
-**现状**：审计日志仅存于 PostgreSQL，未流向 ClickHouse 做分析查询。
+**现状**：审计日志仅存于 MySQL，未流向 ClickHouse 做分析查询。
 
 - [x] `business-server/pom.xml`：新增 `clickhouse-jdbc` 依赖
 - [x] 新建 `business-server/.../config/ClickHouseConfig.java`：ClickHouse 数据源配置
@@ -213,11 +213,11 @@
 
 **现状**：6张核心表已建，但架构文档核心数据模型中还有多个实体未建表。
 
-- [x] `docker/init-scripts/init-postgres.sql`：新增 `api_keys` 表（应用级密钥管理，含 rate_limit/permissions/expires_at）
-- [x] `docker/init-scripts/init-postgres.sql`：新增 `knowledge_bases` 表（知识库元数据，含 embedding_model/chunk_strategy 配置）
-- [x] `docker/init-scripts/init-postgres.sql`：新增 `workflows` + `workflow_executions` 表（自定义工作流记录）
-- [x] `docker/init-scripts/init-postgres.sql`：新增 `agents` 表（智能体配置，含 model/system_prompt/tools/temperature）
-- [x] `docker/init-scripts/init-postgres.sql`：新增 `cost_logs` 表（独立成本日志，含 provider/cost_usd）
+- [x] `docker/init-scripts/init-mysql.sql`：新增 `api_keys` 表（应用级密钥管理，含 rate_limit/permissions/expires_at）
+- [x] `docker/init-scripts/init-mysql.sql`：新增 `knowledge_bases` 表（知识库元数据，含 embedding_model/chunk_strategy 配置）
+- [x] `docker/init-scripts/init-mysql.sql`：新增 `workflows` + `workflow_executions` 表（自定义工作流记录）
+- [x] `docker/init-scripts/init-mysql.sql`：新增 `agents` 表（智能体配置，含 model/system_prompt/tools/temperature）
+- [x] `docker/init-scripts/init-mysql.sql`：新增 `cost_logs` 表（独立成本日志，含 provider/cost_usd）
 
 ---
 
@@ -238,7 +238,7 @@
 
 ### 第二轮：数据完整性与配置规范化（已完成）
 
-- [x] **6张新表 Entity 类**：ApiKey / KnowledgeBase / Workflow / WorkflowExecution / Agent / CostLog 对齐 init-postgres.sql 4.1.7-4.1.12
+- [x] **6张新表 Entity 类**：ApiKey / KnowledgeBase / Workflow / WorkflowExecution / Agent / CostLog 对齐 init-mysql.sql 4.1.7-4.1.12
 - [x] **6个 Mapper 接口 + XML**：继承 BaseMapper，namespace 正确
 - [x] **RAGService 命名冲突**：`_neo4j_driver` 字段与方法同名 → 字段 `_neo4j` + 方法 `_neo4j_client()`
 - [x] **RAGService 资源泄漏**：新增 `close()` 方法释放 ES / Neo4j / ClickHouse 连接
@@ -250,17 +250,200 @@
 
 ### 待办：后续优化（HIGH/MEDIUM）
 
-- [ ] **Python**: ModelRouter/ChatWorkflow httpx 客户端生命周期管理
-- [ ] **Python**: MCP tools 每次调用创建新服务实例 → 共享单例
-- [ ] **Java**: 适配器类重复 helper 方法（firstNonNull/coalesce）→ 提取到 BaseSystemAdapter
-- [ ] **Java**: JwtAuthenticationFilter 静默吞吃所有异常 → 区分认证失败/系统异常
-- [ ] **Java**: PageQuery 缺少 @Min/@Max 验证
-- [ ] **Java**: KnowledgeApplicationService 缺少 @Transactional 边界
-- [ ] **Java**: DocumentProcessListener TODO（文档处理逻辑未实现）
-- [ ] **前端**: AIChat forceRender 反模式
-- [ ] **前端**: Vite alias `'@': '/src'` → `path.resolve(__dirname, './src')`
+- [x] **Python**: ModelRouter/ChatWorkflow httpx 客户端生命周期管理
+- [x] **Python**: MCP tools 每次调用创建新服务实例 → 共享单例
+- [x] **Java**: 适配器类重复 helper 方法（firstNonNull/coalesce）→ 提取到 BaseSystemAdapter
+- [x] **Java**: JwtAuthenticationFilter 静默吞吃所有异常 → 区分认证失败/系统异常
+- [x] **Java**: PageQuery 缺少 @Min/@Max 验证
+- [x] **Java**: KnowledgeApplicationService 缺少 @Transactional 边界
+- [x] **Java**: DocumentProcessListener TODO（文档处理逻辑未实现）
+- [x] **前端**: AIChat forceRender 反模式
+- [x] **前端**: Vite alias `'@': '/src'` → `path.resolve(__dirname, './src')`
 - [x] ~~**前端**: 缺少 ESLint 配置~~ — 已存在 `eslint.config.mjs`（TS/React/a11y/import 插件完整）
 - [x] **前端**: aria-label 补充（AIChat 关闭按钮/输入框/发送按钮）
+
+---
+
+## Sprint 5：技术方案落地（基于 docs/04-05 补充/优化方案审查）
+
+> **审查日期**：2026-03-24
+> **审查方法**：12篇技术补充/优化方案逐篇对照代码库，提取 P8 核心平台未落地项
+> **参考文档**：`docs/04_技术补充方案/` (6篇) + `docs/05_技术优化方案/` (6篇)
+
+### S5-1. 统一错误码与异常体系（优化方案10）— P0
+
+**现状**：无统一异常类，Controller 直接抛原生异常，无业务错误码体系。
+
+- [x] 新建 `business-server/.../exception/BusinessException.java`：业务异常基类，含 code + message
+- [x] 新建 `business-server/.../exception/ErrorCode.java`：错误码枚举（1000通用/2000认证/3000AI/4000知识库/5000工作流/6000业务规则/7000外部系统）
+- [x] 新建 `business-server/.../exception/GlobalExceptionHandler.java`：`@RestControllerAdvice` 统一异常处理，返回 `ApiResponse` 格式
+- [x] AI 网关同步定义 Python 错误码常量，对齐 Java 层码段
+
+### S5-2. Docker 资源限制（优化方案12）— P0
+
+**现状**：docker-compose.yml 所有服务无 mem_limit / cpus 限制，单服务可吞噬宿主机全部资源。
+
+- [x] `docker/docker-compose.yml`：为所有 13 个服务添加 `deploy.resources.limits`（CPU + 内存上限）
+- [x] 关键服务资源参考：MySQL 4C16G、Milvus 4C16G、ES 4C8G、Redis 2C4G、Ollama 4C8G
+
+### S5-3. Springdoc / Swagger UI（优化方案10）— P1
+
+**现状**：业务编排层无 API 文档自动生成，AI 网关依赖 FastAPI 内置 `/docs` 已可用。
+
+- [x] `business-server/pom.xml`：新增 `springdoc-openapi-starter-webmvc-ui` 依赖
+- [x] `application-dev.yml`：配置 Springdoc 分组（业务API / 管理API）
+- [x] 所有 Controller 方法补充 `@Operation` / `@Parameter` 注解（渐进式）
+
+### S5-4. Prometheus Exporters + 告警规则（补充方案04）— P1
+
+**现状**：Prometheus/Grafana 已部署，但 exporters 全部注释、无 Grafana Dashboard、无告警规则。
+
+- [x] `docker/docker-compose.yml`：新增 mysqld-exporter、redis-exporter 服务
+- [x] `docker/prometheus/prometheus.yml`：取消注释并配置 MySQL/Redis 抓取 job
+- [x] 新建 `docker/prometheus/alert-rules.yml`：核心告警（MySQL连接>80%、Redis内存>80%、RabbitMQ队列>10000）
+- [x] 新建 `docker/grafana/dashboards/`：MySQL面板 + Redis面板 + 总览面板（JSON provisioning）
+
+### S5-5. 缓存防护体系（优化方案09）— P1
+
+**现状**：Caffeine + Redis 二级缓存已配置，但无穿透/击穿/雪崩防护。
+
+- [x] `business-server/pom.xml`：新增 `redisson-spring-boot-starter` 依赖（分布式锁）
+- [x] 新建 `business-server/.../service/CacheProtectedService.java`：BloomFilter防穿透 + Redisson互斥锁防击穿 + TTL随机化防雪崩
+- [x] 缓存键命名规范统一：`{产品}:{模块}:{实体}:{ID}` 模式
+
+### S5-6. 缓存失效联动（优化方案09）— P2
+
+**现状**：知识库文档更新后 RAG 缓存不会失效，可能返回过期结果。
+
+- [x] `business-server/.../config/RabbitMQConfig.java`：新增 `cache.invalidation` 队列
+- [x] `business-server/.../service/KnowledgeApplicationService.java`：文档创建/更新时发布缓存失效事件
+- [x] AI 网关监听失效事件，清除对应知识库的 RAG 结果缓存
+
+### S5-7. SSE 统一消息信封（优化方案10）— P2
+
+**现状**：SSE 使用自定义 event 类型（intent/content/ui_spec/done/error），未遵循统一信封规范。
+
+- [x] 定义统一信封 TypeScript 类型（MessageEnvelope: version/id/traceId/timestamp/source/type/payload）
+- [x] AI 网关 SSE 输出改造为 STREAM_START / STREAM_CHUNK / STREAM_END / STREAM_ERROR 格式
+- [x] 前端 SSE 解析层适配新信封格式（向后兼容旧格式）
+
+### S5-8. GraphRAG 图谱查询接入融合（优化方案11）— P2
+
+**现状**：Neo4j 已部署，driver 已预留，但图谱查询未接入 RAG 融合排序，实际仅二路（向量+关键词）。
+
+- [x] 设计医疗知识图谱 Schema（疾病/药物/症状/检查 实体 + 关系模型）
+- [x] 导入基础配伍禁忌图谱数据（Cypher LOAD CSV 或脚本）
+- [x] `ai-gateway/app/services/rag_service.py`：实现 `_graph_search()` 方法，Cypher 查询实体关系
+- [x] 融合排序器接入图谱结果，三路 RRF（向量0.4 + 关键词0.3 + 图谱0.3）
+- [x] 意图自适应权重：FACTUAL / RELATIONAL / REASONING 不同配比
+
+### S5-9. Spring AI 引入（补充方案02）— P3
+
+**现状**：Java 层无 AI 框架集成，方案02 推荐 Spring AI 1.0+。
+
+- [ ] `business-server/pom.xml`：新增 `spring-ai-starter` 依赖
+- [ ] 评估 Java 层 AI 能力需求（模型调用/Embedding/Function Calling）
+
+### S5-10. Feature Flag 服务（优化方案12）— P3
+
+**现状**：无功能开关机制，新功能只能全量发布。
+
+- [x] 新建 `business-server/.../config/FeatureFlagProperties.java`：`@ConfigurationProperties` 绑定 Nacos 动态配置
+- [x] 新建 `business-server/.../service/FeatureFlagService.java`：全局开关 + 用户白名单两种模式 + Redis 缓存
+- [x] 新建 `business-server/.../interfaces/rest/FeatureFlagController.java`：REST 查询端点
+- [x] AI 网关 `app/services/feature_flags.py`：Python 侧 Feature Flag（本地环境变量 + 远程 HTTP 查询）
+
+### S5-11. 语义缓存（优化方案09）— P3
+
+**现状**：每次 RAG 检索都触发完整的 Embedding + Milvus + ES + LLM 调用链路，无语义级缓存。
+
+- [x] AI 网关 `app/services/semantic_cache.py`：Milvus 缓存 Collection + Embedding 相似度检索（>0.95命中）
+- [x] `chat_workflow.py` _handle_knowledge 注入缓存：命中直接返回，未命中走 RAG+LLM 后回写
+- [x] `cache_invalidation.py` 联动：知识库更新时同步清除 Milvus 语义缓存
+
+---
+
+## Sprint 6：生产就绪加固（四层代码审计）
+
+> **审查日期**：2026-03-24
+> **审查方法**：四层并行代码审计（AI网关/业务编排/前端/基础设施），共发现52个新问题
+> **重点方向**：安全加固、可靠性提升、性能优化
+
+### S6-1. Java 安全加固 — P0
+
+**现状**：CORS 通配符、URL 拼接注入、文件上传无类型校验、工作流端点无权限验证。
+
+- [x] `SecurityConfig.java`：CORS `allowedOriginPatterns("*")` → 显式域名白名单
+- [x] `BaseSystemAdapter.java`：URL 字符串拼接 → `UriComponentsBuilder` 安全构造
+- [x] `StorageService.java`：文件上传新增白名单校验（pdf/docx/txt/md/csv）+ 大小限制（100MB）
+- [x] `WorkflowController.java`：deploy/start 端点补充 `@PreAuthorize` 权限
+
+### S6-2. Docker 安全加固 — P0
+
+**现状**：RabbitMQ/MinIO 管理界面外网暴露、ES 安全认证禁用、多服务弱密码。
+
+- [x] `docker-compose.yml`：RabbitMQ 移除 `15672` 端口映射（仅内部访问）
+- [x] `docker-compose.yml`：MinIO 移除 `9001` 端口映射（控制台走 Nginx 代理）
+- [x] `docker-compose.yml`：ES 启用 `xpack.security.enabled=true` + 环境变量密码
+- [x] `docker-compose.yml`：Redis 启用 AOF 持久化（`--appendonly yes --appendfsync everysec`）
+- [x] `docker/.env.example`：补齐所有缺失变量（ES/Nacos/Grafana），密码改为 `<CHANGE_ME>` 占位
+
+### S6-3. AI 网关可靠性提升 — P0
+
+**现状**：DynamicUIService 每次创建新 LLMService 实例、缓存监听无重试、配置无范围校验。
+
+- [x] `dynamic_ui_service.py`：`_llm_generate_spec` 中 LLMService 改为懒加载单例
+- [x] `cache_invalidation.py`：新增指数退避重试（最多3次，5/10/20秒间隔）
+- [x] `config.py`：关键配置添加 `Field(ge=, le=)` 范围约束（权重/阈值/限制数）
+- [x] `.env.example`：数据库 URL 改为 MySQL 驱动（与 config.py 默认值一致）
+
+### S6-4. 前端 Error Boundary + 流式错误处理 — P0
+
+**现状**：无全局 Error Boundary（组件崩溃白屏）、SSE 流无超时/重连、Workspace 页面纯静态。
+
+- [x] 新建 `frontend/src/components/ErrorBoundary.tsx`：全局错误捕获 + Ant Design Result 降级 UI
+- [x] `main.tsx`：包裹 `<ErrorBoundary>` 到根组件
+- [x] `AIChat.tsx`：SSE 流添加 30s 超时 + 友好错误提示（429/503 分类处理）
+- [x] `Workspace.tsx`：接入 TanStack Query 加载待办/统计真实数据（loading/error/empty 三态）
+
+### S6-5. Java 性能与可靠性 — P1
+
+**现状**：适配器串行调用、HikariCP 未配置、AuditLogListener 无限重试、日期参数无校验。
+
+- [x] `TaskApplicationService.java`：适配器串行 → `CompletableFuture` 并行调用
+- [x] `application-dev.yml`：补充 HikariCP 连接池配置（max=20, min-idle=5）
+- [x] `AuditLogListener.java`：`basicNack` 无限重试 → 3次重试后进死信队列
+- [x] `AuditController.java`：日期参数 String → `@DateTimeFormat LocalDate` + 逻辑校验
+- [x] `application.yml`：移除 `profiles.active: dev` 硬编码，由启动参数指定
+
+### S6-6. 前端 API 层与性能优化 — P1
+
+**现状**：API 客户端配置不一致、React Query 无 staleTime、KnowledgeBase 页面静态。
+
+- [x] `services/api.ts`：提取 `createClient()` 工厂函数，统一超时/拦截器/Token 注入
+- [x] `AuditLog.tsx`：React Query 添加 `staleTime: 5min`、`gcTime: 10min`
+- [x] `KnowledgeBase.tsx`：接入知识库 API 加载真实数据（同 Workspace 三态处理）
+
+### S6-7. Nginx + Prometheus 运维增强 — P2
+
+**现状**：Nginx 无 gzip/日志轮转、Prometheus 告警规则不完整。
+
+- [x] `nginx.conf`：新增 gzip 压缩 + 增强日志格式（含 request_time/upstream_time）
+- [x] `alert-rules.yml`：补充容器 CPU/内存、磁盘空间、RabbitMQ 队列深度告警规则
+
+---
+
+### 产品线专属（非 P8 核心，记录备忘）
+
+> 以下方案针对其他产品线，当前代码库不涉及，仅记录关键待办。
+
+- [ ] **补充方案01 命名规范**：全团队通知 T-Layer/Tier 命名规范、文档头编号标注
+- [ ] **补充方案03 P3离线模式**：IndexedDB + Service Worker + 本地规则引擎（P3专属）
+- [ ] **补充方案05 WebRTC会诊**：LiveKit Server 部署 + 视频会诊功能（P2 v3.0，Q3-Q4）
+- [ ] **补充方案06 Part A SSO**：Keycloak 24.x 部署 + 8产品 OIDC 集成
+- [ ] **补充方案06 Part B 零容错**：Drools 规则引擎 + 药物三级防护体系（P2/P3专属）
+- [ ] **优化方案07 医疗合规**：DataClassification 四级分类注解、AI可解释性封装、等保三级整改
+- [ ] **优化方案08 P6技术栈**：抽取 @lizkal/shared-* 共享 npm 包、移除 NestJS BFF
 
 ---
 
@@ -314,7 +497,7 @@
 - ✅ Vite 分层代理
 
 ### 基础设施
-- ✅ Docker Compose 13服务（PostgreSQL/Redis/Milvus/RabbitMQ/ES/MinIO/ClickHouse/Ollama/Neo4j/Prometheus/Grafana/Nginx/Nacos）
-- ✅ PostgreSQL 12张表 + 索引 + FK ON DELETE 策略 + 默认管理员
+- ✅ Docker Compose 13服务（MySQL/Redis/Milvus/RabbitMQ/ES/MinIO/ClickHouse/Ollama/Neo4j/Prometheus/Grafana/Nginx/Nacos）
+- ✅ MySQL 12张表 + 索引 + FK ON DELETE 策略 + 默认管理员
 
 </details>

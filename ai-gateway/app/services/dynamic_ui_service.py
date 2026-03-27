@@ -43,6 +43,13 @@ class DynamicUIService:
 
         return None
 
+    def _get_llm_service(self):
+        """懒加载 LLMService 单例，避免每次调用创建新实例。"""
+        if not hasattr(self, "_llm_service") or self._llm_service is None:
+            from app.services.llm_service import LLMService
+            self._llm_service = LLMService()
+        return self._llm_service
+
     async def _llm_generate_spec(self, intent: str, data: Any, context: dict | None) -> dict[str, Any] | None:
         """通过 LLM 生成 UI Spec（实验性）。
 
@@ -53,9 +60,7 @@ class DynamicUIService:
         """
         import json as _json
 
-        from app.services.llm_service import LLMService
-
-        llm = LLMService()
+        llm = self._get_llm_service()
 
         # 构造数据摘要（避免发送完整数据给 LLM）
         if isinstance(data, list):

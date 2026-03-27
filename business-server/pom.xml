@@ -89,11 +89,24 @@
             <version>${mybatis-plus.version}</version>
         </dependency>
 
+        <!-- MySQL 8.0（保留兼容，服务器环境使用 PostgreSQL）-->
+        <dependency>
+            <groupId>com.mysql</groupId>
+            <artifactId>mysql-connector-j</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
         <!-- PostgreSQL -->
         <dependency>
             <groupId>org.postgresql</groupId>
             <artifactId>postgresql</artifactId>
             <scope>runtime</scope>
+        </dependency>
+
+        <!-- Apache HttpClient 5（Flowable 7.x 依赖）-->
+        <dependency>
+            <groupId>org.apache.httpcomponents.client5</groupId>
+            <artifactId>httpclient5</artifactId>
         </dependency>
 
         <!-- Lombok -->
@@ -147,15 +160,7 @@
             <version>${flowable.version}</version>
         </dependency>
 
-        <!-- Spring Cloud Alibaba Nacos (S4-2) -->
-        <dependency>
-            <groupId>com.alibaba.cloud</groupId>
-            <artifactId>spring-cloud-starter-alibaba-nacos-config</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>com.alibaba.cloud</groupId>
-            <artifactId>spring-cloud-starter-alibaba-nacos-discovery</artifactId>
-        </dependency>
+        <!-- Spring Cloud Alibaba Nacos → 通过 Maven profile -Pnacos 按需引入 -->
 
         <!-- Spring Boot Actuator + Prometheus (S4-5) -->
         <dependency>
@@ -165,6 +170,20 @@
         <dependency>
             <groupId>io.micrometer</groupId>
             <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
+
+        <!-- Springdoc OpenAPI / Swagger UI (S5-3) -->
+        <dependency>
+            <groupId>org.springdoc</groupId>
+            <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+            <version>2.6.0</version>
+        </dependency>
+
+        <!-- Redisson 分布式锁 (S5-5) -->
+        <dependency>
+            <groupId>org.redisson</groupId>
+            <artifactId>redisson-spring-boot-starter</artifactId>
+            <version>3.37.0</version>
         </dependency>
 
         <!-- Test -->
@@ -205,4 +224,21 @@
             </plugin>
         </plugins>
     </build>
+
+    <profiles>
+        <!-- 云环境 Nacos 注册/配置中心：mvn spring-boot:run -Pnacos -->
+        <profile>
+            <id>nacos</id>
+            <dependencies>
+                <dependency>
+                    <groupId>com.alibaba.cloud</groupId>
+                    <artifactId>spring-cloud-starter-alibaba-nacos-config</artifactId>
+                </dependency>
+                <dependency>
+                    <groupId>com.alibaba.cloud</groupId>
+                    <artifactId>spring-cloud-starter-alibaba-nacos-discovery</artifactId>
+                </dependency>
+            </dependencies>
+        </profile>
+    </profiles>
 </project>

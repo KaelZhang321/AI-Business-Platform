@@ -77,12 +77,16 @@ export const authService = {
   /** SSO/Keycloak 登录 — 重定向到 Keycloak 授权端点 */
   loginWithSSO() {
     const keycloakUrl = import.meta.env.VITE_KEYCLOAK_URL
+    if (!keycloakUrl) return
     const realm = import.meta.env.VITE_KEYCLOAK_REALM || 'ai-platform'
     const clientId = import.meta.env.VITE_KEYCLOAK_CLIENT_ID || 'ai-platform-frontend'
-    const redirectUri = encodeURIComponent(`${window.location.origin}/sso/callback`)
-    window.location.href =
-      `${keycloakUrl}/realms/${realm}/protocol/openid-connect/auth` +
-      `?client_id=${clientId}&response_type=code&scope=openid&redirect_uri=${redirectUri}`
+    const url = new URL(`${keycloakUrl}/realms/${realm}/protocol/openid-connect/auth`)
+    const callbackUrl = new URL(`${import.meta.env.BASE_URL}sso/callback`, window.location.origin)
+    url.searchParams.set('client_id', clientId)
+    url.searchParams.set('response_type', 'code')
+    url.searchParams.set('scope', 'openid')
+    url.searchParams.set('redirect_uri', callbackUrl.toString())
+    window.location.href = url.toString()
   },
 
   /** SSO 是否已配置启用 */

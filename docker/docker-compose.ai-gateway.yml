@@ -1,0 +1,37 @@
+services:
+  ai-gateway:
+    container_name: ai-platform-ai-gateway
+    image: ai-platform/ai-gateway:${AI_GATEWAY_IMAGE_TAG:-local}
+    build:
+      context: ../ai-gateway
+      dockerfile: Dockerfile
+      args:
+        BASE_IMAGE: alibaba-cloud-linux-3-registry.cn-hangzhou.cr.aliyuncs.com/alinux3/python:3.11.1
+        PIP_INDEX_URL: https://mirrors.aliyun.com/pypi/simple/
+    env_file:
+      - path: ./.env
+        required: false
+    environment:
+      PYTHONUNBUFFERED: "1"
+      HF_HOME: /opt/model-cache/huggingface
+      TRANSFORMERS_CACHE: /opt/model-cache/huggingface
+      XDG_CACHE_HOME: /opt/model-cache
+    ports:
+      - "${AI_GATEWAY_HOST_PORT:-8000}:8000"
+    volumes:
+      - ai_gateway_model_cache:/opt/model-cache
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 45s
+    restart: unless-stopped
+
+volumes:
+  ai_gateway_model_cache:
+
+networks:
+  default:
+    external: true
+    name: ai-platform-net

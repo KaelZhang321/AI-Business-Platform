@@ -20,21 +20,21 @@ public class ReservationAdapter extends BaseSystemAdapter {
     @Override
     protected Map<String, Object> mapTaskFields(Map<String, Object> raw) {
         Map<String, Object> mapped = new HashMap<>();
-        mapped.put("sourceId", firstNonNull(raw, "reservation_id", "booking_id", "id"));
-        mapped.put("title", firstNonNull(raw, "service_name", "title", "subject"));
-        mapped.put("description", firstNonNull(raw, "customer_name", "description", "remark"));
-        mapped.put("status", mapStatus(String.valueOf(firstNonNull(raw, "booking_status", "status"))));
-        mapped.put("priority", mapPriority(String.valueOf(firstNonNull(raw, "urgency", "priority"))));
-        mapped.put("deadline", firstNonNull(raw, "appointment_time", "scheduled_at", "deadline"));
-        mapped.put("externalUrl", firstNonNull(raw, "detail_url", "url"));
+        mapped.put("sourceId", coalesce(raw, "reservation_id", "booking_id", "id"));
+        mapped.put("title", coalesce(raw, "service_name", "title", "subject"));
+        mapped.put("description", coalesce(raw, "customer_name", "description", "remark"));
+        mapped.put("status", mapStatus(String.valueOf(coalesce(raw, "booking_status", "status"))));
+        mapped.put("priority", mapPriority(String.valueOf(coalesce(raw, "urgency", "priority"))));
+        mapped.put("deadline", coalesce(raw, "appointment_time", "scheduled_at", "deadline"));
+        mapped.put("externalUrl", coalesce(raw, "detail_url", "url"));
         return mapped;
     }
 
     @Override
     protected Map<String, Object> mapActionResponse(Map<String, Object> raw) {
         Map<String, Object> mapped = new HashMap<>();
-        mapped.put("result", firstNonNull(raw, "result", "status"));
-        mapped.put("message", firstNonNull(raw, "message", "msg"));
+        mapped.put("result", coalesce(raw, "result", "status"));
+        mapped.put("message", coalesce(raw, "message", "msg"));
         mapped.put("data", raw.get("data"));
         return mapped;
     }
@@ -58,13 +58,5 @@ public class ReservationAdapter extends BaseSystemAdapter {
             case "低", "low" -> "low";
             default -> "normal";
         };
-    }
-
-    private Object firstNonNull(Map<String, Object> map, String... keys) {
-        for (String key : keys) {
-            Object val = map.get(key);
-            if (val != null) return val;
-        }
-        return null;
     }
 }

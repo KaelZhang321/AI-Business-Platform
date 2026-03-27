@@ -6,7 +6,6 @@ import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Select;
 
 import java.util.Optional;
-import java.util.UUID;
 
 @Mapper
 public interface UserMapper extends BaseMapper<User> {
@@ -15,5 +14,5 @@ public interface UserMapper extends BaseMapper<User> {
     Optional<User> findByUsername(String username);
 
     @Select("SELECT * FROM users WHERE id = #{id} LIMIT 1")
-    Optional<User> findById(UUID id);
+    Optional<User> findById(String id);
 }

@@ -30,19 +30,21 @@ type ChatMsg = {
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || window.location.origin
 
+const initialMessages: ChatMsg[] = [
+  {
+    role: 'assistant',
+    content: [
+      {
+        type: 'text',
+        text: '你好！我是AI助手，可以帮你查询待办、搜索知识库、分析数据。请问有什么需要帮助的？',
+      },
+    ],
+  },
+]
+
 export default function AIChat({ onClose }: AIChatProps) {
   const { user } = useAppStore()
-  const messagesRef = useRef<ChatMsg[]>([
-    {
-      role: 'assistant',
-      content: [
-        {
-          type: 'text',
-          text: '你好！我是AI助手，可以帮你查询待办、搜索知识库、分析数据。请问有什么需要帮助的？',
-        },
-      ],
-    },
-  ])
+  const [messages, setMessages] = useState<ChatMsg[]>(initialMessages)
   const abortControllerRef = useRef<AbortController | null>(null)
   const conversationIdRef = useRef<string | null>(null)
   const bufferRef = useRef('')
@@ -50,10 +52,9 @@ export default function AIChat({ onClose }: AIChatProps) {
   const [sources, setSources] = useState<Source[]>([])
   const [intent, setIntent] = useState<string | null>(null)
   const [isStreaming, setIsStreaming] = useState(false)
-  const [, forceRender] = useState(0)
 
   const runtime = useExternalStoreRuntime({
-    messages: messagesRef.current,
+    messages,
     isRunning: isStreaming,
     convertMessage: (msg: ChatMsg) => ({
       role: msg.role,
@@ -72,25 +73,27 @@ export default function AIChat({ onClose }: AIChatProps) {
   })
 
   const addMessage = ({ role, text }: { role: 'user' | 'assistant'; text: string }) => {
-    messagesRef.current = [
-      ...messagesRef.current,
+    setMessages((prev) => [
+      ...prev,
       { role, content: [{ type: 'text' as const, text }] },
-    ]
-    forceRender((tick) => tick + 1)
+    ])
   }
 
   const appendAssistantChunk = (chunk: string) => {
     if (!chunk) return
-    const nextMessages = [...messagesRef.current]
-    const last = nextMessages[nextMessages.length - 1]
-    if (!last || last.role !== 'assistant') {
-      nextMessages.push({ role: 'assistant', content: [{ type: 'text', text: chunk }] })
-    } else {
-      const currentText = last.content?.[0]?.text ?? ''
-      last.content = [{ type: 'text', text: currentText + chunk }]
-    }
-    messagesRef.current = nextMessages
-    forceRender((tick) => tick + 1)
+    setMessages((prev) => {
+      const nextMessages = [...prev]
+      const last = nextMessages[nextMessages.length - 1]
+      if (!last || last.role !== 'assistant') {
+        nextMessages.push({ role: 'assistant', content: [{ type: 'text', text: chunk }] })
+      } else {
+        nextMessages[nextMessages.length - 1] = {
+          ...last,
+          content: [{ type: 'text', text: (last.content?.[0]?.text ?? '') + chunk }],
+        }
+      }
+      return nextMessages
+    })
   }
 
   const streamChat = async (userText: string) => {
@@ -101,6 +104,16 @@ export default function AIChat({ onClose }: AIChatProps) {
     setUiSpec(null)
     setSources([])
     setIntent(null)
+
+    // 首字节超时 60s，读取间隔超时 30s
+    const FIRST_BYTE_TIMEOUT = 60_000
+    const READ_TIMEOUT = 30_000
+
+    const scheduleTimeout = (ms: number, reason: string) => {
+      return setTimeout(() => controller.abort(reason), ms)
+    }
+
+    let timer = scheduleTimeout(FIRST_BYTE_TIMEOUT, 'AI 响应超时，请重试')
 
     try {
       const body = {
@@ -119,7 +132,11 @@ export default function AIChat({ onClose }: AIChatProps) {
         signal: controller.signal,
       })
       if (!response.ok || !response.body) {
-        throw new Error('聊天服务不可用')
+        const status = response.status
+        if (status === 429) throw new Error('请求过于频繁，请稍后再试')
+        if (status === 503) throw new Error('AI 服务暂时不可用，请稍后重试')
+        if (status >= 500) throw new Error(`服务异常 (${status})，请稍后重试`)
+        throw new Error(`请求失败 (${status})`)
       }
       const reader = response.body.getReader()
       const decoder = new TextDecoder('utf-8')
@@ -127,15 +144,21 @@ export default function AIChat({ onClose }: AIChatProps) {
 
       while (true) {
         const { value, done } = await reader.read()
+        clearTimeout(timer)
         if (done) break
+        timer = scheduleTimeout(READ_TIMEOUT, 'AI 响应中断，请重试')
         bufferRef.current += decoder.decode(value, { stream: true })
         bufferRef.current = processEventBuffer(bufferRef.current)
       }
     } catch (error) {
       if (!controller.signal.aborted) {
         message.error((error as Error).message || 'AI 对话失败')
+      } else {
+        const reason = typeof controller.signal.reason === 'string' ? controller.signal.reason : 'AI 对话超时'
+        message.warning(reason)
       }
     } finally {
+      clearTimeout(timer)
       setIsStreaming(false)
       abortControllerRef.current = null
     }
@@ -166,21 +189,43 @@ export default function AIChat({ onClose }: AIChatProps) {
     if (!dataPayload) return
     try {
       const parsed = JSON.parse(dataPayload)
-      switch (event) {
+
+      // 统一信封格式（v1.0）：解包 payload
+      const isEnvelope = parsed.version && parsed.type && parsed.payload !== undefined
+      const payload = isEnvelope ? parsed.payload : parsed
+      const eventType = isEnvelope ? parsed.type : event
+
+      switch (eventType) {
+        // 新信封格式
+        case 'STREAM_START':
+          if (payload.intent) setIntent(payload.intent as string)
+          break
+        case 'STREAM_CHUNK':
+          if (payload.text) appendAssistantChunk(payload.text as string)
+          if (payload.ui_spec) setUiSpec(payload.ui_spec)
+          if (payload.sources) setSources(payload.sources as Source[])
+          break
+        case 'STREAM_END':
+          if (payload.conversation_id) conversationIdRef.current = payload.conversation_id as string
+          break
+        case 'STREAM_ERROR':
+          message.error(payload.message || 'AI 服务异常')
+          break
+        // 旧格式向后兼容
         case 'intent':
-          setIntent(parsed.intent as string)
+          setIntent(payload.intent as string)
           break
         case 'content':
-          appendAssistantChunk(parsed.text as string)
+          appendAssistantChunk(payload.text as string)
           break
         case 'ui_spec':
-          setUiSpec(parsed)
+          setUiSpec(payload)
           break
         case 'sources':
-          setSources(parsed as Source[])
+          setSources(payload as Source[])
           break
         case 'done':
-          conversationIdRef.current = parsed.conversation_id as string
+          conversationIdRef.current = payload.conversation_id as string
           break
         default:
           break

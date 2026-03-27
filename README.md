@@ -2,234 +2,125 @@
 
 企业级AI业务中台，集成多源系统数据与AI能力，提供统一的智能工作台。
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Java](https://img.shields.io/badge/Java-17-blue.svg)](https://www.oracle.com/java/)
 [![Python](https://img.shields.io/badge/Python-3.11+-green.svg)](https://www.python.org/)
 [![React](https://img.shields.io/badge/React-19-cyan.svg)](https://react.dev/)
+[![Spring Boot](https://img.shields.io/badge/Spring%20Boot-3.3.6-brightgreen.svg)](https://spring.io/projects/spring-boot)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688.svg)](https://fastapi.tiangolo.com/)
 
-## 🎯 项目简介
+## 项目简介
 
-本项目是一个**面向企业的AI集成平台**，旨在通过AI技术打通企业内部分离的各个业务系统（ERP、CRM、OA等），实现：
+本项目是一个**面向企业的AI集成平台**，通过AI技术打通企业内部各业务系统（ERP、CRM、OA、预约、业务中台、360），实现：
 
-- **统一工作台**：一个界面聚合所有待办事项，无需切换多个系统
-- **智能问答**：基于RAG技术的私有知识库问答
-- **自然语言查询**：通过Text2SQL用自然语言查询业务数据
-- **动态UI生成**：AI实时生成匹配的后台管理界面
+- **统一工作台** — 一个界面聚合所有待办事项，6 个系统并行拉取
+- **智能问答** — GraphRAG 三路融合检索（向量 + 关键词 + 知识图谱）
+- **自然语言查数** — Text2SQL 自然语言转 SQL，自动生成可视化图表
+- **动态 UI 生成** — AI 实时生成 7 种组件（Card/Table/Metric/List/Form/Tag/Chart）
+- **工作流审批** — Flowable BPMN 引擎，通用审批流程
 
-## 🏗️ 技术架构
-
-### 系统分层
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                         前端层 (Frontend)                        │
-│              React 19 + Vite + TypeScript + Ant Design          │
-│                         端口: 5173                                │
-└─────────────────────────────────────────────────────────────────┘
-                                  │
-                    ┌─────────────┴─────────────┐
-                    ▼                           ▼
-┌─────────────────────────────────┐  ┌─────────────────────────────────┐
-│        AI网关层 (AI Gateway)      │  │     业务编排层 (Business Server)  │
-│   Python/FastAPI + LangChain     │  │   Java/Spring Boot 3 单体架构    │
-│         端口: 8000               │  │          端口: 8080              │
-└─────────────────────────────────┘  └─────────────────────────────────┘
-          │                                    │
-          ▼                                    ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                       基础设施层 (Infrastructure)                 │
-│   PostgreSQL │ Redis │ Milvus │ RabbitMQ │ Elasticsearch │ MinIO │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-### 请求流向
+## 技术架构
 
 ```
-前端(:5173) ──→ AI网关(:8000)     ──→ Ollama / Milvus / ES / ClickHouse
-              └→ 业务编排(:8080)   ──→ PostgreSQL / Redis / RabbitMQ
-
-### 业务编排层分层（单体）
-
-```
-business-server/
-├── application/        # 用例编排，含 task/knowledge/audit 等 ApplicationService 与 DTO
-├── domain/             # 领域模型（实体、聚合、领域服务）
-├── interfaces/         # 适配层，REST Controller + ViewObject
-├── infrastructure/
-│   ├── persistence/    # MyBatis-Plus Mapper、数据库实现
-│   └── system/         # ERP/CRM/OA 等外部系统适配器
-└── config/             # MyBatisPlus、Cache、Redis、MQ 等统一配置
+                      ┌→ Nginx(:80) ──────────────────────────────┐
+  前端(:5173) ──→ AI网关(:8000)     ──→ Ollama/Milvus/ES/ClickHouse/Neo4j
+               └→ 业务编排(:8080)   ──→ MySQL/Redis/☁RabbitMQ/☁Nacos
+                      └→ 监控: ☁Prometheus + ☁Grafana（云服务）
 ```
 
-- 默认引入 **Caffeine + Redis** 组合缓存（`@EnableCaching`），遵循“先内存、再 Redis、最后数据库”的三级策略。
-- Application 层仅与 DTO/VO 交互，避免 Controller 直接访问 Mapper，满足 Clean Architecture 的依赖流向。
-```
+### 三层职责
 
-## ✨ 核心功能
+| 层 | 技术栈 | 职责 |
+|----|--------|------|
+| **前端** | React 19 + Vite 5 + Ant Design 5 + Tailwind CSS | AI 对话、动态 UI 渲染（7 种组件）、数据可视化（ECharts） |
+| **AI 网关** | Python 3.11+ / FastAPI + LangChain + LangGraph | 意图分类（4 类 + 9 子类）、GraphRAG、Text2SQL、LLM 多后端路由、MCP Server |
+| **业务编排** | Java 17 / Spring Boot 3.3.6 + MyBatis-Plus 3.5.9 | 待办聚合（6 系统适配器）、知识库、审计日志 + ClickHouse、Flowable 工作流、数据权限 |
 
-### 1. 🤖 多系统适配器架构
-- 抽象统一的 `BaseSystemAdapter` 接口
-- 已实现：ERP适配器、CRM适配器、OA适配器
-- 支持快速扩展新系统对接
+## 核心功能
 
-### 2. 🔍 RAG 智能问答
-- 混合检索：向量相似度 + 关键词BM25 + RRF融合
-- 支持多文档格式：PDF、Word、Markdown、TXT
-- 向量数据库：Milvus
-- 文档解析：Unstructured OCR
+### AI 对话（SSE 流式）
+- 4 类一级意图自动分类：闲聊 / 知识检索 / 数据查询 / 任务管理
+- 9 类二级意图精细路由：政策/产品/医疗知识、客户/销售/运营数据、任务查询/创建/审批
+- 统一 SSE 信封格式（STREAM_START → STREAM_CHUNK → STREAM_END）
+- Markdown 渲染 + 代码语法高亮
 
-### 3. 📊 Text2SQL 自然语言查询
-- 基于 Vanna.ai 实现
-- 自动生成SQL语句查询业务数据库
-- 支持复杂Join和聚合查询
+### GraphRAG 混合检索
+- 三路融合：Milvus 向量（BGE-M3）+ ES 关键词（BM25）+ Neo4j 图谱
+- RRF 融合排序 + BGE-Reranker-v2 重排序
+- 意图自适应权重（FACTUAL / RELATIONAL / REASONING）
+- Milvus 语义缓存（相似度 > 0.95 直接命中）
 
-### 4. 🎨 动态UI生成
-- AI根据业务数据动态渲染管理界面
-- 支持7种核心组件类型
-- 实时交互，无需重复开发
+### Text2SQL 自然语言查数
+- 基于 Vanna.ai，火山引擎 ARK（OpenAI 兼容接口）推理
+- SQL 安全校验（黑名单 + 注释检测 + 多语句防护 + 自动 LIMIT）
+- 自动生成可视化 UI Spec（Table + Metric + Chart 智能选型）
 
-### 5. 📝 AI对话助手
-- SSE流式响应
-- 意图自动分类与路由
-- 会话历史持久化
+### 动态 UI 渲染
+- AI 网关返回 JSON Spec → 前端 `@json-render/react` 渲染
+- 7 种组件：Card / Table / Metric / List / Form / Tag / Chart
+- 图表自动选型：柱状图 / 折线图 / 饼图 / 散点图 / 雷达图
 
-### 6. 📋 审计日志
-- 完整的AI调用记录
-- 请求参数、响应内容、耗时分析
-- 合规审计支持
+### 待办聚合
+- 适配器模式对接 6 个外部系统：ERP / CRM / OA / 预约 / 业务中台 / 360
+- CompletableFuture 并行调用 + 断路器保护 + Caffeine/Redis 二级缓存
 
-## 🛠️ 技术栈
+### 工作流引擎
+- Flowable 7.1.0 BPMN 引擎
+- 通用审批流程（提交 → 主管审批 → 通过/驳回）
+- 流程部署 / 启动 / 认领 / 完成全生命周期
 
-| 层级 | 技术选型 | 说明 |
-|------|---------|------|
-| **前端** | React 19 + Vite 5 + TypeScript 5 | 现代前端工程化 |
-| **UI框架** | Ant Design 5 + Tailwind CSS | 企业级组件库 |
-| **状态管理** | Zustand | 轻量级状态管理 |
-| **AI网关** | Python 3.11+ / FastAPI | 高性能异步API |
-| **AI框架** | LangChain 0.3 + LangGraph 0.2 | LLM应用开发框架 |
-| **LLM** | Ollama (本地部署) | 私有化部署保护数据安全 |
-| **向量库** | Milvus | 高性能向量检索 |
-| **业务编排** | Java 17 / Spring Boot 3.3 | 企业级Java开发 |
-| **ORM** | MyBatis-Plus 3.5.9 | 敏捷数据库操作 |
-| **消息队列** | RabbitMQ | 异步任务解耦 |
-| **缓存** | Redis | 高性能缓存 |
-| **搜索引擎** | Elasticsearch | 全文检索 |
-| **对象存储** | MinIO | S3兼容对象存储 |
-| **数据库** | PostgreSQL | 关系型数据存储 |
-| **分析引擎** | ClickHouse | OLAP数据分析 |
-| **基础设施** | Docker Compose | 容器化编排 |
+### 安全体系
+- JWT 认证 + Refresh Token + SSO/Keycloak 预留
+- RBAC + CASL 前端权限 + 行级/列级数据权限（MyBatis-Plus 拦截器）
+- 数据脱敏（`@Sensitive` 注解：手机号/身份证/姓名）
+- API 限流（`@RateLimit` + Redis 滑动窗口）
+- SQL 安全（Text2SQL 黑名单 + JSqlParser AST 改写）
+- Nginx 安全头 + CORS 域名白名单
 
-## 📁 项目结构
-
-```
-AI业务中台/
-├── frontend/                          # React 前端应用
-│   ├── src/
-│   │   ├── components/                # 组件库
-│   │   │   ├── chat/                 # AI对话组件 (assistant-ui)
-│   │   │   └── dynamic-ui/           # 动态UI渲染引擎
-│   │   ├── layouts/                  # 布局组件
-│   │   ├── pages/                    # 页面
-│   │   │   ├── Workspace/            # 统一工作台
-│   │   │   └── KnowledgeBase/        # 知识库管理
-│   │   ├── stores/                   # Zustand状态管理
-│   │   ├── services/                # API服务层
-│   │   └── types/                    # TypeScript类型定义
-│   └── vite.config.ts                # Vite配置(含代理)
-│
-├── ai-gateway/                        # Python AI网关
-│   ├── app/
-│   │   ├── api/
-│   │   │   └── routes/              # API路由
-│   │   │       ├── chat.py           # 对话接口(SSE)
-│   │   │       ├── knowledge.py      # 知识库接口
-│   │   │       └── query.py          # Text2SQL接口
-│   │   ├── services/                 # 业务服务
-│   │   │   ├── intent_classifier.py  # 意图分类
-│   │   │   ├── rag_service.py         # RAG服务
-│   │   │   ├── text2sql_service.py   # Text2SQL服务
-│   │   │   └── dynamic_ui_service.py  # 动态UI服务
-│   │   ├── models/                   # 数据模型
-│   │   └── core/                     # 核心配置
-│   └── pyproject.toml                 # Python依赖
-│
-├── business-server/                    # Java 业务编排层
-│   ├── src/main/java/com/lzke/ai/
-│   │   ├── controller/               # REST控制器
-│   │   │   ├── TaskController.java   # 待办任务
-│   │   │   ├── KnowledgeController.java # 知识库
-│   │   │   └── AuditController.java  # 审计日志
-│   │   ├── service/                 # 业务服务层
-│   │   ├── adapter/                  # 系统适配器
-│   │   │   ├── BaseSystemAdapter.java
-│   │   │   ├── ErpAdapter.java
-│   │   │   ├── CrmAdapter.java
-│   │   │   └── OaAdapter.java
-│   │   ├── mapper/                  # MyBatis Mapper
-│   │   ├── model/
-│   │   │   ├── entity/              # 实体类
-│   │   │   ├── dto/                  # 请求DTO
-│   │   │   └── vo/                   # 响应VO
-│   │   └── config/                   # 配置类
-│   └── pom.xml                       # Maven依赖
-│
-├── docker/                            # 基础设施
-│   ├── docker-compose.yml            # 服务编排
-│   └── init-scripts/
-│       └── init-postgres.sql         # 数据库初始化
-│
-└── docs/                              # 架构设计文档
-    ├── AI业务中台_整体技术架构文档.md
-    └── AI业务中台_MVP一期实施文档.md
-```
-
-## 🚀 快速开始
+## 快速开始
 
 ### 环境要求
 
 | 工具 | 版本要求 |
 |------|---------|
-| Node.js | 18+ |
-| Python | 3.11+ |
-| JDK | **17** (必须) |
-| Maven | 3.9+ |
-| Docker | 24+ |
+| Node.js | >= 18 |
+| Python | >= 3.11 |
+| JDK | **17**（Lombok 不兼容 JDK 23+） |
+| Maven | >= 3.9 |
+| Docker | >= 24 |
 
-> ⚠️ **JDK 注意**：Lombok 不兼容 JDK 23+，请确保使用 JDK 17
-
-### 步骤 1：启动基础设施
+### 1. 启动基础设施
 
 ```bash
 cd docker
-cp .env.example .env
+cp .env.example .env   # 修改所有 <CHANGE_ME> 密码
 docker compose up -d
 ```
 
-### 步骤 2：启动 AI 网关
+### 2. 启动 AI 网关
 
 ```bash
 cd ai-gateway
-cp .env.example .env
-python -m venv .venv
-source .venv/bin/activate
+cp .env.example .env   # 配置 TEXT2SQL_API_KEY 等连接地址
 pip install -e .
 uvicorn app.main:app --reload --port 8000
 ```
 
-访问 http://localhost:8000/docs 查看 Swagger API 文档
+API 文档：http://localhost:8000/docs
 
-### 步骤 3：启动业务编排层
+### 3. 启动业务编排
 
 ```bash
+export JAVA_HOME=/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home
 cd business-server
-# 设置JDK 17路径（如需要）
-export JAVA_HOME=/path/to/jdk17
-mvn spring-boot:run
+mvn spring-boot:run -Dspring-boot.run.profiles=dev
+
+# 如需 Nacos 注册/配置中心（云环境）：
+# mvn spring-boot:run -Pnacos -Dspring-boot.run.profiles=dev
 ```
 
-服务运行在 http://localhost:8080
+Swagger 文档：http://localhost:8080/swagger-ui.html
 
-### 步骤 4：启动前端
+### 4. 启动前端
 
 ```bash
 cd frontend
@@ -237,64 +128,198 @@ npm install
 npm run dev
 ```
 
-访问 http://localhost:5173 进入统一工作台
+访问 http://localhost:5173（开发模式）或 http://localhost:80（Nginx 代理）
 
-## 🌐 服务端口一览
+## 项目结构
+
+```
+AI业务中台/
+├── frontend/                   # React 前端
+│   ├── src/
+│   │   ├── components/         # chat / dynamic-ui / auth / ErrorBoundary
+│   │   ├── pages/              # Workspace / KnowledgeBase / AuditLog / Login
+│   │   ├── services/           # API 客户端（createClient 工厂）+ 认证服务
+│   │   ├── stores/             # Zustand 状态管理
+│   │   ├── abilities/          # CASL 前端权限定义
+│   │   └── types/              # TypeScript 类型定义
+│   └── vite.config.ts          # 分层代理规则
+│
+├── ai-gateway/                 # Python AI 网关
+│   └── app/
+│       ├── api/                # FastAPI 路由（chat / knowledge / query）
+│       ├── services/           # 核心服务
+│       │   ├── chat_workflow.py       # LangGraph 对话工作流
+│       │   ├── intent_classifier.py   # 意图分类（4 类 + 9 子类）
+│       │   ├── rag_service.py         # GraphRAG 三路融合检索
+│       │   ├── text2sql_service.py    # Vanna.ai + ARK OpenAI 接口
+│       │   ├── model_router.py        # 多后端 LLM 路由
+│       │   ├── dynamic_ui_service.py  # JSON Spec UI 生成
+│       │   └── semantic_cache.py      # Milvus 语义缓存
+│       ├── mcp_server/         # MCP Server（FastMCP）
+│       └── core/               # 配置 / 错误码
+│
+├── business-server/            # Java 业务编排（DDD 分层）
+│   └── src/main/java/com/lzke/ai/
+│       ├── domain/entity/      # 数据库实体（12 张表）
+│       ├── application/        # DTO / VO
+│       ├── infrastructure/     # MyBatis-Plus Mapper
+│       ├── service/            # 业务服务
+│       ├── controller/         # REST Controller
+│       ├── interfaces/rest/    # 接口层
+│       ├── security/           # JWT / RBAC / 数据权限 / 脱敏
+│       ├── config/             # SecurityConfig / PasswordEncoderConfig / FlowableConfig
+│       ├── adapter/            # 外部系统适配器（6 个）
+│       ├── annotation/         # @RateLimit / @Sensitive 自定义注解
+│       ├── aspect/             # 限流 / 脱敏 AOP 切面
+│       └── listener/           # RabbitMQ 消费者
+│
+├── docker/                     # 基础设施
+│   ├── docker-compose.yml            # 9 个本地服务
+│   ├── docker-compose.ai-gateway.yml # AI 网关容器编排
+│   ├── docker-compose.business-server.yml # 业务编排容器编排
+│   ├── init-scripts/           # MySQL 初始化（12 张表）
+│   ├── nginx/                  # Nginx 反向代理配置
+│   ├── prometheus/             # Prometheus 抓取 + 告警规则
+│   └── grafana/                # Grafana Dashboard 配置
+│
+└── docs/                       # 项目文档（7 个分类目录）
+    ├── 00_产品全景与价值矩阵/   # 业务需求分析 + 产品价值矩阵
+    ├── 01_产品设计/             # P1-P8 产品线详细设计（每线 4 篇）
+    ├── 02_产品原型/             # 交互原型
+    ├── 03_技术架构方案/         # 整体架构 + MVP 实施 + 集成指南
+    ├── 04_技术补充方案/         # 6 篇补充方案
+    ├── 05_技术优化方案/         # 6 篇优化方案
+    └── 99_其他/                 # 架构审查 + 修改指南
+```
+
+## 服务端口
+
+### 本地 Docker 服务（9 个）
 
 | 服务 | 端口 | 用途 |
 |------|------|------|
-| 前端 | 5173 | Web UI |
-| AI网关 | 8000 | LLM推理、RAG |
-| 业务编排 | 8080 | 业务API |
-| PostgreSQL | 5432 | 主数据库 |
-| Redis | 6379 | 缓存/会话 |
-| Milvus | 19530 | 向量存储 |
-| RabbitMQ | 5672/15672 | 消息队列 |
+| Nginx | 80 | 反向代理统一入口 |
+| MySQL | 3306 | 主数据库 |
+| Redis | 6379 | 缓存 / 会话 / 限流 |
+| Milvus | 19530 | 向量检索 |
 | Elasticsearch | 9200 | 全文搜索 |
-| MinIO | 9000/9001 | 对象存储 |
-| ClickHouse | 8123 | OLAP分析 |
-| Ollama | 11434 | 本地LLM |
+| MinIO | 9000 | 对象存储（S3 兼容） |
+| ClickHouse | 8123 | OLAP 审计分析 |
+| Ollama | 11434 | 本地 LLM |
+| Neo4j | 7474 / 7687 | 知识图谱 |
 
-## 📡 API 文档
+### 云服务（配置指向云地址）
 
-### AI网关 API
+| 服务 | 用途 |
+|------|------|
+| RabbitMQ | 异步消息队列（文档处理/审计日志/缓存失效） |
+| Prometheus + Grafana | 整体监控系统（复用） |
+| Nacos | 服务注册 / 配置中心（Maven profile `-Pnacos` 按需引入） |
+
+### 应用服务
+
+| 服务 | 端口 |
+|------|------|
+| 前端（Vite） | 5173 |
+| AI 网关（FastAPI） | 8000 |
+| 业务编排（Spring Boot） | 8080 |
+
+## API 端点
+
+### AI 网关
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| POST | `/api/v1/chat` | SSE流式对话 |
-| POST | `/api/v1/knowledge/search` | RAG混合检索 |
-| POST | `/api/v1/query/text2sql` | 自然语言转SQL |
+| POST | `/api/v1/chat` | SSE 流式对话 |
+| POST | `/api/v1/knowledge/search` | RAG 知识检索 |
+| POST | `/api/v1/query/text2sql` | 自然语言转 SQL |
+| POST | `/api/v1/query/train` | 导入训练数据 |
+| POST | `/api/v1/query/train-schema` | 从 DDL 自动训练 |
+| SSE | `/mcp` | MCP Server |
 | GET | `/health` | 健康检查 |
+| GET | `/metrics` | Prometheus 指标 |
 
-### 业务编排 API
+### 业务编排
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | GET | `/api/v1/tasks/aggregate` | 多系统待办聚合 |
-| POST | `/api/v1/knowledge/documents` | 上传知识文档 |
-| GET | `/api/v1/knowledge/documents` | 查询文档列表 |
+| GET/POST | `/api/v1/knowledge/documents` | 文档列表 / 创建 |
+| POST | `/api/v1/knowledge/documents/upload` | 文件上传（MinIO） |
 | GET | `/api/v1/audit/logs` | 审计日志查询 |
+| GET | `/api/v1/audit/analytics/*` | ClickHouse 统计分析 |
+| POST | `/api/v1/auth/login` | JWT 登录 |
+| POST | `/api/v1/auth/refresh` | Token 刷新 |
+| GET/POST | `/api/v1/workflow/*` | Flowable 工作流 |
+| GET | `/actuator/prometheus` | Prometheus 指标 |
 
-## 📊 数据库设计
+## 数据库设计
 
-6张核心表存储在 `docker/init-scripts/init-postgres.sql`：
+12 张核心表定义在 `docker/init-scripts/init-mysql.sql`：
 
 | 表名 | 用途 |
 |------|------|
-| `users` | 用户信息 |
-| `system_adapters` | 系统适配器配置 |
+| `users` | 用户信息与角色 |
+| `system_adapters` | 系统适配器配置（6 条预置） |
 | `tasks` | 待办任务（多系统聚合） |
 | `documents` | 知识库文档 |
-| `conversations` | AI对话历史 |
+| `conversations` | AI 对话历史 |
 | `audit_logs` | 审计日志 |
+| `api_keys` | 应用级密钥管理 |
+| `knowledge_bases` | 知识库元数据 |
+| `workflows` | 自定义工作流 |
+| `workflow_executions` | 工作流执行记录 |
+| `agents` | 智能体配置 |
+| `cost_logs` | 成本日志 |
 
-## 📚 文档
+## 技术栈
 
-详细架构设计文档请参考 `docs/` 目录：
+| 类别 | 技术 |
+|------|------|
+| 前端框架 | React 19 + TypeScript 5 + Vite 5 |
+| UI 组件 | Ant Design 5 + Tailwind CSS |
+| AI 对话 | assistant-ui 0.12+ |
+| 动态渲染 | @json-render/react 0.14 + ECharts |
+| 状态管理 | Zustand 4 + TanStack Query 5 |
+| AI 网关 | FastAPI + LangChain 0.3 + LangGraph 0.2 |
+| 向量检索 | Milvus（BGE-M3）+ BGE-Reranker-v2 |
+| Text2SQL | Vanna.ai + 火山引擎 ARK |
+| 知识图谱 | Neo4j 5 + APOC |
+| MCP | FastMCP |
+| 业务框架 | Spring Boot 3.3.6 + MyBatis-Plus 3.5.9 |
+| 工作流 | Flowable 7.1.0 |
+| 缓存 | Caffeine + Redis + Redisson |
+| 消息队列 | RabbitMQ（云服务） |
+| 对象存储 | MinIO（S3 兼容） |
+| 分析库 | ClickHouse |
+| 监控 | Prometheus + Grafana + Micrometer + prometheus-client |
+| 追踪 | LangSmith |
 
-- `AI业务中台_整体技术架构文档.md` — 完整技术架构设计
-- `AI业务中台_MVP一期实施文档.md` — 项目实施计划与接口规范
+## 配置说明
 
-## 📄 License
+| 配置文件 | 说明 |
+|----------|------|
+| `docker/.env` | 基础设施密码（从 `.env.example` 复制） |
+| `ai-gateway/.env` | AI 网关连接地址和 API Key |
+| `business-server/src/main/resources/application-dev.yml` | Spring Boot 开发环境（MySQL） |
+| `business-server/src/main/resources/application-docker.yml` | Docker 生产环境（PostgreSQL） |
+| `business-server/src/main/resources/bootstrap.yml` | Nacos 配置（需 `-Pnacos` 构建才生效） |
+| `frontend/vite.config.ts` | API 代理分层规则 |
 
-MIT License - 详见 [LICENSE](LICENSE) 文件
+## 文档
+
+完整项目文档位于 `docs/` 目录，按 7 个分类组织：
+
+| 目录 | 内容 |
+|------|------|
+| `00_产品全景与价值矩阵/` | 业务需求分析报告、产品全景与价值矩阵、行业标准对比 |
+| `01_产品设计/` | P1-P8 产品线详细设计（每线含需求/功能/交互/迭代 4 篇） |
+| `02_产品原型/` | 核心功能交互原型 |
+| `03_技术架构方案/` | 整体技术架构文档（权威参考）、MVP 一期实施文档、json-render 集成指南 |
+| `04_技术补充方案/` | 6 篇：命名规范 / Agent 选型 / 离线模式 / 存储运维 / WebRTC / 统一认证 |
+| `05_技术优化方案/` | 6 篇：医疗合规 / P6 技术栈 / 缓存策略 / API 版本 / GraphRAG / 容量规划 |
+| `99_其他/` | 技术架构审查报告、文档修改执行指南 |
+
+## License
+
+MIT License

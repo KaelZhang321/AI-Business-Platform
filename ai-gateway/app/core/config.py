@@ -1,3 +1,4 @@
+from pydantic import Field
 from pydantic_settings import BaseSettings
 
 
@@ -6,8 +7,8 @@ class Settings(BaseSettings):
     app_debug: bool = True
     app_port: int = 8000
 
-    # PostgreSQL
-    database_url: str = "postgresql+asyncpg://ai_platform:ai_platform_dev@localhost:5432/ai_platform"
+    # MySQL
+    database_url: str = "mysql+aiomysql://ai_platform:ai_platform_dev@localhost:3306/ai_platform?charset=utf8mb4"
 
     # Redis
     redis_url: str = "redis://:redis_dev@localhost:6379/0"
@@ -18,16 +19,18 @@ class Settings(BaseSettings):
     milvus_collection: str = "knowledge_chunks"
     milvus_vector_field: str = "embedding"
     milvus_output_fields: list[str] = ["doc_id", "title", "content", "doc_type", "metadata"]
-    milvus_search_limit: int = 20
+    milvus_search_limit: int = Field(20, ge=1, le=100)
 
     # Elasticsearch
     elasticsearch_url: str = "http://localhost:9200"
+    elasticsearch_username: str = "elastic"
+    elasticsearch_password: str = "elastic_dev"
     elasticsearch_index: str = "knowledge_documents"
 
     # GraphRAG融合权重
-    rag_vector_weight: float = 0.4
-    rag_keyword_weight: float = 0.3
-    rag_graph_weight: float = 0.3
+    rag_vector_weight: float = Field(0.4, ge=0.0, le=1.0)
+    rag_keyword_weight: float = Field(0.3, ge=0.0, le=1.0)
+    rag_graph_weight: float = Field(0.3, ge=0.0, le=1.0)
 
     # Ollama
     ollama_base_url: str = "http://localhost:11434"
@@ -57,12 +60,15 @@ class Settings(BaseSettings):
     text2sql_default_database: str = "default"
     text2sql_timeout_seconds: int = 12
     text2sql_max_rows: int = 200
+    text2sql_api_key: str = ""          # ARK / OpenAI API Key（env: TEXT2SQL_API_KEY 或 ARK_API_KEY）
+    text2sql_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
+    text2sql_model: str = "ep-20251108132803-xbb9f"
 
     # 动态UI
     llm_ui_spec_enabled: bool = False
 
     # Intent classification
-    intent_confidence_threshold: float = 0.55
+    intent_confidence_threshold: float = Field(0.55, ge=0.0, le=1.0)
 
     # 业务编排层
     business_server_url: str = "http://localhost:8080"
@@ -75,6 +81,21 @@ class Settings(BaseSettings):
     langsmith_api_key: str = ""
     langsmith_project: str = "ai-platform"
     langsmith_tracing: bool = False
+
+    # RabbitMQ（缓存失效监听）
+    rabbitmq_url: str = "amqp://admin:admin_dev@localhost:5672/"
+
+    # Feature Flags（本地模式，key=flag名, value=bool）
+    feature_flags: dict[str, bool] = {
+        "semantic-cache": False,
+        "spring-ai": False,
+    }
+
+    # 语义缓存（S5-11）
+    semantic_cache_enabled: bool = False
+    semantic_cache_similarity_threshold: float = 0.95
+    semantic_cache_ttl_hours: int = 24
+    semantic_cache_max_size: int = 10000
 
     model_config = {"env_file": ".env", "extra": "ignore"}
 

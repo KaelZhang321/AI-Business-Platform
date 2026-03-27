@@ -14,8 +14,4 @@ spring:
         namespace: ${NACOS_NAMESPACE:}
         file-extension: yml
         enabled: ${NACOS_ENABLED:false}
-        # 共享配置
-        shared-configs:
-          - data-id: common.yml
-            group: DEFAULT_GROUP
-            refresh: true
+        shared-configs: ${NACOS_SHARED_CONFIGS:[]}

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import Any, TypedDict
 from uuid import uuid4
 
@@ -20,6 +21,7 @@ from app.services.dynamic_ui_service import DynamicUIService
 from app.services.intent_classifier import IntentClassifier
 from app.services.llm_service import LLMService
 from app.services.rag_service import RAGService
+from app.services.semantic_cache import SemanticCacheService
 from app.services.text2sql_service import Text2SQLService
 
 logger = logging.getLogger(__name__)
@@ -45,14 +47,20 @@ class ChatWorkflow:
         text2sql_service: Text2SQLService | None = None,
         dynamic_ui: DynamicUIService | None = None,
         llm_service: LLMService | None = None,
+        semantic_cache: SemanticCacheService | None = None,
     ) -> None:
         self._intent_classifier = intent_classifier or IntentClassifier()
         self._rag_service = rag_service or RAGService()
         self._text2sql_service = text2sql_service or Text2SQLService()
         self._dynamic_ui = dynamic_ui or DynamicUIService()
         self._llm_service = llm_service or LLMService()
+        self._semantic_cache = semantic_cache or SemanticCacheService()
         self._http = httpx.AsyncClient(timeout=15)
         self._graph = self._build_graph()
+
+    async def close(self) -> None:
+        """关闭内部 httpx 客户端。"""
+        await self._http.aclose()
 
     def _build_graph(self):
         graph = StateGraph(ChatState)
@@ -85,12 +93,13 @@ class ChatWorkflow:
     async def stream(self, request: ChatRequest):
         initial_state = self._initial_state(request)
         async for event in self._graph.astream_events(initial_state, version="v1"):
-            yield from self._convert_event(request, event)
+            yield self._convert_event(request, event)
 
     def _convert_event(self, request: ChatRequest, event: dict[str, Any]):
         event_type: str | None = event.get("event")
         name: str | None = event.get("name")
         state = event.get("data", {}).get("state", {})
+        trace_id = request.conversation_id or ""
 
         if event_type == "on_node_end" and name == "classify":
             intent = state.get("intent", IntentType.CHAT)
@@ -99,19 +108,19 @@ class ChatWorkflow:
                 "intent": intent.value if isinstance(intent, IntentType) else intent,
                 "sub_intent": sub_intent.value if isinstance(sub_intent, SubIntentType) else sub_intent,
             }
-            yield self._sse("intent", payload)
+            yield self._sse("STREAM_START", payload, trace_id)
         elif event_type == "on_node_end" and name in {"knowledge", "query", "task", "chat"}:
             text = state.get("response_text", "")
             if text:
-                yield self._sse("content", {"node": name, "text": text})
+                yield self._sse("STREAM_CHUNK", {"node": name, "text": text}, trace_id)
             if state.get("ui_spec"):
-                yield self._sse("ui_spec", state["ui_spec"])
+                yield self._sse("STREAM_CHUNK", {"ui_spec": state["ui_spec"]}, trace_id)
             if sources := state.get("sources"):
-                yield self._sse("sources", sources)
+                yield self._sse("STREAM_CHUNK", {"sources": sources}, trace_id)
         elif event_type == "on_graph_end":
             final_state = state if state else {}
             response = self._to_response(request, final_state)
-            yield self._sse("done", response.model_dump())
+            yield self._sse("STREAM_END", response.model_dump(), trace_id)
 
     def _initial_state(self, request: ChatRequest) -> ChatState:
         return {
@@ -130,12 +139,31 @@ class ChatWorkflow:
 
     async def _handle_knowledge(self, state: ChatState) -> dict[str, Any]:
         req = ChatRequest(**state["request"])
+
+        # S5-11: 语义缓存 — 命中则直接返回
+        cache_hit = await self._semantic_cache.lookup(req.message)
+        if cache_hit:
+            logger.info("语义缓存命中 (similarity=%.4f)", cache_hit.similarity)
+            return {
+                "response_text": cache_hit.answer,
+                "ui_spec": cache_hit.ui_spec,
+                "sources": cache_hit.sources,
+            }
+
         results = await self._rag_service.search(req.message)
         if results:
             summary_lines = [f"- {item.title}: {item.content[:150]}" for item in results[:3]]
             response_text = "\n".join(summary_lines)
             ui_spec = await self._dynamic_ui.generate_ui_spec("knowledge", results)
             sources = [item.model_dump() for item in results]
+
+            # S5-11: 写入语义缓存
+            await self._semantic_cache.store(
+                question=req.message,
+                answer=response_text,
+                sources=sources,
+                ui_spec=ui_spec,
+            )
         else:
             response_text = "未从知识库中检索到相关内容。"
             ui_spec = None
@@ -220,5 +248,15 @@ class ChatWorkflow:
         )
 
     @staticmethod
-    def _sse(event: str, data: Any) -> str:
-        return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+    def _sse(event_type: str, payload: Any, trace_id: str = "") -> str:
+        """统一 SSE 信封格式 — STREAM_START / STREAM_CHUNK / STREAM_END / STREAM_ERROR"""
+        envelope = {
+            "version": "1.0",
+            "id": str(uuid4()),
+            "traceId": trace_id,
+            "timestamp": int(time.time() * 1000),
+            "source": "ai-gateway",
+            "type": event_type,
+            "payload": payload,
+        }
+        return f"event: {event_type}\ndata: {json.dumps(envelope, ensure_ascii=False)}\n\n"
