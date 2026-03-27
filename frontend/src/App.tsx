@@ -10,6 +10,7 @@ import { AbilityContext } from './components/auth/Can'
 import { useAppStore } from './stores/useAppStore'
 
 const Login = lazy(() => import('./pages/Login'))
+const SsoCallback = lazy(() => import('./pages/SsoCallback'))
 const Workspace = lazy(() => import('./pages/Workspace'))
 const KnowledgeBase = lazy(() => import('./pages/KnowledgeBase'))
 const AuditLog = lazy(() => import('./pages/AuditLog'))
@@ -29,6 +30,7 @@ function App() {
     <Suspense fallback={PageFallback}>
     <Routes>
       <Route path="/login" element={<Login />} />
+      <Route path="/sso/callback" element={<SsoCallback />} />
 
       <Route element={<ProtectedRoute />}>
         <Route element={<MainLayout />}>

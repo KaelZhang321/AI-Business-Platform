@@ -81,10 +81,11 @@ export const authService = {
     const realm = import.meta.env.VITE_KEYCLOAK_REALM || 'ai-platform'
     const clientId = import.meta.env.VITE_KEYCLOAK_CLIENT_ID || 'ai-platform-frontend'
     const url = new URL(`${keycloakUrl}/realms/${realm}/protocol/openid-connect/auth`)
+    const callbackUrl = new URL(`${import.meta.env.BASE_URL}sso/callback`, window.location.origin)
     url.searchParams.set('client_id', clientId)
     url.searchParams.set('response_type', 'code')
     url.searchParams.set('scope', 'openid')
-    url.searchParams.set('redirect_uri', `${window.location.origin}/sso/callback`)
+    url.searchParams.set('redirect_uri', callbackUrl.toString())
     window.location.href = url.toString()
   },
 

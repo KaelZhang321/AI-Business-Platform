@@ -7,6 +7,8 @@ import zhCN from 'antd/locale/zh_CN'
 import App from './App'
 import './index.css'
 
+const routerBase = import.meta.env.BASE_URL.replace(/\/$/, '') || '/'
+
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
@@ -20,7 +22,7 @@ const queryClient = new QueryClient({
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <BrowserRouter>
+    <BrowserRouter basename={routerBase === '/' ? undefined : routerBase}>
       <QueryClientProvider client={queryClient}>
         <ConfigProvider locale={zhCN}>
           <App />
