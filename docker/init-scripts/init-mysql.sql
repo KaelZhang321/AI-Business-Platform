@@ -1,6 +1,20 @@
 -- AI业务中台 MySQL 8.0 初始化脚本
 -- 严格按照文档 4.1 节数据模型定义
 
+CREATE DATABASE IF NOT EXISTS ai_platform_business
+    CHARACTER SET utf8mb4
+    COLLATE utf8mb4_unicode_ci;
+
+CREATE DATABASE IF NOT EXISTS ai_platform_gateway
+    CHARACTER SET utf8mb4
+    COLLATE utf8mb4_unicode_ci;
+
+GRANT ALL PRIVILEGES ON ai_platform_business.* TO 'ai_platform'@'%';
+GRANT ALL PRIVILEGES ON ai_platform_gateway.* TO 'ai_platform'@'%';
+FLUSH PRIVILEGES;
+
+USE ai_platform_business;
+
 -- 4.1.1 用户表 (users)
 CREATE TABLE users (
     id CHAR(36) NOT NULL PRIMARY KEY,
@@ -225,9 +239,9 @@ CREATE INDEX idx_cost_logs_user ON cost_logs(user_id);
 CREATE INDEX idx_cost_logs_model ON cost_logs(model);
 CREATE INDEX idx_cost_logs_created ON cost_logs(created_at DESC);
 
--- 插入默认管理员用户
+-- 插入默认管理员用户（账号：admin，密码：admin123）
 INSERT INTO users (id, username, display_name, department, role, password_hash)
-VALUES (UUID(), 'admin', '系统管理员', '技术部', 'admin', '$2a$10$h6BeMs87sWv36uVw8c0j7OsOf9A4Oi3s2S9aj.YGxuBBGFLAWN4yG');
+VALUES (UUID(), 'admin', '系统管理员', '技术部', 'admin', '$2y$10$53THN4Tu2vMijQSBJ1jqguw1c3QYIllaB59GPFQSqOo8iU3dH/2q6');
 
 -- 插入系统适配器预置数据
 INSERT INTO system_adapters (id, name, code, type, endpoint, auth_type, config, status)

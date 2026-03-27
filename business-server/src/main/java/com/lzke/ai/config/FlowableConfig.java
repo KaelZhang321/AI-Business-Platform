@@ -2,8 +2,6 @@ package com.lzke.ai.config;
 
 import org.flowable.spring.SpringProcessEngineConfiguration;
 import org.flowable.spring.boot.EngineConfigurationConfigurer;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.jdbc.DataSourceProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -28,7 +26,7 @@ public class FlowableConfig {
         return engineConfiguration -> {
             engineConfiguration.setDataSource(primaryDataSource);
             engineConfiguration.setTransactionManager(transactionManager);
-            engineConfiguration.setDatabaseType("postgres");
+            engineConfiguration.setDatabaseType("mysql");
         };
     }
 }

@@ -11,7 +11,7 @@ services:
     restart: unless-stopped
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-ai_platform_dev}
-      MYSQL_DATABASE: ${MYSQL_DATABASE:-ai_platform}
+      MYSQL_DATABASE: ${MYSQL_DATABASE_BUSINESS:-ai_platform_business}
       MYSQL_USER: ${MYSQL_USER:-ai_platform}
       MYSQL_PASSWORD: ${MYSQL_PASSWORD:-ai_platform_dev}
     ports:
