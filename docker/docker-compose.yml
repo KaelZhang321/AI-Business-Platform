@@ -217,27 +217,6 @@ services:
           cpus: "0.5"
           memory: 1G
 
-  # ── Nginx 反向代理 ───────────────────────────────────────
-  nginx:
-    image: nginx:1.25-alpine
-    container_name: ai-platform-nginx
-    restart: unless-stopped
-    ports:
-      - "80:80"
-    volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./nginx/proxy-params.conf:/etc/nginx/proxy-params.conf:ro
-      - ./nginx/proxy-sse.conf:/etc/nginx/proxy-sse.conf:ro
-      - frontend_dist:/usr/share/nginx/html:ro
-    deploy:
-      resources:
-        limits:
-          cpus: "1"
-          memory: 1G
-        reservations:
-          cpus: "0.25"
-          memory: 128M
-
 volumes:
   mysql_data:
   redis_data:
@@ -251,5 +230,5 @@ volumes:
 
 networks:
   default:
+    external: true
     name: ai-platform-net
-    driver: bridge
