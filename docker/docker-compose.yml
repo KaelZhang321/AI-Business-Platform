@@ -250,5 +250,6 @@ volumes:
   frontend_dist:
 
 networks:
-  ai-platform-net:
-    external: true
+  default:
+    name: ai-platform-net
+    driver: bridge
