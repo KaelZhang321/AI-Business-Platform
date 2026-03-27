@@ -25,13 +25,25 @@ export interface LoginResponse {
   user: UserPermission
 }
 
+function unwrapApiData<T>(payload: T | { data: T }): T {
+  if (
+    payload &&
+    typeof payload === 'object' &&
+    'data' in payload &&
+    payload.data !== undefined
+  ) {
+    return payload.data
+  }
+  return payload as T
+}
+
 export const authService = {
   async login(username: string, password: string): Promise<LoginResponse> {
-    const res = await businessClient.post<{ code: number; message: string; data: LoginResponse }>(
+    const res = await businessClient.post<LoginResponse | { code: number; message: string; data: LoginResponse }>(
       '/api/v1/auth/login',
       { username, password },
     )
-    const loginData = res.data.data
+    const loginData = unwrapApiData(res.data)
     localStorage.setItem(TOKEN_KEY, loginData.token)
     if (loginData.refreshToken) {
       localStorage.setItem(REFRESH_TOKEN_KEY, loginData.refreshToken)
@@ -40,10 +52,10 @@ export const authService = {
   },
 
   async getMe(): Promise<UserPermission> {
-    const res = await businessClient.get<{ code: number; message: string; data: UserPermission }>(
+    const res = await businessClient.get<UserPermission | { code: number; message: string; data: UserPermission }>(
       '/api/v1/auth/me',
     )
-    return res.data.data
+    return unwrapApiData(res.data)
   },
 
   logout() {
