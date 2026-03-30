@@ -13,12 +13,12 @@ spring:
 
   data:
     redis:
-      host: 172.29.240.142
+      host: 39.96.197.81
       port: 6379
       password: SMf1B0VBPWwqNWnr
 
   rabbitmq:
-    host: 172.29.240.142
+    host: 39.96.197.81
     port: 5672
     username: admin
     password: admin_dev
@@ -68,13 +68,13 @@ app:
       secret: dev_change_me_super_secret_key_1234567890
       expiration: 86400000
   minio:
-    endpoint: http://172.29.240.142:9000
+    endpoint: http://39.96.197.81:9000
     access-key: K7#mP9@vX2$bL5!qR8*y
     secret-key: zT4wN8mK2vX9cR5bL7pQ
     bucket: ai-platform-docs
   clickhouse:
     enabled: false
-    url: jdbc:clickhouse://172.29.240.142:8123/ai_platform_logs
+    url: jdbc:clickhouse://39.96.197.81:8123/ai_platform_logs
     username: clickhouse
     password: "*x7Lq@9vP#"
   feature-flags:

@@ -6,7 +6,8 @@ spring:
     name: ai-business-server
   # profiles.active 由启动参数指定：-Dspring.profiles.active=dev
   # 本地开发默认在 IDE 或命令行中传入 --spring.profiles.active=dev
-
+  profiles:
+    active: dev
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
 
