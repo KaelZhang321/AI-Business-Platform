@@ -56,10 +56,10 @@ def register_tools(mcp):
         return [r.model_dump() for r in results]
 
     @mcp.tool()
-    async def text2sql(question: str, database: str = "default") -> dict[str, Any]:
+    async def text2sql(question: str, database: str = "default", domain: str | None = None) -> dict[str, Any]:
         """自然语言转 SQL — 将业务问题转为 SQL 查询并执行，返回结果和可视化 Spec。"""
         service = _get_text2sql_service()
-        result = await service.query(question, database=database)
+        result = await service.query(question, database=database, domain=domain)
         return result.model_dump()
 
     @mcp.tool()

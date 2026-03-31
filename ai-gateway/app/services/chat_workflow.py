@@ -172,10 +172,15 @@ class ChatWorkflow:
 
     async def _handle_query(self, state: ChatState) -> dict[str, Any]:
         req = ChatRequest(**state["request"])
-        result = await self._text2sql_service.query(req.message)
+        result = await self._text2sql_service.query(
+            req.message,
+            sub_intent=state.get("sub_intent"),
+            conversation_id=req.conversation_id,
+            context=req.context,
+        )
         ui_spec = result.chart_spec or await self._dynamic_ui.generate_ui_spec("query", result.results, {"question": req.message})
         sources = [{"sql": result.sql}]
-        return {"response_text": result.explanation, "ui_spec": ui_spec, "sources": sources}
+        return {"response_text": result.answer or result.explanation, "ui_spec": ui_spec, "sources": sources}
 
     async def _handle_task(self, state: ChatState) -> dict[str, Any]:
         """调用业务编排层获取用户待办任务。"""
