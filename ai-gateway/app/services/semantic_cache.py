@@ -21,7 +21,6 @@ from pymilvus import (
     CollectionSchema,
     DataType,
     FieldSchema,
-    connections,
     utility,
 )
 

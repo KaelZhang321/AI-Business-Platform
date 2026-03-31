@@ -8,7 +8,11 @@ class Settings(BaseSettings):
     app_port: int = 8000
 
     # MySQL
-    database_url: str = "mysql+aiomysql://ai_platform:ai_platform_dev@localhost:3306/ai_platform?charset=utf8mb4"
+    ai_mysql_host: str = "localhost"
+    ai_mysql_port: int = 3306
+    ai_mysql_user: str = "ai_platform"
+    ai_mysql_password: str = "ai_platform_dev"
+    ai_mysql_database: str = "ai_platform"
 
     # Redis
     redis_url: str = "redis://:redis_dev@localhost:6379/0"
@@ -63,6 +67,16 @@ class Settings(BaseSettings):
     text2sql_api_key: str = ""          # ARK / OpenAI API Key（env: TEXT2SQL_API_KEY 或 ARK_API_KEY）
     text2sql_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
     text2sql_model: str = "ep-20251108132803-xbb9f"
+
+    # Meeting BI
+    meeting_bi_enabled: bool = False
+    meeting_bi_database_url: str = "mysql+pymysql://root:root@localhost:3306/meeting_bi?charset=utf8mb4"
+    meeting_bi_api_key: str = ""
+    meeting_bi_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
+    meeting_bi_model: str = "deepseek-v3-2-251201"
+    meeting_bi_max_rows: int = 200
+    meeting_bi_context_ttl_seconds: int = 1800
+    meeting_bi_train_on_startup: bool = False
 
     # 动态UI
     llm_ui_spec_enabled: bool = False

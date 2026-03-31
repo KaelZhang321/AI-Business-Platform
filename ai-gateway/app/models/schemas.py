@@ -23,6 +23,7 @@ class SubIntentType(str, Enum):
     DATA_CUSTOMER = "data_customer"
     DATA_SALES = "data_sales"
     DATA_OPERATION = "data_operation"
+    DATA_MEETING_BI = "data_meeting_bi"
     # 任务操作
     TASK_QUERY = "task_query"
     TASK_CREATE = "task_create"
@@ -80,14 +81,23 @@ class KnowledgeResult(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class QueryDomain(str, Enum):
+    GENERIC = "generic"
+    MEETING_BI = "meeting_bi"
+
+
 class Text2SQLRequest(BaseModel):
     question: str = Field(..., description="自然语言查询问题")
     database: str = Field("default", description="目标数据库")
+    domain: QueryDomain | None = Field(None, description="查询域，空则由服务自动判定")
+    conversation_id: str | None = Field(None, description="会话ID，用于多轮问数场景")
 
 
 class Text2SQLResponse(BaseModel):
     sql: str = Field(..., description="生成的SQL")
     explanation: str = Field(..., description="SQL解释")
+    domain: QueryDomain = Field(QueryDomain.GENERIC, description="实际命中的查询域")
+    answer: str | None = Field(None, description="自然语言结论回答")
     results: list[dict[str, Any]] = Field(default_factory=list, description="查询结果")
     chart_spec: dict[str, Any] | None = Field(None, description="可视化图表规格")
 
