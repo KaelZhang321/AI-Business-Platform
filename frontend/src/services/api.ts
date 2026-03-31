@@ -1,148 +1,111 @@
-import axios, { type AxiosError, type AxiosInstance, type InternalAxiosRequestConfig } from 'axios'
-import { authService } from './auth'
-import type { AuditLogEntry, KnowledgeDocument, Task } from '../types'
+// 接口服务层：统一创建带鉴权和自动刷新能力的 Axios 客户端。
+import axios, {
+  type AxiosError,
+  type AxiosInstance,
+  type InternalAxiosRequestConfig,
+} from 'axios';
 
-const TOKEN_KEY = 'ai_platform_token'
+const TOKEN_KEY = 'ai_platform_token';
+const REFRESH_TOKEN_KEY = 'ai_platform_refresh_token';
 
-// ── 401 刷新 — 共享 Promise 消除竞态 ─────────────────────
-let refreshPromise: Promise<string> | null = null
-
-function redirectToLogin() {
-  authService.logout()
-  if (window.location.pathname !== '/login') {
-    window.location.href = '/login'
-  }
+function getToken() {
+  return localStorage.getItem(TOKEN_KEY);
 }
 
-function doRefresh(baseURL: string): Promise<string> {
-  const refreshToken = authService.getRefreshToken()
+function getRefreshToken() {
+  return localStorage.getItem(REFRESH_TOKEN_KEY);
+}
+
+function clearAuthStorage() {
+  localStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem(REFRESH_TOKEN_KEY);
+}
+
+function notifyAuthLogout() {
+  clearAuthStorage();
+  // 通过全局事件把“鉴权已失效”广播给应用层，避免服务层直接依赖 UI。
+  window.dispatchEvent(new CustomEvent('auth:logout'));
+}
+
+function attachToken(config: InternalAxiosRequestConfig) {
+  const token = getToken();
+  if (token) {
+    // 统一在请求发出前注入 Bearer token。
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+}
+
+async function refreshAccessToken(baseURL: string) {
+  const refreshToken = getRefreshToken();
   if (!refreshToken) {
-    return Promise.reject(new Error('no refresh token'))
+    throw new Error('no refresh token');
   }
-  return axios
-    .post<{ token: string; expiresIn: number }>(
-      `${baseURL}/api/v1/auth/refresh`,
-      null,
-      { headers: { Authorization: `Bearer ${refreshToken}` } },
-    )
-    .then((res) => {
-      const newToken = res.data.token
-      authService.setToken(newToken)
-      return newToken
-    })
+
+  const response = await axios.post<{ token: string; expiresIn: number }>(
+    `${baseURL}/api/v1/auth/refresh`,
+    null,
+    {
+      headers: {
+        Authorization: `Bearer ${refreshToken}`,
+      },
+    },
+  );
+
+  localStorage.setItem(TOKEN_KEY, response.data.token);
+  return response.data.token;
 }
 
-// ── Axios 客户端工厂 ─────────────────────────────────────
+let refreshPromise: Promise<string> | null = null;
 
-function createClient(baseURL: string, timeout = 15_000): AxiosInstance {
+export function createClient(baseURL: string, timeout = 15_000): AxiosInstance {
   const client = axios.create({
     baseURL,
     timeout,
-    headers: { 'Content-Type': 'application/json' },
-  })
+    headers: {
+      'Content-Type': 'application/json',
+    },
+  });
 
-  // JWT Token 自动注入
-  client.interceptors.request.use((config: InternalAxiosRequestConfig) => {
-    const token = localStorage.getItem(TOKEN_KEY)
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`
-    }
-    return config
-  })
-
-  // 401 自动刷新
+  client.interceptors.request.use(attachToken);
   client.interceptors.response.use(
-    (r) => r,
+    (response) => response,
     async (error: AxiosError) => {
-      const originalRequest = error.config as InternalAxiosRequestConfig & { _retried?: boolean }
-      if (error.response?.status !== 401 || !originalRequest || originalRequest._retried) {
-        if (error.response?.status === 401) redirectToLogin()
-        return Promise.reject(error)
-      }
-      if (originalRequest.url?.includes('/api/v1/auth/refresh')) {
-        redirectToLogin()
-        return Promise.reject(error)
+      const originalRequest = error.config as
+        | (InternalAxiosRequestConfig & { _retried?: boolean })
+        | undefined;
+
+      if (!originalRequest || error.response?.status !== 401) {
+        return Promise.reject(error);
       }
 
-      originalRequest._retried = true
-
-      if (!refreshPromise) {
-        const refreshBase = businessClient.defaults.baseURL as string
-        refreshPromise = doRefresh(refreshBase).finally(() => { refreshPromise = null })
+      if (originalRequest._retried || originalRequest.url?.includes('/api/v1/auth/refresh')) {
+        notifyAuthLogout();
+        return Promise.reject(error);
       }
+
+      originalRequest._retried = true;
 
       try {
-        const newToken = await refreshPromise
-        originalRequest.headers.Authorization = `Bearer ${newToken}`
-        return client(originalRequest)
+      if (!refreshPromise) {
+        // 共享刷新 Promise，避免多个 401 同时触发多次 refresh 请求。
+        refreshPromise = refreshAccessToken(baseURL).finally(() => {
+          refreshPromise = null;
+        });
+      }
+
+        const newToken = await refreshPromise;
+        originalRequest.headers.Authorization = `Bearer ${newToken}`;
+        return client(originalRequest);
       } catch {
-        redirectToLogin()
-        return Promise.reject(error)
+        notifyAuthLogout();
+        return Promise.reject(error);
       }
     },
-  )
+  );
 
-  return client
+  return client;
 }
 
-const apiClient = createClient(
-  import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000',
-  30_000,
-)
-
-export const businessClient = createClient(
-  import.meta.env.VITE_BUSINESS_API_URL || 'http://localhost:8080',
-  15_000,
-)
-
-// ── 统一响应类型 ──────────────────────────────────────────
-
-export interface PageData<T> {
-  records?: T[]
-  data?: T[]
-  total: number
-  page: number
-  size: number
-}
-
-export interface ApiResult<T> {
-  code: number
-  message: string
-  data: T
-}
-
-// ── AI 网关 API ───────────────────────────────────────────
-
-export const chatAPI = {
-  send: (message: string, conversationId?: string) =>
-    apiClient.post('/api/v1/chat', { message, conversation_id: conversationId, user_id: 'default' }),
-}
-
-export const knowledgeAPI = {
-  search: (query: string, topK = 5) =>
-    apiClient.post('/api/v1/knowledge/search', { query, top_k: topK }),
-}
-
-export const queryAPI = {
-  text2sql: (question: string) =>
-    apiClient.post('/api/v1/query/text2sql', { question }),
-}
-
-// ── 业务编排层 API ────────────────────────────────────────
-
-export const taskAPI = {
-  aggregate: (params?: { userId?: string; status?: string; page?: number; size?: number }) =>
-    businessClient.get<ApiResult<PageData<Task>>>('/api/v1/tasks/aggregate', { params }),
-}
-
-export const documentAPI = {
-  list: (params?: { page?: number; size?: number }) =>
-    businessClient.get<ApiResult<PageData<KnowledgeDocument>>>('/api/v1/knowledge/documents', { params }),
-  create: (data: Record<string, unknown>) =>
-    businessClient.post('/api/v1/knowledge/documents', data),
-}
-
-export const auditAPI = {
-  logs: (params?: { userId?: string; intent?: string; status?: string; startDate?: string; endDate?: string; page?: number; size?: number }) =>
-    businessClient.get<ApiResult<PageData<AuditLogEntry>>>('/api/v1/audit/logs', { params }),
-}
+export const apiClient = createClient(import.meta.env.VITE_API_BASE_URL || '', 30_000);
+export const businessClient = createClient(import.meta.env.VITE_BUSINESS_API_URL || '', 15_000);

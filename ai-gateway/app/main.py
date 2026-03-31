@@ -8,7 +8,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api.routes import chat, knowledge, query
+from app.api.routes import bi, chat, knowledge, query
 from app.core.config import settings
 from app.core.error_codes import BusinessError, ErrorCode
 from app.models.schemas import HealthResponse
@@ -148,6 +148,14 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.warning("关闭 Ollama HTTP 客户端失败: %s", exc)
 
+    # Meeting BI aiomysql 连接池
+    try:
+        from app.bi.meeting_bi.db.async_session import close_meeting_pool
+
+        await close_meeting_pool()
+    except Exception as exc:
+        logger.warning("关闭 Meeting BI 连接池失败: %s", exc)
+
     logger.info("AI网关已关闭")
 
 
@@ -194,6 +202,7 @@ def _error_code_to_http_status(ec: ErrorCode) -> int:
 app.include_router(chat.router, prefix="/api/v1", tags=["对话"])
 app.include_router(knowledge.router, prefix="/api/v1", tags=["知识库"])
 app.include_router(query.router, prefix="/api/v1", tags=["数据查询"])
+app.include_router(bi.router, prefix="/api/v1")
 
 # MCP Server 路由
 from app.mcp_server.server import mcp_server  # noqa: E402

@@ -1,0 +1,1 @@
+"""Meeting BI domain package."""

@@ -11,7 +11,7 @@ services:
     restart: unless-stopped
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-ai_platform_dev}
-      MYSQL_DATABASE: ${MYSQL_DATABASE_BUSINESS:-ai_platform_business}
+      MYSQL_DATABASE: ${BUSINESS_MYSQL_DATABASE:-ai_platform_business}
       MYSQL_USER: ${MYSQL_USER:-ai_platform}
       MYSQL_PASSWORD: ${MYSQL_PASSWORD:-ai_platform_dev}
     ports:
@@ -56,6 +56,31 @@ services:
         reservations:
           cpus: "0.5"
           memory: 512M
+
+  # ==========================================
+  # etcd - Milvus 元数据存储
+  # ==========================================
+  etcd:
+    image: swr.cn-north-4.myhuaweicloud.com/ddn-k8s/quay.io/coreos/etcd:v3.5.5
+    platform: linux/amd64
+    container_name: ${PROJECT_PREFIX:-lecz}-milvus-etcd
+    restart: always
+    environment:
+      - TZ=${TZ:-Asia/Shanghai}
+      - ETCD_AUTO_COMPACTION_MODE=revision
+      - ETCD_AUTO_COMPACTION_RETENTION=1000
+      - ETCD_QUOTA_BACKEND_BYTES=4294967296
+      - ETCD_SNAPSHOT_COUNT=50000
+    volumes:
+      - ./data/milvus/etcd:/etcd
+    # etcd 容器内部端口固定为 2379
+    command: etcd -advertise-client-urls=http://127.0.0.1:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
+    healthcheck:
+      test: [ "CMD", "etcdctl", "endpoint", "health" ]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
 
   milvus:
     image: milvusdb/milvus:v2.3.0
@@ -167,28 +192,6 @@ services:
         reservations:
           cpus: "1"
           memory: 1G
-
-  ollama:
-    image: ollama/ollama
-    container_name: ai-platform-ollama
-    restart: unless-stopped
-    ports:
-      - "127.0.0.1:11434:11434"
-    volumes:
-      - ollama_data:/root/.ollama
-    healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:11434/api/tags || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-    deploy:
-      resources:
-        limits:
-          cpus: "4"
-          memory: 8G
-        reservations:
-          cpus: "1"
-          memory: 2G
 
   # ── Neo4j 图数据库（GraphRAG）────────────────────────────
   neo4j:

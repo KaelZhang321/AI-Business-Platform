@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
 
 from app.core.config import settings
 from app.models.schemas import IntentType, SubIntentType, IntentResult
@@ -24,7 +23,7 @@ class IntentClassifier:
 
 二级意图定义：
 - knowledge下：knowledge_policy(制度/流程/政策咨询)、knowledge_product(产品/服务咨询)、knowledge_medical(医学/健康咨询)
-- query下：data_customer(客户查询/统计)、data_sales(销售/业绩查询)、data_operation(运营查询/统计)
+- query下：data_customer(客户查询/统计)、data_sales(销售/业绩查询)、data_operation(运营查询/统计)、data_meeting_bi(会议BI问数，如报名、签到、大区成交、ROI、方案情报)
 - task下：task_query(查询待办)、task_create(创建任务)、task_approve(审批操作)
 - 无法判断二级意图时返回 general
 """.strip()
@@ -41,6 +40,10 @@ class IntentClassifier:
         SubIntentType.KNOWLEDGE_PRODUCT: ["产品", "服务", "功能", "方案"],
         SubIntentType.KNOWLEDGE_MEDICAL: ["医学", "健康", "诊断", "用药", "治疗"],
         # query
+        SubIntentType.DATA_MEETING_BI: [
+            "会议", "报名", "签到", "已抵达", "到院", "大区", "成交金额", "收款金额", "投资回报率", "roi",
+            "方案情报", "客户画像", "报名客户", "签到率", "目标达成", "运营数据",
+        ],
         SubIntentType.DATA_CUSTOMER: ["客户", "用户数", "会员"],
         SubIntentType.DATA_SALES: ["销售", "业绩", "营收", "订单"],
         SubIntentType.DATA_OPERATION: ["运营", "活跃", "留存", "转化"],

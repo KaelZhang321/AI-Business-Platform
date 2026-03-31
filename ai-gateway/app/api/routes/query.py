@@ -23,6 +23,8 @@ async def text2sql(
     return await text2sql_service.query(
         question=request.question,
         database=request.database or settings.text2sql_default_database,
+        domain=request.domain,
+        conversation_id=request.conversation_id,
     )
 
 

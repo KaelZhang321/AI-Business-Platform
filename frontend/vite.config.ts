@@ -1,55 +1,52 @@
-import path from 'node:path'
-import { fileURLToPath } from 'node:url'
-import { defineConfig } from 'vite'
-import react from '@vitejs/plugin-react'
+// Vite 配置文件：负责插件注册、别名配置和本地代理设置。
+import tailwindcss from '@tailwindcss/vite';
+import react from '@vitejs/plugin-react';
+import path from 'path';
+import { defineConfig, loadEnv } from 'vite';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url))
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, '.', '');
+  const apiUrl = env.VITE_API_BASE_URL?.trim() || 'https://beta-ai-platform.kaibol.net/ai-platform';
 
-export default defineConfig({
-  base: '/ai-platform/',
-  plugins: [react()],
-  build: {
-    rollupOptions: {
-      output: {
-        manualChunks: {
-          'vendor-react': ['react', 'react-dom', 'react-router-dom'],
-          'vendor-antd': ['antd', '@ant-design/icons'],
-          'vendor-charts': ['echarts', 'echarts-for-react'],
-          'vendor-ai': ['@assistant-ui/react', 'react-markdown', 'remark-gfm', 'rehype-highlight', '@tanstack/react-query', 'zustand'],
+  return {
+    base: '/ai-platform/',
+    plugins: [react(), tailwindcss()],
+    define: {
+      'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY),
+    },
+    resolve: {
+      alias: {
+        '@': path.resolve(__dirname, '.'),
+      },
+    },
+    server: {
+      hmr: process.env.DISABLE_HMR !== 'true',
+      proxy: {
+        '/api/v1/auth': {
+          target: apiUrl,
+          changeOrigin: true,
+        },
+        '/api/v1/tasks': {
+          target: apiUrl,
+          changeOrigin: true,
+        },
+        '/api/v1/knowledge/documents': {
+          target: apiUrl,
+          changeOrigin: true,
+        },
+        '/api/v1/audit': {
+          target: apiUrl,
+          changeOrigin: true,
+        },
+        '/api': {
+          target: apiUrl,
+          changeOrigin: true,
+        },
+        '/api/v1': {
+          target: apiUrl,
+          changeOrigin: true,
         },
       },
     },
-  },
-  server: {
-    port: 5173,
-    proxy: {
-      // 业务编排层接口 → :8080
-      '/api/v1/auth': {
-        target: 'http://localhost:8080',
-        changeOrigin: true,
-      },
-      '/api/v1/tasks': {
-        target: 'http://localhost:8080',
-        changeOrigin: true,
-      },
-      '/api/v1/knowledge/documents': {
-        target: 'http://localhost:8080',
-        changeOrigin: true,
-      },
-      '/api/v1/audit': {
-        target: 'http://localhost:8080',
-        changeOrigin: true,
-      },
-      // AI网关接口 → :8000（chat, knowledge/search, query, health）
-      '/api': {
-        target: 'http://localhost:8000',
-        changeOrigin: true,
-      },
-    },
-  },
-  resolve: {
-    alias: {
-      '@': path.resolve(__dirname, './src'),
-    },
-  },
-})
+  };
+});
