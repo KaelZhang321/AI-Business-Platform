@@ -20,7 +20,7 @@ log_info()  { echo -e "${GREEN}[INFO]${NC} $1"; }
 log_warn()  { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
-# ── 确保 Docker 网络存在 ────────────────────────────────
+# ── 1. 确保 Docker 网络存在 ────────────────────────────────
 ensure_network() {
     if ! docker network inspect ai-platform-net &>/dev/null; then
         log_info "创建 Docker 网络: ai-platform-net"
@@ -28,15 +28,6 @@ ensure_network() {
     fi
 }
 
-# ── 1. 基础设施服务 ─────────────────────────────────────
-deploy_infra() {
-    log_info "启动基础设施服务..."
-    cd "$COMPOSE_DIR"
-    docker compose up -d
-    log_info "等待服务健康检查..."
-    sleep 10
-    docker compose ps
-}
 
 # ── 2. AI 网关 ──────────────────────────────────────────
 deploy_gateway() {
@@ -91,7 +82,6 @@ deploy_frontend() {
 # ── 5. 全量部署 ─────────────────────────────────────────
 deploy_all() {
     ensure_network
-    deploy_infra
     deploy_gateway
     deploy_business
     deploy_frontend
@@ -106,7 +96,6 @@ deploy_all() {
 
 # ── 主入口 ──────────────────────────────────────────────
 case "${1:-all}" in
-    infra)    ensure_network && deploy_infra ;;
     gateway)  ensure_network && deploy_gateway ;;
     business) ensure_network && deploy_business ;;
     frontend) deploy_frontend ;;

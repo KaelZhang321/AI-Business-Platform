@@ -23,6 +23,7 @@ dependencies = [
     "aiomysql>=0.2.0",
     "pymysql>=1.1.0",
     "chromadb>=0.4.0",
+    "pysqlite3-binary>=0.5.4; platform_system == 'Linux'",
     "redis>=5.2.0",
     "pymilvus>=2.4.0",
     "elasticsearch>=8.11.0",
