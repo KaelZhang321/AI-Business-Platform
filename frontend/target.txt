@@ -1,0 +1,279 @@
+            {/* Top Section: My Work & Todos and AI Hero Search */}
+            <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 mb-6">
+              
+              {/* Left Column: My Work & Todos */}
+              <section className="xl:col-span-2 bg-white/40 backdrop-blur-xl border border-white/60 rounded-3xl p-6 shadow-[0_8px_30px_rgb(0,0,0,0.02)] flex flex-col">
+                <div className="flex items-center justify-between mb-6 border-b border-slate-100">
+                  <div className="flex items-center space-x-8">
+                    <button 
+                      onClick={() => setActiveTab('work')}
+                      className={`text-lg font-bold flex items-center pb-4 border-b-2 transition-colors relative top-[1px] ${activeTab === 'work' ? 'text-slate-800 border-cyan-600' : 'text-slate-400 border-transparent hover:text-slate-600'}`}
+                    >
+                      <CheckSquare className={`w-5 h-5 mr-2 ${activeTab === 'work' ? 'text-cyan-600' : 'text-slate-400'}`} />
+                      我的工作
+                    </button>
+                    <button 
+                      onClick={() => setActiveTab('todo')}
+                      className={`text-lg font-bold flex items-center pb-4 border-b-2 transition-colors relative top-[1px] ${activeTab === 'todo' ? 'text-slate-800 border-cyan-600' : 'text-slate-400 border-transparent hover:text-slate-600'}`}
+                    >
+                      <ListTodo className={`w-5 h-5 mr-2 ${activeTab === 'todo' ? 'text-cyan-600' : 'text-slate-400'}`} />
+                      待办事项
+                      <span className="ml-2 bg-red-500 text-white text-[10px] px-1.5 py-0.5 rounded-full leading-none">3</span>
+                    </button>
+                  </div>
+                  <div className="flex items-center space-x-4 pb-4">
+                    <button className="text-sm font-medium text-white bg-cyan-600 hover:bg-cyan-700 px-3 py-1.5 rounded-lg flex items-center transition-colors shadow-sm">
+                      <Plus className="w-4 h-4 mr-1" />
+                      添加任务
+                    </button>
+                    <button className="text-sm font-medium text-cyan-600 hover:text-cyan-700 flex items-center transition-colors">
+                      查看全部 <ChevronRight className="w-4 h-4 ml-1" />
+                    </button>
+                  </div>
+                </div>
+                
+                <div className="space-y-4">
+                  {(activeTab === 'work' ? WORKS : TODOS).map(todo => (
+                    <div key={todo.id} className="group flex items-center justify-between p-5 rounded-2xl border border-slate-100 bg-slate-50/50 hover:bg-white hover:border-cyan-200 hover:shadow-md transition-all">
+                      <div className="flex items-center space-x-4 flex-1">
+                        <div className={`w-1.5 h-12 rounded-full ${todo.priority === 'high' ? 'bg-[#D54941]' : todo.priority === 'medium' ? 'bg-orange-400' : 'bg-cyan-500'}`}></div>
+                        <div className="flex-1">
+                          <div className="flex items-center space-x-3 mb-2">
+                            <h3 className="text-[15px] font-bold text-slate-800 group-hover:text-cyan-700 transition-colors">{todo.title}</h3>
+                            {todo.priority === 'high' && (
+                              <span className="flex items-center text-[10px] font-bold text-[#D54941] bg-red-50 px-2 py-0.5 rounded-full border border-red-100">
+                                <span className="w-1.5 h-1.5 rounded-full bg-[#D54941] mr-1.5 animate-pulse"></span>
+                                核心链路预警
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex items-center text-xs text-slate-400 space-x-4">
+                            <span className="flex items-center"><Layers className="w-3.5 h-3.5 mr-1.5 text-slate-300" />{todo.system}</span>
+                            <span className="flex items-center"><Clock className="w-3.5 h-3.5 mr-1.5 text-slate-300" />{todo.sla}</span>
+                          </div>
+                        </div>
+                      </div>
+                      
+                      <div className="flex items-center space-x-8 ml-4">
+                        <div className="w-32 hidden md:block">
+                          <div className="flex justify-between text-[10px] font-medium text-slate-400 mb-1.5">
+                            <span>进度</span>
+                            <span className="text-slate-600 font-bold">{todo.progress}%</span>
+                          </div>
+                          <div className="h-1.5 bg-slate-200 rounded-full overflow-hidden">
+                            <div 
+                              className={`h-full rounded-full ${todo.priority === 'high' ? 'bg-[#D54941]' : todo.priority === 'medium' ? 'bg-orange-400' : 'bg-cyan-500'}`}
+                              style={{ width: `${todo.progress}%` }}
+                            ></div>
+                          </div>
+                        </div>
+                        <button className={`text-sm font-bold px-5 py-2 rounded-xl transition-all whitespace-nowrap ${todo.priority === 'high' ? 'bg-[#D54941] text-white hover:bg-red-700 shadow-md shadow-red-500/20' : 'bg-slate-100 text-slate-600 hover:bg-cyan-50 hover:text-cyan-600'}`}>
+                          处理
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+
+              {/* Right: AI Hero Search Section */}
+              <section className="xl:col-span-1 flex flex-col">
+                <div className="relative group mb-6 w-full">
+                  {/* Outer animated glowing shadow */}
+                  <motion.div 
+                    className="absolute -inset-0.5 rounded-full opacity-30 blur-md group-focus-within:opacity-60 transition-opacity duration-500"
+                    style={{
+                      backgroundImage: 'linear-gradient(to right, #3b82f6, #22d3ee, #a855f7, #f97316, #3b82f6)',
+                      backgroundSize: '200% 200%'
+                    }}
+                    animate={{ backgroundPosition: ['0% 50%', '100% 50%'] }}
+                    transition={{ duration: 4, repeat: Infinity, ease: 'linear' }}
+                  />
+                  
+                  {/* Animated border container */}
+                  <motion.div 
+                    className="absolute inset-0 rounded-full opacity-50 group-focus-within:opacity-100 transition-opacity duration-500"
+                    style={{
+                      backgroundImage: 'linear-gradient(to right, #3b82f6, #22d3ee, #a855f7, #f97316, #3b82f6)',
+                      backgroundSize: '200% 200%'
+                    }}
+                    animate={{ backgroundPosition: ['0% 50%', '100% 50%'] }}
+                    transition={{ duration: 4, repeat: Infinity, ease: 'linear' }}
+                  />
+                  
+                  {/* Input container */}
+                  <div className="relative bg-white rounded-full m-[1.5px] flex items-center shadow-sm">
+                    <input 
+                      type="text" 
+                      value={chatInput}
+                      onChange={(e) => setChatInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          setIsAIOpen(true);
+                          handleSendMessage();
+                        }
+                      }}
+                      placeholder="请告诉我需要协助的事情..." 
+                      className="w-full bg-transparent rounded-full pl-6 pr-28 py-4 text-base focus:outline-none text-slate-700 placeholder:text-slate-400 relative z-10"
+                    />
+                    <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center space-x-3 z-10">
+                      <span className="text-xs text-slate-400 font-medium">{chatInput.length}/100</span>
+                      <button 
+                        onClick={() => {
+                          if(chatInput.trim()) {
+                            setIsAIOpen(true);
+                            handleSendMessage();
+                          }
+                        }}
+                        className="w-10 h-10 flex items-center justify-center bg-blue-600 hover:bg-blue-700 rounded-full text-white shadow-md shadow-blue-600/30 transition-all hover:scale-105 active:scale-95"
+                      >
+                        <Send className="w-4 h-4 ml-0.5" />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="bg-white/40 backdrop-blur-xl border border-white/60 rounded-3xl p-6 shadow-[0_8px_30px_rgb(0,0,0,0.02)] w-full flex-1">
+                  <p className="text-sm font-medium text-slate-500 mb-4">您可以尝试问我以下问题</p>
+                  <div className="grid grid-cols-1 gap-4">
+                    {[
+                      { text: "帮我查询王先生在云仓的剩余库存", tag: "客户云仓" },
+                      { text: "今天下午3点到5点，有哪些空闲的专车司机？", tag: "约车调度" },
+                      { text: "生成一份本周高端客户接待效能报告", tag: "数据分析" },
+                      { text: "查看最新的合规审查红头文件", tag: "政策中心" }
+                    ].map((prompt, idx) => (
+                      <div 
+                        key={idx}
+                        onClick={() => {
+                          setIsAIOpen(true);
+                          handleSendMessage(prompt.text);
+                        }}
+                        className="bg-white/80 hover:bg-white rounded-2xl p-4 cursor-pointer transition-all border border-white/50 hover:border-cyan-200 hover:shadow-sm group flex flex-col justify-between h-24"
+                      >
+                        <p className="text-sm font-bold text-slate-700 group-hover:text-cyan-700 transition-colors line-clamp-2">"{prompt.text}"</p>
+                        <span className="text-[10px] font-medium text-slate-400 mt-2">{prompt.tag}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </section>
+            </div>
+
+            {/* Bottom Section: Common Functions & Stats/Notices */}
+            <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
+              
+              {/* Left: Common Functions (Systems) */}
+              <section className="xl:col-span-2 bg-white/40 backdrop-blur-xl border border-white/60 rounded-3xl p-6 shadow-[0_8px_30px_rgb(0,0,0,0.02)] flex flex-col">
+                <div className="flex items-center justify-between mb-6">
+                  <h2 className="text-lg font-semibold text-slate-800 flex items-center">
+                    <Layers className="w-5 h-5 mr-2 text-cyan-600" />
+                    常用功能
+                  </h2>
+                  <span className="text-xs font-medium text-cyan-600 bg-cyan-50 px-2 py-1 rounded-md border border-cyan-100">
+                    AI 已自动授权
+                  </span>
+                </div>
+                <div className="grid grid-cols-5 gap-y-6 justify-items-center py-4">
+                  {SYSTEMS.map((sys, index) => {
+                    const isActive = index === 0;
+                    return (
+                      <div key={sys.id} className={`flex flex-col items-center justify-center cursor-pointer group transition-all duration-300 ${
+                        isActive 
+                          ? 'w-[88px] h-[104px] bg-gradient-to-b from-[#4A90E2] to-[#3B82F6] rounded-[24px] shadow-[0_12px_30px_-8px_rgba(59,130,246,0.6)] hover:-translate-y-1.5' 
+                          : 'w-[76px] h-[104px] hover:-translate-y-1.5'
+                      }`}>
+                        <div className={`w-[48px] h-[48px] rounded-[16px] flex items-center justify-center mb-3 transition-all duration-300 relative ${
+                          isActive 
+                            ? 'bg-white shadow-sm' 
+                            : 'bg-white shadow-[0_8px_24px_-6px_rgba(0,0,0,0.06)] group-hover:shadow-[0_12px_28px_-6px_rgba(0,0,0,0.12)]'
+                        }`}>
+                          {sys.count > 0 && (
+                            <span className="absolute -top-1.5 -right-1.5 bg-gradient-to-r from-[#D54941] to-red-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full shadow-md z-20 border-2 border-white">
+                              {sys.count}
+                            </span>
+                          )}
+                          <sys.icon 
+                            className={`w-[24px] h-[24px] ${sys.color} transition-transform duration-300 group-hover:scale-110`} 
+                            strokeWidth={2.5}
+                          />
+                        </div>
+                        <span className={`text-[13px] font-medium text-center whitespace-nowrap transition-colors ${
+                          isActive ? 'text-white' : 'text-slate-600 group-hover:text-slate-900'
+                        }`}>
+                          {sys.name}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </section>
+
+              {/* Right Column: Stats & Notices */}
+              <div className="xl:col-span-1 space-y-6">
+                
+                {/* Section: AI Stats */}
+                <section className="bg-white/40 backdrop-blur-xl border border-white/60 rounded-3xl p-6 shadow-[0_8px_30px_rgb(0,0,0,0.02)]">
+                  <div className="flex items-center justify-between mb-6">
+                    <h2 className="text-lg font-bold text-slate-800 flex items-center">
+                      <Activity className="w-5 h-5 mr-2 text-cyan-600" />
+                      AI 效能统计
+                    </h2>
+                    <button className="p-1.5 text-slate-400 hover:text-cyan-600 hover:bg-cyan-50 rounded-lg transition-colors">
+                      <Settings className="w-4 h-4" />
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <StatCard title="今日处理" value="24" unit="项" trend="+12%" icon={CheckSquare} trendUp />
+                    <StatCard title="SOP 达标" value="98" unit="%" trend="+2%" icon={BarChart2} trendUp />
+                    <StatCard title="AI 节省" value="2.5" unit="h" trend="+0.5h" icon={Zap} trendUp />
+                    <StatCard title="跨系统调用" value="156" unit="次" trend="稳定" icon={Layers} />
+                  </div>
+                </section>
+
+                {/* Section: Notices */}
+                <section className="bg-white/40 backdrop-blur-xl border border-white/60 rounded-3xl p-6 shadow-[0_8px_30px_rgb(0,0,0,0.02)] flex flex-col">
+                  <div className="flex items-center justify-between mb-6">
+                    <h2 className="text-lg font-bold text-slate-800 flex items-center">
+                      <Bell className="w-5 h-5 mr-2 text-cyan-600" />
+                      通知公告
+                    </h2>
+                    <button className="text-sm font-medium text-cyan-600 hover:text-cyan-700 transition-colors">
+                      全部
+                    </button>
+                  </div>
+                  
+                  <div className="space-y-5 flex-1">
+                    {NOTICES.map((notice, idx) => (
+                      <div key={notice.id} className={`group pb-5 ${idx !== NOTICES.length - 1 ? 'border-b border-slate-100' : ''}`}>
+                        <div className="flex justify-between items-start mb-3">
+                          <h3 className="text-[15px] font-bold text-slate-800 group-hover:text-cyan-600 transition-colors leading-snug pr-4 cursor-pointer">{notice.title}</h3>
+                          {!notice.read && <span className="w-2 h-2 rounded-full bg-[#D54941] shrink-0 mt-1.5 shadow-[0_0_5px_rgba(213,73,65,0.5)]"></span>}
+                        </div>
+                        <div className="bg-cyan-50/50 rounded-xl p-3.5 mb-3 border border-cyan-100/50 group-hover:bg-cyan-50 transition-colors">
+                          <div className="flex items-center text-[11px] font-bold text-cyan-600 mb-1.5">
+                            <Sparkles className="w-3.5 h-3.5 mr-1" /> AI 摘要
+                          </div>
+                          <p className="text-xs text-slate-600 leading-relaxed line-clamp-2">
+                            {notice.aiSummary}
+                          </p>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <span className="text-[11px] font-medium text-slate-400">{notice.date}</span>
+                          {!notice.read ? (
+                            <button className="text-[11px] font-bold text-cyan-600 hover:text-cyan-700 hover:underline">
+                              标记已读
+                            </button>
+                          ) : (
+                            <span className="text-[11px] font-medium text-emerald-500 flex items-center">
+                              <CheckSquare className="w-3.5 h-3.5 mr-1" /> 已读
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+
+              </div>
+            </div>
+          </div>

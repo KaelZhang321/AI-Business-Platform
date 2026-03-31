@@ -1,0 +1,54 @@
+// 路由占位页：为尚未接入真实业务逻辑的菜单提供统一的过渡界面。
+import React from 'react';
+import { Clock3, Sparkles } from 'lucide-react';
+
+interface PlaceholderPageProps {
+  title: string;
+  description: string;
+}
+
+export function PlaceholderPage({ title, description }: PlaceholderPageProps) {
+  return (
+    <section className="relative overflow-hidden rounded-[32px] border border-slate-200/70 bg-white/80 px-8 py-10 shadow-sm">
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,_rgba(0,122,255,0.08),_transparent_35%),radial-gradient(circle_at_bottom_left,_rgba(16,185,129,0.08),_transparent_30%)]" />
+
+      <div className="relative space-y-8">
+        <div className="flex items-start justify-between gap-6">
+          <div className="space-y-4">
+            <div className="inline-flex items-center rounded-full border border-brand/10 bg-brand/5 px-3 py-1 text-xs font-semibold text-brand">
+              页面建设中
+            </div>
+            <div className="space-y-2">
+              <h2 className="text-3xl font-bold tracking-tight text-slate-900">{title}</h2>
+              <p className="max-w-3xl text-sm leading-7 text-slate-600">{description}</p>
+            </div>
+          </div>
+
+          <div className="hidden rounded-3xl bg-slate-900 p-5 text-white shadow-xl lg:block">
+            <Sparkles className="h-8 w-8 text-brand-light" />
+          </div>
+        </div>
+
+        <div className="grid gap-4 md:grid-cols-3">
+          <div className="rounded-3xl border border-slate-200 bg-slate-50 p-5">
+            <div className="mb-3 flex h-11 w-11 items-center justify-center rounded-2xl bg-white shadow-sm">
+              <Clock3 className="h-5 w-5 text-brand" />
+            </div>
+            <h3 className="text-base font-semibold text-slate-900">路由已接通</h3>
+            <p className="mt-2 text-sm leading-6 text-slate-500">当前菜单已经具备独立路径，后续接业务接口时可以直接挂载到对应页面。</p>
+          </div>
+
+          <div className="rounded-3xl border border-slate-200 bg-slate-50 p-5">
+            <div className="mb-3 text-sm font-semibold text-slate-900">建议下一步</div>
+            <p className="text-sm leading-6 text-slate-500">优先补接口、鉴权和数据流，再把卡片区、列表区和详情抽屉逐步替换成真实业务组件。</p>
+          </div>
+
+          <div className="rounded-3xl border border-slate-200 bg-slate-50 p-5">
+            <div className="mb-3 text-sm font-semibold text-slate-900">当前收益</div>
+            <p className="text-sm leading-6 text-slate-500">即使页面尚未开发完成，导航状态、路径分享和后续拆分懒加载的基础已经准备好了。</p>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}

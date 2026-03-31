@@ -1,96 +1,95 @@
-import { jwtDecode } from 'jwt-decode'
-import { businessClient } from './api'
+// 认证服务层：封装登录、登出、用户信息获取和 token 有效性判断。
+import { jwtDecode } from 'jwt-decode';
+import { businessClient } from './api';
 
-const TOKEN_KEY = 'ai_platform_token'
-const REFRESH_TOKEN_KEY = 'ai_platform_refresh_token'
+const TOKEN_KEY = 'ai_platform_token';
+const REFRESH_TOKEN_KEY = 'ai_platform_refresh_token';
 
 export interface JwtPayload {
-  sub: string
-  exp: number
-  iat: number
+  sub: string;
+  exp: number;
+  iat: number;
 }
 
 export interface UserPermission {
-  id: string
-  username: string
-  displayName: string
-  role: string
-  abilities: string[]
+  id: string;
+  username: string;
+  displayName: string;
+  role: string;
+  abilities: string[];
 }
 
 export interface LoginResponse {
-  token: string
-  refreshToken: string
-  expiresIn: number
-  user: UserPermission
+  token: string;
+  refreshToken: string;
+  expiresIn: number;
+  user: UserPermission;
+}
+
+interface WrappedUserPermission {
+  code: number;
+  message: string;
+  data: UserPermission;
 }
 
 export const authService = {
   async login(username: string, password: string): Promise<LoginResponse> {
-    const res = await businessClient.post<{ code: number; message: string; data: LoginResponse }>(
-      '/api/v1/auth/login',
-      { username, password },
-    )
-    const loginData = res.data.data
-    localStorage.setItem(TOKEN_KEY, loginData.token)
+    const response = await businessClient.post<LoginResponse>('/api/v1/auth/login', {
+      username,
+      password,
+    });
+
+    const loginData = response.data;
+    // 登录成功后立即持久化 token，供页面刷新和接口拦截器复用。
+    localStorage.setItem(TOKEN_KEY, loginData.token);
     if (loginData.refreshToken) {
-      localStorage.setItem(REFRESH_TOKEN_KEY, loginData.refreshToken)
+      localStorage.setItem(REFRESH_TOKEN_KEY, loginData.refreshToken);
     }
-    return loginData
+
+    return loginData;
   },
 
   async getMe(): Promise<UserPermission> {
-    const res = await businessClient.get<{ code: number; message: string; data: UserPermission }>(
+    const response = await businessClient.get<UserPermission | WrappedUserPermission>(
       '/api/v1/auth/me',
-    )
-    return res.data.data
+    );
+
+    if ('data' in response.data) {
+      return response.data.data;
+    }
+
+    return response.data;
   },
 
   logout() {
-    localStorage.removeItem(TOKEN_KEY)
-    localStorage.removeItem(REFRESH_TOKEN_KEY)
+    localStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(REFRESH_TOKEN_KEY);
   },
 
-  getRefreshToken(): string | null {
-    return localStorage.getItem(REFRESH_TOKEN_KEY)
+  getToken() {
+    return localStorage.getItem(TOKEN_KEY);
+  },
+
+  getRefreshToken() {
+    return localStorage.getItem(REFRESH_TOKEN_KEY);
   },
 
   setToken(token: string) {
-    localStorage.setItem(TOKEN_KEY, token)
+    localStorage.setItem(TOKEN_KEY, token);
   },
 
-  getToken(): string | null {
-    return localStorage.getItem(TOKEN_KEY)
-  },
+  isTokenValid() {
+    const token = this.getToken();
+    if (!token) {
+      return false;
+    }
 
-  isTokenValid(): boolean {
-    const token = this.getToken()
-    if (!token) return false
     try {
-      const decoded = jwtDecode<JwtPayload>(token)
-      return decoded.exp * 1000 > Date.now()
+      // 仅做前端过期时间判断，真实权限仍以后端校验为准。
+      const decoded = jwtDecode<JwtPayload>(token);
+      return decoded.exp * 1000 > Date.now();
     } catch {
-      return false
+      return false;
     }
   },
-
-  /** SSO/Keycloak 登录 — 重定向到 Keycloak 授权端点 */
-  loginWithSSO() {
-    const keycloakUrl = import.meta.env.VITE_KEYCLOAK_URL
-    if (!keycloakUrl) return
-    const realm = import.meta.env.VITE_KEYCLOAK_REALM || 'ai-platform'
-    const clientId = import.meta.env.VITE_KEYCLOAK_CLIENT_ID || 'ai-platform-frontend'
-    const url = new URL(`${keycloakUrl}/realms/${realm}/protocol/openid-connect/auth`)
-    const callbackUrl = new URL(`${import.meta.env.BASE_URL}sso/callback`, window.location.origin)
-    url.searchParams.set('client_id', clientId)
-    url.searchParams.set('response_type', 'code')
-    url.searchParams.set('scope', 'openid')
-    url.searchParams.set('redirect_uri', callbackUrl.toString())
-    window.location.href = url.toString()
-  },
-
-  /** SSO 是否已配置启用 */
-  isSSOEnabled(): boolean {
-    return !!import.meta.env.VITE_KEYCLOAK_URL
-  },
-}
+};

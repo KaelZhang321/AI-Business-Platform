@@ -30,7 +30,7 @@
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **AI业务中台** (501 symbols, 935 relationships, 24 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **AI-Business-Platform** (3837 symbols, 5953 relationships, 133 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
@@ -46,7 +46,7 @@ This project is indexed by GitNexus as **AI业务中台** (501 symbols, 935 rela
 
 1. `gitnexus_query({query: "<error or symptom>"})` — find execution flows related to the issue
 2. `gitnexus_context({name: "<suspect function>"})` — see all callers, callees, and process participation
-3. `READ gitnexus://repo/AI业务中台/process/{processName}` — trace the full execution flow step by step
+3. `READ gitnexus://repo/AI-Business-Platform/process/{processName}` — trace the full execution flow step by step
 4. For regressions: `gitnexus_detect_changes({scope: "compare", base_ref: "main"})` — see what your branch changed
 
 ## When Refactoring
@@ -85,10 +85,10 @@ This project is indexed by GitNexus as **AI业务中台** (501 symbols, 935 rela
 
 | Resource | Use for |
 |----------|---------|
-| `gitnexus://repo/AI业务中台/context` | Codebase overview, check index freshness |
-| `gitnexus://repo/AI业务中台/clusters` | All functional areas |
-| `gitnexus://repo/AI业务中台/processes` | All execution flows |
-| `gitnexus://repo/AI业务中台/process/{name}` | Step-by-step execution trace |
+| `gitnexus://repo/AI-Business-Platform/context` | Codebase overview, check index freshness |
+| `gitnexus://repo/AI-Business-Platform/clusters` | All functional areas |
+| `gitnexus://repo/AI-Business-Platform/processes` | All execution flows |
+| `gitnexus://repo/AI-Business-Platform/process/{name}` | Step-by-step execution trace |
 
 ## Self-Check Before Finishing
 
