@@ -1,16 +1,16 @@
 spring:
   datasource:
-    url: jdbc:postgresql://${POSTGRES_HOST:ai-platform-postgres}:5432/${POSTGRES_DB:ai_platform}?sslmode=disable
-    username: ${POSTGRES_USER:ai_platform}
-    password: ${POSTGRES_PASSWORD:ai_platform_dev}
-    driver-class-name: org.postgresql.Driver
+    url: jdbc:mysql://${MYSQL_HOST:ai-platform-mysql}:${MYSQL_PORT:3306}/${MYSQL_DATABASE_BUSINESS:ai_platform_business}?useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&characterEncoding=UTF-8
+    username: ${MYSQL_USER:ai_platform}
+    password: ${MYSQL_PASSWORD:ai_platform_dev}
+    driver-class-name: com.mysql.cj.jdbc.Driver
     hikari:
       maximum-pool-size: 20
       minimum-idle: 5
       connection-timeout: 20000
       idle-timeout: 300000
       max-lifetime: 1800000
-      pool-name: ai-platform-pg
+      pool-name: ai-platform-mysql
 
   data:
     redis:
@@ -27,7 +27,7 @@ spring:
 flowable:
   database-schema-update: true
   async-executor-activate: true
-  database-type: postgres
+  database-type: mysql
 
 management:
   endpoints:

@@ -20,12 +20,11 @@ export interface UserPermission {
 }
 
 export interface LoginResponse {
-  token: string;
-  refreshToken: string;
-  expiresIn: number;
-  user: UserPermission;
+  token: string
+  refreshToken: string
+  expiresIn: number
+  user: UserPermission
 }
-
 interface WrappedUserPermission {
   code: number;
   message: string;
