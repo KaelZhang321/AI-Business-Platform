@@ -298,6 +298,34 @@ mvn -DskipTests compile
 - 待办聚合并不会把结果持久化到本地 `tasks` 表，当前主要是“实时拉取外部系统 + 聚合返回”。
 - 文档处理链路依赖 AI 网关可用，如果 `DocumentProcessListener` 调用 `ai-gateway` 失败，文档状态会落成 `failed`。
 
+### 8.1 UI Builder 模块约定
+
+`UI Builder` 是 `business-server` 中新增的一块“接口文档 -> 页面配置 -> json-render spec”能力，代码主要集中在：
+
+- `src/main/java/com/lzke/ai/interfaces/rest/UiBuilderController.java`
+- `src/main/java/com/lzke/ai/application/ui/UiBuilderApplicationService.java`
+- `src/main/java/com/lzke/ai/application/ui/UiBuilderMetadataService.java`
+- `src/main/resources/db/ddl/ui_builder.sql`
+
+后续维护时建议遵守下面这些规则：
+
+- `UiBuilderApplicationService` 只负责运行时编排逻辑：
+  包括 CRUD、OpenAPI 导入、接口联调、字段绑定、spec 生成和版本发布。
+- 静态组装对象不要继续塞回 `UiBuilderApplicationService`：
+  模块概览、节点类型、认证方式、表结构说明这类“不会随着业务数据变化”的内容，统一维护在 `UiBuilderMetadataService`。
+- `json-render` 生成规则要保持稳定：
+  最终产物必须始终输出 `root + elements` 的扁平结构，不要改成嵌套树，避免前端 `dynamic-ui` 渲染器失配。
+- 接口源与接口定义之间当前通过 `ui_api_tags` 建了一层标签关系：
+  OpenAPI 导入时会读取 operation 的 `tags` 数组，默认取第一个标签写入 `ui_api_tags`，接口定义通过 `tag_id` 关联该标签。
+- UI Builder 新增类和关键方法时，要补充详细注释：
+  至少写清楚这个类负责什么、输入输出是什么、为什么放在这一层，而不是只写一句“创建对象”这种低信息量注释。
+- OpenAPI 导入优先支持 Swagger JSON 地址：
+  当前建议使用 `/v3/api-docs` 这类直接返回 JSON 的地址。导入顺序是：`document` -> `documentUrl` -> 接口源 `docUrl`。
+- 页面配置与绑定逻辑优先依赖“样例响应”：
+  节点字段绑定不是直接请求线上接口动态渲染，而是先基于 `sample_response` 做配置、预览和发布。
+- 如需扩展转换器，优先在服务内做“命名式内置转换器”：
+  例如当前 `tableRows`，避免一上来就引入可执行脚本，先保证可控和可审计。
+
 ## 9. 如果后续要扩展
 
 常见扩展入口：

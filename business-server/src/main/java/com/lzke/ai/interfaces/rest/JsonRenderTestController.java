@@ -46,7 +46,7 @@ public class JsonRenderTestController {
     }
 
     @Operation(summary = "重置测试 Spec", description = "恢复为服务内置的默认 json-render 示例")
-    @PostMapping("/reset")
+    @PostMapping("/reset")                                                       
     public ApiResponse<Map<String, Object>> resetSpec() {
         return ApiResponse.ok(jsonRenderTestService.resetSpec());
     }
