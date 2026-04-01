@@ -42,6 +42,11 @@ const FunctionSquareView = lazy(async () => {
   return { default: module.FunctionSquareView };
 });
 
+const UiBuilderPage = lazy(async () => {
+  const module = await import('./pages/ui-builder/UiBuilderPage');
+  return { default: module.UiBuilderPage };
+});
+
 const MeetingBiView = lazy(async () => {
   const module = await import('./components/MeetingBiView');
   return { default: module.MeetingBiView };
@@ -93,6 +98,7 @@ const PAGE_RENDERERS: Partial<Record<AppPage, PageRenderer>> = {
   'function-square': ({ navigateToPage }) => (
     <FunctionSquareView setCurrentPage={navigateToPage} />
   ),
+  'ui-builder': () => <UiBuilderPage />,
   'meeting-bi': () => <MeetingBiView />,
   'health-butler': () => <HealthButlerView />,
   'ai-diagnosis': () => <AIDiagnosisView />,

@@ -1,0 +1,146 @@
+version: "3.8"
+
+# ============================================================
+#  Apache Doris + Apache SeaTunnel  多数据源汇聚方案
+#  启动命令：docker compose up -d
+#  停止命令：docker compose down
+# ============================================================
+
+networks:
+  data-net:
+    driver: bridge
+
+volumes:
+  doris-fe-meta:
+  doris-be-storage:
+  seatunnel-logs:
+
+
+services:
+
+  # ──────────────────────────────────────────
+  #  Doris FE（查询入口 / 元数据管理）
+  # ──────────────────────────────────────────
+  doris-fe:
+    image: apache/doris:2.1.0-fe-x86_64
+    container_name: doris-fe
+    hostname: doris-fe
+    environment:
+      - FE_SERVERS=fe1:doris-fe:9010
+      - FE_ID=1
+    ports:
+      - "8030:8030" # Web UI & Stream Load
+      - "9030:9030" # MySQL 协议端口（JDBC 连这个）
+      - "9010:9010" # FE 内部通信
+    volumes:
+      - doris-fe-meta:/opt/apache-doris/fe/doris-meta
+      - ./doris/fe/conf/fe.conf:/opt/apache-doris/fe/conf/fe.conf
+    networks:
+      - data-net
+    healthcheck:
+      test: [ "CMD", "curl", "-sf", "http://localhost:8030/api/bootstrap" ]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+  # ──────────────────────────────────────────
+  #  Doris BE（存储 & 计算节点）
+  #  注意：BE 必须等 FE 健康后再启动
+  # ──────────────────────────────────────────
+  doris-be:
+    image: apache/doris:2.1.0-be-x86_64
+    container_name: doris-be
+    hostname: doris-be
+    environment:
+      - FE_SERVERS=fe1:doris-fe:9010
+      - BE_ADDR=doris-be:9050
+    ports:
+      - "8040:8040" # BE Web UI
+      - "9050:9050" # BE 心跳端口
+    volumes:
+      - doris-be-storage:/opt/apache-doris/be/storage
+      - ./doris/be/conf/be.conf:/opt/apache-doris/be/conf/be.conf
+    networks:
+      - data-net
+    depends_on:
+      doris-fe:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-sf", "http://localhost:8040/api/health" ]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+    restart: unless-stopped
+
+  # ──────────────────────────────────────────
+  #  Doris 初始化（注册 BE 到 FE，只跑一次）
+  # ──────────────────────────────────────────
+  doris-init:
+    image: mysql:8.0
+    container_name: doris-init
+    networks:
+      - data-net
+    depends_on:
+      doris-be:
+        condition: service_healthy
+    command: >
+      bash -c "
+        echo '>>> 注册 BE 到 FE...' &&
+        mysql -h doris-fe -P 9030 -u root --connect-timeout=10 -e \"
+          ALTER SYSTEM ADD BACKEND 'doris-be:9050';
+        \" &&
+        echo '>>> 创建数据仓库 dw...' &&
+        mysql -h doris-fe -P 9030 -u root -e \"
+          CREATE DATABASE IF NOT EXISTS dw;
+        \" &&
+        echo '>>> 初始化完成！'
+      "
+    restart: "no"
+
+  # ──────────────────────────────────────────
+  #  Apache SeaTunnel（数据同步引擎）
+  # ──────────────────────────────────────────
+  seatunnel:
+    image: apache/seatunnel:2.3.5
+    container_name: seatunnel
+    hostname: seatunnel
+    ports:
+      - "5801:5801" # SeaTunnel REST API
+    volumes:
+      - ./seatunnel/config:/opt/seatunnel/config # 任务配置目录
+      - ./seatunnel/connectors:/opt/seatunnel/connectors # connector 插件
+      - ./seatunnel/lib:/opt/seatunnel/lib # 额外 jar（如 JDBC 驱动）
+      - seatunnel-logs:/opt/seatunnel/logs
+    networks:
+      - data-net
+    depends_on:
+      doris-fe:
+        condition: service_healthy
+    environment:
+      - ST_DOCKER_MEMBER_LIST=seatunnel:5801
+    command: >
+      bash -c "
+        /opt/seatunnel/bin/seatunnel-cluster.sh -d &&
+        tail -f /opt/seatunnel/logs/seatunnel-engine-server.log
+      "
+    restart: unless-stopped
+
+  # ──────────────────────────────────────────
+  #  MySQL（示例数据源，可删掉用真实数据库）
+  # ──────────────────────────────────────────
+  mysql-source:
+    image: mysql:8.0
+    container_name: mysql-source
+    environment:
+      MYSQL_ROOT_PASSWORD: root123
+      MYSQL_DATABASE: orders_db
+    ports:
+      - "3307:3306" # 用 3307 避免与本机 MySQL 冲突
+    volumes:
+      - ./mysql/init:/docker-entrypoint-initdb.d # 放初始化 SQL
+    networks:
+      - data-net
+    restart: unless-stopped
