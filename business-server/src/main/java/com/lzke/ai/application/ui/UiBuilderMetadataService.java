@@ -98,6 +98,7 @@ public class UiBuilderMetadataService {
         return List.of(
                 new UiBuilderFeatureResponse("接口源管理", "导入 OpenAPI/Swagger、手工录入接口并配置认证方式。"),
                 new UiBuilderFeatureResponse("接口联调", "对三方接口做参数配置、测试调用和样例响应固化。"),
+                new UiBuilderFeatureResponse("运行时调用", "按 endpointId 发起真实接口调用，并记录 flowNum 级别的调用日志。"),
                 new UiBuilderFeatureResponse("页面编排", "用 Card、Table、Metric、Chart 等节点描述页面结构。"),
                 new UiBuilderFeatureResponse("字段绑定", "把接口返回字段通过 JSONPath 绑定到组件 props。"),
                 new UiBuilderFeatureResponse("版本发布", "将页面配置转换为 json-render spec，并进行版本化发布。")
@@ -149,6 +150,13 @@ public class UiBuilderMetadataService {
                         new UiBuilderFieldResponse("request_url", "varchar(255)", "实际请求地址"),
                         new UiBuilderFieldResponse("response_status", "int", "响应状态码"),
                         new UiBuilderFieldResponse("success_flag", "tinyint(1)", "联调是否成功")
+                )),
+                new UiBuilderTableSchemaResponse("ui_api_flow_logs", "运行时接口调用日志", List.of(
+                        new UiBuilderFieldResponse("flow_num", "varchar(64)", "流程编号"),
+                        new UiBuilderFieldResponse("endpoint_id", "varchar(64)", "所属接口定义"),
+                        new UiBuilderFieldResponse("request_body", "json", "实际请求体"),
+                        new UiBuilderFieldResponse("response_body", "json", "实际响应体"),
+                        new UiBuilderFieldResponse("invoke_status", "varchar(32)", "接口调用状态")
                 )),
                 new UiBuilderTableSchemaResponse("ui_projects", "页面配置项目", List.of(
                         new UiBuilderFieldResponse("code", "varchar(64)", "项目编码"),

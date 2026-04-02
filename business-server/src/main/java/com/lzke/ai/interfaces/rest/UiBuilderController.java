@@ -2,6 +2,7 @@ package com.lzke.ai.interfaces.rest;
 
 import com.lzke.ai.application.dto.PageQuery;
 import com.lzke.ai.application.dto.UiApiEndpointRequest;
+import com.lzke.ai.application.dto.UiApiInvokeRequest;
 import com.lzke.ai.application.dto.UiApiSourceRequest;
 import com.lzke.ai.application.dto.UiApiTestRequest;
 import com.lzke.ai.application.dto.UiApiTestResponse;
@@ -197,6 +198,17 @@ public class UiBuilderController {
     @PostMapping("/endpoints/{endpointId}/test")
     public ApiResponse<UiApiTestResponse> testEndpoint(@PathVariable String endpointId, @RequestBody(required = false) UiApiTestRequest request) {
         return ApiResponse.ok(uiBuilderApplicationService.testEndpoint(endpointId, request));
+    }
+
+    /**
+     * 按接口定义发起一次运行时真实调用。
+     */
+    @PostMapping("/runtime/endpoints/{endpointId}/invoke")
+    public ApiResponse<Object> invokeEndpoint(
+            @PathVariable String endpointId,
+            @RequestBody(required = false) UiApiInvokeRequest request
+    ) {
+        return ApiResponse.ok(uiBuilderApplicationService.invokeEndpoint(endpointId, request));
     }
 
     /**

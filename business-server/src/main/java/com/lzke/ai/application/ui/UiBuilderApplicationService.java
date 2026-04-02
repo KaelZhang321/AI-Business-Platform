@@ -12,6 +12,7 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.lzke.ai.application.dto.PageQuery;
 import com.lzke.ai.application.dto.UiApiEndpointRequest;
+import com.lzke.ai.application.dto.UiApiInvokeRequest;
 import com.lzke.ai.application.dto.UiApiSourceRequest;
 import com.lzke.ai.application.dto.UiApiTestRequest;
 import com.lzke.ai.application.dto.UiApiTestResponse;
@@ -26,6 +27,7 @@ import com.lzke.ai.application.dto.UiPagePreviewResponse;
 import com.lzke.ai.application.dto.UiPageRequest;
 import com.lzke.ai.application.dto.UiProjectRequest;
 import com.lzke.ai.domain.entity.UiApiEndpoint;
+import com.lzke.ai.domain.entity.UiApiFlowLog;
 import com.lzke.ai.domain.entity.UiApiSource;
 import com.lzke.ai.domain.entity.UiApiTag;
 import com.lzke.ai.domain.entity.UiApiTestLog;
@@ -37,6 +39,7 @@ import com.lzke.ai.domain.entity.UiSpecVersion;
 import com.lzke.ai.exception.BusinessException;
 import com.lzke.ai.exception.ErrorCode;
 import com.lzke.ai.infrastructure.persistence.mapper.UiApiEndpointMapper;
+import com.lzke.ai.infrastructure.persistence.mapper.UiApiFlowLogMapper;
 import com.lzke.ai.infrastructure.persistence.mapper.UiApiSourceMapper;
 import com.lzke.ai.infrastructure.persistence.mapper.UiApiTagMapper;
 import com.lzke.ai.infrastructure.persistence.mapper.UiApiTestLogMapper;
@@ -47,22 +50,13 @@ import com.lzke.ai.infrastructure.persistence.mapper.UiProjectMapper;
 import com.lzke.ai.infrastructure.persistence.mapper.UiSpecVersionMapper;
 import com.lzke.ai.interfaces.dto.PageResult;
 import lombok.RequiredArgsConstructor;
-import org.springframework.http.HttpEntity;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.HttpMethod;
-import org.springframework.http.MediaType;
-import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestTemplate;
-import org.springframework.web.util.UriComponentsBuilder;
-
-import java.nio.charset.StandardCharsets;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
-import java.util.Base64;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.Iterator;
@@ -101,9 +95,11 @@ public class UiBuilderApplicationService {
     private final ObjectMapper objectMapper;
     private final RestTemplate restTemplate;
     private final UiBuilderMetadataService uiBuilderMetadataService;
+    private final UiHttpInvokeService uiHttpInvokeService;
     private final UiApiSourceMapper uiApiSourceMapper;
     private final UiApiTagMapper uiApiTagMapper;
     private final UiApiEndpointMapper uiApiEndpointMapper;
+    private final UiApiFlowLogMapper uiApiFlowLogMapper;
     private final UiApiTestLogMapper uiApiTestLogMapper;
     private final UiProjectMapper uiProjectMapper;
     private final UiPageMapper uiPageMapper;
@@ -266,6 +262,7 @@ public class UiBuilderApplicationService {
         List<UiApiEndpoint> endpoints = listEndpointsBySource(sourceId);
         List<String> endpointIds = endpoints.stream().map(UiApiEndpoint::getId).toList();
         if (!endpointIds.isEmpty()) {
+            uiApiFlowLogMapper.delete(new LambdaQueryWrapper<UiApiFlowLog>().in(UiApiFlowLog::getEndpointId, endpointIds));
             uiApiTestLogMapper.delete(new LambdaQueryWrapper<UiApiTestLog>().in(UiApiTestLog::getEndpointId, endpointIds));
             uiApiEndpointMapper.delete(new LambdaQueryWrapper<UiApiEndpoint>().in(UiApiEndpoint::getId, endpointIds));
         }
@@ -417,6 +414,7 @@ public class UiBuilderApplicationService {
     @Transactional
     public void deleteEndpoint(String endpointId) {
         requireEndpoint(endpointId);
+        uiApiFlowLogMapper.delete(new LambdaQueryWrapper<UiApiFlowLog>().eq(UiApiFlowLog::getEndpointId, endpointId));
         uiApiTestLogMapper.delete(new LambdaQueryWrapper<UiApiTestLog>().eq(UiApiTestLog::getEndpointId, endpointId));
         uiApiEndpointMapper.deleteById(endpointId);
     }
@@ -524,45 +522,57 @@ public class UiBuilderApplicationService {
         UiApiEndpoint endpoint = requireEndpoint(endpointId);
         UiApiSource source = requireSource(endpoint.getSourceId());
 
-        String requestUrl = buildRequestUrl(source, endpoint, request != null ? request.getQueryParams() : null);
-        HttpMethod httpMethod = HttpMethod.valueOf(endpoint.getMethod());
-        HttpHeaders headers = buildRequestHeaders(source, request != null ? request.getHeaders() : null);
-        Object requestBody = request != null ? request.getBody() : null;
-        HttpEntity<Object> entity = new HttpEntity<>(requestBody, headers);
-
         UiApiTestLog log = new UiApiTestLog();
         log.setEndpointId(endpointId);
-        log.setRequestUrl(requestUrl);
-        log.setRequestHeaders(writeJson(headers.toSingleValueMap()));
-        log.setRequestQuery(writeJson(request != null ? request.getQueryParams() : null));
-        log.setRequestBody(writeJson(requestBody));
         log.setCreatedBy(request != null ? request.getCreatedBy() : null);
 
-        try {
-            ResponseEntity<String> response = restTemplate.exchange(requestUrl, httpMethod, entity, String.class);
-            Map<String, Object> responseHeaders = new LinkedHashMap<>(response.getHeaders().toSingleValueMap());
-            Object responseBodyParsed = parsePossiblyJson(response.getBody());
+        UiHttpInvokeService.HttpExecutionResult result = uiHttpInvokeService.execute(source, endpoint, request != null ? request.getHeaders() : null,
+                request != null ? request.getQueryParams() : null, request != null ? request.getBody() : null);
+        populateTestLog(log, result);
+        uiApiTestLogMapper.insert(log);
 
-            log.setResponseStatus(response.getStatusCode().value());
-            log.setResponseHeaders(writeJson(responseHeaders));
-            log.setResponseBody(writeJson(responseBodyParsed));
-            log.setSuccessFlag(1);
-            uiApiTestLogMapper.insert(log);
+        return new UiApiTestResponse(
+                result.requestUrl(),
+                result.responseStatus(),
+                result.responseHeaders(),
+                parsePossiblyJson((String) result.responseBody()),
+                result.success(),
+                result.errorMessage()
+        );
+    }
 
-            return new UiApiTestResponse(
-                    requestUrl,
-                    response.getStatusCode().value(),
-                    responseHeaders,
-                    responseBodyParsed,
-                    true,
-                    null
-            );
-        } catch (RestClientException ex) {
-            log.setSuccessFlag(0);
-            log.setErrorMessage(ex.getMessage());
-            uiApiTestLogMapper.insert(log);
-            return new UiApiTestResponse(requestUrl, null, Map.of(), null, false, ex.getMessage());
+    /**
+     * 按接口定义发起一次运行时真实调用，并将调用快照写入运行时日志表。
+     *
+     * <p>该方法与联调接口不同：联调结果会写入 `ui_api_test_logs`，
+     * 而运行时调用统一写入 `ui_api_flow_logs`，用于追踪某个流程号下的真实调用链路。
+     *
+     * @param endpointId 接口定义 ID
+     * @param request 运行时调用请求
+     * @return 三方接口的原始响应体解析结果
+     */
+    @Transactional
+    public Object invokeEndpoint(String endpointId, UiApiInvokeRequest request) {
+        UiApiEndpoint endpoint = requireEndpoint(endpointId);
+        UiApiSource source = requireSource(endpoint.getSourceId());
+        validateRuntimeInvokeTarget(source, endpoint);
+
+        Map<String, Object> queryParams = request != null ? request.getQueryParams() : null;
+        Object requestBody = resolveInvokeBody(endpoint, request);
+        UiHttpInvokeService.HttpExecutionResult result = uiHttpInvokeService.execute(source, endpoint, request != null ? request.getHeaders() : null, queryParams, requestBody);
+
+        UiApiFlowLog log = new UiApiFlowLog();
+        log.setFlowNum(request != null ? request.getFlowNum() : null);
+        log.setEndpointId(endpointId);
+        log.setCreatedBy(request != null ? request.getCreatedBy() : null);
+        log.setCreatedByName(request != null ? request.getCreatedByName() : null);
+        populateFlowLog(log, result);
+        uiApiFlowLogMapper.insert(log);
+
+        if (!result.success()) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, defaultIfBlank(result.errorMessage(), "接口调用失败"));
         }
+        return parsePossiblyJson((String) result.responseBody());
     }
 
     /**
@@ -1520,89 +1530,77 @@ public class UiBuilderApplicationService {
     }
 
     /**
-     * 组装接口联调请求地址。
+     * 校验运行时调用目标是否允许被真实执行。
      *
      * @param source 接口源
      * @param endpoint 接口定义
-     * @param queryParams 调用时的查询参数
-     * @return 最终请求地址
      */
-    private String buildRequestUrl(UiApiSource source, UiApiEndpoint endpoint, Map<String, Object> queryParams) {
-        String baseUrl = defaultIfBlank(source.getBaseUrl(), "");
-        String path = defaultIfBlank(endpoint.getPath(), "");
-        UriComponentsBuilder builder = UriComponentsBuilder.fromHttpUrl(baseUrl + path);
-        Map<String, Object> safeQueryParams = queryParams != null ? queryParams : Collections.emptyMap();
-        safeQueryParams.forEach((key, value) -> {
-            if (value instanceof Iterable<?> iterable) {
-                for (Object item : iterable) {
-                    builder.queryParam(key, item);
-                }
-            } else if (value != null) {
-                builder.queryParam(key, value);
-            }
-        });
-
-        Map<String, Object> authConfig = readMap(source.getAuthConfig());
-        if ("api_key".equals(source.getAuthType()) && authConfig.containsKey("queryName") && authConfig.containsKey("queryValue")) {
-            builder.queryParam(String.valueOf(authConfig.get("queryName")), authConfig.get("queryValue"));
+    private void validateRuntimeInvokeTarget(UiApiSource source, UiApiEndpoint endpoint) {
+        if (!"active".equalsIgnoreCase(defaultIfBlank(source.getStatus(), "draft"))) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "接口源未启用，不能发起运行时调用");
         }
-        return builder.build(true).toUriString();
+        if (!"active".equalsIgnoreCase(defaultIfBlank(endpoint.getStatus(), "inactive"))) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "接口定义未启用，不能发起运行时调用");
+        }
+        if (!StringUtils.hasText(source.getBaseUrl()) || !StringUtils.hasText(endpoint.getPath())) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "接口基础地址或接口路径为空，不能发起运行时调用");
+        }
     }
 
     /**
-     * 组装接口联调请求头。
+     * 解析运行时调用请求体。
      *
-     * <p>请求头来源按以下顺序叠加：
+     * <p>优先使用前端显式传入的 body；如果未传且允许回退样例，则使用
+     * 接口定义里的 `sampleRequest` 作为兜底请求体。
      *
-     * <ol>
-     *     <li>默认 Content-Type</li>
-     *     <li>接口源默认请求头</li>
-     *     <li>本次联调显式传入的请求头</li>
-     *     <li>接口源认证配置推导出的认证头</li>
-     * </ol>
-     *
-     * @param source 接口源
-     * @param requestHeaders 本次联调额外传入的请求头
-     * @return 最终请求头
+     * @param endpoint 接口定义
+     * @param request 运行时请求
+     * @return 实际请求体
      */
-    private HttpHeaders buildRequestHeaders(UiApiSource source, Map<String, Object> requestHeaders) {
-        HttpHeaders headers = new HttpHeaders();
-        headers.setContentType(MediaType.APPLICATION_JSON);
-
-        readMap(source.getDefaultHeaders()).forEach((key, value) -> headers.set(key, String.valueOf(value)));
-        if (requestHeaders != null) {
-            requestHeaders.forEach((key, value) -> headers.set(key, String.valueOf(value)));
+    private Object resolveInvokeBody(UiApiEndpoint endpoint, UiApiInvokeRequest request) {
+        if (request != null && request.getBody() != null) {
+            return request.getBody();
         }
-
-        Map<String, Object> authConfig = readMap(source.getAuthConfig());
-        switch (defaultIfBlank(source.getAuthType(), "none")) {
-            case "api_key" -> {
-                if (authConfig.containsKey("headerName") && authConfig.containsKey("headerValue")) {
-                    headers.set(String.valueOf(authConfig.get("headerName")), String.valueOf(authConfig.get("headerValue")));
-                }
-            }
-            case "bearer_token" -> {
-                if (authConfig.containsKey("token")) {
-                    headers.setBearerAuth(String.valueOf(authConfig.get("token")));
-                } else if (authConfig.containsKey("accessToken")) {
-                    headers.setBearerAuth(String.valueOf(authConfig.get("accessToken")));
-                }
-            }
-            case "basic_auth" -> {
-                String username = String.valueOf(authConfig.getOrDefault("username", ""));
-                String password = String.valueOf(authConfig.getOrDefault("password", ""));
-                String encoded = Base64.getEncoder().encodeToString((username + ":" + password).getBytes(StandardCharsets.UTF_8));
-                headers.set(HttpHeaders.AUTHORIZATION, "Basic " + encoded);
-            }
-            case "oauth2_client" -> {
-                if (authConfig.containsKey("accessToken")) {
-                    headers.setBearerAuth(String.valueOf(authConfig.get("accessToken")));
-                }
-            }
-            default -> {
-            }
+        if (request != null && Boolean.FALSE.equals(request.getUseSampleWhenEmpty())) {
+            return null;
         }
-        return headers;
+        return parsePossiblyJson(endpoint.getSampleRequest());
+    }
+
+    /**
+     * 用统一执行结果填充联调日志实体。
+     *
+     * @param log 联调日志实体
+     * @param result 请求执行结果
+     */
+    private void populateTestLog(UiApiTestLog log, UiHttpInvokeService.HttpExecutionResult result) {
+        log.setRequestUrl(result.requestUrl());
+        log.setRequestHeaders(writeJson(result.requestHeaders()));
+        log.setRequestQuery(writeJson(result.queryParams()));
+        log.setRequestBody(writeJson(result.requestBody()));
+        log.setResponseStatus(result.responseStatus());
+        log.setResponseHeaders(writeJson(result.responseHeaders()));
+        log.setResponseBody(writeJson(parsePossiblyJson((String) result.responseBody())));
+        log.setSuccessFlag(result.success() ? 1 : 0);
+        log.setErrorMessage(result.errorMessage());
+    }
+
+    /**
+     * 用统一执行结果填充运行时调用日志实体。
+     *
+     * @param log 运行时日志实体
+     * @param result 请求执行结果
+     */
+    private void populateFlowLog(UiApiFlowLog log, UiHttpInvokeService.HttpExecutionResult result) {
+        log.setRequestUrl(result.requestUrl());
+        log.setRequestHeaders(writeJson(result.requestHeaders()));
+        log.setRequestQuery(writeJson(result.queryParams()));
+        log.setRequestBody(writeJson(result.requestBody()));
+        log.setResponseStatus(result.responseStatus());
+        log.setResponseHeaders(writeJson(result.responseHeaders()));
+        log.setResponseBody(writeJson(parsePossiblyJson((String) result.responseBody())));
+        log.setInvokeStatus(result.success() ? "success" : "failed");
+        log.setErrorMessage(result.errorMessage());
     }
 
     /**
@@ -2298,4 +2296,5 @@ public class UiBuilderApplicationService {
             throw new BusinessException(ErrorCode.BAD_REQUEST, message);
         }
     }
+
 }

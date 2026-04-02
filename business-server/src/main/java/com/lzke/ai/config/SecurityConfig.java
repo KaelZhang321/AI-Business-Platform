@@ -29,18 +29,19 @@ public class SecurityConfig {
                 .csrf(csrf -> csrf.disable())
                 .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
-                        .requestMatchers(
-                                "/api/v1/auth/login",
-                                "/api/v1/auth/refresh",
-                                "/api/v1/auth/me",
-                                "/actuator/**",
-                                "/health",
-                                "/api/v1/feature-flags/**",
-                                "/api/v1/ui-spec/**"
-                        ).permitAll()
-                        .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
-                        .anyRequest().authenticated()
-                )
+//                		  .requestMatchers(
+//                                  "/api/v1/auth/login",
+//                                  "/api/v1/auth/getAuthTokenByCode",
+//                                  "/api/v1/auth/refresh",
+//                                  "/api/v1/auth/me",
+//                                  "/actuator/**",
+//                                  "/health",
+//                                  "/api/v1/feature-flags/**",
+//                                  "/api/v1/ui-spec/**"
+//                          ).permitAll()
+//                          .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
+//                          .anyRequest().authenticated()
+                        .anyRequest().permitAll())
                 .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
         return http.build();
     }

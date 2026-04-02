@@ -89,3 +89,20 @@ app:
       graphrag:
         enabled: true
         description: "GraphRAG 三路融合检索"
+forest:
+  backend: okhttp3
+  timeout: 180000
+  logEnabled: true
+  forest-req:
+    enabled: true
+  variables:
+    crm:
+      services:
+        oa:
+         url: http://172.23.15.59:9080/tapi/api/iam
+    oa:
+      url: http://172.23.15.59:9080/api/iam/
+      appKey: AI-RND-WORKFLOW
+      appSecret: a8b3949f289647148b073f88e19ee673
+      appCode: AI-RND-WORKFLOW
+

@@ -71,6 +71,28 @@ CREATE TABLE IF NOT EXISTS ui_api_test_logs (
     KEY idx_ui_api_test_logs_endpoint_created (endpoint_id, created_at)
 ) COMMENT='UI Builder 接口联调日志';
 
+CREATE TABLE IF NOT EXISTS ui_api_flow_logs (
+    id               VARCHAR(64) PRIMARY KEY COMMENT '主键',
+    flow_num         VARCHAR(64) NOT NULL COMMENT '流程编号',
+    endpoint_id      VARCHAR(64) NOT NULL COMMENT '接口定义ID',
+    request_url      VARCHAR(500) NOT NULL COMMENT '实际请求地址',
+    request_headers  JSON NULL COMMENT '请求头',
+    request_query    JSON NULL COMMENT '请求参数',
+    request_body     JSON NULL COMMENT '请求体',
+    response_status  INT NULL COMMENT 'HTTP响应状态码',
+    response_headers JSON NULL COMMENT '响应头',
+    response_body    JSON NULL COMMENT '响应体',
+    invoke_status    VARCHAR(32) NOT NULL DEFAULT 'success' COMMENT '接口调用状态',
+    error_message    VARCHAR(1000) NULL COMMENT '错误信息',
+    created_by       VARCHAR(64) NULL COMMENT '创建人ID',
+    created_by_name  VARCHAR(64) NULL COMMENT '创建人名称',
+    created_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    updated_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    KEY idx_ui_api_flow_logs_flow_created (flow_num, created_at),
+    KEY idx_ui_api_flow_logs_endpoint_created (endpoint_id, created_at),
+    KEY idx_ui_api_flow_logs_status_created (invoke_status, created_at)
+) COMMENT='UI Builder 运行时接口调用日志';
+
 CREATE TABLE IF NOT EXISTS ui_projects (
     id           VARCHAR(64) PRIMARY KEY COMMENT '主键',
     name         VARCHAR(128) NOT NULL COMMENT '项目名称',

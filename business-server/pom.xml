@@ -166,6 +166,18 @@
             <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>
         </dependency>
+        
+        <dependency>
+			<groupId>com.lecz.service</groupId>
+			<artifactId>lecz-bootstrap-commons</artifactId>
+			<version>0.0.1-SNAPSHOT</version>
+		</dependency>
+		<dependency>
+			<groupId>com.lecz.service</groupId>
+			<artifactId>component-oa-http-api</artifactId>
+			<version>0.0.1-SNAPSHOT</version>
+		</dependency>
+        
     </dependencies>
 
     <build>
