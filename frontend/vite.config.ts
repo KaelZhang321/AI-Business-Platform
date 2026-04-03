@@ -6,7 +6,7 @@ import { defineConfig, loadEnv } from 'vite';
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, '.', '');
-  const apiUrl = env.VITE_API_BASE_URL?.trim() || 'http://39.96.197.81:8080';
+  const apiUrl = env.VITE_API_BASE_URL?.trim() || 'http://172.23.15.59:9080/ai-platform';
 
   return {
     base: mode === 'development' ? '/' : '/ai-platform/',
