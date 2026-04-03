@@ -13,12 +13,14 @@ from app.api.routes.api_query import router as api_query_router
 from app.core.config import settings
 from app.core.error_codes import BusinessError, ErrorCode
 from app.models.schemas import HealthResponse
+from app.services.identity_vault import IdentityVault
 from app.services.rag_service import RAGService
 
 logger = logging.getLogger(__name__)
 
 # 全局服务连接状态，lifespan 写入，health_check 读取
 _service_status: dict[str, str] = {}
+_identity_vault = IdentityVault()
 
 
 @asynccontextmanager
@@ -174,6 +176,18 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def identity_vault_middleware(request: Request, call_next):
+    if settings.identity_vault_enabled:
+        identity = _identity_vault.extract_from_request(request)
+        request.state.identity = identity
+        request.state.user_id = identity.user_id if identity else None
+    else:
+        request.state.identity = None
+        request.state.user_id = None
+    return await call_next(request)
 
 
 @app.exception_handler(BusinessError)

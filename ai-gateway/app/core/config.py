@@ -86,6 +86,17 @@ class Settings(BaseSettings):
 
     # 业务编排层
     business_server_url: str = "http://localhost:8080"
+    business_server_timeout_seconds: float = 15.0
+
+    # 身份金库
+    identity_vault_enabled: bool = True
+    gateway_jwt_secret: str = ""
+
+    # API Registry / UI Builder metadata
+    api_catalog_source_mode: str = "hybrid"  # yaml | ui_builder | hybrid
+    ui_builder_metadata_timeout_seconds: float = 10.0
+    ui_builder_metadata_page_size: int = 100
+    ui_builder_metadata_token: str = ""
 
     # 外部LLM API
     openai_api_key: str = ""

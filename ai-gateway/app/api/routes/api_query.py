@@ -16,7 +16,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from app.models.schemas import (
     ApiQueryBusinessIntent,
@@ -336,8 +336,12 @@ def _extract_user_context(request: Request) -> dict[str, Any]:
     避免用户每次都要手动说"我的 ID 是 xxx"。
     """
     ctx: dict[str, Any] = {}
-    # 从 request.state 获取（如果有认证中间件注入）
-    if hasattr(request.state, "user_id"):
+    identity = getattr(request.state, "identity", None)
+    if identity is not None and hasattr(identity, "to_request_context"):
+        for key, value in identity.to_request_context().items():
+            if value not in (None, "", [], {}):
+                ctx[key] = value
+    elif hasattr(request.state, "user_id"):
         ctx["userId"] = request.state.user_id
     return ctx
 

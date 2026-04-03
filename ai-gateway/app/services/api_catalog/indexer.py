@@ -1,7 +1,7 @@
 """
 API Catalog — Milvus 向量入库器
 
-将 config/api_catalog.yaml 中的接口描述 embedding 后写入 Milvus `api_catalog` collection。
+将业务接口注册表 embedding 后写入 Milvus `api_catalog` collection。
 
 命令行使用::
 
@@ -21,9 +21,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from pathlib import Path
 
-import yaml
 from FlagEmbedding import BGEM3FlagModel
 from pymilvus import (
     Collection,
@@ -35,6 +33,7 @@ from pymilvus import (
 )
 
 from app.core.config import settings
+from app.services.api_catalog.registry_source import ApiCatalogRegistrySource
 from app.services.api_catalog.schema import ApiCatalogEntry
 
 logger = logging.getLogger(__name__)
@@ -118,20 +117,21 @@ class ApiCatalogIndexer:
     # ── 公共 API ────────────────────────────────────────────────
 
     async def index_all(self, config_path: str | None = None) -> dict[str, int]:
-        """从 YAML 配置文件全量入库。
+        """从配置的注册表源全量入库。
 
         Returns:
             {"indexed": N, "skipped": M}
         """
-        path = Path(config_path or _default_config_path())
-        if not path.exists():
-            raise FileNotFoundError(f"api_catalog.yaml 不存在: {path}")
-
-        with open(path, encoding="utf-8") as f:
-            raw = yaml.safe_load(f)
-
-        entries = [ApiCatalogEntry(**item) for item in raw.get("apis", [])]
-        logger.info("Loaded %d API entries from %s", len(entries), path)
+        source = ApiCatalogRegistrySource()
+        try:
+            entries = await source.load_entries(config_path)
+        finally:
+            await source.close()
+        logger.info(
+            "Loaded %d API entries from source_mode=%s",
+            len(entries),
+            settings.api_catalog_source_mode,
+        )
 
         results = await asyncio.gather(*[self.index_entry(e) for e in entries], return_exceptions=True)
         indexed = sum(1 for r in results if r is True)
@@ -187,11 +187,6 @@ class ApiCatalogIndexer:
         collection.flush()
         logger.debug("Indexed API entry: %s → %s %s", entry.id, entry.method, entry.path)
         return True
-
-
-def _default_config_path() -> str:
-    return str(Path(__file__).resolve().parents[4] / "config" / "api_catalog.yaml")
-
 
 def _create_collection() -> Collection:
     collection = Collection(name=API_CATALOG_COLLECTION, schema=_get_collection_schema())

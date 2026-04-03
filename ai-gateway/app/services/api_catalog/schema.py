@@ -124,6 +124,20 @@ class ApiCatalogEntry(BaseModel):
             parts.append(" ".join(self.business_intents))
         return "\n".join(parts)
 
+    @property
+    def api_path(self) -> str:
+        """Stage-1 naming aligned alias."""
+        return self.path
+
+    @property
+    def api_schema(self) -> dict[str, Any]:
+        """供 LLM 理解的裁剪接口说明书。"""
+        return {
+            "request": self.param_schema.model_dump(),
+            "response_data_path": self.response_data_path,
+            "field_labels": self.field_labels,
+        }
+
 
 class ApiCatalogSearchResult(BaseModel):
     """带相似度分数的接口检索结果。"""

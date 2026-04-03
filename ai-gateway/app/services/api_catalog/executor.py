@@ -30,10 +30,6 @@ from app.services.api_catalog.schema import ApiCatalogEntry
 
 logger = logging.getLogger(__name__)
 
-# 调用 business-server 超时（秒）
-API_CALL_TIMEOUT = 15.0
-
-
 class ApiExecutor:
     """通过 httpx 调用 business-server，规范化响应数据。"""
 
@@ -44,7 +40,7 @@ class ApiExecutor:
         if self._client is None or self._client.is_closed:
             self._client = httpx.AsyncClient(
                 base_url=settings.business_server_url,
-                timeout=API_CALL_TIMEOUT,
+                timeout=settings.business_server_timeout_seconds,
                 follow_redirects=True,
             )
         return self._client
@@ -90,7 +86,8 @@ class ApiExecutor:
                     headers=headers,
                 )
         except httpx.TimeoutException:
-            return _error_result(f"接口调用超时（{API_CALL_TIMEOUT}s）: {entry.path}", trace_id=trace_id)
+            timeout_seconds = settings.business_server_timeout_seconds
+            return _error_result(f"接口调用超时（{timeout_seconds}s）: {entry.path}", trace_id=trace_id)
         except httpx.RequestError as exc:
             return _error_result(f"接口网络异常: {exc}", trace_id=trace_id)
 
