@@ -44,6 +44,29 @@ _OUTPUT_FIELDS = [
     "path",
     "auth_required",
     "ui_hint",
+    "example_queries",
+    "tags",
+    "business_intents",
+    "api_schema",
+    "response_data_path",
+    "field_labels",
+    "executor_config",
+    "security_rules",
+    "detail_hint",
+    "pagination_hint",
+    "template_hint",
+]
+_LEGACY_OUTPUT_FIELDS = [
+    "id",
+    "description",
+    "domain",
+    "env",
+    "status",
+    "tag_name",
+    "method",
+    "path",
+    "auth_required",
+    "ui_hint",
     "example_queries_json",
     "tags_json",
     "business_intents_json",
@@ -78,6 +101,25 @@ class ApiCatalogRetriever:
             self._collection = Collection(name=API_CATALOG_COLLECTION)
             self._collection.load()
         return self._collection
+
+    def _get_output_fields(self) -> list[str]:
+        """根据 collection 实际 schema 选择输出字段集合。
+
+        设计意图：
+            新版本使用原生 JSON 字段，但线上在重建索引前可能仍保留旧 schema。
+            这里做一次读兼容，让发布顺序可以是“先发代码，后重建索引”。
+        """
+        field_names = {field.name for field in self._get_collection().schema.fields}
+        if "api_schema" in field_names:
+            return _OUTPUT_FIELDS
+        return _LEGACY_OUTPUT_FIELDS
+
+    def _get_search_param(self) -> dict[str, object]:
+        """根据 collection 版本选择向量检索参数。"""
+        field_names = {field.name for field in self._get_collection().schema.fields}
+        if "api_schema" in field_names:
+            return {"metric_type": "COSINE", "params": {"ef": 64}}
+        return {"metric_type": "IP", "params": {"nprobe": 16}}
 
     async def search(
         self,
@@ -160,7 +202,7 @@ class ApiCatalogRetriever:
         try:
             results = collection.query(
                 expr=f'id == "{api_id}"',
-                output_fields=_OUTPUT_FIELDS,
+                output_fields=self._get_output_fields(),
                 limit=1,
             )
         except Exception as exc:
@@ -220,9 +262,9 @@ class ApiCatalogRetriever:
             search_kwargs = {
                 "data": [query_emb],
                 "anns_field": "embedding",
-                "param": {"metric_type": "IP", "params": {"nprobe": 16}},
+                "param": self._get_search_param(),
                 "limit": top_k + 2,
-                "output_fields": _OUTPUT_FIELDS,
+                "output_fields": self._get_output_fields(),
             }
             if expr:
                 search_kwargs["expr"] = expr
@@ -255,6 +297,12 @@ class ApiCatalogRetriever:
 
 def _build_entry_from_fields(fields: dict) -> ApiCatalogEntry:
     """从 Milvus 输出字段重建 `ApiCatalogEntry`。"""
+    api_schema = _read_json_field(fields, "api_schema", "api_schema_json", {})
+    response_data_path = fields.get("response_data_path") or api_schema.get("response_data_path") or "data"
+    field_labels = _read_json_field(fields, "field_labels", "field_labels_json", api_schema.get("field_labels", {}))
+    request_schema = api_schema.get("request", {})
+    response_schema = api_schema.get("response_schema", {})
+    sample_request = api_schema.get("sample_request", {})
     return ApiCatalogEntry(
         id=fields.get("id", ""),
         description=fields.get("description", ""),
@@ -266,28 +314,39 @@ def _build_entry_from_fields(fields: dict) -> ApiCatalogEntry:
         path=fields.get("path", ""),
         auth_required=fields.get("auth_required", True),
         ui_hint=fields.get("ui_hint", "table"),
-        example_queries=_safe_json_loads(fields.get("example_queries_json"), []),
-        tags=_safe_json_loads(fields.get("tags_json"), []),
-        business_intents=_safe_json_loads(fields.get("business_intents_json"), ["query_business_data"]),
-        param_schema=ParamSchema(**_safe_json_loads(fields.get("param_schema_json"), {})),
-        response_data_path=fields.get("response_data_path", "data"),
-        field_labels=_safe_json_loads(fields.get("field_labels_json"), {}),
-        executor_config=_safe_json_loads(fields.get("executor_config_json"), {}),
-        security_rules=_safe_json_loads(fields.get("security_rules_json"), {}),
-        detail_hint=ApiCatalogDetailHint(**_safe_json_loads(fields.get("detail_hint_json"), {})),
-        pagination_hint=ApiCatalogPaginationHint(**_safe_json_loads(fields.get("pagination_hint_json"), {})),
-        template_hint=ApiCatalogTemplateHint(**_safe_json_loads(fields.get("template_hint_json"), {})),
+        example_queries=_read_json_field(fields, "example_queries", "example_queries_json", []),
+        tags=_read_json_field(fields, "tags", "tags_json", []),
+        business_intents=_read_json_field(fields, "business_intents", "business_intents_json", ["query_business_data"]),
+        param_schema=ParamSchema(**(request_schema if isinstance(request_schema, dict) else {})),
+        response_schema=response_schema if isinstance(response_schema, dict) else {},
+        sample_request=sample_request if isinstance(sample_request, dict) else {},
+        response_data_path=response_data_path,
+        field_labels=field_labels if isinstance(field_labels, dict) else {},
+        executor_config=_read_json_field(fields, "executor_config", "executor_config_json", {}),
+        security_rules=_read_json_field(fields, "security_rules", "security_rules_json", {}),
+        detail_hint=ApiCatalogDetailHint(**_read_json_field(fields, "detail_hint", "detail_hint_json", {})),
+        pagination_hint=ApiCatalogPaginationHint(**_read_json_field(fields, "pagination_hint", "pagination_hint_json", {})),
+        template_hint=ApiCatalogTemplateHint(**_read_json_field(fields, "template_hint", "template_hint_json", {})),
     )
 
 
-def _safe_json_loads(value: str | None, default):
+def _safe_json_loads(value, default):
     """安全反序列化 Milvus 中的 JSON 字段。"""
+    if isinstance(value, (dict, list)):
+        return value
     if not value:
         return default
     try:
         return json.loads(value)
     except (json.JSONDecodeError, TypeError):
         return default
+
+
+def _read_json_field(fields: dict, primary_name: str, legacy_name: str, default):
+    """兼容读取新旧两代 schema 的 JSON 字段。"""
+    if primary_name in fields:
+        return _safe_json_loads(fields.get(primary_name), default)
+    return _safe_json_loads(fields.get(legacy_name), default)
 
 
 def _normalize_filters(

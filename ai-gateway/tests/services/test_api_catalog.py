@@ -12,12 +12,21 @@ from __future__ import annotations
 
 import asyncio
 
+from pymilvus import DataType
+
+import app.services.api_catalog.indexer as indexer_module
 from app.services.api_catalog.executor import (
     _apply_field_labels,
     _extract_data,
 )
+from app.services.api_catalog.indexer import _create_collection, _get_collection_schema
 from app.services.api_catalog.param_extractor import _coerce_type, _parse_json, _validate_params
-from app.services.api_catalog.retriever import ApiCatalogRetriever, _build_filter_expr
+from app.services.api_catalog.retriever import (
+    _LEGACY_OUTPUT_FIELDS,
+    _build_entry_from_fields,
+    _build_filter_expr,
+    ApiCatalogRetriever,
+)
 from app.services.api_catalog.schema import ApiCatalogEntry, ApiCatalogSearchFilters, ApiCatalogSearchResult, ParamSchema
 
 
@@ -63,6 +72,31 @@ class TestApiCatalogEntry:
         assert "domain:crm" in entry.embed_text
         assert "customer_management" in entry.embed_text
         assert "query_business_data" in entry.embed_text
+
+    def test_api_schema_contains_request_response_and_sample_request(self):
+        entry = self._make_entry(
+            param_schema=ParamSchema(
+                type="object",
+                properties={"pageNum": {"type": "integer"}},
+                required=["pageNum"],
+            ),
+            response_schema={"type": "object", "properties": {"data": {"type": "array"}}},
+            sample_request={"pageNum": 1},
+            response_data_path="data.list",
+            field_labels={"customerId": "客户ID"},
+        )
+
+        assert entry.api_schema == {
+            "request": {
+                "type": "object",
+                "properties": {"pageNum": {"type": "integer"}},
+                "required": ["pageNum"],
+            },
+            "response_schema": {"type": "object", "properties": {"data": {"type": "array"}}},
+            "sample_request": {"pageNum": 1},
+            "response_data_path": "data.list",
+            "field_labels": {"customerId": "客户ID"},
+        }
 
 
 # ── executor _extract_data tests ─────────────────────────────────────────────
@@ -237,3 +271,110 @@ class TestRetrieverFilters:
         )
 
         assert [result.entry.domain for result in results] == ["crm", "erp"]
+
+
+class TestIndexerSchema:
+    def test_collection_schema_uses_json_fields_and_dynamic_fields(self):
+        schema = _get_collection_schema()
+        field_map = {field.name: field for field in schema.fields}
+
+        assert schema.enable_dynamic_field is True
+        assert field_map["api_schema"].dtype == DataType.JSON
+        assert field_map["executor_config"].dtype == DataType.JSON
+        assert field_map["security_rules"].dtype == DataType.JSON
+        assert field_map["example_queries"].dtype == DataType.JSON
+
+    def test_create_collection_uses_hnsw_and_scalar_indexes(self, monkeypatch):
+        class FakeCollection:
+            def __init__(self, name, schema):
+                self.name = name
+                self.schema = schema
+                self.index_calls: list[tuple[str, dict]] = []
+                self.loaded = False
+
+            def create_index(self, field_name, index_params):
+                self.index_calls.append((field_name, index_params))
+
+            def load(self):
+                self.loaded = True
+
+        monkeypatch.setattr(indexer_module, "Collection", FakeCollection)
+
+        collection = _create_collection()
+        index_map = {field_name: params for field_name, params in collection.index_calls}
+
+        assert index_map["embedding"] == {
+            "metric_type": "COSINE",
+            "index_type": "HNSW",
+            "params": {"M": 16, "efConstruction": 200},
+        }
+        assert index_map["domain"] == {"index_type": "INVERTED"}
+        assert index_map["env"] == {"index_type": "INVERTED"}
+        assert index_map["status"] == {"index_type": "INVERTED"}
+        assert index_map["tag_name"] == {"index_type": "INVERTED"}
+        assert collection.loaded is True
+
+
+class TestRetrieverCompatibility:
+    def test_build_entry_from_fields_supports_native_json_schema(self):
+        entry = _build_entry_from_fields(
+            {
+                "id": "customer_list",
+                "description": "查询客户列表",
+                "domain": "crm",
+                "env": "prod",
+                "status": "active",
+                "tag_name": "客户管理",
+                "method": "GET",
+                "path": "/api/customer/list",
+                "auth_required": True,
+                "ui_hint": "table",
+                "example_queries": ["查询客户列表"],
+                "tags": ["客户管理", "crm"],
+                "business_intents": ["query_business_data"],
+                "api_schema": {
+                    "request": {
+                        "type": "object",
+                        "properties": {"pageNum": {"type": "integer"}},
+                        "required": ["pageNum"],
+                    },
+                    "response_schema": {"type": "object", "properties": {"data": {"type": "array"}}},
+                    "sample_request": {"pageNum": 1},
+                    "response_data_path": "data.list",
+                    "field_labels": {"customerId": "客户ID"},
+                },
+                "field_labels": {"customerId": "客户ID"},
+                "executor_config": {"base_url": "http://business-server"},
+                "security_rules": {"read_only": True},
+                "detail_hint": {"enabled": False},
+                "pagination_hint": {"enabled": True, "page_param": "pageNum"},
+                "template_hint": {"enabled": False},
+            }
+        )
+
+        assert entry.param_schema.required == ["pageNum"]
+        assert entry.response_schema["type"] == "object"
+        assert entry.sample_request == {"pageNum": 1}
+        assert entry.field_labels["customerId"] == "客户ID"
+
+    def test_retriever_uses_legacy_output_fields_before_reindex(self):
+        retriever = ApiCatalogRetriever()
+
+        class FakeField:
+            def __init__(self, name: str) -> None:
+                self.name = name
+
+        class FakeSchema:
+            fields = [FakeField(name) for name in _LEGACY_OUTPUT_FIELDS]
+
+        class FakeCollection:
+            def __init__(self) -> None:
+                self.schema = FakeSchema()
+
+            def load(self) -> None:
+                return None
+
+        retriever._collection = FakeCollection()
+
+        assert retriever._get_output_fields() == _LEGACY_OUTPUT_FIELDS
+        assert retriever._get_search_param() == {"metric_type": "IP", "params": {"nprobe": 16}}

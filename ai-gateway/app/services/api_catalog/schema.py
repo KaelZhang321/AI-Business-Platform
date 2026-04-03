@@ -102,6 +102,14 @@ class ApiCatalogEntry(BaseModel):
         default_factory=ParamSchema,
         description="接口参数 JSON Schema，供 LLM 参数提取使用",
     )
+    response_schema: dict[str, Any] = Field(
+        default_factory=dict,
+        description="接口响应 JSON Schema，供 LLM 理解返回结构与字段层级",
+    )
+    sample_request: dict[str, Any] = Field(
+        default_factory=dict,
+        description="接口示例请求，用于提示 LLM 更贴近真实参数形状",
+    )
 
     # ---------- 响应规范化 ----------
     response_data_path: str = Field(
@@ -147,9 +155,17 @@ class ApiCatalogEntry(BaseModel):
 
     @property
     def api_schema(self) -> dict[str, Any]:
-        """输出给 LLM 的裁剪版接口说明书。"""
+        """输出给 LLM 的稳定接口说明书契约。
+
+        功能：
+            对齐设计文档中 `api_schema` 的职责，明确区分给 LLM 使用的说明书
+            与给执行器使用的 `executor_config`。这里保留请求/响应主体，并额外
+            附带网关运行时必需的裁剪提示，避免后续链路再去猜响应展开路径。
+        """
         return {
             "request": self.param_schema.model_dump(),
+            "response_schema": self.response_schema,
+            "sample_request": self.sample_request,
             "response_data_path": self.response_data_path,
             "field_labels": self.field_labels,
         }

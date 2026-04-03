@@ -26,12 +26,33 @@ class ApiCatalogSourceError(RuntimeError):
 
 
 class ApiCatalogRegistrySource:
-    """Build `ApiCatalogEntry` records from the authoritative registry source."""
+    """从权威元数据源构建 `ApiCatalogEntry` 列表。
+
+    功能：
+        统一承接 YAML、本地 overlay、UI Builder 元数据三类来源，产出可直接入库
+        到 Milvus 的标准化目录记录。
+
+    Edge Cases:
+        - `ui_builder` 模式下远端元数据不可用时直接失败，避免悄悄退回过期配置
+        - `hybrid` 模式下远端失败允许回退到 overlay，保障本地开发与演示链路可用
+        - 标签映射缺失时不再回填原始 `tagId`，避免把存储主键污染为业务标签名
+    """
 
     def __init__(self, client: httpx.AsyncClient | None = None) -> None:
         self._client = client
 
     async def load_entries(self, config_path: str | None = None) -> list[ApiCatalogEntry]:
+        """按配置模式加载接口目录记录。
+
+        Args:
+            config_path: overlay YAML 路径；为空时读取默认 `config/api_catalog.yaml`。
+
+        Returns:
+            标准化后的 `ApiCatalogEntry` 列表，且始终附带 builtin 字典接口。
+
+        Raises:
+            ApiCatalogSourceError: 当 source mode 非法，或强制远端模式下元数据不可用。
+        """
         source_mode = settings.api_catalog_source_mode.strip().lower()
         if source_mode not in {"yaml", "ui_builder", "hybrid"}:
             raise ApiCatalogSourceError(f"Unsupported api catalog source mode: {source_mode}")
@@ -54,6 +75,11 @@ class ApiCatalogRegistrySource:
         return _append_builtin_entries(_merge_overlay_entries(remote_entries, overlay_entries))
 
     async def _load_ui_builder_entries(self) -> list[ApiCatalogEntry]:
+        """从 UI Builder 拉取源、标签、接口三层元数据并拍平。
+
+        这里显式补一跳 `/tags` 查询，是为了让 `tag_name` 始终来自业务标签名，
+        而不是把 `tagId` 这种存储主键误当成检索标签写入向量目录。
+        """
         sources = await self._fetch_paged("/api/v1/ui-builder/sources")
 
         entries: list[ApiCatalogEntry] = []
@@ -61,15 +87,39 @@ class ApiCatalogRegistrySource:
             source_id = source.get("id")
             if not source_id:
                 continue
+            tag_name_by_id = await self._fetch_tags_by_source(str(source_id))
             endpoints = await self._fetch_paged(f"/api/v1/ui-builder/sources/{source_id}/endpoints")
             for endpoint in endpoints:
-                entries.append(_build_entry(source, endpoint))
+                entries.append(_build_entry(source, endpoint, tag_name_by_id))
 
         if not entries:
             raise ApiCatalogSourceError("UI Builder metadata returned no endpoints")
         return _dedupe_by_signature(entries)
 
+    async def _fetch_tags_by_source(self, source_id: str) -> dict[str, str]:
+        """获取单个接口源的标签映射表。
+
+        Args:
+            source_id: UI Builder 中的接口源 ID。
+
+        Returns:
+            `tag_id -> tag_name` 的稳定映射，仅保留名称非空的条目。
+
+        Raises:
+            ApiCatalogSourceError: 标签接口返回异常时抛出，由上层统一决定是否降级。
+        """
+        tags = await self._fetch_paged(f"/api/v1/ui-builder/sources/{source_id}/tags")
+        mapping: dict[str, str] = {}
+        for tag in tags:
+            tag_id = _first_non_empty(tag.get("id"), tag.get("code"))
+            tag_name = _first_non_empty(tag.get("name"), tag.get("code"))
+            if not tag_id or not tag_name:
+                continue
+            mapping[str(tag_id)] = str(tag_name).strip()
+        return mapping
+
     async def _fetch_paged(self, path: str) -> list[dict[str, Any]]:
+        """读取 UI Builder 的分页接口并聚合成完整列表。"""
         page = 1
         size = settings.ui_builder_metadata_page_size
         items: list[dict[str, Any]] = []
@@ -95,6 +145,7 @@ class ApiCatalogRegistrySource:
         return items
 
     def _get_client(self) -> httpx.AsyncClient:
+        """懒加载远端元数据客户端。"""
         if self._client is None:
             headers = {}
             if settings.ui_builder_metadata_token:
@@ -109,11 +160,26 @@ class ApiCatalogRegistrySource:
         return self._client
 
     async def close(self) -> None:
+        """释放内部 httpx 客户端，避免测试场景泄漏连接。"""
         if self._client and not self._client.is_closed:
             await self._client.aclose()
 
 
-def _build_entry(source: dict[str, Any], endpoint: dict[str, Any]) -> ApiCatalogEntry:
+def _build_entry(
+    source: dict[str, Any],
+    endpoint: dict[str, Any],
+    tag_name_by_id: dict[str, str] | None = None,
+) -> ApiCatalogEntry:
+    """把一条 UI Builder endpoint 元数据拍平成 `ApiCatalogEntry`。
+
+    Args:
+        source: 接口源元数据，提供 domain/env/auth/base_url 等外围信息。
+        endpoint: 单条接口定义，包含 path/schema/sample 等接口级信息。
+        tag_name_by_id: 由 `/tags` 拉取到的显式标签映射。
+
+    Returns:
+        可直接入库 Milvus 的标准目录对象。
+    """
     method = str(endpoint.get("method") or "GET").upper()
     path = str(endpoint.get("path") or "")
     name = str(endpoint.get("name") or "").strip()
@@ -121,13 +187,14 @@ def _build_entry(source: dict[str, Any], endpoint: dict[str, Any]) -> ApiCatalog
 
     request_schema = _safe_json_loads(endpoint.get("requestSchema"))
     response_schema = _safe_json_loads(endpoint.get("responseSchema"))
+    sample_request = _safe_json_loads(endpoint.get("sampleRequest"))
     sample_response = _safe_json_loads(endpoint.get("sampleResponse"))
 
     auth_type = str(source.get("authType") or "").strip()
     auth_required = auth_type.lower() not in {"", "none", "public", "anonymous"}
     source_code = str(source.get("code") or "").strip()
     source_name = str(source.get("name") or "").strip()
-    tag_name = _first_non_empty(endpoint.get("tagName"), endpoint.get("tagId"))
+    tag_name = _resolve_tag_name(endpoint, tag_name_by_id or {})
 
     return ApiCatalogEntry(
         id=str(endpoint.get("id") or f"{method}:{path}"),
@@ -161,6 +228,8 @@ def _build_entry(source: dict[str, Any], endpoint: dict[str, Any]) -> ApiCatalog
             "enforcement": "delegated_to_business_server",
         },
         param_schema=_to_param_schema(request_schema),
+        response_schema=response_schema,
+        sample_request=sample_request,
         response_data_path=_infer_response_data_path(sample_response, response_schema),
         field_labels=_extract_field_labels(response_schema),
         ui_hint=_infer_ui_hint(summary, path, sample_response),
@@ -183,6 +252,12 @@ def _merge_overlay_entries(remote_entries: list[ApiCatalogEntry], overlay_entrie
 
 
 def _merge_overlay(remote_entry: ApiCatalogEntry, overlay_entry: ApiCatalogEntry) -> ApiCatalogEntry:
+    """合并远端权威元数据与本地 overlay。
+
+    设计意图：
+        overlay 的职责是“补丁”，不是“覆盖整个远端对象”。因此只让用户显式声明的字段
+        覆盖远端；其它字段继续继承 UI Builder 提供的最新 schema 与运行时提示。
+    """
     merged = overlay_entry.model_copy(deep=True)
     merged.domain = remote_entry.domain or overlay_entry.domain
     merged.env = remote_entry.env or overlay_entry.env
@@ -191,16 +266,67 @@ def _merge_overlay(remote_entry: ApiCatalogEntry, overlay_entry: ApiCatalogEntry
     merged.auth_required = remote_entry.auth_required
     merged.executor_config = {**remote_entry.executor_config, **overlay_entry.executor_config}
     merged.security_rules = {**remote_entry.security_rules, **overlay_entry.security_rules}
-    if not merged.description:
+    overlay_fields = set(overlay_entry.model_fields_set)
+
+    if "description" not in overlay_fields:
         merged.description = remote_entry.description
-    if not merged.example_queries:
+
+    if "example_queries" in overlay_fields:
+        merged.example_queries = _compact_list([*overlay_entry.example_queries, *remote_entry.example_queries])
+    else:
         merged.example_queries = remote_entry.example_queries
-    if not merged.tags:
+
+    if "tags" in overlay_fields:
+        merged.tags = _compact_list([*overlay_entry.tags, *remote_entry.tags])
+    else:
         merged.tags = remote_entry.tags
-    if not merged.business_intents:
+
+    if "business_intents" in overlay_fields:
+        merged.business_intents = _compact_list([*overlay_entry.business_intents, *remote_entry.business_intents])
+    else:
         merged.business_intents = remote_entry.business_intents
-    if not merged.field_labels:
-        merged.field_labels = remote_entry.field_labels
+
+    merged.param_schema = _merge_model_field(
+        remote_entry.param_schema,
+        overlay_entry.param_schema,
+        explicit="param_schema" in overlay_fields,
+    )
+    merged.response_schema = (
+        {**remote_entry.response_schema, **overlay_entry.response_schema}
+        if "response_schema" in overlay_fields
+        else remote_entry.response_schema
+    )
+    merged.sample_request = (
+        overlay_entry.sample_request
+        if "sample_request" in overlay_fields
+        else remote_entry.sample_request
+    )
+    merged.response_data_path = (
+        overlay_entry.response_data_path
+        if "response_data_path" in overlay_fields
+        else remote_entry.response_data_path
+    )
+    merged.field_labels = (
+        {**remote_entry.field_labels, **overlay_entry.field_labels}
+        if "field_labels" in overlay_fields
+        else remote_entry.field_labels
+    )
+    merged.ui_hint = overlay_entry.ui_hint if "ui_hint" in overlay_fields else remote_entry.ui_hint
+    merged.detail_hint = _merge_model_field(
+        remote_entry.detail_hint,
+        overlay_entry.detail_hint,
+        explicit="detail_hint" in overlay_fields,
+    )
+    merged.pagination_hint = _merge_model_field(
+        remote_entry.pagination_hint,
+        overlay_entry.pagination_hint,
+        explicit="pagination_hint" in overlay_fields,
+    )
+    merged.template_hint = _merge_model_field(
+        remote_entry.template_hint,
+        overlay_entry.template_hint,
+        explicit="template_hint" in overlay_fields,
+    )
     return merged
 
 
@@ -212,6 +338,12 @@ def _append_builtin_entries(entries: list[ApiCatalogEntry]) -> list[ApiCatalogEn
 
 
 def _build_system_dict_entry() -> ApiCatalogEntry:
+    """注册系统级万能字典接口。
+
+    设计意图：
+        字典项本质上是“高复用的枚举读取能力”，应以单条通用接口注册，
+        再通过 `allowed_values` 约束可用字典编码，避免为每个下拉框膨胀一条 API。
+    """
     allowed_values = ["customer_region", "customer_level", "industry", "contract_type"]
     return ApiCatalogEntry(
         id="system_dicts_v1",
@@ -248,6 +380,23 @@ def _build_system_dict_entry() -> ApiCatalogEntry:
             },
             required=["types"],
         ),
+        response_schema={
+            "type": "object",
+            "properties": {
+                "data": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "label": {"type": "string", "description": "显示文案"},
+                            "value": {"type": "string", "description": "提交值"},
+                            "type": {"type": "string", "description": "字典编码"},
+                        },
+                    },
+                }
+            },
+        },
+        sample_request={"types": "customer_region,customer_level"},
         response_data_path="data",
         field_labels={"label": "标签", "value": "值"},
         ui_hint="list",
@@ -277,6 +426,23 @@ def _dedupe_by_signature(entries: list[ApiCatalogEntry]) -> list[ApiCatalogEntry
     return list(by_signature.values())
 
 
+def _merge_model_field(remote_model: Any, overlay_model: Any, *, explicit: bool) -> Any:
+    """按字段粒度合并 Pydantic 子模型。
+
+    overlay 一旦显式声明某个复杂字段，通常只会改其中 1-2 个键。
+    这里保留远端元数据剩余字段，避免因为 overlay 的局部补丁把整段 schema 或 hint 覆盖成默认值。
+    """
+    if not explicit:
+        return remote_model
+    remote_payload = remote_model.model_dump() if hasattr(remote_model, "model_dump") else dict(remote_model or {})
+    overlay_fields = getattr(overlay_model, "model_fields_set", set())
+    merged_payload = dict(remote_payload)
+    for field_name in overlay_fields:
+        merged_payload[field_name] = getattr(overlay_model, field_name)
+    model_cls = type(remote_model)
+    return model_cls(**merged_payload) if hasattr(model_cls, "model_validate") else merged_payload
+
+
 def _normalize_domain(value: str) -> str:
     normalized = re.sub(r"[^a-zA-Z0-9]+", "_", value.strip().lower()).strip("_")
     return normalized or "generic"
@@ -285,7 +451,8 @@ def _normalize_domain(value: str) -> str:
 def _normalize_tag_name(value: str | None) -> str | None:
     if not value:
         return None
-    normalized = re.sub(r"[^a-zA-Z0-9]+", "_", value.strip().lower()).strip("_")
+    # `tag_name` 直接参与标量过滤，不能因为团队使用中文标签就被归一化成空值。
+    normalized = re.sub(r"[^\w]+", "_", value.strip().lower()).strip("_")
     return normalized or None
 
 
@@ -305,6 +472,32 @@ def _build_example_queries(name: str, summary: str) -> list[str]:
     if name:
         queries.append(f"查询{name}")
     return _compact_list(queries)
+
+
+def _resolve_tag_name(endpoint: dict[str, Any], tag_name_by_id: dict[str, str]) -> str | None:
+    """解析接口标签名。
+
+    优先级：
+        1. endpoint 自带的 `tagName`
+        2. `/sources/{sourceId}/tags` 提供的 `tagId -> tagName` 映射
+
+    注意：
+        如果两者都缺失，返回 `None`，而不是把 `tagId` 当作可读标签名写入目录。
+    """
+    direct_tag_name = _first_non_empty(endpoint.get("tagName"))
+    if direct_tag_name:
+        return direct_tag_name
+
+    tag_id = _first_non_empty(endpoint.get("tagId"))
+    if not tag_id:
+        return None
+
+    resolved = tag_name_by_id.get(str(tag_id))
+    if resolved:
+        return resolved
+
+    logger.debug("UI Builder endpoint tag could not be resolved: endpoint_id=%s tag_id=%s", endpoint.get("id"), tag_id)
+    return None
 
 
 def _infer_business_intents(name: str, summary: str, path: str) -> list[str]:

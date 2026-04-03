@@ -19,7 +19,6 @@ API Catalog — Milvus 向量入库器
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 
 from FlagEmbedding import BGEM3FlagModel
@@ -50,39 +49,54 @@ def _get_collection_schema() -> CollectionSchema:
 
     功能：
         同时保留向量检索字段和少量标量护栏，让第二阶段可以做 Hybrid Search。
+        复杂结构改用 Milvus 原生 JSON 字段，避免网关长期维护一层“JSON 字符串协议”。
     """
     fields = [
-        FieldSchema(name="id",           dtype=DataType.VARCHAR,       max_length=128,  is_primary=True),
-        FieldSchema(name="description",  dtype=DataType.VARCHAR,       max_length=1024),
-        FieldSchema(name="domain",       dtype=DataType.VARCHAR,       max_length=64),
-        FieldSchema(name="env",          dtype=DataType.VARCHAR,       max_length=64),
-        FieldSchema(name="status",       dtype=DataType.VARCHAR,       max_length=32),
-        FieldSchema(name="tag_name",     dtype=DataType.VARCHAR,       max_length=128),
-        FieldSchema(name="method",       dtype=DataType.VARCHAR,       max_length=16),
-        FieldSchema(name="path",         dtype=DataType.VARCHAR,       max_length=512),
-        FieldSchema(name="auth_required",dtype=DataType.BOOL),
-        FieldSchema(name="ui_hint",      dtype=DataType.VARCHAR,       max_length=32),
-        # JSON 序列化存储复杂字段
-        FieldSchema(name="example_queries_json", dtype=DataType.VARCHAR, max_length=2048),
-        FieldSchema(name="tags_json",            dtype=DataType.VARCHAR, max_length=512),
-        FieldSchema(name="business_intents_json",dtype=DataType.VARCHAR, max_length=512),
-        FieldSchema(name="param_schema_json",    dtype=DataType.VARCHAR, max_length=4096),
-        FieldSchema(name="response_data_path",   dtype=DataType.VARCHAR, max_length=256),
-        FieldSchema(name="field_labels_json",    dtype=DataType.VARCHAR, max_length=2048),
-        FieldSchema(name="executor_config_json", dtype=DataType.VARCHAR, max_length=2048),
-        FieldSchema(name="security_rules_json",  dtype=DataType.VARCHAR, max_length=2048),
-        FieldSchema(name="detail_hint_json",     dtype=DataType.VARCHAR, max_length=2048),
-        FieldSchema(name="pagination_hint_json", dtype=DataType.VARCHAR, max_length=2048),
-        FieldSchema(name="template_hint_json",   dtype=DataType.VARCHAR, max_length=2048),
+        FieldSchema(name="id", dtype=DataType.VARCHAR, max_length=128, is_primary=True),
+        FieldSchema(name="description", dtype=DataType.VARCHAR, max_length=1024),
+        FieldSchema(name="domain", dtype=DataType.VARCHAR, max_length=64),
+        FieldSchema(name="env", dtype=DataType.VARCHAR, max_length=64),
+        FieldSchema(name="status", dtype=DataType.VARCHAR, max_length=32),
+        FieldSchema(name="tag_name", dtype=DataType.VARCHAR, max_length=128),
+        FieldSchema(name="method", dtype=DataType.VARCHAR, max_length=16),
+        FieldSchema(name="path", dtype=DataType.VARCHAR, max_length=512),
+        FieldSchema(name="auth_required", dtype=DataType.BOOL),
+        FieldSchema(name="ui_hint", dtype=DataType.VARCHAR, max_length=32),
+        FieldSchema(name="example_queries", dtype=DataType.JSON),
+        FieldSchema(name="tags", dtype=DataType.JSON),
+        FieldSchema(name="business_intents", dtype=DataType.JSON),
+        FieldSchema(name="api_schema", dtype=DataType.JSON),
+        FieldSchema(name="response_data_path", dtype=DataType.VARCHAR, max_length=256),
+        FieldSchema(name="field_labels", dtype=DataType.JSON),
+        FieldSchema(name="executor_config", dtype=DataType.JSON),
+        FieldSchema(name="security_rules", dtype=DataType.JSON),
+        FieldSchema(name="detail_hint", dtype=DataType.JSON),
+        FieldSchema(name="pagination_hint", dtype=DataType.JSON),
+        FieldSchema(name="template_hint", dtype=DataType.JSON),
         # 向量字段
-        FieldSchema(name="embedding",    dtype=DataType.FLOAT_VECTOR,  dim=EMBEDDING_DIM),
+        FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=EMBEDDING_DIM),
     ]
-    return CollectionSchema(fields=fields, description="Business API RAG catalog")
+    return CollectionSchema(
+        fields=fields,
+        description="Business API RAG catalog",
+        enable_dynamic_field=True,
+    )
 
 
-def _expected_field_names() -> set[str]:
-    """返回当前版本 schema 的字段集合，用于识别 Milvus 漂移。"""
-    return {field.name for field in _get_collection_schema().fields}
+def _field_signature(field: FieldSchema) -> tuple[str, int, tuple[tuple[str, object], ...]]:
+    """抽取字段签名，用于识别类型级别的 schema 漂移。"""
+    return field.name, int(field.dtype), tuple(sorted((field.params or {}).items()))
+
+
+def _expected_schema_signature() -> set[tuple[str, int, tuple[tuple[str, object], ...]]]:
+    """返回当前版本 schema 的字段签名集合。"""
+    return {_field_signature(field) for field in _get_collection_schema().fields}
+
+
+def _matches_expected_schema(collection: Collection) -> bool:
+    """判断现有 collection 是否与当前代码版本的 schema 完全一致。"""
+    actual_signature = {_field_signature(field) for field in collection.schema.fields}
+    return actual_signature == _expected_schema_signature() and bool(collection.schema.enable_dynamic_field)
 
 
 class ApiCatalogIndexer:
@@ -110,9 +124,8 @@ class ApiCatalogIndexer:
                 col = _create_collection()
             else:
                 col = Collection(name=API_CATALOG_COLLECTION)
-                actual_fields = {field.name for field in col.schema.fields}
-                # 元数据字段经常在阶段演进时扩展，这里选择显式重建而不是静默兼容旧 schema。
-                if actual_fields != _expected_field_names():
+                # 目录 schema 影响检索过滤、LLM 上下文和执行配置，类型不一致时宁可显式重建。
+                if not _matches_expected_schema(col):
                     logger.info("Recreating Milvus collection %s due to schema drift", API_CATALOG_COLLECTION)
                     col.release()
                     utility.drop_collection(API_CATALOG_COLLECTION)
@@ -178,17 +191,17 @@ class ApiCatalogIndexer:
             [entry.path],
             [entry.auth_required],
             [entry.ui_hint],
-            [json.dumps(entry.example_queries, ensure_ascii=False)],
-            [json.dumps(entry.tags, ensure_ascii=False)],
-            [json.dumps(entry.business_intents, ensure_ascii=False)],
-            [json.dumps(entry.param_schema.model_dump(), ensure_ascii=False)],
+            [entry.example_queries],
+            [entry.tags],
+            [entry.business_intents],
+            [entry.api_schema],
             [entry.response_data_path],
-            [json.dumps(entry.field_labels, ensure_ascii=False)],
-            [json.dumps(entry.executor_config, ensure_ascii=False)],
-            [json.dumps(entry.security_rules, ensure_ascii=False)],
-            [json.dumps(entry.detail_hint.model_dump(), ensure_ascii=False)],
-            [json.dumps(entry.pagination_hint.model_dump(), ensure_ascii=False)],
-            [json.dumps(entry.template_hint.model_dump(), ensure_ascii=False)],
+            [entry.field_labels],
+            [entry.executor_config],
+            [entry.security_rules],
+            [entry.detail_hint.model_dump()],
+            [entry.pagination_hint.model_dump()],
+            [entry.template_hint.model_dump()],
             [embedding],
         ]
         collection.insert(data)
@@ -199,10 +212,17 @@ class ApiCatalogIndexer:
 def _create_collection() -> Collection:
     """创建并加载 `api_catalog` collection。"""
     collection = Collection(name=API_CATALOG_COLLECTION, schema=_get_collection_schema())
+    # 向量检索切到 HNSW + COSINE，和设计稿保持一致，也能避免后续在相似度阈值上来回换算。
     collection.create_index(
         field_name="embedding",
-        index_params={"metric_type": "IP", "index_type": "IVF_FLAT", "params": {"nlist": 128}},
+        index_params={
+            "metric_type": "COSINE",
+            "index_type": "HNSW",
+            "params": {"M": 16, "efConstruction": 200},
+        },
     )
+    for field_name in ("domain", "env", "status", "tag_name"):
+        collection.create_index(field_name=field_name, index_params={"index_type": "INVERTED"})
     collection.load()
     return collection
 

@@ -65,6 +65,18 @@ apis:
                     ]
                 ),
             )
+        if request.url.path == "/api/v1/ui-builder/sources/src_1/tags":
+            return httpx.Response(
+                200,
+                json=_ok_page(
+                    [
+                        {
+                            "id": "tag_customer",
+                            "name": "客户管理",
+                        }
+                    ]
+                ),
+            )
         if request.url.path == "/api/v1/ui-builder/sources/src_1/endpoints":
             return httpx.Response(
                 200,
@@ -78,8 +90,9 @@ apis:
                             "summary": "查询当前登录用户名下的客户列表",
                             "requestSchema": "{\"type\":\"object\",\"properties\":{\"page\":{\"type\":\"integer\"}}}",
                             "responseSchema": "{\"type\":\"object\",\"properties\":{\"data\":{\"type\":\"object\",\"properties\":{\"list\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"customerId\":{\"type\":\"string\",\"description\":\"客户ID\"}}}}}}}}",
+                            "sampleRequest": "{\"page\":1}",
                             "status": "active",
-                            "tagName": "customer_management",
+                            "tagId": "tag_customer",
                         }
                     ]
                 ),
@@ -98,13 +111,26 @@ apis:
     assert customer_entry.id == "customer_list_overlay"
     assert customer_entry.domain == "crm"
     assert customer_entry.env == "prod"
-    assert customer_entry.tag_name == "customer_management"
+    assert customer_entry.tag_name == "客户管理"
     assert customer_entry.executor_config["base_url"] == "http://business-server"
     assert customer_entry.security_rules["read_only"] is True
     assert customer_entry.response_data_path == "data.list"
     assert customer_entry.pagination_hint.enabled is True
     assert customer_entry.field_labels["customerId"] == "客户ID"
-    assert "/api/system/dicts" in entry_by_path
+    assert customer_entry.response_schema["type"] == "object"
+    assert customer_entry.sample_request == {"page": 1}
+    assert customer_entry.api_schema["response_schema"]["type"] == "object"
+    assert customer_entry.api_schema["sample_request"] == {"page": 1}
+
+    dict_entry = entry_by_path["/api/system/dicts"]
+    assert dict_entry.id == "system_dicts_v1"
+    assert dict_entry.api_schema["request"]["properties"]["types"]["allowed_values"] == [
+        "customer_region",
+        "customer_level",
+        "industry",
+        "contract_type",
+    ]
+    assert dict_entry.api_schema["sample_request"] == {"types": "customer_region,customer_level"}
 
 
 @pytest.mark.asyncio
