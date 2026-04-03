@@ -1,8 +1,11 @@
 package com.lzke.ai.controller;
 
+import java.time.Duration;
 import java.util.Map;
+import java.util.Set;
 
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -15,10 +18,13 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.lecz.iam.system.employee.dto.SysOauthCodeTokenDTO;
+import com.lecz.iam.system.employee.dto.SysTokenRefreshDTO;
 import com.lecz.iam.system.employee.service.ISysEmployeeHttpService;
 import com.lecz.iam.system.employee.service.ISysLoginHttpService;
 import com.lecz.iam.system.employee.vo.SysEmployeeVO;
 import com.lecz.iam.system.employee.vo.SysLoginResultVO;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.lecz.service.tools.core.dto.ResponseDto;
 import com.lecz.service.tools.core.utils.AuthUtil;
 import com.lzke.ai.application.dto.LoginRequest;
@@ -47,10 +53,14 @@ import lombok.extern.slf4j.Slf4j;
 public class AuthController {
 
 	private static final String DEVICE_ID = "pc";
+    private static final String USER_INFO_CACHE_PREFIX = "auth:info:user:";
+    private static final Duration USER_INFO_CACHE_TTL = Duration.ofHours(8);
 	
     private final UserService userService;
     private final JwtTokenProvider jwtTokenProvider;
     private final JwtProperties jwtProperties;
+    private final ObjectMapper objectMapper;
+    private final StringRedisTemplate stringRedisTemplate;
 
     private final ISysLoginHttpService sysLoginHttpService;
 
@@ -73,6 +83,7 @@ public class AuthController {
     	log.info("获取登陆的token result: {}", result);
     	if(result.isSuccess()) {
     		SysLoginResultVO sysLoginResultVO = result.getData();
+    		 clearUserInfoCache(sysLoginResultVO.getAccountId());
         	return new LoginResponse(sysLoginResultVO.getAccessToken(), sysLoginResultVO.getRefreshToken(), Long.parseLong(sysLoginResultVO.getAccessTokenExpiresIn()), null);
     	} else {
     		throw new BusinessException(ErrorCode.TOKEN_INVALID, result.getMessage());                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   
@@ -133,6 +144,46 @@ public class AuthController {
     @GetMapping("/info")
     public ResponseDto<SysEmployeeVO> info() {
     	Long userId = AuthUtil.getUserId();
-    	return sysEmployeeHttpService.getById(userId);
+        ResponseDto<SysEmployeeVO> response = sysEmployeeHttpService.getById(userId);
+        if (response != null && response.isSuccess() && response.getData() != null) {
+            cacheUserInfo(userId, response.getData());
+        }
+    	return response;
     }
+
+    private void cacheUserInfo(Long userId, SysEmployeeVO employee) {
+        try {
+            stringRedisTemplate.opsForValue().set(
+                    USER_INFO_CACHE_PREFIX + userId,
+                    objectMapper.writeValueAsString(employee),
+                    USER_INFO_CACHE_TTL
+            );
+        } catch (JsonProcessingException ex) {
+            log.warn("用户信息写入 Redis 失败, userId={}", userId, ex);
+        }
+    }
+
+    private void clearUserInfoCache(String userId) {
+        stringRedisTemplate.delete(USER_INFO_CACHE_PREFIX + userId);
+    }
+    
+    @Operation(summary = "刷新令牌", description = "使用 refresh token 获取新的 access token")
+    @PostMapping("/refreshAuthToken")
+    @ResponseStatus(HttpStatus.OK)
+    public Map<String, Object> refreshAuthToken(@RequestBody SysTokenRefreshDTO dto) {
+        
+        try {
+        	dto.setAppCode(appCode);
+        	ResponseDto<SysLoginResultVO> result = sysLoginHttpService.refreshAccessToken(dto);
+        	return Map.of(
+                    "token", result.getData().getAccessToken(),
+                    "refreshToken", result.getData().getRefreshToken(),
+                    "expiresIn", result.getData().getRefreshTokenExpiresIn());
+        } catch (BusinessException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new BusinessException(ErrorCode.TOKEN_EXPIRED, "refresh token 已过期或无效");
+        } 
+     }
+    
 }

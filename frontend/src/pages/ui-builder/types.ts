@@ -127,6 +127,16 @@ export interface UiApiTestResponse {
   errorMessage?: string | null
 }
 
+export interface UiApiInvokeRequest {
+  flowNum?: string
+  headers?: Record<string, unknown>
+  queryParams?: Record<string, unknown>
+  body?: unknown
+  createdBy?: string
+  createdByName?: string
+  useSampleWhenEmpty?: boolean
+}
+
 export interface UiProject {
   id: string
   name: string

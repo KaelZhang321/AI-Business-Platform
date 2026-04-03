@@ -5,6 +5,7 @@ import type {
   PageResult,
   UiApiEndpoint,
   UiApiEndpointRequest,
+  UiApiInvokeRequest,
   UiApiSource,
   UiApiSourceRequest,
   UiApiTag,
@@ -86,6 +87,9 @@ export const uiBuilderApi = {
   },
   testEndpoint(endpointId: string, payload: UiApiTestRequest) {
     return unwrap<UiApiTestResponse>(businessClient.post(`/api/v1/ui-builder/endpoints/${endpointId}/test`, payload))
+  },
+  invokeEndpoint(endpointId: string, payload: UiApiInvokeRequest) {
+    return unwrap<unknown>(businessClient.post(`/api/v1/ui-builder/runtime/endpoints/${endpointId}/invoke`, payload))
   },
   listTestLogs(endpointId: string, query?: PageQuery) {
     return unwrap<PageResult<UiApiTestLog>>(businessClient.get(`/api/v1/ui-builder/endpoints/${endpointId}/test-logs`, {

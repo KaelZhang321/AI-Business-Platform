@@ -1,5 +1,16 @@
 package com.lzke.ai.interfaces.rest;
 
+import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+
+import com.lecz.service.tools.core.utils.AuthUtil;
 import com.lzke.ai.application.dto.PageQuery;
 import com.lzke.ai.application.dto.UiApiEndpointRequest;
 import com.lzke.ai.application.dto.UiApiInvokeRequest;
@@ -28,19 +39,11 @@ import com.lzke.ai.domain.entity.UiProject;
 import com.lzke.ai.domain.entity.UiSpecVersion;
 import com.lzke.ai.interfaces.dto.ApiResponse;
 import com.lzke.ai.interfaces.dto.PageResult;
+
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
-import org.springframework.web.bind.annotation.DeleteMapping;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.PutMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RequestParam;
-import org.springframework.web.bind.annotation.RestController;
 
 /**
  * UI Builder REST 控制器。
@@ -208,6 +211,10 @@ public class UiBuilderController {
             @PathVariable String endpointId,
             @RequestBody(required = false) UiApiInvokeRequest request
     ) {
+    	Long userId = AuthUtil.getUserId();
+    	if(userId != null) {
+    		request.setCreatedBy(userId+"");
+    	}
         return ApiResponse.ok(uiBuilderApplicationService.invokeEndpoint(endpointId, request));
     }
 

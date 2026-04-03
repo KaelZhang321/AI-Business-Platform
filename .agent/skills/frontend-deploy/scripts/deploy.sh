@@ -97,18 +97,22 @@ if [ "$GIT_COMMIT_ENABLED" != "false" ]; then
     echo "Changes detected. Committing and pushing..."
     git add .
     
-    # Generate a summary of changed files for the commit message
-    CHANGED_FILES=$(git diff --name-only --cached | head -n 5 | tr '\n' ',' | sed 's/,$//' | sed 's/,/, /g')
-    TOTAL_FILES=$(git diff --name-only --cached | wc -l | tr -d ' ')
-    
-    if [ "$TOTAL_FILES" -gt 5 ]; then
-        COMMIT_MSG="chore: auto-deploy - updated $CHANGED_FILES and $(($TOTAL_FILES - 5)) more files ($(date +'%Y-%m-%d %H:%M:%S'))"
+    if [ -z "$(git diff --cached --porcelain)" ]; then
+        echo "No changes staged for commit in this directory."
     else
-        COMMIT_MSG="chore: auto-deploy - updated $CHANGED_FILES ($(date +'%Y-%m-%d %H:%M:%S'))"
+        # Generate a summary of changed files for the commit message
+        CHANGED_FILES=$(git diff --name-only --cached | head -n 5 | tr '\n' ',' | sed 's/,$//' | sed 's/,/, /g')
+        TOTAL_FILES=$(git diff --name-only --cached | wc -l | tr -d ' ')
+        
+        if [ "$TOTAL_FILES" -gt 5 ]; then
+            COMMIT_MSG="chore: auto-deploy - updated $CHANGED_FILES and $(($TOTAL_FILES - 5)) more files ($(date +'%Y-%m-%d %H:%M:%S'))"
+        else
+            COMMIT_MSG="chore: auto-deploy - updated $CHANGED_FILES ($(date +'%Y-%m-%d %H:%M:%S'))"
+        fi
+        
+        git commit -m "$COMMIT_MSG"
+        git push
     fi
-    
-    git commit -m "$COMMIT_MSG"
-    git push
   else
     echo "No changes to commit."
   fi
