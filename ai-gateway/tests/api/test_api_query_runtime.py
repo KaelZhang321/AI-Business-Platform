@@ -15,16 +15,28 @@ class StubRetriever:
     async def search(self, query: str, top_k: int = 3, score_threshold: float = 0.3, filters=None):
         return [ApiCatalogSearchResult(entry=self._entry, score=0.95)]
 
+    async def search_stratified(self, query: str, *, domains, top_k: int = 3, filters=None, **kwargs):
+        return await self.search(query, top_k=top_k, score_threshold=0.3, filters=filters)
+
 
 class StubExtractor:
     def __init__(self, entry: ApiCatalogEntry) -> None:
         self._entry = entry
 
+    async def route_query(self, query: str, user_context: dict[str, object], **kwargs):
+        return ApiQueryRoutingResult(
+            query_domains=[self._entry.domain],
+            business_intents=["none"],
+            is_multi_domain=False,
+            reasoning="runtime test route",
+            route_status="ok",
+        )
+
     async def extract_routing_result(self, query: str, candidates, user_context: dict[str, object], **kwargs):
         return ApiQueryRoutingResult(
             selected_api_id=self._entry.id,
             query_domains=[self._entry.domain],
-            business_intents=["query_business_data"],
+            business_intents=["none"],
             params={"pageNum": 1, "pageSize": 20},
         )
 
@@ -82,6 +94,7 @@ def test_api_query_returns_empty_notice_for_empty_execution(monkeypatch) -> None
     body = response.json()
     assert body["execution_status"] == "EMPTY"
     assert body["data_count"] == 0
+    assert body["ui_runtime"]["audit"]["enabled"] is False
     assert body["ui_spec"]["children"][0]["type"] == "Notice"
     assert body["ui_spec"]["children"][0]["props"]["level"] == "info"
 
