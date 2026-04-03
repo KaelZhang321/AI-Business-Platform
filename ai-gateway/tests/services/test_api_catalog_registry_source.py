@@ -1,27 +1,104 @@
 from __future__ import annotations
 
-import httpx
 import pytest
 
+import app.services.api_catalog.registry_source as registry_source_module
 from app.core.config import settings
 from app.services.api_catalog.registry_source import ApiCatalogRegistrySource
 
 
-def _ok_page(data: list[dict], *, total: int | None = None) -> dict:
+class FakeCursor:
+    def __init__(self, rows: list[dict], capture: dict[str, object]) -> None:
+        self._rows = rows
+        self._capture = capture
+
+    async def execute(self, sql: str) -> None:
+        self._capture["sql"] = sql
+
+    async def fetchall(self) -> list[dict]:
+        return list(self._rows)
+
+
+class FakeCursorContext:
+    def __init__(self, cursor: FakeCursor) -> None:
+        self._cursor = cursor
+
+    async def __aenter__(self) -> FakeCursor:
+        return self._cursor
+
+    async def __aexit__(self, exc_type, exc, tb) -> bool:
+        return False
+
+
+class FakeConnection:
+    def __init__(self, rows: list[dict], capture: dict[str, object]) -> None:
+        self._rows = rows
+        self._capture = capture
+
+    def cursor(self, cursor_cls) -> FakeCursorContext:
+        self._capture["cursor_cls"] = cursor_cls
+        return FakeCursorContext(FakeCursor(self._rows, self._capture))
+
+
+class FakeAcquireContext:
+    def __init__(self, rows: list[dict], capture: dict[str, object]) -> None:
+        self._rows = rows
+        self._capture = capture
+
+    async def __aenter__(self) -> FakeConnection:
+        return FakeConnection(self._rows, self._capture)
+
+    async def __aexit__(self, exc_type, exc, tb) -> bool:
+        return False
+
+
+class FakePool:
+    def __init__(self, rows: list[dict], capture: dict[str, object]) -> None:
+        self._rows = rows
+        self._capture = capture
+        self.closed = False
+        self.wait_closed_called = False
+
+    def acquire(self) -> FakeAcquireContext:
+        return FakeAcquireContext(self._rows, self._capture)
+
+    def close(self) -> None:
+        self.closed = True
+
+    async def wait_closed(self) -> None:
+        self.wait_closed_called = True
+
+
+def _mysql_row() -> dict[str, object]:
     return {
-        "code": 200,
-        "message": "success",
-        "data": {
-            "data": data,
-            "total": len(data) if total is None else total,
-            "page": 1,
-            "size": 100,
-        },
+        "endpointId": "ep_1",
+        "tagId": "tag_customer",
+        "tagName": "客户管理",
+        "endpointName": "客户列表",
+        "path": "/api/customer/list",
+        "method": "GET",
+        "summary": "查询当前登录用户名下的客户列表",
+        "requestSchema": '{"type":"object","properties":{"page":{"type":"integer"}}}',
+        "responseSchema": '{"type":"object","properties":{"data":{"type":"object","properties":{"list":{"type":"array","items":{"type":"object","properties":{"customerId":{"type":"string","description":"客户ID"}}}}}}}}',
+        "sampleRequest": '{"page":1}',
+        "sampleResponse": '{"data":{"list":[{"customerId":"C001"}]}}',
+        "endpointStatus": "active",
+        "sourceId": "src_1",
+        "sourceCode": "crm",
+        "sourceName": "CRM接口",
+        "sourceType": "openapi",
+        "baseUrl": "http://business-server",
+        "docUrl": "http://business-server/doc",
+        "authType": "bearer",
+        "authConfig": '{"mode":"token"}',
+        "defaultHeaders": '{"X-App":"ui-builder"}',
+        "env": "prod",
+        "sourceStatus": "active",
     }
 
 
 @pytest.mark.asyncio
-async def test_registry_source_loads_ui_builder_entries_and_merges_overlay(tmp_path, monkeypatch) -> None:
+async def test_registry_source_loads_mysql_entries_and_merges_overlay(tmp_path, monkeypatch) -> None:
     overlay = tmp_path / "api_catalog.yaml"
     overlay.write_text(
         """
@@ -44,67 +121,38 @@ apis:
         encoding="utf-8",
     )
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/api/v1/ui-builder/sources":
-            return httpx.Response(
-                200,
-                json=_ok_page(
-                    [
-                        {
-                            "id": "src_1",
-                            "code": "crm",
-                            "name": "CRM接口",
-                            "sourceType": "openapi",
-                            "baseUrl": "http://business-server",
-                            "authType": "bearer",
-                            "authConfig": "{\"mode\":\"token\"}",
-                            "defaultHeaders": "{\"X-App\":\"ui-builder\"}",
-                            "env": "prod",
-                            "status": "active",
-                        }
-                    ]
-                ),
-            )
-        if request.url.path == "/api/v1/ui-builder/sources/src_1/tags":
-            return httpx.Response(
-                200,
-                json=_ok_page(
-                    [
-                        {
-                            "id": "tag_customer",
-                            "name": "客户管理",
-                        }
-                    ]
-                ),
-            )
-        if request.url.path == "/api/v1/ui-builder/sources/src_1/endpoints":
-            return httpx.Response(
-                200,
-                json=_ok_page(
-                    [
-                        {
-                            "id": "ep_1",
-                            "name": "客户列表",
-                            "path": "/api/customer/list",
-                            "method": "GET",
-                            "summary": "查询当前登录用户名下的客户列表",
-                            "requestSchema": "{\"type\":\"object\",\"properties\":{\"page\":{\"type\":\"integer\"}}}",
-                            "responseSchema": "{\"type\":\"object\",\"properties\":{\"data\":{\"type\":\"object\",\"properties\":{\"list\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"customerId\":{\"type\":\"string\",\"description\":\"客户ID\"}}}}}}}}",
-                            "sampleRequest": "{\"page\":1}",
-                            "status": "active",
-                            "tagId": "tag_customer",
-                        }
-                    ]
-                ),
-            )
-        raise AssertionError(f"Unexpected request: {request.method} {request.url}")
+    capture: dict[str, object] = {}
+    fake_pool = FakePool([_mysql_row()], capture)
+
+    async def fake_create_pool(**kwargs):
+        capture["conn_kwargs"] = kwargs
+        return fake_pool
 
     monkeypatch.setattr(settings, "api_catalog_source_mode", "ui_builder")
-    client = httpx.AsyncClient(base_url="http://testserver", transport=httpx.MockTransport(handler))
-    source = ApiCatalogRegistrySource(client=client)
+    monkeypatch.setattr(settings, "ai_mysql_host", "ai-platform-mysql")
+    monkeypatch.setattr(settings, "ai_mysql_port", 3306)
+    monkeypatch.setattr(settings, "ai_mysql_user", "ai_platform")
+    monkeypatch.setattr(settings, "ai_mysql_password", "ai_platform_dev")
+    monkeypatch.setattr(settings, "ai_mysql_database", "ai_platform_business")
+    monkeypatch.setattr(registry_source_module.aiomysql, "create_pool", fake_create_pool)
 
+    source = ApiCatalogRegistrySource()
     entries = await source.load_entries(str(overlay))
     await source.close()
+
+    assert capture["conn_kwargs"] == {
+        "host": "ai-platform-mysql",
+        "port": 3306,
+        "user": "ai_platform",
+        "password": "ai_platform_dev",
+        "db": "ai_platform_business",
+        "charset": "utf8mb4",
+        "minsize": 1,
+        "maxsize": 5,
+    }
+    assert "FROM ui_api_endpoints e" in str(capture["sql"])
+    assert fake_pool.closed is True
+    assert fake_pool.wait_closed_called is True
 
     entry_by_path = {entry.path: entry for entry in entries}
     customer_entry = entry_by_path["/api/customer/list"]
@@ -134,7 +182,7 @@ apis:
 
 
 @pytest.mark.asyncio
-async def test_registry_source_falls_back_to_overlay_in_hybrid_mode(tmp_path, monkeypatch) -> None:
+async def test_registry_source_falls_back_to_overlay_in_hybrid_mode_when_mysql_fails(tmp_path, monkeypatch) -> None:
     overlay = tmp_path / "api_catalog.yaml"
     overlay.write_text(
         """
@@ -148,16 +196,29 @@ apis:
         encoding="utf-8",
     )
 
-    async def failing_get(*args, **kwargs):  # pragma: no cover - invoked via registry source
-        raise httpx.ConnectError("boom")
+    async def failing_create_pool(**kwargs):  # pragma: no cover - invoked via registry source
+        raise RuntimeError("boom")
 
-    client = httpx.AsyncClient(base_url="http://testserver")
-    monkeypatch.setattr(client, "get", failing_get)
     monkeypatch.setattr(settings, "api_catalog_source_mode", "hybrid")
-    source = ApiCatalogRegistrySource(client=client)
+    monkeypatch.setattr(registry_source_module.aiomysql, "create_pool", failing_create_pool)
 
+    source = ApiCatalogRegistrySource()
     entries = await source.load_entries(str(overlay))
     await source.close()
 
     assert any(entry.id == "fallback_customer_list" for entry in entries)
     assert any(entry.path == "/api/system/dicts" for entry in entries)
+
+
+@pytest.mark.asyncio
+async def test_registry_source_raises_in_ui_builder_mode_when_mysql_fails(monkeypatch) -> None:
+    async def failing_create_pool(**kwargs):  # pragma: no cover - invoked via registry source
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(settings, "api_catalog_source_mode", "ui_builder")
+    monkeypatch.setattr(registry_source_module.aiomysql, "create_pool", failing_create_pool)
+
+    source = ApiCatalogRegistrySource()
+    with pytest.raises(registry_source_module.ApiCatalogSourceError, match="无法从 MySQL 加载注册表"):
+        await source.load_entries()
+    await source.close()

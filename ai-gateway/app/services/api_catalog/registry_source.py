@@ -1,12 +1,12 @@
 from __future__ import annotations
 
+import aiomysql
 import json
 import logging
 import re
 from pathlib import Path
 from typing import Any
 
-import httpx
 import yaml
 
 from app.core.config import settings
@@ -20,6 +20,37 @@ from app.services.api_catalog.schema import (
 
 logger = logging.getLogger(__name__)
 
+_API_CATALOG_REGISTRY_SQL = """
+SELECT
+    e.id AS endpointId,
+    e.tag_id AS tagId,
+    t.name AS tagName,
+    e.name AS endpointName,
+    e.path AS path,
+    e.method AS method,
+    e.summary AS summary,
+    CAST(e.request_schema AS CHAR) AS requestSchema,
+    CAST(e.response_schema AS CHAR) AS responseSchema,
+    CAST(e.sample_request AS CHAR) AS sampleRequest,
+    CAST(e.sample_response AS CHAR) AS sampleResponse,
+    e.status AS endpointStatus,
+    s.id AS sourceId,
+    s.code AS sourceCode,
+    s.name AS sourceName,
+    s.source_type AS sourceType,
+    s.base_url AS baseUrl,
+    s.doc_url AS docUrl,
+    s.auth_type AS authType,
+    CAST(s.auth_config AS CHAR) AS authConfig,
+    CAST(s.default_headers AS CHAR) AS defaultHeaders,
+    s.env AS env,
+    s.status AS sourceStatus
+FROM ui_api_endpoints e
+LEFT JOIN ui_api_sources s ON e.source_id = s.id
+LEFT JOIN ui_api_tags t ON e.tag_id = t.id
+ORDER BY s.code, t.name, e.method, e.path
+"""
+
 
 class ApiCatalogSourceError(RuntimeError):
     """Raised when the registry source cannot be loaded."""
@@ -29,17 +60,17 @@ class ApiCatalogRegistrySource:
     """从权威元数据源构建 `ApiCatalogEntry` 列表。
 
     功能：
-        统一承接 YAML、本地 overlay、UI Builder 元数据三类来源，产出可直接入库
+        统一承接 YAML、本地 overlay、ai-gateway 直连 MySQL 三类来源，产出可直接入库
         到 Milvus 的标准化目录记录。
 
     Edge Cases:
-        - `ui_builder` 模式下远端元数据不可用时直接失败，避免悄悄退回过期配置
-        - `hybrid` 模式下远端失败允许回退到 overlay，保障本地开发与演示链路可用
-        - 标签映射缺失时不再回填原始 `tagId`，避免把存储主键污染为业务标签名
+        - `ui_builder` 模式在切换后作为“严格直连 MySQL”兼容别名使用
+        - `hybrid` 模式下 MySQL 不可用时允许回退到 overlay，保障本地开发与演示链路可用
+        - SQL 里显式 `CAST(JSON AS CHAR)`，是为了消除不同 MySQL 驱动对 JSON 返回类型的差异
     """
 
-    def __init__(self, client: httpx.AsyncClient | None = None) -> None:
-        self._client = client
+    def __init__(self) -> None:
+        self._pool: aiomysql.Pool | None = None
 
     async def load_entries(self, config_path: str | None = None) -> list[ApiCatalogEntry]:
         """按配置模式加载接口目录记录。
@@ -63,106 +94,100 @@ class ApiCatalogRegistrySource:
 
         remote_entries: list[ApiCatalogEntry] = []
         try:
-            remote_entries = await self._load_ui_builder_entries()
+            remote_entries = await self._load_mysql_entries()
         except Exception as exc:
             if source_mode == "ui_builder":
-                raise ApiCatalogSourceError(f"无法从 UI Builder 加载注册表: {exc}") from exc
-            logger.warning("Falling back to YAML api catalog source: %s", exc)
+                raise ApiCatalogSourceError(f"无法从 MySQL 加载注册表: {exc}") from exc
+            logger.warning("Falling back to YAML api catalog source after MySQL load failed: %s", exc)
 
         if not remote_entries:
             return _append_builtin_entries(overlay_entries)
 
         return _append_builtin_entries(_merge_overlay_entries(remote_entries, overlay_entries))
 
-    async def _load_ui_builder_entries(self) -> list[ApiCatalogEntry]:
-        """从 UI Builder 拉取源、标签、接口三层元数据并拍平。
+    async def _load_mysql_entries(self) -> list[ApiCatalogEntry]:
+        """从业务 MySQL 直连抽取接口目录元数据。
 
-        这里显式补一跳 `/tags` 查询，是为了让 `tag_name` 始终来自业务标签名，
-        而不是把 `tagId` 这种存储主键误当成检索标签写入向量目录。
+        功能：
+            直接对齐设计稿里的 `ui_api_endpoints + ui_api_sources + ui_api_tags` 三表拍平逻辑，
+            避免在网关和 business-server 之间再绕一层 REST 元数据代理。
         """
-        sources = await self._fetch_paged("/api/v1/ui-builder/sources")
-
-        entries: list[ApiCatalogEntry] = []
-        for source in sources:
-            source_id = source.get("id")
-            if not source_id:
-                continue
-            tag_name_by_id = await self._fetch_tags_by_source(str(source_id))
-            endpoints = await self._fetch_paged(f"/api/v1/ui-builder/sources/{source_id}/endpoints")
-            for endpoint in endpoints:
-                entries.append(_build_entry(source, endpoint, tag_name_by_id))
-
+        rows = await self._fetch_mysql_rows(_API_CATALOG_REGISTRY_SQL)
+        entries = [_build_entry_from_mysql_row(row) for row in rows]
         if not entries:
-            raise ApiCatalogSourceError("UI Builder metadata returned no endpoints")
+            raise ApiCatalogSourceError("MySQL metadata returned no endpoints")
         return _dedupe_by_signature(entries)
 
-    async def _fetch_tags_by_source(self, source_id: str) -> dict[str, str]:
-        """获取单个接口源的标签映射表。
+    async def _fetch_mysql_rows(self, sql: str) -> list[dict[str, Any]]:
+        """执行注册表元数据 SQL，并返回字典行结果。"""
+        pool = await self._get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cursor:
+                await cursor.execute(sql)
+                rows = await cursor.fetchall()
+                return [dict(row) for row in rows]
 
-        Args:
-            source_id: UI Builder 中的接口源 ID。
-
-        Returns:
-            `tag_id -> tag_name` 的稳定映射，仅保留名称非空的条目。
-
-        Raises:
-            ApiCatalogSourceError: 标签接口返回异常时抛出，由上层统一决定是否降级。
-        """
-        tags = await self._fetch_paged(f"/api/v1/ui-builder/sources/{source_id}/tags")
-        mapping: dict[str, str] = {}
-        for tag in tags:
-            tag_id = _first_non_empty(tag.get("id"), tag.get("code"))
-            tag_name = _first_non_empty(tag.get("name"), tag.get("code"))
-            if not tag_id or not tag_name:
-                continue
-            mapping[str(tag_id)] = str(tag_name).strip()
-        return mapping
-
-    async def _fetch_paged(self, path: str) -> list[dict[str, Any]]:
-        """读取 UI Builder 的分页接口并聚合成完整列表。"""
-        page = 1
-        size = settings.ui_builder_metadata_page_size
-        items: list[dict[str, Any]] = []
-
-        while True:
-            response = await self._get_client().get(path, params={"page": page, "size": size})
-            if response.status_code >= 400:
-                raise ApiCatalogSourceError(f"HTTP {response.status_code} from {path}")
-
-            payload = response.json()
-            if payload.get("code") != 200:
-                raise ApiCatalogSourceError(f"Unexpected response code from {path}: {payload.get('code')}")
-
-            page_data = payload.get("data") or {}
-            page_items = page_data.get("data") or []
-            items.extend(item for item in page_items if isinstance(item, dict))
-
-            total = int(page_data.get("total") or 0)
-            if not page_items or not total or len(items) >= total:
-                break
-            page += 1
-
-        return items
-
-    def _get_client(self) -> httpx.AsyncClient:
-        """懒加载远端元数据客户端。"""
-        if self._client is None:
-            headers = {}
-            if settings.ui_builder_metadata_token:
-                token = settings.ui_builder_metadata_token
-                headers["Authorization"] = token if token.startswith("Bearer ") else f"Bearer {token}"
-            self._client = httpx.AsyncClient(
-                base_url=settings.business_server_url.rstrip("/"),
-                timeout=settings.ui_builder_metadata_timeout_seconds,
-                headers=headers,
-                follow_redirects=True,
-            )
-        return self._client
+    async def _get_pool(self) -> aiomysql.Pool:
+        """懒加载 API Catalog MySQL 连接池。"""
+        if self._pool is None:
+            self._pool = await aiomysql.create_pool(minsize=1, maxsize=5, **_build_ai_mysql_conn_params())
+        return self._pool
 
     async def close(self) -> None:
-        """释放内部 httpx 客户端，避免测试场景泄漏连接。"""
-        if self._client and not self._client.is_closed:
-            await self._client.aclose()
+        """释放内部连接池。"""
+        if self._pool is not None:
+            self._pool.close()
+            await self._pool.wait_closed()
+            self._pool = None
+
+
+def _build_ai_mysql_conn_params() -> dict[str, str | int]:
+    """从 `AI_MYSQL_*` 生成 API Catalog 直连配置。"""
+    return {
+        "host": settings.ai_mysql_host,
+        "port": settings.ai_mysql_port,
+        "user": settings.ai_mysql_user,
+        "password": settings.ai_mysql_password,
+        "db": settings.ai_mysql_database,
+        "charset": "utf8mb4",
+    }
+
+
+def _build_entry_from_mysql_row(row: dict[str, Any]) -> ApiCatalogEntry:
+    """把 SQL 联表结果转换成统一的目录对象。
+
+    设计意图：
+        通过一层 payload 适配复用 `_build_entry()`，让“SQL 主源”和“历史 REST 主源”
+        共用同一套拍平与字段推断逻辑，减少后续演进时的分叉维护成本。
+    """
+    source_payload = {
+        "id": row.get("sourceId"),
+        "code": row.get("sourceCode"),
+        "name": row.get("sourceName"),
+        "sourceType": row.get("sourceType"),
+        "baseUrl": row.get("baseUrl"),
+        "docUrl": row.get("docUrl"),
+        "authType": row.get("authType"),
+        "authConfig": row.get("authConfig"),
+        "defaultHeaders": row.get("defaultHeaders"),
+        "env": row.get("env"),
+        "status": row.get("sourceStatus"),
+    }
+    endpoint_payload = {
+        "id": row.get("endpointId"),
+        "tagId": row.get("tagId"),
+        "tagName": row.get("tagName"),
+        "name": row.get("endpointName"),
+        "path": row.get("path"),
+        "method": row.get("method"),
+        "summary": row.get("summary"),
+        "requestSchema": row.get("requestSchema"),
+        "responseSchema": row.get("responseSchema"),
+        "sampleRequest": row.get("sampleRequest"),
+        "sampleResponse": row.get("sampleResponse"),
+        "status": row.get("endpointStatus"),
+    }
+    return _build_entry(source_payload, endpoint_payload)
 
 
 def _build_entry(
@@ -170,7 +195,7 @@ def _build_entry(
     endpoint: dict[str, Any],
     tag_name_by_id: dict[str, str] | None = None,
 ) -> ApiCatalogEntry:
-    """把一条 UI Builder endpoint 元数据拍平成 `ApiCatalogEntry`。
+    """把一条接口元数据拍平成 `ApiCatalogEntry`。
 
     Args:
         source: 接口源元数据，提供 domain/env/auth/base_url 等外围信息。
@@ -256,7 +281,7 @@ def _merge_overlay(remote_entry: ApiCatalogEntry, overlay_entry: ApiCatalogEntry
 
     设计意图：
         overlay 的职责是“补丁”，不是“覆盖整个远端对象”。因此只让用户显式声明的字段
-        覆盖远端；其它字段继续继承 UI Builder 提供的最新 schema 与运行时提示。
+        覆盖远端；其它字段继续继承 MySQL 主源提供的最新 schema 与运行时提示。
     """
     merged = overlay_entry.model_copy(deep=True)
     merged.domain = remote_entry.domain or overlay_entry.domain
@@ -479,7 +504,7 @@ def _resolve_tag_name(endpoint: dict[str, Any], tag_name_by_id: dict[str, str]) 
 
     优先级：
         1. endpoint 自带的 `tagName`
-        2. `/sources/{sourceId}/tags` 提供的 `tagId -> tagName` 映射
+        2. 外部显式提供的 `tagId -> tagName` 映射
 
     注意：
         如果两者都缺失，返回 `None`，而不是把 `tagId` 当作可读标签名写入目录。
