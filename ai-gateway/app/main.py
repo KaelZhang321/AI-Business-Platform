@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.api.routes import bi, chat, knowledge, query
+from app.api.routes.api_query import router as api_query_router
 from app.core.config import settings
 from app.core.error_codes import BusinessError, ErrorCode
 from app.models.schemas import HealthResponse
@@ -168,7 +169,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -203,6 +204,7 @@ app.include_router(chat.router, prefix="/api/v1", tags=["对话"])
 app.include_router(knowledge.router, prefix="/api/v1", tags=["知识库"])
 app.include_router(query.router, prefix="/api/v1", tags=["数据查询"])
 app.include_router(bi.router, prefix="/api/v1")
+app.include_router(api_query_router, prefix="/api/v1")
 
 # MCP Server 路由
 from app.mcp_server.server import mcp_server  # noqa: E402
