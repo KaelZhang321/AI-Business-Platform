@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from app.bi.meeting_bi.ai.vanna_client import _parse_mysql_url
+import sys
+from types import ModuleType
+
+from app.bi.meeting_bi.ai.vanna_client import _ensure_sqlite_compat, _parse_mysql_url
 
 
 def test_parse_mysql_url_decodes_credentials_and_scalar_charset() -> None:
@@ -19,3 +22,16 @@ def test_parse_mysql_url_decodes_credentials_and_scalar_charset() -> None:
         "port": 3306,
         "charset": "utf8mb4",
     }
+
+
+def test_ensure_sqlite_compat_switches_to_pysqlite3_when_stdlib_is_too_old(monkeypatch) -> None:
+    old_sqlite = ModuleType("sqlite3")
+    old_sqlite.sqlite_version_info = (3, 34, 1)
+    pysqlite3 = ModuleType("pysqlite3")
+
+    monkeypatch.setitem(sys.modules, "sqlite3", old_sqlite)
+    monkeypatch.setitem(sys.modules, "pysqlite3", pysqlite3)
+
+    _ensure_sqlite_compat()
+
+    assert sys.modules["sqlite3"] is pysqlite3

@@ -5,7 +5,7 @@ from statistics import mean
 from typing import Any
 
 from app.core.config import settings
-from app.models.schemas import KnowledgeResult
+from app.models.schemas import ApiQueryExecutionStatus, ApiQueryUIRuntime, KnowledgeResult
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +18,29 @@ class DynamicUIService:
     - LLM 模式（实验性）：通过 LLM 生成 UI Spec，需设置 LLM_UI_SPEC_ENABLED=true
     """
 
-    async def generate_ui_spec(self, intent: str, data: Any, context: dict | None = None) -> dict[str, Any] | None:
+    async def generate_ui_spec(
+        self,
+        intent: str,
+        data: Any,
+        context: dict | None = None,
+        *,
+        status: ApiQueryExecutionStatus | str | None = None,
+        runtime: ApiQueryUIRuntime | None = None,
+    ) -> dict[str, Any] | None:
+        execution_status = ApiQueryExecutionStatus(status) if status else None
+
+        if execution_status == ApiQueryExecutionStatus.ERROR:
+            return self._notice_spec(
+                title=(context or {}).get("title", "查询失败"),
+                message=(context or {}).get("error", "业务接口调用失败"),
+                level="warning",
+            )
+        if execution_status == ApiQueryExecutionStatus.EMPTY:
+            return self._notice_spec(
+                title=(context or {}).get("title", "暂无数据"),
+                message=(context or {}).get("empty_message", "未查到符合条件的数据"),
+                level="info",
+            )
         if not data:
             return None
 
@@ -36,7 +58,7 @@ class DynamicUIService:
             return self._knowledge_spec(data, context)
 
         if intent == "query" and isinstance(data, list) and data and isinstance(data[0], dict):
-            return self._query_spec(data, context)
+            return self._query_spec(data, context, runtime)
 
         if intent == "task" and isinstance(data, list):
             return self._task_spec(data)
@@ -139,7 +161,12 @@ class DynamicUIService:
             ],
         }
 
-    def _query_spec(self, rows: list[dict[str, Any]], context: dict | None) -> dict[str, Any]:
+    def _query_spec(
+        self,
+        rows: list[dict[str, Any]],
+        context: dict | None,
+        runtime: ApiQueryUIRuntime | None,
+    ) -> dict[str, Any]:
         columns = list(rows[0].keys())
         dataset = [[row.get(column) for column in columns] for row in rows]
         numeric_fields = {
@@ -156,17 +183,47 @@ class DynamicUIService:
         if chart_spec:
             children.append(chart_spec)
 
-        children.append(
-            {
-                "type": "Table",
-                "props": {
-                    "title": "查询结果",
-                    "columns": columns,
-                    "data": dataset,
-                    "actions": [{"type": "export", "label": "导出 CSV"}],
+        table_props: dict[str, Any] = {
+            "title": "查询结果",
+            "columns": columns,
+            "data": dataset,
+            "actions": [{"type": "export", "label": "导出 CSV"}],
+        }
+        if runtime and runtime.detail.enabled:
+            table_props["rowActions"] = [
+                {
+                    "type": runtime.detail.ui_action or "remoteQuery",
+                    "label": "查看详情",
+                    "params": {
+                        "api_id": runtime.detail.api_id,
+                        "route_url": runtime.detail.route_url,
+                        "identifier_field": runtime.detail.identifier_field,
+                        "query_param": runtime.detail.query_param,
+                        "template_code": runtime.detail.template_code,
+                        "fallback_mode": runtime.detail.fallback_mode,
+                    },
+                }
+            ]
+        if runtime and runtime.pagination.enabled:
+            table_props["pagination"] = {
+                "enabled": True,
+                "total": runtime.pagination.total,
+                "currentPage": runtime.pagination.current_page,
+                "pageSize": runtime.pagination.page_size,
+                "action": {
+                    "type": runtime.pagination.ui_action or "remoteQuery",
+                    "params": {
+                        "api_id": runtime.pagination.api_id,
+                        "page_param": runtime.pagination.page_param,
+                        "page_size_param": runtime.pagination.page_size_param,
+                        "mutation_target": runtime.pagination.mutation_target,
+                    },
                 },
             }
-        )
+        if runtime and runtime.template.enabled:
+            table_props["templateHint"] = runtime.template.model_dump(exclude_none=True)
+
+        children.append({"type": "Table", "props": table_props})
 
         return {
             "type": "Card",
@@ -176,8 +233,28 @@ class DynamicUIService:
                     {"type": "export", "label": "导出表格"},
                     {"type": "refresh", "label": "重新查询"},
                 ],
+                "audit": runtime.audit.model_dump(exclude_none=True) if runtime and runtime.audit.enabled else None,
             },
             "children": children,
+        }
+
+    @staticmethod
+    def _notice_spec(title: str, message: str, level: str) -> dict[str, Any]:
+        return {
+            "type": "Card",
+            "props": {
+                "title": title,
+                "actions": [{"type": "refresh", "label": "重新查询"}],
+            },
+            "children": [
+                {
+                    "type": "Notice",
+                    "props": {
+                        "level": level,
+                        "message": message,
+                    },
+                }
+            ],
         }
 
     def _task_spec(self, tasks: list[dict[str, Any]]) -> dict[str, Any]:

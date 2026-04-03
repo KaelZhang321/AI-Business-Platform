@@ -1,11 +1,36 @@
 from __future__ import annotations
 
 import logging
+import sys
 import threading
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 from openai import OpenAI
+
+
+def _ensure_sqlite_compat() -> None:
+    """在 Linux 容器里优先切换到 pysqlite3，规避系统 sqlite3 版本过低导致的 Chroma 导入失败。"""
+    try:
+        import sqlite3
+
+        if sqlite3.sqlite_version_info >= (3, 35, 0):
+            return
+    except Exception:
+        pass
+
+    try:
+        __import__("pysqlite3")
+    except ImportError as exc:  # pragma: no cover - depends on runtime image
+        raise RuntimeError(
+            "Detected unsupported sqlite3 for ChromaDB, and pysqlite3-binary is not installed."
+        ) from exc
+
+    sys.modules["sqlite3"] = sys.modules["pysqlite3"]
+
+
+_ensure_sqlite_compat()
+
 from vanna.chromadb import ChromaDB_VectorStore
 
 from app.bi.meeting_bi.ai.training_data import BUSINESS_DOCS, QA_PAIRS, TABLES

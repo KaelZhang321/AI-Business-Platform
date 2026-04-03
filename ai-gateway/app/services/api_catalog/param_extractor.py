@@ -1,0 +1,330 @@
+"""
+API Catalog — LLM 参数提取器
+
+给定最匹配的 ApiCatalogEntry + 用户原始查询，
+通过 LLM 提取接口所需的调用参数，并用 JSON Schema 校验结果。
+
+设计约束：
+- 接口选择（从 Top-K 候选选最优）和参数提取 在同一次 LLM 调用中完成，节省 token
+- jsonschema 校验防止 LLM 幻觉产生非法参数
+- 校验失败时自动降级：只传允许的字段，过滤非法字段
+
+使用方式::
+
+    from app.services.api_catalog.param_extractor import ApiParamExtractor
+    extractor = ApiParamExtractor()
+    api_id, params = await extractor.extract(query, candidates)
+"""
+from __future__ import annotations
+
+import json
+import logging
+from typing import Any
+
+from app.models.schemas import ApiQueryRoutingResult
+from app.services.api_catalog.schema import ApiCatalogEntry, ApiCatalogSearchResult
+
+logger = logging.getLogger(__name__)
+
+
+class ApiParamExtractor:
+    """通过 LLM 从用户查询中提取接口路由 + 参数。"""
+
+    def __init__(self) -> None:
+        self._llm = None
+
+    def _get_llm(self):
+        if self._llm is None:
+            from app.services.llm_service import LLMService
+            self._llm = LLMService()
+        return self._llm
+
+    async def extract(
+        self,
+        query: str,
+        candidates: list[ApiCatalogSearchResult],
+        user_context: dict[str, Any] | None = None,
+    ) -> tuple[ApiCatalogEntry | None, dict[str, Any]]:
+        """
+        从候选接口列表中选择最优接口，并提取调用参数。
+
+        Args:
+            query: 用户原始输入
+            candidates: 向量检索返回的候选接口列表（建议 Top-3）
+            user_context: 可选的上下文（如 current_user_id 等可自动填充的参数）
+
+        Returns:
+            (selected_entry, params_dict)
+            - selected_entry: 选中的接口，无法匹配时返回 None
+            - params_dict: 提取到的参数字典，可能为空 {}
+        """
+        routing_result = await self.extract_routing_result(query, candidates, user_context)
+        selected_id = routing_result.selected_api_id
+        entry = next((candidate.entry for candidate in candidates if candidate.entry.id == selected_id), None)
+        return entry, dict(routing_result.params)
+
+    async def extract_routing_result(
+        self,
+        query: str,
+        candidates: list[ApiCatalogSearchResult],
+        user_context: dict[str, Any] | None = None,
+        *,
+        allowed_business_intents: set[str] | None = None,
+    ) -> ApiQueryRoutingResult:
+        """
+        返回更完整的路由结果，显式表达 query_domains 与 business_intents。
+
+        该结果仍视为不可信输入，调用方需继续执行 allowlist / 只读校验。
+        """
+        if not candidates:
+            return ApiQueryRoutingResult()
+
+        # 单候选时跳过路由，直接提参数
+        if len(candidates) == 1:
+            entry = candidates[0].entry
+            params = await self._extract_params(query, entry, user_context)
+            return ApiQueryRoutingResult(
+                selected_api_id=entry.id,
+                query_domains=[entry.domain],
+                business_intents=_sanitize_business_intents(
+                    entry.business_intents,
+                    allowed=allowed_business_intents,
+                    fallback=["query_business_data"],
+                ),
+                params=params,
+            )
+
+        # 多候选：一次 LLM 调用完成「接口路由 + 参数提取」
+        return await self._route_and_extract(
+            query,
+            candidates,
+            user_context,
+            allowed_business_intents=allowed_business_intents,
+        )
+
+    # ── 单接口参数提取 ──────────────────────────────────────────
+
+    async def _extract_params(
+        self,
+        query: str,
+        entry: ApiCatalogEntry,
+        user_context: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        prompt = _build_extract_only_prompt(query, entry, user_context)
+        raw = await self._call_llm(prompt)
+        params = _parse_json(raw)
+        return _validate_params(params, entry)
+
+    # ── 多候选路由 + 提参 ───────────────────────────────────────
+
+    async def _route_and_extract(
+        self,
+        query: str,
+        candidates: list[ApiCatalogSearchResult],
+        user_context: dict[str, Any] | None,
+        *,
+        allowed_business_intents: set[str] | None,
+    ) -> ApiQueryRoutingResult:
+        prompt = _build_route_and_extract_prompt(query, candidates, user_context)
+        raw = await self._call_llm(prompt)
+        result = _parse_json(raw)
+
+        selected_id = result.get("selected_api_id")
+        raw_params = result.get("params", {})
+
+        # 找到选中的接口
+        entry = next((c.entry for c in candidates if c.entry.id == selected_id), None)
+        if entry is None:
+            # LLM 返回了不在候选列表中的 id，降级为第一个候选
+            logger.warning(
+                "LLM selected unknown api_id '%s', falling back to top candidate", selected_id
+            )
+            entry = candidates[0].entry
+
+        params = _validate_params(raw_params, entry)
+        query_domains = _sanitize_query_domains(result.get("query_domains"), candidates, entry.domain)
+        business_intents = _sanitize_business_intents(
+            result.get("business_intents"),
+            allowed=allowed_business_intents,
+            fallback=entry.business_intents or ["query_business_data"],
+        )
+        return ApiQueryRoutingResult(
+            selected_api_id=entry.id,
+            query_domains=query_domains,
+            business_intents=business_intents,
+            params=params,
+        )
+
+    async def _call_llm(self, prompt: str) -> str:
+        llm = self._get_llm()
+        try:
+            return await llm.chat(messages=[{"role": "user", "content": prompt}])
+        except Exception as exc:
+            logger.warning("LLM call failed in param extractor: %s", exc)
+            return "{}"
+
+
+# ── Prompt 构建 ──────────────────────────────────────────────────────────────
+
+def _build_extract_only_prompt(
+    query: str,
+    entry: ApiCatalogEntry,
+    user_context: dict[str, Any] | None,
+) -> str:
+    schema_str = json.dumps(entry.param_schema.model_dump(), ensure_ascii=False, indent=2)
+    ctx_str = json.dumps(user_context or {}, ensure_ascii=False)
+    return f"""你是一个参数提取助手。根据用户输入从接口参数 Schema 中提取对应参数值。
+
+用户输入：{query}
+接口描述：{entry.description}
+用户上下文（可直接填入参数）：{ctx_str}
+
+参数 Schema：
+{schema_str}
+
+规则：
+1. 只输出 Schema 中定义的参数，不要添加额外键
+2. 用户未提及的可选参数不要包含（让接口用默认值）
+3. 类型严格匹配 Schema 中的 type（integer, string, boolean）
+4. 直接输出 JSON 对象，不要解释或包含 markdown 代码块
+
+输出："""
+
+
+def _build_route_and_extract_prompt(
+    query: str,
+    candidates: list[ApiCatalogSearchResult],
+    user_context: dict[str, Any] | None,
+) -> str:
+    ctx_str = json.dumps(user_context or {}, ensure_ascii=False)
+    candidates_str = "\n".join(
+        (
+            f"- id: {c.entry.id}\n"
+            f"  domain: {c.entry.domain}\n"
+            f"  描述: {c.entry.description}\n"
+            f"  业务意图: {json.dumps(c.entry.business_intents, ensure_ascii=False)}\n"
+            f"  参数Schema: {json.dumps(c.entry.param_schema.model_dump(), ensure_ascii=False)}"
+        )
+        for c in candidates
+    )
+    return f"""你是一个接口路由 + 参数提取助手。
+
+用户输入：{query}
+用户上下文：{ctx_str}
+
+候选接口列表：
+{candidates_str}
+
+任务：
+1. 从候选接口中选择最匹配用户意图的接口（selected_api_id）
+2. 输出本次查询命中的业务域（query_domains）
+3. 从用户输入 + 上下文中提取该接口的调用参数（params）
+4. 输出业务意图编码列表（business_intents），仅可使用候选接口已有的意图或 query_business_data
+
+规则：
+- selected_api_id 必须是候选列表中的某个 id
+- query_domains 必须是候选接口中出现过的 domain
+- params 只包含选中接口 Schema 中定义的字段
+- 类型严格匹配
+- 用户未提及的可选参数不要包含
+- 直接输出 JSON，格式为 {{"selected_api_id": "...", "query_domains": ["..."], "business_intents": ["..."], "params": {{...}}}}
+
+输出："""
+
+
+# ── 工具函数 ─────────────────────────────────────────────────────────────────
+
+def _parse_json(raw: str) -> dict[str, Any]:
+    """从 LLM 输出中提取 JSON，容错 markdown 代码块。"""
+    text = raw.strip()
+    if text.startswith("```"):
+        lines = text.split("\n")
+        text = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and start < end:
+        text = text[start : end + 1]
+    try:
+        result = json.loads(text)
+        return result if isinstance(result, dict) else {}
+    except json.JSONDecodeError:
+        logger.debug("Failed to parse LLM JSON: %s", raw[:200])
+        return {}
+
+
+def _validate_params(params: dict[str, Any], entry: ApiCatalogEntry) -> dict[str, Any]:
+    """
+    校验 LLM 提取的参数：
+    1. 过滤 Schema 中未定义的字段（防幻觉）
+    2. 尝试类型转换（如 LLM 返回 "1" 但 Schema 要求 integer）
+    """
+    schema_props = entry.param_schema.properties
+    if not schema_props:
+        return params  # 无 Schema 定义时透传
+
+    validated: dict[str, Any] = {}
+    for key, value in params.items():
+        if key not in schema_props:
+            logger.debug("Filtered hallucinated param '%s' for %s", key, entry.id)
+            continue
+        prop_type = schema_props[key].get("type", "string")
+        validated[key] = _coerce_type(value, prop_type)
+
+    return validated
+
+
+def _coerce_type(value: Any, expected_type: str) -> Any:
+    """尝试将值转换为 Schema 期望类型。"""
+    try:
+        if expected_type == "integer":
+            return int(value)
+        if expected_type == "number":
+            return float(value)
+        if expected_type == "boolean":
+            if isinstance(value, str):
+                return value.lower() in ("true", "1", "yes")
+            return bool(value)
+        return str(value) if expected_type == "string" else value
+    except (ValueError, TypeError):
+        return value
+
+
+def _sanitize_query_domains(
+    raw_domains: Any,
+    candidates: list[ApiCatalogSearchResult],
+    fallback_domain: str,
+) -> list[str]:
+    allowed = {candidate.entry.domain for candidate in candidates if candidate.entry.domain}
+    if isinstance(raw_domains, str):
+        items = [raw_domains]
+    elif isinstance(raw_domains, list):
+        items = [str(item) for item in raw_domains if item]
+    else:
+        items = []
+
+    domains = [item for item in items if item in allowed]
+    if fallback_domain and fallback_domain not in domains:
+        domains.insert(0, fallback_domain)
+    return list(dict.fromkeys(domains))
+
+
+def _sanitize_business_intents(
+    raw_business_intents: Any,
+    *,
+    allowed: set[str] | None,
+    fallback: list[str],
+) -> list[str]:
+    if isinstance(raw_business_intents, str):
+        candidates = [raw_business_intents]
+    elif isinstance(raw_business_intents, list):
+        candidates = [str(item) for item in raw_business_intents if item]
+    else:
+        candidates = []
+
+    if allowed is not None:
+        candidates = [item for item in candidates if item in allowed]
+
+    if not candidates:
+        candidates = [item for item in fallback if allowed is None or item in allowed]
+
+    return list(dict.fromkeys(candidates))
