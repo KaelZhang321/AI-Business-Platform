@@ -9,7 +9,19 @@ from app.services.llm_service import LLMService
 
 
 class IntentClassifier:
-    """意图分类服务 - LLM优先 + 关键词兜底，支持一级+二级意图。"""
+    """统一聊天入口的意图分类器。
+
+    功能：
+        优先使用 LLM 做一级/二级意图识别，在模型不可用或置信度不足时退回关键词规则，
+        保证聊天主链路在弱依赖场景下仍然可用。
+
+    返回值约束：
+        始终返回 `IntentResult`，不会把 LLM 解析异常直接抛给上层工作流。
+
+    Edge Cases:
+        - LLM 返回脏 JSON 或置信度过低时，自动回退关键词规则
+        - 二级意图无法识别时，统一回落到 `general`
+    """
 
     SYSTEM_PROMPT = """
 你是一名企业AI助理，需要根据用户问题判断所属意图，并返回JSON：
@@ -59,13 +71,32 @@ class IntentClassifier:
         self._logger = logging.getLogger(__name__)
 
     async def classify(self, message: str, context: dict | None = None) -> IntentResult:
-        """对用户消息进行一级+二级意图分类，返回 IntentResult。"""
+        """对用户消息执行一级 + 二级意图分类。
+
+        Args:
+            message: 用户原始提问文本。
+            context: 上游透传的上下文，例如用户身份或会话补充信息。
+
+        Returns:
+            一个稳定的 `IntentResult`，供工作流节点做路由分发。
+
+        Edge Cases:
+            - LLM 分类失败时，不中断请求，而是立即转入关键词兜底
+        """
         result = await self._llm_intent(message, context)
         if result:
             return result
         return self._keyword_fallback(message)
 
     async def _llm_intent(self, message: str, context: dict | None) -> IntentResult | None:
+        """使用 LLM 做高精度意图识别。
+
+        功能：
+            让复杂自然语言先经过模型判定，减少纯关键词在多义句上的误判。
+
+        Returns:
+            命中且置信度达标时返回 `IntentResult`，否则返回 `None` 触发兜底逻辑。
+        """
         payload = {
             "message": message,
             "context": context or {},
@@ -82,6 +113,7 @@ class IntentClassifier:
             intent_value = str(data.get("intent", "")).lower()
             sub_intent_value = str(data.get("sub_intent", "general")).lower()
             confidence = float(data.get("confidence", 0))
+            # 低置信度结果不进入业务链路，宁可走保守兜底也不把错路由继续放大。
             if confidence < self._threshold:
                 return None
 
@@ -96,6 +128,12 @@ class IntentClassifier:
         return None
 
     def _keyword_fallback(self, message: str) -> IntentResult:
+        """使用关键词执行保守兜底分类。
+
+        功能：
+            当模型不可用或返回异常时，保障查询、知识、待办等主干能力至少有一个
+            粗粒度可用路由，不让整条聊天链路硬失败。
+        """
         intent = IntentType.CHAT
         for candidate, keywords in self.KEYWORD_RULES.items():
             if any(kw in message for kw in keywords):

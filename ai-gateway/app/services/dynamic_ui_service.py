@@ -99,7 +99,7 @@ class DynamicUIService:
         return None
 
     def _get_llm_service(self):
-        """懒加载 LLMService 单例，避免每次调用创建新实例。"""
+        """懒加载 LLMService 单例，避免规则模式也承担额外初始化成本。"""
         if not hasattr(self, "_llm_service") or self._llm_service is None:
             from app.services.llm_service import LLMService
             self._llm_service = LLMService()
@@ -155,6 +155,7 @@ class DynamicUIService:
         return None
 
     def _knowledge_spec(self, results: list[KnowledgeResult], context: dict | None) -> dict[str, Any]:
+        """把知识检索结果渲染成列表卡片。"""
         items = [
             {
                 "id": result.doc_id,
@@ -200,6 +201,12 @@ class DynamicUIService:
         context: dict | None,
         runtime: ApiQueryUIRuntime | None,
     ) -> dict[str, Any]:
+        """把结构化查询结果渲染成指标 + 图表 + 表格的标准查询页。
+
+        功能：
+            这是 `api_query` 当前阶段最核心的读态渲染器，必须同时保留结果预览、
+            详情跳转、分页刷新与审计元数据挂载能力。
+        """
         columns = list(rows[0].keys())
         dataset = [[row.get(column) for column in columns] for row in rows]
         numeric_fields = {
@@ -223,6 +230,7 @@ class DynamicUIService:
             "actions": [{"type": "export", "label": "导出 CSV"}],
         }
         if runtime and runtime.detail.enabled:
+            # 详情动作只下发运行时契约，不在网关 UI 层硬编码具体业务参数。
             table_props["rowActions"] = [
                 {
                     "type": runtime.detail.ui_action or "remoteQuery",
@@ -238,6 +246,7 @@ class DynamicUIService:
                 }
             ]
         if runtime and runtime.pagination.enabled:
+            # 分页后续走 remoteQuery + mutation_target 做局部补丁，不重新生成整页 UI。
             table_props["pagination"] = {
                 "enabled": True,
                 "total": runtime.pagination.total,
@@ -273,6 +282,7 @@ class DynamicUIService:
 
     @staticmethod
     def _notice_spec(title: str, message: str, level: str) -> dict[str, Any]:
+        """构造统一 Notice 卡片，承接失败、空结果和跳过执行场景。"""
         return {
             "type": "Card",
             "props": {
@@ -291,6 +301,7 @@ class DynamicUIService:
         }
 
     def _task_spec(self, tasks: list[dict[str, Any]]) -> dict[str, Any]:
+        """将待办列表渲染成带筛选器的工作台视图。"""
         items = [
             {
                 "id": task.get("id", task.get("sourceId", str(index))),
@@ -402,6 +413,7 @@ class DynamicUIService:
         rows: list[dict[str, Any]],
         numeric_fields: dict[str, list[float]],
     ) -> dict[str, Any] | None:
+        """从查询结果中推导一个最小可用图表。"""
         if not rows or not numeric_fields:
             return None
 
@@ -508,6 +520,7 @@ class DynamicUIService:
 
     @staticmethod
     def _priority_color(priority: str) -> str:
+        """把业务优先级映射成前端约定颜色。"""
         priority_value = (priority or "").lower()
         if priority_value in ("urgent", "紧急"):
             return "red"

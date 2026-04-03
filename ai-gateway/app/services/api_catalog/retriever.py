@@ -66,11 +66,13 @@ class ApiCatalogRetriever:
         self._collection: Collection | None = None
 
     def _get_embedder(self) -> BGEM3FlagModel:
+        """懒加载查询向量模型。"""
         if self._embedder is None:
             self._embedder = BGEM3FlagModel(settings.embedding_model_name, use_fp16=True)
         return self._embedder
 
     def _get_collection(self) -> Collection:
+        """获取并加载 `api_catalog` collection。"""
         if self._collection is None:
             connections.connect(alias="default", host=settings.milvus_host, port=settings.milvus_port)
             self._collection = Collection(name=API_CATALOG_COLLECTION)
@@ -232,6 +234,7 @@ class ApiCatalogRetriever:
         results: list[ApiCatalogSearchResult] = []
         for hit in raw_results[0]:
             score = float(hit.distance)
+            # 相似度阈值是第二阶段的最后一道护栏，宁可少给候选，也不要把垃圾接口送进规划链路。
             if score < score_threshold:
                 continue
 
@@ -251,7 +254,7 @@ class ApiCatalogRetriever:
 
 
 def _build_entry_from_fields(fields: dict) -> ApiCatalogEntry:
-    """从 Milvus 返回字段构建 ApiCatalogEntry。"""
+    """从 Milvus 输出字段重建 `ApiCatalogEntry`。"""
     return ApiCatalogEntry(
         id=fields.get("id", ""),
         description=fields.get("description", ""),
@@ -278,6 +281,7 @@ def _build_entry_from_fields(fields: dict) -> ApiCatalogEntry:
 
 
 def _safe_json_loads(value: str | None, default):
+    """安全反序列化 Milvus 中的 JSON 字段。"""
     if not value:
         return default
     try:
@@ -321,6 +325,7 @@ def _merge_filters(
 
 
 def _build_filter_expr(filters: ApiCatalogSearchFilters | dict[str, list[str]] | None) -> str | None:
+    """将标量过滤条件拼装成 Milvus 表达式。"""
     normalized = _normalize_filters(filters)
     expressions: list[str] = []
     expressions.extend(_build_in_expr("domain", normalized.domains))
@@ -331,6 +336,7 @@ def _build_filter_expr(filters: ApiCatalogSearchFilters | dict[str, list[str]] |
 
 
 def _build_in_expr(field: str, values: list[str]) -> list[str]:
+    """构造 `field in [...]` 形式的过滤表达式片段。"""
     filtered = [value for value in values if value]
     if not filtered:
         return []
@@ -359,6 +365,7 @@ def _merge_stratified_results(
     seen_api_ids: set[str] = set()
 
     for domain, results in zip(domains, domain_results, strict=False):
+        # 先在单域内按分数排序，再按 domain 顺序合并，保证“每个域至少带回代表候选”。
         sorted_results = sorted(results, key=lambda item: item.score, reverse=True)
         for result in sorted_results:
             if result.entry.id in seen_api_ids:

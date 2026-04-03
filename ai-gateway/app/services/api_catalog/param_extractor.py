@@ -43,6 +43,7 @@ class ApiParamExtractor:
         self._llm = None
 
     def _get_llm(self):
+        """懒加载 LLM 服务，避免无调用时初始化模型客户端。"""
         if self._llm is None:
             from app.services.llm_service import LLMService
 
@@ -159,6 +160,7 @@ class ApiParamExtractor:
 
         if len(candidates) == 1:
             entry = candidates[0].entry
+            # 单候选时不再做“接口选择”，但参数仍必须经过 LLM + Schema 双重治理。
             params = await self._extract_params(query, entry, user_context)
             return ApiQueryRoutingResult(
                 selected_api_id=entry.id,
@@ -208,7 +210,11 @@ class ApiParamExtractor:
         allowed_business_intents: set[str] | None,
         routing_hints: ApiQueryRoutingResult | None,
     ) -> ApiQueryRoutingResult:
-        """多候选场景下的接口路由与参数提取。"""
+        """多候选场景下的接口路由与参数提取。
+
+        功能：
+            把“选哪个接口”和“提什么参数”绑定在一次结构化输出里，减少多次模型调用引入的漂移。
+        """
         prompt = _build_route_and_extract_prompt(query, candidates, user_context, routing_hints)
         result = await self._call_llm_json(prompt, scenario="route_and_extract")
         if not result:
@@ -496,7 +502,11 @@ def _sanitize_query_domains(
     candidates: list[ApiCatalogSearchResult],
     fallback_domain: str,
 ) -> list[str]:
-    """限制最终 query_domains 只能落在候选集域内。"""
+    """限制最终 `query_domains` 只能落在候选集域内。
+
+    功能：
+        避免模型把第一阶段未召回的陌生域重新塞回响应，破坏链路可解释性。
+    """
     allowed = {candidate.entry.domain for candidate in candidates if candidate.entry.domain}
     if isinstance(raw_domains, str):
         items = [raw_domains]
@@ -529,6 +539,7 @@ def _sanitize_business_intents(
         candidates = [item for item in candidates if item in allowed]
 
     if not candidates:
+        # 业务意图宁可回退到 `none`，也不能把模型臆造的写动作透传到下游。
         candidates = [item for item in fallback if allowed is None or item in allowed]
 
     return list(dict.fromkeys(candidates or [_NOOP_BUSINESS_INTENT]))

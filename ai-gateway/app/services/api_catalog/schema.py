@@ -12,13 +12,19 @@ from pydantic import BaseModel, Field
 
 
 class ParamSchema(BaseModel):
-    """接口参数 JSON Schema（简化版，够用于 LLM 提取）。"""
+    """接口参数 Schema 的最小子集。
+
+    功能：
+        只保留第二阶段参数提取真正需要的字段，避免把完整 OpenAPI schema 全量塞给 LLM。
+    """
     type: str = "object"
     properties: dict[str, dict[str, Any]] = Field(default_factory=dict)
     required: list[str] = Field(default_factory=list)
 
 
 class ApiCatalogDetailHint(BaseModel):
+    """详情页运行时提示。"""
+
     enabled: bool = False
     api_id: str | None = Field(None, description="详情查询使用的接口 ID")
     identifier_field: str | None = Field(None, description="详情主键字段")
@@ -29,6 +35,8 @@ class ApiCatalogDetailHint(BaseModel):
 
 
 class ApiCatalogPaginationHint(BaseModel):
+    """分页运行时提示。"""
+
     enabled: bool = False
     api_id: str | None = Field(None, description="分页刷新使用的接口 ID")
     page_param: str = Field("pageNum", description="页码参数名")
@@ -38,6 +46,8 @@ class ApiCatalogPaginationHint(BaseModel):
 
 
 class ApiCatalogTemplateHint(BaseModel):
+    """模板快路提示。"""
+
     enabled: bool = False
     template_code: str | None = Field(None, description="模板编码")
     render_mode: str = Field("dynamic_ui", description="模板渲染模式")
@@ -45,6 +55,8 @@ class ApiCatalogTemplateHint(BaseModel):
 
 
 class ApiCatalogSearchFilters(BaseModel):
+    """Milvus 标量过滤器。"""
+
     domains: list[str] = Field(default_factory=list)
     envs: list[str] = Field(default_factory=list)
     statuses: list[str] = Field(default_factory=list)
@@ -112,7 +124,11 @@ class ApiCatalogEntry(BaseModel):
 
     @property
     def embed_text(self) -> str:
-        """生成用于 embedding 的文本（描述 + 示例问法）。"""
+        """生成 embedding 文本。
+
+        功能：
+            把语义描述、业务域、标签、业务意图压成一段检索文本，兼顾召回率与过滤稳定性。
+        """
         parts = [self.description, f"domain:{self.domain}", f"status:{self.status}"]
         if self.example_queries:
             parts.extend(self.example_queries)
@@ -126,12 +142,12 @@ class ApiCatalogEntry(BaseModel):
 
     @property
     def api_path(self) -> str:
-        """Stage-1 naming aligned alias."""
+        """兼容第一阶段命名习惯的别名字段。"""
         return self.path
 
     @property
     def api_schema(self) -> dict[str, Any]:
-        """供 LLM 理解的裁剪接口说明书。"""
+        """输出给 LLM 的裁剪版接口说明书。"""
         return {
             "request": self.param_schema.model_dump(),
             "response_data_path": self.response_data_path,

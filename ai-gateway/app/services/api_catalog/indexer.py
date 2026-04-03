@@ -46,7 +46,11 @@ EMBEDDING_DIM = 1024
 
 
 def _get_collection_schema() -> CollectionSchema:
-    """定义 api_catalog collection schema。"""
+    """定义 `api_catalog` 的 Milvus schema。
+
+    功能：
+        同时保留向量检索字段和少量标量护栏，让第二阶段可以做 Hybrid Search。
+    """
     fields = [
         FieldSchema(name="id",           dtype=DataType.VARCHAR,       max_length=128,  is_primary=True),
         FieldSchema(name="description",  dtype=DataType.VARCHAR,       max_length=1024),
@@ -77,6 +81,7 @@ def _get_collection_schema() -> CollectionSchema:
 
 
 def _expected_field_names() -> set[str]:
+    """返回当前版本 schema 的字段集合，用于识别 Milvus 漂移。"""
     return {field.name for field in _get_collection_schema().fields}
 
 
@@ -90,12 +95,14 @@ class ApiCatalogIndexer:
     # ── 懒加载 ──────────────────────────────────────────────────
 
     def _get_embedder(self) -> BGEM3FlagModel:
+        """懒加载 embedding 模型。"""
         if self._embedder is None:
             logger.info("Loading embedding model: %s", settings.embedding_model_name)
             self._embedder = BGEM3FlagModel(settings.embedding_model_name, use_fp16=True)
         return self._embedder
 
     def _get_collection(self) -> Collection:
+        """获取 Milvus collection，并在 schema 漂移时自动重建。"""
         if self._collection is None:
             connections.connect(alias="default", host=settings.milvus_host, port=settings.milvus_port)
             if not utility.has_collection(API_CATALOG_COLLECTION):
@@ -104,6 +111,7 @@ class ApiCatalogIndexer:
             else:
                 col = Collection(name=API_CATALOG_COLLECTION)
                 actual_fields = {field.name for field in col.schema.fields}
+                # 元数据字段经常在阶段演进时扩展，这里选择显式重建而不是静默兼容旧 schema。
                 if actual_fields != _expected_field_names():
                     logger.info("Recreating Milvus collection %s due to schema drift", API_CATALOG_COLLECTION)
                     col.release()
@@ -149,13 +157,13 @@ class ApiCatalogIndexer:
         embedder = self._get_embedder()
         collection = self._get_collection()
 
-        # Embedding（在线程池中执行 CPU 密集型操作）
+        # Embedding 是 CPU 密集型操作，放到线程池里避免卡住事件循环。
         embed_text = entry.embed_text
         embedding: list[float] = await asyncio.to_thread(
             lambda: embedder.encode([embed_text])["dense_vecs"][0].tolist()
         )
 
-        # 先删除同 ID 的旧记录（upsert 语义）
+        # 先删后插，维持“同一个 api_id 在 Milvus 中只有一条有效记录”的语义。
         collection.delete(f'id in ["{entry.id}"]')
 
         # 准备插入数据
@@ -189,6 +197,7 @@ class ApiCatalogIndexer:
         return True
 
 def _create_collection() -> Collection:
+    """创建并加载 `api_catalog` collection。"""
     collection = Collection(name=API_CATALOG_COLLECTION, schema=_get_collection_schema())
     collection.create_index(
         field_name="embedding",

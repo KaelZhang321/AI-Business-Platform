@@ -30,6 +30,7 @@ from app.services.api_catalog.schema import ApiCatalogEntry
 
 logger = logging.getLogger(__name__)
 
+
 class ApiExecutor:
     """通过 httpx 调用 business-server，规范化响应数据。
 
@@ -47,6 +48,7 @@ class ApiExecutor:
         self._client: httpx.AsyncClient | None = None
 
     def _get_client(self) -> httpx.AsyncClient:
+        """懒加载 business-server HTTP 客户端。"""
         if self._client is None or self._client.is_closed:
             self._client = httpx.AsyncClient(
                 base_url=settings.business_server_url,
@@ -183,6 +185,7 @@ class ApiExecutor:
 # ── 数据规范化工具 ───────────────────────────────────────────────────────────
 
 def _safe_json(response: httpx.Response) -> dict[str, Any]:
+    """安全解析上游 JSON，失败时回落为原始文本。"""
     try:
         return response.json()
     except Exception:
@@ -255,7 +258,11 @@ def _apply_field_labels(
     data: list[dict[str, Any]] | dict[str, Any],
     field_labels: dict[str, str],
 ) -> list[dict[str, Any]] | dict[str, Any]:
-    """将字段名按 field_labels 映射为中文（保留原字段名，新增中文 key）。"""
+    """将字段名按 field_labels 映射为中文。
+
+    功能：
+        在网关层收敛多系统字段口径，让后续 UI 层更偏向“展示问题”而不是“字段翻译问题”。
+    """
     if not field_labels:
         return data
 
@@ -274,7 +281,10 @@ def _apply_field_labels(
 
 
 class ApiCallError(Exception):
-    """业务接口调用失败异常。"""
+    """业务接口调用失败异常。
+
+    当前阶段保留该异常类型，便于后续需要切换为异常驱动风格时复用统一语义。
+    """
 
     def __init__(self, message: str, status_code: int = 500) -> None:
         super().__init__(message)
