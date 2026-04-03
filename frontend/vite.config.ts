@@ -6,10 +6,10 @@ import { defineConfig, loadEnv } from 'vite';
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, '.', '');
-  const apiUrl = env.VITE_API_BASE_URL?.trim() || 'https://beta-ai-platform.kaibol.net/ai-platform';
+  const apiUrl = env.VITE_API_BASE_URL?.trim() || 'http://39.96.197.81:8080';
 
   return {
-    base: '/ai-platform/',
+    base: mode === 'development' ? '/' : '/ai-platform/',
     plugins: [react(), tailwindcss()],
     define: {
       'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY),
@@ -22,27 +22,13 @@ export default defineConfig(({ mode }) => {
     server: {
       hmr: process.env.DISABLE_HMR !== 'true',
       proxy: {
-        '/api/v1/auth': {
-          target: apiUrl,
-          changeOrigin: true,
-        },
-        '/api/v1/tasks': {
-          target: apiUrl,
-          changeOrigin: true,
-        },
-        '/api/v1/knowledge/documents': {
-          target: apiUrl,
-          changeOrigin: true,
-        },
-        '/api/v1/audit': {
-          target: apiUrl,
-          changeOrigin: true,
-        },
-        '/api': {
-          target: apiUrl,
-          changeOrigin: true,
-        },
+        // 业务编排层接口 (auth, tasks, knowledge, audit...)
         '/api/v1': {
+          target: apiUrl,
+          changeOrigin: true,
+        },
+        // AI网关其余接口 (chat, health, bi...)
+        '/api': {
           target: apiUrl,
           changeOrigin: true,
         },

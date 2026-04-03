@@ -32,6 +32,7 @@ export function App() {
   const token = useAppStore((state) => state.token);
   const user = useAppStore((state) => state.user);
   const login = useAppStore((state) => state.login);
+  const iamLogin = useAppStore((state) => state.iamLogin);
   const logout = useAppStore((state) => state.logout);
   const restoreSession = useAppStore((state) => state.restoreSession);
   const [isAuthBootstrapping, setIsAuthBootstrapping] = useState(Boolean(token));
@@ -147,9 +148,13 @@ export function App() {
 
   if (!isAuthenticated) {
     return (
+      // onLogin={async ({ username, password }) => {
+      //   await login(username, password);
+      //   navigate(PAGE_PATHS.dashboard, { replace: true });
+      // }}
       <LoginPage
-        onLogin={async ({ username, password }) => {
-          await login(username, password);
+        onIamLogin={async (code) => {
+          await iamLogin(code);
           navigate(PAGE_PATHS.dashboard, { replace: true });
         }}
       />
