@@ -3,6 +3,7 @@ export type AppPage =
   | 'login'
   | 'dashboard'
   | 'function-square'
+  | 'ui-builder'
   | 'meeting-bi'
   | 'consultant-ai'
   | 'medical-ai'
@@ -49,6 +50,7 @@ export const PAGE_DEFINITIONS: Record<AppPage, PageDefinition> = {
   login: { path: '/login', title: '登录', implemented: false },
   dashboard: { path: '/', title: 'AI业务工作台', implemented: true },
   'function-square': { path: '/function-square', title: '功能广场', implemented: true },
+  'ui-builder': { path: '/ui-builder', title: 'JSON Render Builder', implemented: true },
   'meeting-bi': { path: '/meeting-bi', title: '会议BI', implemented: true },
   'consultant-ai': { path: '/consultant-ai', title: '我的AI工作台', implemented: true },
   'medical-ai': { path: '/medical-ai', title: '医疗AI工作台', implemented: true },
@@ -168,6 +170,11 @@ export const NAVIGATION_ITEMS: NavigationItemDefinition[] = [
 ];
 
 export const FOOTER_NAVIGATION_ITEMS: NavigationItemDefinition[] = [
+  {
+    page: 'ui-builder',
+    label: 'UI Builder',
+    icon: 'layout-dashboard',
+  },
   {
     page: 'notices',
     label: '通知公告',

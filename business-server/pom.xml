@@ -5,10 +5,9 @@
     <modelVersion>4.0.0</modelVersion>
 
     <parent>
-        <groupId>org.springframework.boot</groupId>
-        <artifactId>spring-boot-starter-parent</artifactId>
-        <version>3.3.6</version>
-        <relativePath/>
+        <groupId>com.lecz.service</groupId>
+		<artifactId>lecz-bootstrap-parent</artifactId>
+		<version>0.0.1-SNAPSHOT</version>
     </parent>
 
     <groupId>com.lzke.ai</groupId>
@@ -18,32 +17,9 @@
     <description>AI业务中台业务编排服务</description>
 
     <properties>
-        <java.version>17</java.version>
-        <mybatis-plus.version>3.5.9</mybatis-plus.version>
-        <lombok.version>1.18.34</lombok.version>
+        <java.version>21</java.version>
         <flowable.version>7.1.0</flowable.version>
-        <spring-cloud.version>2023.0.4</spring-cloud.version>
-        <spring-cloud-alibaba.version>2023.0.3.2</spring-cloud-alibaba.version>
     </properties>
-
-    <dependencyManagement>
-        <dependencies>
-            <dependency>
-                <groupId>org.springframework.cloud</groupId>
-                <artifactId>spring-cloud-dependencies</artifactId>
-                <version>${spring-cloud.version}</version>
-                <type>pom</type>
-                <scope>import</scope>
-            </dependency>
-            <dependency>
-                <groupId>com.alibaba.cloud</groupId>
-                <artifactId>spring-cloud-alibaba-dependencies</artifactId>
-                <version>${spring-cloud-alibaba.version}</version>
-                <type>pom</type>
-                <scope>import</scope>
-            </dependency>
-        </dependencies>
-    </dependencyManagement>
 
     <dependencies>
         <!-- Spring Boot -->
@@ -81,18 +57,20 @@
         <dependency>
             <groupId>com.baomidou</groupId>
             <artifactId>mybatis-plus-spring-boot3-starter</artifactId>
-            <version>${mybatis-plus.version}</version>
         </dependency>
         <dependency>
             <groupId>com.baomidou</groupId>
             <artifactId>mybatis-plus-jsqlparser</artifactId>
-            <version>${mybatis-plus.version}</version>
         </dependency>
 
         <!-- MySQL 8.0 -->
         <dependency>
             <groupId>com.mysql</groupId>
             <artifactId>mysql-connector-j</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
             <scope>runtime</scope>
         </dependency>
 
@@ -100,6 +78,7 @@
         <dependency>
             <groupId>org.apache.httpcomponents.client5</groupId>
             <artifactId>httpclient5</artifactId>
+            <version>5.4.4</version>
         </dependency>
 
         <!-- Lombok -->
@@ -147,11 +126,14 @@
         </dependency>
 
         <!-- Flowable 工作流引擎 (S4-1) -->
-        <dependency>
+        
+         <!--
+		<dependency>
             <groupId>org.flowable</groupId>
             <artifactId>flowable-spring-boot-starter-process</artifactId>
             <version>${flowable.version}</version>
         </dependency>
+        -->
 
         <!-- Spring Cloud Alibaba Nacos → 通过 Maven profile -Pnacos 按需引入 -->
 
@@ -169,7 +151,6 @@
         <dependency>
             <groupId>org.springdoc</groupId>
             <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
-            <version>2.6.0</version>
         </dependency>
 
         <!-- Redisson 分布式锁 (S5-5) -->
@@ -185,6 +166,18 @@
             <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>
         </dependency>
+        
+        <dependency>
+			<groupId>com.lecz.service</groupId>
+			<artifactId>lecz-bootstrap-commons</artifactId>
+			<version>0.0.1-SNAPSHOT</version>
+		</dependency>
+		<dependency>
+			<groupId>com.lecz.service</groupId>
+			<artifactId>component-oa-http-api</artifactId>
+			<version>0.0.1-SNAPSHOT</version>
+		</dependency>
+        
     </dependencies>
 
     <build>
@@ -193,6 +186,7 @@
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
                 <configuration>
+                    <release>${java.version}</release>
                     <parameters>true</parameters>
                     <annotationProcessorPaths>
                         <path>
@@ -206,6 +200,14 @@
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
+                <version>3.4.7</version>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>repackage</goal>
+                        </goals>
+                    </execution>
+                </executions>
                 <configuration>
                     <excludes>
                         <exclude>
@@ -218,20 +220,4 @@
         </plugins>
     </build>
 
-    <profiles>
-        <!-- 云环境 Nacos 注册/配置中心：mvn spring-boot:run -Pnacos -->
-        <profile>
-            <id>nacos</id>
-            <dependencies>
-                <dependency>
-                    <groupId>com.alibaba.cloud</groupId>
-                    <artifactId>spring-cloud-starter-alibaba-nacos-config</artifactId>
-                </dependency>
-                <dependency>
-                    <groupId>com.alibaba.cloud</groupId>
-                    <artifactId>spring-cloud-starter-alibaba-nacos-discovery</artifactId>
-                </dependency>
-            </dependencies>
-        </profile>
-    </profiles>
 </project>

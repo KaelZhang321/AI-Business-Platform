@@ -1,14 +1,16 @@
 package com.lzke.ai.config;
 
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
 import io.minio.BucketExistsArgs;
 import io.minio.MakeBucketArgs;
 import io.minio.MinioClient;
 import lombok.Getter;
 import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.boot.context.properties.ConfigurationProperties;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
 
 @Slf4j
 @Getter
@@ -17,10 +19,14 @@ import org.springframework.context.annotation.Configuration;
 @ConfigurationProperties(prefix = "app.minio")
 public class MinIOConfig {
 
-    private String endpoint = "http://localhost:9000";
-    private String accessKey = "minioadmin";
-    private String secretKey = "minioadmin_dev";
-    private String bucket = "ai-platform-docs";
+	@Value("${app.minio.endpoint:http://localhost:9000}")
+    private String endpoint;
+	@Value("${app.minio.access-key:minioadmin}")
+    private String accessKey;
+	@Value("${app.minio.secret-key:minioadmin_dev}")
+    private String secretKey;
+	@Value("${app.minio.bucket:ai-platform-docs}")
+    private String bucket;
 
     @Bean
     public MinioClient minioClient() {
