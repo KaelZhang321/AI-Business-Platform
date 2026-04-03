@@ -86,7 +86,8 @@ class Settings(BaseSettings):
     api_query_route_retry_count: int = 1
     api_query_retrieval_timeout_seconds: float = 0.8
     api_query_retrieval_per_domain_top_k: int = 2
-    api_query_score_threshold: float = 0.3
+    # 第二阶段默认改为 0.6，是为了更贴近设计文档中的“宁可少给候选，也不喂垃圾接口”的保守策略。
+    api_query_score_threshold: float = 0.6
 
     # Intent classification
     intent_confidence_threshold: float = Field(0.55, ge=0.0, le=1.0)

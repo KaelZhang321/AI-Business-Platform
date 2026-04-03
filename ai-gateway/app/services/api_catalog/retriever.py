@@ -193,7 +193,8 @@ class ApiCatalogRetriever:
             )
             for domain in normalized_domains
         ]
-        domain_results = await asyncio.gather(*tasks)
+        gathered_results = await asyncio.gather(*tasks, return_exceptions=True)
+        domain_results = _coerce_domain_results(normalized_domains, gathered_results)
         return _merge_stratified_results(normalized_domains, domain_results)
 
     async def get_by_id(self, api_id: str) -> ApiCatalogEntry | None:
@@ -436,3 +437,46 @@ def _merge_stratified_results(
             logger.debug("API catalog stratified search returned no results for domain=%s", domain)
 
     return merged
+
+
+def _coerce_domain_results(
+    domains: list[str],
+    gathered_results: list[list[ApiCatalogSearchResult] | Exception],
+) -> list[list[ApiCatalogSearchResult]]:
+    """将 `asyncio.gather` 结果收敛成稳定的 domain 结果列表。
+
+    功能：
+        设计文档要求第二阶段采用 Scatter-Gather 且单域失败不能拖垮整条链路。
+        这里显式处理 `return_exceptions=True` 的结果，把异常域统一降级为空列表。
+
+    Args:
+        domains: 本轮检索的业务域顺序。
+        gathered_results: `asyncio.gather` 返回的原始结果，可能混入异常对象。
+
+    Returns:
+        与 `domains` 顺序一一对应的结果列表；异常域会被替换为空列表。
+
+    Edge Cases:
+        - 未预期异常不会外抛到 route 层
+        - 返回值不是 list 时同样视为异常退化，避免破坏后续聚合逻辑
+    """
+    normalized_results: list[list[ApiCatalogSearchResult]] = []
+
+    for domain, result in zip(domains, gathered_results, strict=False):
+        if isinstance(result, Exception):
+            logger.warning("API catalog stratified search failed for domain=%s: %s", domain, result)
+            normalized_results.append([])
+            continue
+
+        if not isinstance(result, list):
+            logger.warning(
+                "API catalog stratified search returned unexpected payload for domain=%s: %r",
+                domain,
+                result,
+            )
+            normalized_results.append([])
+            continue
+
+        normalized_results.append(result)
+
+    return normalized_results

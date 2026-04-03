@@ -97,11 +97,22 @@ class KnowledgeResult(BaseModel):
 
 
 class ApiQueryRequest(BaseModel):
-    """`api_query` 的自然语言请求模型。"""
+    """`api_query` 的自然语言请求模型。
+
+    功能：
+        承载第二阶段主链路所需的最小输入。除了自然语言问题本身，也允许调用方
+        显式附加环境与标签过滤，以便在多环境、多模块共享同一向量库时维持硬隔离。
+
+    返回值约束：
+        - `envs` / `tag_names` 仅用于 Milvus 标量过滤，不参与业务写动作判断
+        - `top_k` 仍然只控制候选召回规模，不改变单域/多域的保底策略
+    """
 
     query: str = Field(..., min_length=1, max_length=500, description="用户自然语言输入")
     conversation_id: str | None = Field(None, description="对话 ID（保留，用于未来多轮记忆）")
     top_k: int = Field(3, ge=1, le=5, description="候选接口数量")
+    envs: list[str] = Field(default_factory=list, description="可选的环境过滤，如 prod / dev")
+    tag_names: list[str] = Field(default_factory=list, description="可选的业务标签过滤，如 合同管理")
 
 
 class ApiQueryBusinessIntent(BaseModel):

@@ -11,6 +11,7 @@ API Catalog — 第二阶段路由与参数提取器
 - 结构化输出 + 一次重试是为了把路由失败控制在第二阶段，不把脏 JSON 继续传下去
 - 所有 LLM 输出都视为不可信，必须经过 allowlist 与 Schema 双重清洗
 """
+
 from __future__ import annotations
 
 import json
@@ -19,11 +20,15 @@ from typing import Any
 
 from app.core.config import settings
 from app.models.schemas import ApiQueryRoutingResult
+from app.services.api_catalog.business_intents import (
+    NOOP_BUSINESS_INTENT,
+    normalize_business_intent_code,
+)
 from app.services.api_catalog.schema import ApiCatalogEntry, ApiCatalogSearchResult
 
 logger = logging.getLogger(__name__)
 
-_NOOP_BUSINESS_INTENT = "none"
+_NOOP_BUSINESS_INTENT = NOOP_BUSINESS_INTENT
 _UNKNOWN_DOMAIN = "unknown"
 
 
@@ -236,9 +241,7 @@ class ApiParamExtractor:
             entry = candidates[0].entry
 
         query_domain_fallback = (
-            routing_hints.query_domains[0]
-            if routing_hints and routing_hints.query_domains
-            else entry.domain
+            routing_hints.query_domains[0] if routing_hints and routing_hints.query_domains else entry.domain
         )
         business_intent_fallback = (
             list(routing_hints.business_intents)
@@ -254,9 +257,8 @@ class ApiParamExtractor:
                 allowed=allowed_business_intents,
                 fallback=business_intent_fallback,
             ),
-            is_multi_domain=bool(result.get("is_multi_domain")) or (
-                bool(routing_hints.is_multi_domain) if routing_hints else False
-            ),
+            is_multi_domain=bool(result.get("is_multi_domain"))
+            or (bool(routing_hints.is_multi_domain) if routing_hints else False),
             reasoning=_safe_string(result.get("reasoning")) or (routing_hints.reasoning if routing_hints else None),
             params=_validate_params(raw_params, entry),
         )
@@ -346,21 +348,57 @@ def _build_route_only_prompt(
     ctx_str = json.dumps(user_context or {}, ensure_ascii=False)
     allowed_intents = sorted(allowed_business_intents or {_NOOP_BUSINESS_INTENT})
     intents_str = json.dumps(allowed_intents, ensure_ascii=False)
-    return f"""你是企业级工作流引擎的第二阶段轻量路由器。
+    return f"""# Role
+你是一个企业级 API 网关的“高级智能路由与意图解析引擎”。你的核心任务是：深度分析用户的自然语言输入，将其精准拆解为“底层数据查询域（Read）”和“业务变更意图（Write）”两部分。
 
 用户输入：{query}
 用户上下文：{ctx_str}
 
-任务：
-1. 提取 query_domains，输出 1 到 N 个业务域编码，例如 crm、erp、iam、meeting_bi；如果无法判断则输出 ["unknown"]
-2. 提取 business_intents；纯查询场景输出 ["none"]，只允许使用这些编码：{intents_str}
-3. 输出 is_multi_domain
-4. 用一句简短中文说明 reasoning
+# Domain Mapping Rules
+1. `CRM`
+   - 核心职责：管理外部客户、联系人、潜在商机、销售线索等。
+   - 映射词汇：客户、联系人、客户画像、商机、线索、买家、公海、档案。
+2. `IAM`
+   - 核心职责：管理企业内部组织架构、员工账号、角色、权限、部门等。
+   - 映射词汇：权限、账号、角色、员工、部门、组织架构、销售部。
+3. 其他兼容域
+   - 若用户明确涉及 `ERP`、`MEETING_BI` 等现有业务域，可直接输出对应域编码。
+   - 若完全不属于已知业务域，则输出 `["unknown"]`。
+
+# Action Mapping Rules
+- `saveToServer`: 用户意图更新、保存、修改、写入目标或信息。
+- `deleteCustomer`: 用户意图废弃、删除、下线某位客户或数据。
+- `none`: 纯查询请求，没有任何变更或写入意图。
+- 只允许使用这些业务意图编码：{intents_str}
+
+# Output Constraint
+必须且只能输出合法的纯 JSON 字符串，不要包含 Markdown、前缀说明或注释。
+JSON 结构必须包含：
+- `query_domains`
+- `business_intents`
+- `is_multi_domain`
+- `reasoning`
 
 规则：
-- query_domains 只输出领域编码，不要输出接口名
-- business_intents 只描述业务意图，不要输出 remoteQuery / remoteMutation 等前端动作
-- 直接输出 JSON，不要解释或包含 markdown
+- `query_domains` 只输出领域编码，不要输出接口名
+- `business_intents` 只描述业务意图，不要输出 `remoteQuery` / `remoteMutation` 等前端动作
+- 如果命中多个域，`is_multi_domain` 必须为 `true`
+
+# Few-Shot Examples
+User: 帮我查一下王总的联系方式。
+Assistant: {{"query_domains":["CRM"],"business_intents":["none"],"is_multi_domain":false,"reasoning":"仅需要查询外部客户联系人，无任何数据修改意图。"}}
+
+User: 查一下华东区销售部有哪些人，顺便看看他们名下各自有多少大客户。
+Assistant: {{"query_domains":["IAM","CRM"],"business_intents":["none"],"is_multi_domain":true,"reasoning":"查询内部部门人员与其名下客户，属于跨域纯查询。"}}
+
+User: 帮我调出客户C001的档案，然后把他的下月核心目标更新为每周3次有氧。
+Assistant: {{"query_domains":["CRM"],"business_intents":["saveToServer"],"is_multi_domain":false,"reasoning":"需要先查询客户档案，再准备保存更新后的业务目标。"}}
+
+User: 看看我名下有哪些无效的公海线索，直接把那个叫测试公司的记录删掉。
+Assistant: {{"query_domains":["CRM"],"business_intents":["deleteCustomer"],"is_multi_domain":false,"reasoning":"查询线索属于CRM，且包含明确删除客户记录的意图。"}}
+
+User: 帮我订一张明天上午飞北京的头等舱机票。
+Assistant: {{"query_domains":["unknown"],"business_intents":["none"],"is_multi_domain":false,"reasoning":"当前请求不属于已知业务域。"}}
 
 输出格式：
 {{"query_domains":["crm"],"business_intents":["none"],"is_multi_domain":false,"reasoning":"..."}}"""
@@ -422,7 +460,8 @@ def _parse_json(raw: str) -> dict[str, Any]:
 
     功能：
         第二阶段最怕的不是模型答错，而是输出了一段“半礼貌半 JSON”的混合文本。
-        这里先剥掉 markdown，再截取首尾大括号，尽量把脏文本还原成可解析对象。
+        这里先剥掉 markdown，再裁掉注释和尾逗号，最后截取首尾大括号，
+        尽量把脏文本还原成可解析对象。
     """
     text = raw.strip()
     if text.startswith("```"):
@@ -434,12 +473,127 @@ def _parse_json(raw: str) -> dict[str, Any]:
     if start != -1 and end != -1 and start < end:
         text = text[start : end + 1]
 
+    # 有些本地模型会把“解释性注释”直接写进 JSON；这里先做轻量词法清洗，避免把脏格式留给 json.loads。
+    text = _strip_json_comments(text)
+    text = _strip_trailing_commas(text)
+
     try:
         result = json.loads(text)
         return result if isinstance(result, dict) else {}
     except json.JSONDecodeError:
         logger.debug("Failed to parse LLM JSON: %s", raw[:200])
         return {}
+
+
+def _strip_json_comments(text: str) -> str:
+    """删除 JSON 里的行注释和块注释，同时保留字符串原文。
+
+    功能：
+        设计文档里已经明确提到 `// 这是一个客户 ID` 这类脏输出。
+        这里不用正则硬切，是为了避免误伤 URL、时间戳或普通字符串中的 `/`。
+
+    Args:
+        text: 已经裁剪到首尾大括号之间的原始 JSON 文本。
+
+    Returns:
+        去掉注释后的文本；字符串字面量保持原样。
+
+    Edge Cases:
+        - 支持 `// ...` 行注释
+        - 支持 `/* ... */` 块注释
+        - 字符串中的 `//`、`/*` 不会被误删
+    """
+    result: list[str] = []
+    index = 0
+    in_string = False
+    escaped = False
+    length = len(text)
+
+    while index < length:
+        char = text[index]
+        next_char = text[index + 1] if index + 1 < length else ""
+
+        if in_string:
+            result.append(char)
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            index += 1
+            continue
+
+        if char == '"':
+            in_string = True
+            result.append(char)
+            index += 1
+            continue
+
+        if char == "/" and next_char == "/":
+            index += 2
+            while index < length and text[index] not in ("\n", "\r"):
+                index += 1
+            continue
+
+        if char == "/" and next_char == "*":
+            index += 2
+            while index + 1 < length and not (text[index] == "*" and text[index + 1] == "/"):
+                index += 1
+            index += 2
+            continue
+
+        result.append(char)
+        index += 1
+
+    return "".join(result)
+
+
+def _strip_trailing_commas(text: str) -> str:
+    """删除对象和数组闭合前的尾逗号，同时保留字符串中的原始内容。
+
+    功能：
+        部分模型会生成 JSON5 风格的尾逗号；这里在不引入第三方解析器的前提下，
+        先做一轮精确清洗，减少纯格式问题导致的整链路降级。
+    """
+    result: list[str] = []
+    index = 0
+    in_string = False
+    escaped = False
+    length = len(text)
+
+    while index < length:
+        char = text[index]
+
+        if in_string:
+            result.append(char)
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            index += 1
+            continue
+
+        if char == '"':
+            in_string = True
+            result.append(char)
+            index += 1
+            continue
+
+        if char == ",":
+            lookahead = index + 1
+            while lookahead < length and text[lookahead].isspace():
+                lookahead += 1
+            if lookahead < length and text[lookahead] in ("]", "}"):
+                index += 1
+                continue
+
+        result.append(char)
+        index += 1
+
+    return "".join(result)
 
 
 def _validate_params(params: dict[str, Any], entry: ApiCatalogEntry) -> dict[str, Any]:
@@ -490,7 +644,7 @@ def _sanitize_route_domains(raw_domains: Any) -> list[str]:
 
     domains: list[str] = []
     for candidate in candidates:
-        normalized = candidate.strip().lower().replace("-", "_").replace(" ", "_")
+        normalized = _normalize_domain_code(candidate)
         if not normalized or normalized == _UNKNOWN_DOMAIN:
             continue
         domains.append(normalized)
@@ -507,17 +661,12 @@ def _sanitize_query_domains(
     功能：
         避免模型把第一阶段未召回的陌生域重新塞回响应，破坏链路可解释性。
     """
-    allowed = {candidate.entry.domain for candidate in candidates if candidate.entry.domain}
-    if isinstance(raw_domains, str):
-        items = [raw_domains]
-    elif isinstance(raw_domains, list):
-        items = [str(item) for item in raw_domains if item]
-    else:
-        items = []
-
-    domains = [item for item in items if item in allowed]
-    if fallback_domain and fallback_domain not in domains:
-        domains.insert(0, fallback_domain)
+    allowed = {_normalize_domain_code(candidate.entry.domain) for candidate in candidates if candidate.entry.domain}
+    normalized_items = _sanitize_route_domains(raw_domains)
+    normalized_fallback = _normalize_domain_code(fallback_domain)
+    domains = [item for item in normalized_items if item in allowed]
+    if normalized_fallback and normalized_fallback not in domains:
+        domains.insert(0, normalized_fallback)
     return list(dict.fromkeys(domains))
 
 
@@ -535,14 +684,24 @@ def _sanitize_business_intents(
     else:
         candidates = []
 
+    candidates = [normalize_business_intent_code(item) for item in candidates]
+    normalized_fallback = [normalize_business_intent_code(item) for item in fallback]
+
     if allowed is not None:
         candidates = [item for item in candidates if item in allowed]
 
     if not candidates:
         # 业务意图宁可回退到 `none`，也不能把模型臆造的写动作透传到下游。
-        candidates = [item for item in fallback if allowed is None or item in allowed]
+        candidates = [item for item in normalized_fallback if allowed is None or item in allowed]
 
     return list(dict.fromkeys(candidates or [_NOOP_BUSINESS_INTENT]))
+
+
+def _normalize_domain_code(raw_domain: str | None) -> str:
+    """统一 domain 编码格式，避免大小写或连接符差异影响候选匹配。"""
+    if raw_domain is None:
+        return ""
+    return raw_domain.strip().lower().replace("-", "_").replace(" ", "_")
 
 
 def _safe_string(value: Any) -> str | None:

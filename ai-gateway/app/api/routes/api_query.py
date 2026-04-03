@@ -215,11 +215,12 @@ async def api_query(
         )
 
     # Step 2: 按 query_domains 做分层召回，避免多域场景被单一 domain 吞掉 Top-K。
+    retrieval_filters = _build_retrieval_filters(request_body)
     candidates = await retriever.search_stratified(
         request_body.query,
         domains=route_hint.query_domains,
         top_k=request_body.top_k,
-        filters=ApiCatalogSearchFilters(statuses=["active"]),
+        filters=retrieval_filters,
     )
     if not candidates:
         logger.info(
@@ -284,7 +285,8 @@ async def api_query(
 
     _ensure_read_only_entry(selected_entry, trace_id)
     params = dict(routing_result.params)
-    query_domains = routing_result.query_domains or route_hint.query_domains or [selected_entry.domain]
+    internal_query_domains = routing_result.query_domains or route_hint.query_domains or [selected_entry.domain]
+    query_domains = _format_query_domains_for_response(internal_query_domains)
     business_intents = _build_business_intents(routing_result.business_intents or route_hint.business_intents)
 
     # Step 3: 调用 business-server
@@ -330,6 +332,7 @@ async def api_query(
             "api_id": selected_entry.id,
             "api_path": selected_entry.path,
             "query_domains": query_domains,
+            "retrieval_filters": retrieval_filters.model_dump(),
         },
     )
 
@@ -418,10 +421,60 @@ def _extract_user_context(request: Request) -> dict[str, Any]:
     return ctx
 
 
+def _build_retrieval_filters(request_body: ApiQueryRequest) -> ApiCatalogSearchFilters:
+    """构造第二阶段召回使用的标量过滤器。
+
+    功能：
+        `status=active` 是第二阶段默认的安全护栏；`envs / tag_names` 则允许上层在
+        不改 Prompt 的前提下，把环境隔离和业务标签收紧到硬过滤表达式里。
+
+    Args:
+        request_body: 当前 `api_query` 请求体。
+
+    Returns:
+        已去空、去重后的 Milvus 标量过滤器。
+
+    Edge Cases:
+        - 空字符串会被静默丢弃，避免拼出无意义的 `in [""]`
+        - 标签名保留原始大小写和中文，以适配数据库中的稳定业务标签
+    """
+    return ApiCatalogSearchFilters(
+        statuses=["active"],
+        envs=_dedupe_non_empty([item.strip().lower() for item in request_body.envs]),
+        tag_names=_dedupe_non_empty([item.strip() for item in request_body.tag_names]),
+    )
+
+
 def _resolve_trace_id(request: Request) -> str:
     """优先复用外部 Trace ID，缺失时由网关生成。"""
     header_trace_id = request.headers.get("X-Trace-Id") or request.headers.get("X-Request-Id")
     return header_trace_id or uuid4().hex
+
+
+def _format_query_domains_for_response(query_domains: list[str]) -> list[str]:
+    """将内部 domain 编码转换成对外稳定展示格式。
+
+    功能：
+        检索链路内部继续使用小写编码，便于和 Milvus 标量字段对齐；
+        对外响应则统一转成大写，和技术方案中的展示契约保持一致。
+    """
+    return [_format_domain_for_response(domain) for domain in query_domains if domain]
+
+
+def _format_domain_for_response(domain: str | None) -> str:
+    """格式化单个业务域编码。"""
+    normalized = (domain or "").strip()
+    return normalized.upper() if normalized else ""
+
+
+def _dedupe_non_empty(values: list[str]) -> list[str]:
+    """对过滤入参做去空与去重，避免把脏值直接推进 Milvus 表达式。"""
+    deduped: list[str] = []
+    for value in values:
+        if not value or value in deduped:
+            continue
+        deduped.append(value)
+    return deduped
 
 
 def _ensure_read_only_entry(entry: ApiCatalogEntry, trace_id: str) -> None:
@@ -867,6 +920,7 @@ async def _build_stage2_degrade_response(
         路由失败、无候选、候选内无法定点等场景都属于“未进入真实执行”的安全失败，
         不应该再抛裸 HTTP 错，而应返回一份冻结的只读 UI envelope 给前端。
     """
+    response_query_domains = _format_query_domains_for_response(query_domains)
     execution_result = ApiQueryExecutionResult(
         status=ApiQueryExecutionStatus.SKIPPED,
         data=[],
@@ -882,7 +936,7 @@ async def _build_stage2_degrade_response(
     context_pool = {
         "stage2_routing": ApiQueryContextStepResult(
             status=ApiQueryExecutionStatus.SKIPPED,
-            domain=query_domains[0] if len(query_domains) == 1 else None,
+            domain=response_query_domains[0] if len(response_query_domains) == 1 else None,
             data=[],
             total=0,
             error=ApiQueryExecutionErrorDetail(
@@ -893,7 +947,7 @@ async def _build_stage2_degrade_response(
             skipped_reason=error_code,
             meta={
                 "stage": "stage2",
-                "query_domains": query_domains,
+                "query_domains": response_query_domains,
                 "reasoning": reasoning,
             },
         )
@@ -919,7 +973,7 @@ async def _build_stage2_degrade_response(
     ui_runtime = _finalize_ui_runtime(base_runtime, ui_spec)
     return ApiQueryResponse(
         trace_id=trace_id,
-        query_domains=query_domains,
+        query_domains=response_query_domains,
         execution_status=execution_result.status,
         business_intents=business_intents,
         context_pool=context_pool,
