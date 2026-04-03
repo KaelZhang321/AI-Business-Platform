@@ -107,5 +107,11 @@ export function createClient(baseURL: string, timeout = 15_000): AxiosInstance {
   return client;
 }
 
-export const apiClient = createClient(import.meta.env.VITE_API_BASE_URL || '', 30_000);
-export const businessClient = createClient(import.meta.env.VITE_BUSINESS_API_URL || '', 15_000);
+const getBaseUrl = (envUrl?: string) => {
+  if (envUrl?.trim()) return envUrl.trim();
+  const base = import.meta.env.BASE_URL || '';
+  return base.endsWith('/') ? base.slice(0, -1) : base;
+};
+
+export const apiClient = createClient(getBaseUrl(import.meta.env.VITE_API_BASE_URL), 30_000);
+export const businessClient = createClient(getBaseUrl(import.meta.env.VITE_BUSINESS_API_URL), 15_000);
