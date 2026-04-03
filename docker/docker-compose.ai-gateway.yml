@@ -9,7 +9,7 @@ services:
         BASE_IMAGE: alibaba-cloud-linux-3-registry.cn-hangzhou.cr.aliyuncs.com/alinux3/python:3.11.1
         PIP_INDEX_URL: https://mirrors.aliyun.com/pypi/simple/
     env_file:
-      - path: ./.env
+      - path: ../ai-gateway/.env
         required: false
     environment:
       PYTHONUNBUFFERED: "1"
@@ -19,7 +19,7 @@ services:
     ports:
       - "${AI_GATEWAY_HOST_PORT:-8000}:8000"
     volumes:
-      - ai_gateway_model_cache:/opt/model-cache
+      - /data/ai_platform_infra/chroma:/opt/model-cache/.cache/chroma
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
       interval: 30s
@@ -27,9 +27,6 @@ services:
       retries: 5
       start_period: 45s
     restart: unless-stopped
-
-volumes:
-  ai_gateway_model_cache:
 
 networks:
   default:

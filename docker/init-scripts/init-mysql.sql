@@ -1,19 +1,6 @@
 -- AI业务中台 MySQL 8.0 初始化脚本
 -- 严格按照文档 4.1 节数据模型定义
-
-CREATE DATABASE IF NOT EXISTS ai_platform_business
-    CHARACTER SET utf8mb4
-    COLLATE utf8mb4_unicode_ci;
-
-CREATE DATABASE IF NOT EXISTS ai_platform_gateway
-    CHARACTER SET utf8mb4
-    COLLATE utf8mb4_unicode_ci;
-
-GRANT ALL PRIVILEGES ON ai_platform_business.* TO 'ai_platform'@'%';
-GRANT ALL PRIVILEGES ON ai_platform_gateway.* TO 'ai_platform'@'%';
-FLUSH PRIVILEGES;
-
-USE ai_platform_business;
+-- 该脚本应由初始化链路导入 BUSINESS_MYSQL_DATABASE 对应的业务库。
 
 -- 4.1.1 用户表 (users)
 CREATE TABLE users (

@@ -10,6 +10,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_TRUSTED_HOST=mirrors.aliyun.com \
     VIRTUAL_ENV=/opt/venv \
     PATH="/opt/venv/bin:${PATH}" \
+    HOME=/opt/model-cache \
     HF_HOME=/opt/model-cache/huggingface \
     TRANSFORMERS_CACHE=/opt/model-cache/huggingface \
     XDG_CACHE_HOME=/opt/model-cache
@@ -25,10 +26,10 @@ COPY app ./app
 RUN pip install --no-cache-dir .
 
 # 预下载 BGE Embedding + Reranker 模型到缓存目录
-RUN python -c "\
-from FlagEmbedding import BGEM3FlagModel, FlagReranker; \
-BGEM3FlagModel('BAAI/bge-m3', use_fp16=False); \
-FlagReranker('BAAI/bge-reranker-large', use_fp16=False)"
+#RUN python -c "\
+#from FlagEmbedding import BGEM3FlagModel, FlagReranker; \
+#BGEM3FlagModel('BAAI/bge-m3', use_fp16=False); \
+#FlagReranker('BAAI/bge-reranker-large', use_fp16=False)"
 
 # ── 运行时镜像 ──────────────────────────────────────────
 FROM ${BASE_IMAGE} AS runtime
@@ -37,6 +38,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     VIRTUAL_ENV=/opt/venv \
     PATH="/opt/venv/bin:${PATH}" \
+    HOME=/opt/model-cache \
     HF_HOME=/opt/model-cache/huggingface \
     TRANSFORMERS_CACHE=/opt/model-cache/huggingface \
     XDG_CACHE_HOME=/opt/model-cache
@@ -44,7 +46,6 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 COPY --from=builder /opt/venv /opt/venv
-COPY --from=builder /opt/model-cache /opt/model-cache
 COPY pyproject.toml ./
 COPY app ./app
 
