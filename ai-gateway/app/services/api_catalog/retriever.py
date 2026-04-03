@@ -1,17 +1,14 @@
 """
 API Catalog — 语义检索器
 
-给定用户自然语言查询，在 Milvus `api_catalog` collection 中
-找到最匹配的业务接口列表（Top-K）。
+职责：
+1. 单域语义检索
+2. 多域分层召回（Scatter-Gather）
+3. 统一的标量过滤拼装
 
-使用方式::
-
-    from app.services.api_catalog.retriever import ApiCatalogRetriever
-
-    retriever = ApiCatalogRetriever()
-    results = await retriever.search("查询我名下的所有客户信息", top_k=3)
-    for r in results:
-        print(r.score, r.entry.id, r.entry.path)
+设计动机：
+- 第二阶段已经先拿到了 `query_domains`，这里必须尊重该结果做分层召回
+- 多域并发检索的目标不是“找全世界最像的 5 个接口”，而是“让每个目标域都至少带回自己的核心候选”
 """
 from __future__ import annotations
 
@@ -36,15 +33,37 @@ from app.services.api_catalog.schema import (
 
 logger = logging.getLogger(__name__)
 
+_OUTPUT_FIELDS = [
+    "id",
+    "description",
+    "domain",
+    "env",
+    "status",
+    "tag_name",
+    "method",
+    "path",
+    "auth_required",
+    "ui_hint",
+    "example_queries_json",
+    "tags_json",
+    "business_intents_json",
+    "param_schema_json",
+    "response_data_path",
+    "field_labels_json",
+    "executor_config_json",
+    "security_rules_json",
+    "detail_hint_json",
+    "pagination_hint_json",
+    "template_hint_json",
+]
+
 
 class ApiCatalogRetriever:
-    """从 Milvus api_catalog collection 检索最匹配的业务接口。"""
+    """从 Milvus `api_catalog` collection 检索最匹配的业务接口。"""
 
     def __init__(self) -> None:
         self._embedder: BGEM3FlagModel | None = None
         self._collection: Collection | None = None
-
-    # ── 懒加载 ─────────────────────────────────────────────────
 
     def _get_embedder(self) -> BGEM3FlagModel:
         if self._embedder is None:
@@ -58,93 +77,88 @@ class ApiCatalogRetriever:
             self._collection.load()
         return self._collection
 
-    # ── 公共 API ────────────────────────────────────────────────
-
     async def search(
         self,
         query: str,
         top_k: int = 3,
-        score_threshold: float = 0.3,
+        score_threshold: float | None = None,
         filters: ApiCatalogSearchFilters | dict[str, list[str]] | None = None,
     ) -> list[ApiCatalogSearchResult]:
-        """
-        对用户自然语言查询做语义检索，返回 Top-K 候选接口。
+        """执行一次普通语义检索。"""
+        query_emb = await self._encode_query(query)
+        return await self._search_with_embedding(
+            query=query,
+            query_emb=query_emb,
+            top_k=top_k,
+            score_threshold=score_threshold or settings.api_query_score_threshold,
+            filters=filters,
+        )
+
+    async def search_stratified(
+        self,
+        query: str,
+        *,
+        domains: list[str],
+        top_k: int = 3,
+        per_domain_top_k: int | None = None,
+        score_threshold: float | None = None,
+        filters: ApiCatalogSearchFilters | dict[str, list[str]] | None = None,
+    ) -> list[ApiCatalogSearchResult]:
+        """按业务域并发执行分层召回。
 
         Args:
-            query: 用户输入，如"查询我名下的客户"
-            top_k: 返回候选数量（建议 3，传给 LLM Router 做二次选择）
-            score_threshold: 最低相似度阈值，低于此分数的结果过滤掉
+            query: 用户自然语言请求。
+            domains: 轻量路由阶段识别出的业务域顺序列表。
+            top_k: 单域场景返回的候选数。
+            per_domain_top_k: 多域时每个域保底返回的候选数。
+            score_threshold: 相似度阈值；为空时使用全局默认值。
+            filters: 额外的标量过滤条件，例如 `status=active`。
 
         Returns:
-            List[ApiCatalogSearchResult]: 按相似度降序排列
+            去重后的候选接口列表；多域时按输入 domain 顺序聚合。
+
+        Edge Cases:
+            - 某个 domain 超时不会拖死整条链路，只会局部丢失该域候选
+            - 如果所有 domain 都失败或为空，返回空列表交给 route 层决定是否降级
         """
-        embedder = self._get_embedder()
-        query_emb: list[float] = await asyncio.to_thread(
-            lambda: embedder.encode([query])["dense_vecs"][0].tolist()
-        )
-
-        collection = self._get_collection()
-        output_fields = [
-            "id", "description", "domain", "env", "status", "tag_name",
-            "method", "path", "auth_required", "ui_hint",
-            "example_queries_json", "tags_json", "business_intents_json",
-            "param_schema_json", "response_data_path", "field_labels_json",
-            "executor_config_json", "security_rules_json",
-            "detail_hint_json", "pagination_hint_json", "template_hint_json",
-        ]
-        expr = _build_filter_expr(filters)
-
-        try:
-            search_kwargs = {
-                "data": [query_emb],
-                "anns_field": "embedding",
-                "param": {"metric_type": "IP", "params": {"nprobe": 16}},
-                "limit": top_k + 2,
-                "output_fields": output_fields,
-            }
-            if expr:
-                search_kwargs["expr"] = expr
-            raw_results = collection.search(**search_kwargs)
-        except Exception as exc:
-            logger.warning("Milvus api_catalog search failed: %s", exc)
+        normalized_domains = _dedupe_domains(domains)
+        if not normalized_domains:
             return []
 
-        results: list[ApiCatalogSearchResult] = []
-        for hit in raw_results[0]:
-            score = float(hit.distance)
-            if score < score_threshold:
-                continue
+        threshold = score_threshold or settings.api_query_score_threshold
+        if len(normalized_domains) == 1:
+            merged_filters = _merge_filters(filters, domains=normalized_domains)
+            return await self.search(
+                query,
+                top_k=max(1, top_k),
+                score_threshold=threshold,
+                filters=merged_filters,
+            )
 
-            fields = {f: hit.entity.get(f) for f in output_fields}
-            entry = _build_entry_from_fields(fields)
-            results.append(ApiCatalogSearchResult(entry=entry, score=score))
-
-            if len(results) >= top_k:
-                break
-
-        logger.debug(
-            "API catalog search '%s' → %d results (top score: %.3f)",
-            query[:50],
-            len(results),
-            results[0].score if results else 0.0,
-        )
-        return results
+        query_emb = await self._encode_query(query)
+        each_top_k = max(1, per_domain_top_k or settings.api_query_retrieval_per_domain_top_k)
+        base_filters = _normalize_filters(filters)
+        tasks = [
+            self._search_domain_with_timeout(
+                query=query,
+                query_emb=query_emb,
+                domain=domain,
+                top_k=each_top_k,
+                score_threshold=threshold,
+                base_filters=base_filters,
+            )
+            for domain in normalized_domains
+        ]
+        domain_results = await asyncio.gather(*tasks)
+        return _merge_stratified_results(normalized_domains, domain_results)
 
     async def get_by_id(self, api_id: str) -> ApiCatalogEntry | None:
-        """按 id 直接获取接口记录（用于二次调用确认）。"""
+        """按 id 直接获取接口记录。"""
         collection = self._get_collection()
-        output_fields = [
-            "id", "description", "domain", "env", "status", "tag_name",
-            "method", "path", "auth_required", "ui_hint",
-            "example_queries_json", "tags_json", "business_intents_json",
-            "param_schema_json", "response_data_path", "field_labels_json",
-            "executor_config_json", "security_rules_json",
-            "detail_hint_json", "pagination_hint_json", "template_hint_json",
-        ]
         try:
             results = collection.query(
                 expr=f'id == "{api_id}"',
-                output_fields=output_fields,
+                output_fields=_OUTPUT_FIELDS,
                 limit=1,
             )
         except Exception as exc:
@@ -155,9 +169,89 @@ class ApiCatalogRetriever:
             return None
         return _build_entry_from_fields(results[0])
 
+    async def _encode_query(self, query: str) -> list[float]:
+        """统一管理 query embedding，避免多域召回时重复编码。"""
+        embedder = self._get_embedder()
+        return await asyncio.to_thread(lambda: embedder.encode([query])["dense_vecs"][0].tolist())
+
+    async def _search_domain_with_timeout(
+        self,
+        *,
+        query: str,
+        query_emb: list[float],
+        domain: str,
+        top_k: int,
+        score_threshold: float,
+        base_filters: ApiCatalogSearchFilters,
+    ) -> list[ApiCatalogSearchResult]:
+        """为单个 domain 包一层硬超时，防止最慢域拖垮整体体验。"""
+        filters = _merge_filters(base_filters, domains=[domain])
+        try:
+            return await asyncio.wait_for(
+                self._search_with_embedding(
+                    query=query,
+                    query_emb=query_emb,
+                    top_k=top_k,
+                    score_threshold=score_threshold,
+                    filters=filters,
+                ),
+                timeout=settings.api_query_retrieval_timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("API catalog stratified search timed out for domain=%s", domain)
+            return []
+
+    async def _search_with_embedding(
+        self,
+        *,
+        query: str,
+        query_emb: list[float],
+        top_k: int,
+        score_threshold: float,
+        filters: ApiCatalogSearchFilters | dict[str, list[str]] | None,
+    ) -> list[ApiCatalogSearchResult]:
+        """用已生成好的 embedding 执行一次实际 Milvus 查询。"""
+        collection = self._get_collection()
+        expr = _build_filter_expr(filters)
+
+        try:
+            search_kwargs = {
+                "data": [query_emb],
+                "anns_field": "embedding",
+                "param": {"metric_type": "IP", "params": {"nprobe": 16}},
+                "limit": top_k + 2,
+                "output_fields": _OUTPUT_FIELDS,
+            }
+            if expr:
+                search_kwargs["expr"] = expr
+            raw_results = await asyncio.to_thread(collection.search, **search_kwargs)
+        except Exception as exc:
+            logger.warning("Milvus api_catalog search failed: %s", exc)
+            return []
+
+        results: list[ApiCatalogSearchResult] = []
+        for hit in raw_results[0]:
+            score = float(hit.distance)
+            if score < score_threshold:
+                continue
+
+            fields = {field: hit.entity.get(field) for field in _OUTPUT_FIELDS}
+            results.append(ApiCatalogSearchResult(entry=_build_entry_from_fields(fields), score=score))
+            if len(results) >= top_k:
+                break
+
+        logger.debug(
+            "API catalog search '%s' -> %d results (expr=%s, top score=%.3f)",
+            query[:50],
+            len(results),
+            expr,
+            results[0].score if results else 0.0,
+        )
+        return results
+
 
 def _build_entry_from_fields(fields: dict) -> ApiCatalogEntry:
-    """从 Milvus 返回的原始字段构建 ApiCatalogEntry。"""
+    """从 Milvus 返回字段构建 ApiCatalogEntry。"""
     return ApiCatalogEntry(
         id=fields.get("id", ""),
         description=fields.get("description", ""),
@@ -192,19 +286,42 @@ def _safe_json_loads(value: str | None, default):
         return default
 
 
-def _build_filter_expr(filters: ApiCatalogSearchFilters | dict[str, list[str]] | None) -> str | None:
+def _normalize_filters(
+    filters: ApiCatalogSearchFilters | dict[str, list[str]] | None,
+) -> ApiCatalogSearchFilters:
+    """把 dict / model 两种过滤入参统一成模型对象。"""
     if filters is None:
-        return None
-    if isinstance(filters, dict):
-        normalized = ApiCatalogSearchFilters(
-            domains=list(filters.get("domains", [])),
-            envs=list(filters.get("envs", [])),
-            statuses=list(filters.get("statuses", [])),
-            tag_names=list(filters.get("tag_names", [])),
-        )
-    else:
-        normalized = filters
+        return ApiCatalogSearchFilters()
+    if isinstance(filters, ApiCatalogSearchFilters):
+        return filters
+    return ApiCatalogSearchFilters(
+        domains=list(filters.get("domains", [])),
+        envs=list(filters.get("envs", [])),
+        statuses=list(filters.get("statuses", [])),
+        tag_names=list(filters.get("tag_names", [])),
+    )
 
+
+def _merge_filters(
+    filters: ApiCatalogSearchFilters | dict[str, list[str]] | None,
+    *,
+    domains: list[str] | None = None,
+    envs: list[str] | None = None,
+    statuses: list[str] | None = None,
+    tag_names: list[str] | None = None,
+) -> ApiCatalogSearchFilters:
+    """合并基础过滤条件与本次检索特有的标量过滤。"""
+    normalized = _normalize_filters(filters)
+    return ApiCatalogSearchFilters(
+        domains=list(domains) if domains is not None else list(normalized.domains),
+        envs=list(envs) if envs is not None else list(normalized.envs),
+        statuses=list(statuses) if statuses is not None else list(normalized.statuses),
+        tag_names=list(tag_names) if tag_names is not None else list(normalized.tag_names),
+    )
+
+
+def _build_filter_expr(filters: ApiCatalogSearchFilters | dict[str, list[str]] | None) -> str | None:
+    normalized = _normalize_filters(filters)
     expressions: list[str] = []
     expressions.extend(_build_in_expr("domain", normalized.domains))
     expressions.extend(_build_in_expr("env", normalized.envs))
@@ -219,3 +336,37 @@ def _build_in_expr(field: str, values: list[str]) -> list[str]:
         return []
     quoted = ", ".join(f'"{value}"' for value in filtered)
     return [f"{field} in [{quoted}]"]
+
+
+def _dedupe_domains(domains: list[str]) -> list[str]:
+    """保留路由顺序，并过滤掉 `unknown` 这类不可检索值。"""
+    normalized: list[str] = []
+    for domain in domains:
+        value = (domain or "").strip()
+        if not value or value == "unknown":
+            continue
+        if value not in normalized:
+            normalized.append(value)
+    return normalized
+
+
+def _merge_stratified_results(
+    domains: list[str],
+    domain_results: list[list[ApiCatalogSearchResult]],
+) -> list[ApiCatalogSearchResult]:
+    """按 domain 顺序聚合召回结果，并对重复接口去重。"""
+    merged: list[ApiCatalogSearchResult] = []
+    seen_api_ids: set[str] = set()
+
+    for domain, results in zip(domains, domain_results, strict=False):
+        sorted_results = sorted(results, key=lambda item: item.score, reverse=True)
+        for result in sorted_results:
+            if result.entry.id in seen_api_ids:
+                continue
+            seen_api_ids.add(result.entry.id)
+            merged.append(result)
+
+        if not results:
+            logger.debug("API catalog stratified search returned no results for domain=%s", domain)
+
+    return merged

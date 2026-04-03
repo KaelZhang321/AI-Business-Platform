@@ -135,15 +135,10 @@ _TEMPLATE_SCENARIOS = [
 ]
 _RUNTIME_ACTION_CODES = {item["code"] for item in _UI_ACTION_DEFINITIONS}
 _ALLOWED_BUSINESS_INTENTS: dict[str, dict[str, str]] = {
-    "query_business_data": {
-        "name": "查询业务数据",
+    "none": {
+        "name": "纯查询",
         "category": "read",
-        "description": "仅允许读操作进入 api_query 执行链路。",
-    },
-    "query_detail_data": {
-        "name": "查询详情数据",
-        "category": "read",
-        "description": "读取单条业务详情，用于详情页或明细卡片。",
+        "description": "当前请求仅包含读取诉求，不携带写前确认意图。",
     },
     "prepare_record_update": {
         "name": "准备修改业务数据",
@@ -156,6 +151,8 @@ _ALLOWED_BUSINESS_INTENTS: dict[str, dict[str, str]] = {
         "description": "命中高风险写意图时，需要生成 UI 快照凭证。",
     },
 }
+_ROUTE_ALLOWED_BUSINESS_INTENT_CODES = set(_ALLOWED_BUSINESS_INTENTS)
+_LEGACY_READ_BUSINESS_INTENT_CODES = {"none", "query_business_data", "query_detail_data"}
 
 
 def _get_services() -> tuple[ApiCatalogRetriever, ApiParamExtractor, ApiExecutor, DynamicUIService, UISnapshotService]:
@@ -188,51 +185,117 @@ async def api_query(
     用户自然语言输入 → 语义匹配业务接口 → 调用接口 → 返回 json-render UI Spec。
 
     流程：
-    1. Milvus 语义检索候选接口（Top-K）
-    2. LLM 路由选择最优接口 + 提取参数（一次调用）
-    3. 透传 Token 调用 business-server
-    4. 响应规范化 → DynamicUIService → UI Spec
+    1. 轻量路由先提取 `query_domains + business_intents`
+    2. 按业务域执行分层召回，避免全域 Top-K 偏科
+    3. 在候选集内完成最终接口选择 + 参数提取
+    4. 透传 Token 调用 business-server
+    5. 响应规范化 → DynamicUIService → UI Spec
     """
     retriever, extractor, executor, dynamic_ui, snapshot_service = _get_services()
     trace_id = _resolve_trace_id(request)
+    user_context = _extract_user_context(request)
 
     # 用户 token（透传给 business-server）
     user_token = f"Bearer {credentials.credentials}" if credentials else None
 
-    # Step 1: 语义检索
-    candidates = await retriever.search(
+    # Step 1: 轻量路由先产出 query_domains + business_intents，避免后续直接做全域 Top-K。
+    route_hint = await extractor.route_query(
         request_body.query,
+        user_context,
+        allowed_business_intents=_ROUTE_ALLOWED_BUSINESS_INTENT_CODES,
+    )
+    if route_hint.route_status != "ok":
+        logger.info(
+            "api_query[%s] stage2 route degraded code=%s query=%s",
+            trace_id,
+            route_hint.route_error_code,
+            request_body.query[:100],
+        )
+        return await _build_stage2_degrade_response(
+            dynamic_ui,
+            trace_id=trace_id,
+            query=request_body.query,
+            title="未识别到可用业务域",
+            message="抱歉，我没有完全理解您的意图，或系统中暂未开放相关查询能力，请尝试换种说法。",
+            error_code=route_hint.route_error_code or "routing_failed",
+            query_domains=route_hint.query_domains,
+            business_intent_codes=route_hint.business_intents,
+            reasoning=route_hint.reasoning,
+        )
+
+    # Step 2: 按 query_domains 做分层召回，避免多域场景被单一 domain 吞掉 Top-K。
+    candidates = await retriever.search_stratified(
+        request_body.query,
+        domains=route_hint.query_domains,
         top_k=request_body.top_k,
         filters=ApiCatalogSearchFilters(statuses=["active"]),
     )
     if not candidates:
-        logger.info("api_query[%s] no candidates for query=%s", trace_id, request_body.query[:100])
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"[{trace_id}] 未找到匹配的业务接口，请换一种表达方式重试",
+        logger.info(
+            "api_query[%s] no candidates after stratified retrieval domains=%s query=%s",
+            trace_id,
+            route_hint.query_domains,
+            request_body.query[:100],
+        )
+        return await _build_stage2_degrade_response(
+            dynamic_ui,
+            trace_id=trace_id,
+            query=request_body.query,
+            title="未找到匹配接口",
+            message="当前问题没有召回到可执行的查询接口，请调整表达方式后重试。",
+            error_code="no_catalog_match",
+            query_domains=route_hint.query_domains,
+            business_intent_codes=route_hint.business_intents,
+            reasoning=route_hint.reasoning,
         )
 
-    # Step 2: LLM 路由 + 参数提取
-    user_context = _extract_user_context(request)
+    # Step 3: 在候选集中完成最终接口选择与参数提取。
     routing_result = await extractor.extract_routing_result(
         request_body.query,
         candidates,
         user_context,
-        allowed_business_intents=set(_ALLOWED_BUSINESS_INTENTS),
+        allowed_business_intents=_ROUTE_ALLOWED_BUSINESS_INTENT_CODES,
+        routing_hints=route_hint,
     )
+    if routing_result.route_status != "ok":
+        logger.info(
+            "api_query[%s] route-and-extract degraded code=%s query=%s",
+            trace_id,
+            routing_result.route_error_code,
+            request_body.query[:100],
+        )
+        return await _build_stage2_degrade_response(
+            dynamic_ui,
+            trace_id=trace_id,
+            query=request_body.query,
+            title="无法确定查询接口",
+            message="我找到了相关业务域，但还无法稳定确定具体接口，请补充更明确的查询条件后重试。",
+            error_code=routing_result.route_error_code or "route_and_extract_failed",
+            query_domains=routing_result.query_domains or route_hint.query_domains,
+            business_intent_codes=routing_result.business_intents or route_hint.business_intents,
+            reasoning=routing_result.reasoning or route_hint.reasoning,
+        )
+
     selected_entry = _find_selected_entry(candidates, routing_result)
     if selected_entry is None:
         logger.info("api_query[%s] extractor could not choose endpoint", trace_id)
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=f"[{trace_id}] 无法从输入中确定要查询的接口，请描述得更具体",
+        return await _build_stage2_degrade_response(
+            dynamic_ui,
+            trace_id=trace_id,
+            query=request_body.query,
+            title="无法确定查询接口",
+            message="当前输入关联了多个候选接口，但仍缺少足够信息来确定最终查询目标。",
+            error_code="selected_api_unresolved",
+            query_domains=routing_result.query_domains or route_hint.query_domains,
+            business_intent_codes=routing_result.business_intents or route_hint.business_intents,
+            reasoning=routing_result.reasoning or route_hint.reasoning,
         )
 
     _ensure_read_only_entry(selected_entry, trace_id)
     params = dict(routing_result.params)
-    query_domains = routing_result.query_domains or [selected_entry.domain]
+    query_domains = routing_result.query_domains or route_hint.query_domains or [selected_entry.domain]
     business_intents = _build_business_intents(
-        routing_result.business_intents or selected_entry.business_intents
+        routing_result.business_intents or route_hint.business_intents
     )
 
     # Step 3: 调用 business-server
@@ -388,9 +451,7 @@ def _ensure_read_only_entry(entry: ApiCatalogEntry, trace_id: str) -> None:
 
 
 def _build_business_intents(intent_codes: list[str]) -> list[ApiQueryBusinessIntent]:
-    codes = [code for code in intent_codes if code in _ALLOWED_BUSINESS_INTENTS]
-    if not codes:
-        codes = ["query_business_data"]
+    codes = _normalize_business_intent_codes(intent_codes)
     return [
         ApiQueryBusinessIntent(
             code=code,
@@ -400,6 +461,21 @@ def _build_business_intents(intent_codes: list[str]) -> list[ApiQueryBusinessInt
         )
         for code in dict.fromkeys(codes)
     ]
+
+
+def _normalize_business_intent_codes(intent_codes: list[str]) -> list[str]:
+    """把历史读意图与空结果统一折叠成 `none`。
+
+    功能：
+        文档层已经把第二阶段语义收敛为“写意图 or none”，这里负责兼容旧 catalog
+        中残留的 `query_business_data` / `query_detail_data` 等只读编码。
+    """
+    write_codes = [
+        code
+        for code in intent_codes
+        if code in _ALLOWED_BUSINESS_INTENTS and code not in _LEGACY_READ_BUSINESS_INTENT_CODES
+    ]
+    return list(dict.fromkeys(write_codes)) or ["none"]
 
 
 def _build_runtime_actions(action_codes: set[str] | None = None) -> list[ApiQueryUIAction]:
@@ -570,13 +646,10 @@ def _find_selected_entry(
     candidates: list[Any],
     routing_result: ApiQueryRoutingResult,
 ) -> ApiCatalogEntry | None:
-    selected = next(
+    return next(
         (candidate.entry for candidate in candidates if candidate.entry.id == routing_result.selected_api_id),
         None,
     )
-    if selected is not None:
-        return selected
-    return candidates[0].entry if candidates else None
 
 
 def _normalize_rows(data: list[dict[str, Any]] | dict[str, Any] | None) -> list[dict[str, Any]]:
@@ -751,6 +824,91 @@ def _build_skip_message(execution_result: ApiQueryExecutionResult) -> str:
     if execution_result.error:
         return execution_result.error
     return "由于缺少必要条件，当前查询未被执行。"
+
+
+async def _build_stage2_degrade_response(
+    dynamic_ui: DynamicUIService,
+    *,
+    trace_id: str,
+    query: str,
+    title: str,
+    message: str,
+    error_code: str,
+    query_domains: list[str],
+    business_intent_codes: list[str],
+    reasoning: str | None = None,
+) -> ApiQueryResponse:
+    """把第二阶段失败统一折叠为可渲染的安全 Notice。
+
+    功能：
+        路由失败、无候选、候选内无法定点等场景都属于“未进入真实执行”的安全失败，
+        不应该再抛裸 HTTP 错，而应返回一份冻结的只读 UI envelope 给前端。
+    """
+    execution_result = ApiQueryExecutionResult(
+        status=ApiQueryExecutionStatus.SKIPPED,
+        data=[],
+        total=0,
+        error=message,
+        error_code=error_code,
+        retryable=True,
+        trace_id=trace_id,
+        skipped_reason=error_code,
+        meta={"stage": "stage2", "query": query, "reasoning": reasoning},
+    )
+    business_intents = _build_business_intents(business_intent_codes)
+    context_pool = {
+        "stage2_routing": ApiQueryContextStepResult(
+            status=ApiQueryExecutionStatus.SKIPPED,
+            domain=query_domains[0] if len(query_domains) == 1 else None,
+            data=[],
+            total=0,
+            error=ApiQueryExecutionErrorDetail(
+                code=error_code,
+                message=message,
+                retryable=True,
+            ),
+            skipped_reason=error_code,
+            meta={
+                "stage": "stage2",
+                "query_domains": query_domains,
+                "reasoning": reasoning,
+            },
+        )
+    }
+    base_runtime = ApiQueryUIRuntime(
+        components=["Card", "Notice"],
+        ui_actions=_build_runtime_actions({"refresh"}),
+    )
+    ui_spec = await dynamic_ui.generate_ui_spec(
+        intent="query",
+        data=[],
+        context={
+            "title": title,
+            "user_query": query,
+            "skip_message": message,
+            "error": message,
+            "context_pool": {
+                step_id: step.model_dump(exclude_none=True)
+                for step_id, step in context_pool.items()
+            },
+            "business_intents": [intent.model_dump() for intent in business_intents],
+        },
+        status=execution_result.status,
+        runtime=base_runtime,
+    )
+    ui_runtime = _finalize_ui_runtime(base_runtime, ui_spec)
+    return ApiQueryResponse(
+        trace_id=trace_id,
+        query_domains=query_domains,
+        execution_status=execution_result.status,
+        business_intents=business_intents,
+        context_pool=context_pool,
+        ui_runtime=ui_runtime,
+        ui_spec=ui_spec,
+        data_count=0,
+        total=0,
+        error=message,
+    )
 
 
 def _maybe_attach_snapshot(

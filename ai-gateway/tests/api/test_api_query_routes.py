@@ -25,12 +25,35 @@ class StubRetriever:
     async def search(self, query: str, top_k: int = 3, score_threshold: float = 0.3, filters=None):
         return [ApiCatalogSearchResult(entry=self._entry, score=0.91)]
 
+    async def search_stratified(self, query: str, *, domains, top_k: int = 3, filters=None, **kwargs):
+        return await self.search(query, top_k=top_k, filters=filters)
+
 
 class StubExtractor:
-    def __init__(self, entry: ApiCatalogEntry, params: dict[str, object], *, business_intents: list[str] | None = None) -> None:
+    def __init__(
+        self,
+        entry: ApiCatalogEntry,
+        params: dict[str, object],
+        *,
+        business_intents: list[str] | None = None,
+        route_status: str = "ok",
+        route_error_code: str | None = None,
+    ) -> None:
         self._entry = entry
         self._params = params
-        self._business_intents = business_intents or ["query_business_data"]
+        self._business_intents = business_intents or ["none"]
+        self._route_status = route_status
+        self._route_error_code = route_error_code
+
+    async def route_query(self, query: str, user_context: dict[str, object], **kwargs):
+        return ApiQueryRoutingResult(
+            query_domains=[self._entry.domain] if self._route_status == "ok" else [],
+            business_intents=list(self._business_intents),
+            is_multi_domain=False,
+            reasoning="stub route",
+            route_status=self._route_status,
+            route_error_code=self._route_error_code,
+        )
 
     async def extract_routing_result(self, query: str, candidates, user_context: dict[str, object], **kwargs):
         return ApiQueryRoutingResult(
@@ -69,6 +92,13 @@ class StubDynamicUI:
                 "type": "Card",
                 "props": {"title": "暂无数据", "actions": [{"type": "refresh", "label": "重试"}]},
                 "children": [{"type": "Notice", "props": {"level": "info", "message": context["empty_message"]}}],
+            }
+
+        if status == ApiQueryExecutionStatus.SKIPPED:
+            return {
+                "type": "Card",
+                "props": {"title": context["title"], "actions": [{"type": "refresh", "label": "重试"}]},
+                "children": [{"type": "Notice", "props": {"level": "info", "message": context["skip_message"]}}],
             }
 
         return {
@@ -184,10 +214,10 @@ def test_api_query_returns_runtime_contract(monkeypatch) -> None:
     assert body["api_id"] == "customer_list"
     assert body["business_intents"] == [
         {
-            "code": "query_business_data",
-            "name": "查询业务数据",
+            "code": "none",
+            "name": "纯查询",
             "category": "read",
-            "description": "仅允许读操作进入 api_query 执行链路。",
+            "description": "当前请求仅包含读取诉求，不携带写前确认意图。",
         }
     ]
     assert body["context_pool"]["step_customer_list"]["status"] == "SUCCESS"
@@ -261,6 +291,40 @@ def test_api_query_attaches_snapshot_for_high_risk_write_intent(monkeypatch) -> 
     assert body["ui_runtime"]["audit"]["snapshot_required"] is True
     assert body["ui_runtime"]["audit"]["snapshot_id"] == "snap_test_001"
     assert body["ui_runtime"]["audit"]["risk_level"] == "high"
+
+
+def test_api_query_soft_degrades_when_route_query_fails(monkeypatch) -> None:
+    entry = _make_entry()
+    stub_services = (
+        StubRetriever(entry),
+        StubExtractor(
+            entry,
+            {"customerId": "C001"},
+            route_status="fallback",
+            route_error_code="routing_parse_failed",
+        ),
+        StubExecutor(
+            ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.SUCCESS,
+                data=[{"customerId": "C001", "customerName": "张三"}],
+                total=1,
+            )
+        ),
+        StubDynamicUI(),
+        StubSnapshotService(),
+    )
+    monkeypatch.setattr(api_query_routes, "_get_services", lambda: stub_services)
+
+    client = TestClient(create_test_app())
+    response = client.post("/api/v1/api-query", json={"query": "帮我处理那个事情"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["execution_status"] == "SKIPPED"
+    assert body["context_pool"]["stage2_routing"]["status"] == "SKIPPED"
+    assert body["context_pool"]["stage2_routing"]["error"]["code"] == "routing_parse_failed"
+    assert body["business_intents"][0]["code"] == "none"
+    assert body["ui_spec"]["props"]["title"] == "未识别到可用业务域"
 
 
 def test_runtime_metadata_endpoint_returns_contract() -> None:

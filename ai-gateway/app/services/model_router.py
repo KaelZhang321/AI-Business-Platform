@@ -72,10 +72,41 @@ class ModelRouter:
     def _enabled_backends(self) -> list[ModelBackend]:
         return [b for b in self._backends if b.enabled]
 
-    async def chat(self, messages: list[dict], temperature: float = 0.7) -> str:
+    async def chat(
+        self,
+        messages: list[dict],
+        temperature: float = 0.7,
+        *,
+        response_format: dict | None = None,
+        timeout_seconds: float | None = None,
+    ) -> str:
+        """统一的非流式对话入口。
+
+        功能：
+            为上层屏蔽具体模型后端差异，并允许在少数关键链路附加
+            JSON Mode 与更激进的超时控制，避免把“路由失败”拖成整条请求超时。
+
+        Args:
+            messages: OpenAI-compatible messages 数组。
+            temperature: 推理温度。
+            response_format: 可选的结构化输出约束，例如 `{"type": "json_object"}`。
+            timeout_seconds: 单次请求超时时间；为空时沿用底层客户端默认值。
+
+        Returns:
+            模型最终返回的文本内容。
+
+        Edge Cases:
+            某些兼容后端可能不支持 `response_format`，此时调用方应结合 fallback 逻辑重试。
+        """
         for backend in self._enabled_backends():
             try:
-                return await self._call_chat(backend, messages, temperature)
+                return await self._call_chat(
+                    backend,
+                    messages,
+                    temperature,
+                    response_format=response_format,
+                    timeout_seconds=timeout_seconds,
+                )
             except Exception as exc:
                 logger.warning("Backend '%s' failed: %s, trying next...", backend.name, exc)
         raise RuntimeError("所有模型后端均不可用")
@@ -92,7 +123,15 @@ class ModelRouter:
                 last_error = exc
         raise RuntimeError(f"所有模型后端均不可用: {last_error}")
 
-    async def _call_chat(self, backend: ModelBackend, messages: list[dict], temperature: float) -> str:
+    async def _call_chat(
+        self,
+        backend: ModelBackend,
+        messages: list[dict],
+        temperature: float,
+        *,
+        response_format: dict | None = None,
+        timeout_seconds: float | None = None,
+    ) -> str:
         client = backend.client()
         headers = self._build_headers(backend)
         payload = {
@@ -101,11 +140,18 @@ class ModelRouter:
             "stream": False,
             "temperature": temperature,
         }
+        if response_format:
+            payload["response_format"] = response_format
         if backend.type == "ollama":
             payload["options"] = {"temperature": temperature}
             del payload["temperature"]
 
-        resp = await client.post("/v1/chat/completions", json=payload, headers=headers)
+        resp = await client.post(
+            "/v1/chat/completions",
+            json=payload,
+            headers=headers,
+            timeout=timeout_seconds,
+        )
         resp.raise_for_status()
         data = resp.json()
         return data.get("choices", [{}])[0].get("message", {}).get("content", "")

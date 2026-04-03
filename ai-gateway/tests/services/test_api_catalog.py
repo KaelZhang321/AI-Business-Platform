@@ -10,13 +10,15 @@ Tests cover:
 """
 from __future__ import annotations
 
+import asyncio
+
 from app.services.api_catalog.executor import (
     _apply_field_labels,
     _extract_data,
 )
 from app.services.api_catalog.param_extractor import _coerce_type, _parse_json, _validate_params
-from app.services.api_catalog.retriever import _build_filter_expr
-from app.services.api_catalog.schema import ApiCatalogEntry, ApiCatalogSearchFilters, ParamSchema
+from app.services.api_catalog.retriever import ApiCatalogRetriever, _build_filter_expr
+from app.services.api_catalog.schema import ApiCatalogEntry, ApiCatalogSearchFilters, ApiCatalogSearchResult, ParamSchema
 
 
 # ── schema tests ─────────────────────────────────────────────────────────────
@@ -201,3 +203,37 @@ class TestRetrieverFilters:
     def test_build_filter_expr_from_dict(self):
         expr = _build_filter_expr({"domains": ["report"], "statuses": ["active"]})
         assert expr == 'domain in ["report"] and status in ["active"]'
+
+    def test_search_stratified_keeps_each_domain_candidates(self, monkeypatch):
+        retriever = ApiCatalogRetriever()
+
+        async def fake_encode_query(query: str):
+            return [0.1, 0.2]
+
+        async def fake_search_domain_with_timeout(**kwargs):
+            domain = kwargs["domain"]
+            return [
+                ApiCatalogSearchResult(
+                    entry=ApiCatalogEntry(
+                        id=f"{domain}_list",
+                        description=f"{domain} list",
+                        domain=domain,
+                        path=f"/api/{domain}/list",
+                    ),
+                    score=0.91,
+                )
+            ]
+
+        monkeypatch.setattr(retriever, "_encode_query", fake_encode_query)
+        monkeypatch.setattr(retriever, "_search_domain_with_timeout", fake_search_domain_with_timeout)
+
+        results = asyncio.run(
+            retriever.search_stratified(
+                "对比客户和订单",
+                domains=["crm", "erp"],
+                top_k=3,
+                filters=ApiCatalogSearchFilters(statuses=["active"]),
+            )
+        )
+
+        assert [result.entry.domain for result in results] == ["crm", "erp"]

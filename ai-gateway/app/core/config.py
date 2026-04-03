@@ -81,6 +81,13 @@ class Settings(BaseSettings):
     # 动态UI
     llm_ui_spec_enabled: bool = False
 
+    # API Query Stage-2
+    api_query_route_timeout_seconds: float = 8.0
+    api_query_route_retry_count: int = 1
+    api_query_retrieval_timeout_seconds: float = 0.8
+    api_query_retrieval_per_domain_top_k: int = 2
+    api_query_score_threshold: float = 0.3
+
     # Intent classification
     intent_confidence_threshold: float = Field(0.55, ge=0.0, le=1.0)
 

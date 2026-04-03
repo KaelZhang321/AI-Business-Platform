@@ -116,6 +116,10 @@ class ApiQueryRoutingResult(BaseModel):
     selected_api_id: str | None = Field(None, description="路由命中的接口 ID")
     query_domains: list[str] = Field(default_factory=list, description="本次查询命中的业务域")
     business_intents: list[str] = Field(default_factory=list, description="路由阶段识别出的业务意图编码")
+    is_multi_domain: bool = Field(False, description="是否命中多个业务域")
+    reasoning: str | None = Field(None, description="路由阶段的简要判定说明")
+    route_status: Literal["ok", "fallback"] = Field("ok", description="轻量路由是否正常完成")
+    route_error_code: str | None = Field(None, description="路由失败时的结构化错误码")
     params: dict[str, Any] = Field(default_factory=dict, description="提取后的接口参数")
 
 
