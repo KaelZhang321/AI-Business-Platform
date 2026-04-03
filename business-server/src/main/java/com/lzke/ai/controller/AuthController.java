@@ -2,8 +2,8 @@ package com.lzke.ai.controller;
 
 import java.time.Duration;
 import java.util.Map;
-import java.util.Set;
 
+import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.HttpStatus;
@@ -17,14 +17,14 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.lecz.iam.system.employee.dto.SysOauthCodeTokenDTO;
 import com.lecz.iam.system.employee.dto.SysTokenRefreshDTO;
 import com.lecz.iam.system.employee.service.ISysEmployeeHttpService;
 import com.lecz.iam.system.employee.service.ISysLoginHttpService;
 import com.lecz.iam.system.employee.vo.SysEmployeeVO;
 import com.lecz.iam.system.employee.vo.SysLoginResultVO;
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.lecz.service.tools.core.dto.ResponseDto;
 import com.lecz.service.tools.core.utils.AuthUtil;
 import com.lzke.ai.application.dto.LoginRequest;
@@ -32,7 +32,6 @@ import com.lzke.ai.application.dto.LoginResponse;
 import com.lzke.ai.application.dto.UserPermission;
 import com.lzke.ai.exception.BusinessException;
 import com.lzke.ai.exception.ErrorCode;
-import com.lzke.ai.interfaces.dto.ApiResponse;
 import com.lzke.ai.security.JwtProperties;
 import com.lzke.ai.security.JwtTokenProvider;
 import com.lzke.ai.security.UserPrincipal;
@@ -83,7 +82,8 @@ public class AuthController {
     	log.info("获取登陆的token result: {}", result);
     	if(result.isSuccess()) {
     		SysLoginResultVO sysLoginResultVO = result.getData();
-    		 clearUserInfoCache(sysLoginResultVO.getAccountId());
+    		clearUserInfoCache(sysLoginResultVO.getAccountId());
+    		getSysEmployeeVO(sysLoginResultVO.getAccountId()+"");
         	return new LoginResponse(sysLoginResultVO.getAccessToken(), sysLoginResultVO.getRefreshToken(), Long.parseLong(sysLoginResultVO.getAccessTokenExpiresIn()), null);
     	} else {
     		throw new BusinessException(ErrorCode.TOKEN_INVALID, result.getMessage());                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   
@@ -144,14 +144,30 @@ public class AuthController {
     @GetMapping("/info")
     public ResponseDto<SysEmployeeVO> info() {
     	Long userId = AuthUtil.getUserId();
-        ResponseDto<SysEmployeeVO> response = sysEmployeeHttpService.getById(userId);
-        if (response != null && response.isSuccess() && response.getData() != null) {
-            cacheUserInfo(userId, response.getData());
-        }
-    	return response;
+    	return ResponseDto.success(getSysEmployeeVO(userId+""));
+    }
+    
+    SysEmployeeVO getSysEmployeeVO(String userId) {
+    	String employeeStr = stringRedisTemplate.opsForValue().get(USER_INFO_CACHE_PREFIX + userId);
+    	if(StringUtils.isNotBlank(employeeStr)) {
+			try {
+				return objectMapper.readValue(employeeStr, SysEmployeeVO.class);
+			} catch (JsonProcessingException e) {
+				log.warn("用户信息从 Redis 反序列化失败, userId={}", userId, e);
+				return null;
+			}
+		} else {
+			ResponseDto<SysEmployeeVO> response = sysEmployeeHttpService.getById(Long.parseLong(userId));
+            if (response != null && response.isSuccess() && response.getData() != null) {
+                cacheUserInfo(userId, response.getData());
+                return response.getData();
+            }
+    		
+    	}
+    	return null;
     }
 
-    private void cacheUserInfo(Long userId, SysEmployeeVO employee) {
+    private void cacheUserInfo(String userId, SysEmployeeVO employee) {
         try {
             stringRedisTemplate.opsForValue().set(
                     USER_INFO_CACHE_PREFIX + userId,
