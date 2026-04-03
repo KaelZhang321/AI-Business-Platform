@@ -13,10 +13,8 @@ from __future__ import annotations
 import pytest
 
 from app.services.api_catalog.executor import (
-    ApiCallError,
     _apply_field_labels,
     _extract_data,
-    _safe_json,
 )
 from app.services.api_catalog.param_extractor import _coerce_type, _parse_json, _validate_params
 from app.services.api_catalog.retriever import _build_filter_expr
