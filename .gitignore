@@ -47,7 +47,6 @@ Thumbs.db
 docker/.env
 
 # === Environment ===
-.env
 .env.local
 .env.*.local
 

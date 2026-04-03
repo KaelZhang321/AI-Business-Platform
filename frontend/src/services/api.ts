@@ -111,9 +111,11 @@ export function createClient(baseURL: string, timeout = 15_000): AxiosInstance {
   return client;
 }
 
-// 开发模式下使用空字符串，让请求走 Vite 代理；生产模式下使用环境变量中的绝对地址。
-const resolveBase = (envKey: string) =>
-  import.meta.env.DEV ? '' : (import.meta.env[envKey]?.trim() || '');
+const getBaseUrl = (envUrl?: string) => {
+  if (envUrl?.trim()) return envUrl.trim();
+  const base = import.meta.env.BASE_URL || '';
+  return base.endsWith('/') ? base.slice(0, -1) : base;
+};
 
-export const apiClient = createClient(resolveBase('VITE_API_BASE_URL'), 30_000);
-export const businessClient = createClient(resolveBase('VITE_BUSINESS_API_URL') || resolveBase('VITE_API_BASE_URL'), 15_000);
+export const apiClient = createClient(getBaseUrl(import.meta.env.VITE_API_BASE_URL), 30_000);
+export const businessClient = createClient(getBaseUrl(import.meta.env.VITE_BUSINESS_API_URL), 15_000);

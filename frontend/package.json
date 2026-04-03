@@ -10,7 +10,8 @@
     "build:pro": "vite build",
     "preview": "vite preview",
     "clean": "rm -rf dist",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "deploy": "bash ../.agent/skills/frontend-deploy/scripts/deploy.sh frontend"
   },
   "dependencies": {
     "@ant-design/icons": "^6.1.1",
