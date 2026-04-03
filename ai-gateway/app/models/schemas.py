@@ -94,6 +94,29 @@ class ApiQueryBusinessIntent(BaseModel):
     description: str | None = Field(None, description="业务意图说明")
 
 
+class ApiQueryExecutionStatus(str, Enum):
+    SUCCESS = "SUCCESS"
+    EMPTY = "EMPTY"
+    ERROR = "ERROR"
+    SKIPPED = "SKIPPED"
+
+
+class ApiQueryRoutingResult(BaseModel):
+    selected_api_id: str | None = Field(None, description="路由命中的接口 ID")
+    query_domains: list[str] = Field(default_factory=list, description="本次查询命中的业务域")
+    business_intents: list[str] = Field(default_factory=list, description="路由阶段识别出的业务意图编码")
+    params: dict[str, Any] = Field(default_factory=dict, description="提取后的接口参数")
+
+
+class ApiQueryExecutionResult(BaseModel):
+    status: ApiQueryExecutionStatus = Field(..., description="执行结果状态")
+    data: list[dict[str, Any]] | dict[str, Any] | None = Field(None, description="接口执行后的原始数据")
+    total: int = Field(0, ge=0, description="总记录数")
+    error: str | None = Field(None, description="错误信息")
+    trace_id: str | None = Field(None, description="执行链路 Trace ID")
+    skipped_reason: str | None = Field(None, description="跳过执行时的原因")
+
+
 class ApiQueryUIAction(BaseModel):
     code: str = Field(..., description="前端动作编码")
     description: str = Field(..., description="前端动作说明")
@@ -103,24 +126,40 @@ class ApiQueryUIAction(BaseModel):
 
 class ApiQueryDetailRuntime(BaseModel):
     enabled: bool = Field(False, description="是否具备详情运行时信息")
+    api_id: str | None = Field(None, description="详情查询使用的接口 ID")
+    route_url: str | None = Field(None, description="建议调用的网关路由")
     identifier_field: str | None = Field(None, description="可用于跳转详情的主键字段")
     query_param: str | None = Field(None, description="详情查询时建议使用的参数名")
     ui_action: str | None = Field(None, description="推荐的前端动作编码")
+    template_code: str | None = Field(None, description="命中预设模板时的模板编码")
+    fallback_mode: str | None = Field(None, description="未命中模板时的回退模式")
 
 
 class ApiQueryPaginationRuntime(BaseModel):
     enabled: bool = Field(False, description="是否具备分页运行时信息")
+    api_id: str | None = Field(None, description="分页刷新使用的接口 ID")
     total: int = Field(0, ge=0, description="总记录数")
     page_size: int | None = Field(None, ge=1, description="当前页大小")
     current_page: int | None = Field(None, ge=1, description="当前页码")
+    page_param: str | None = Field(None, description="页码参数名")
+    page_size_param: str | None = Field(None, description="分页大小参数名")
     ui_action: str | None = Field(None, description="推荐的前端动作编码")
     mutation_target: str | None = Field(None, description="前端局部刷新目标路径")
+
+
+class ApiQueryTemplateRuntime(BaseModel):
+    enabled: bool = Field(False, description="是否命中模板快路")
+    template_code: str | None = Field(None, description="模板编码")
+    ui_action: str | None = Field(None, description="推荐的前端动作编码")
+    render_mode: str | None = Field(None, description="模板渲染模式")
+    fallback_mode: str | None = Field(None, description="模板未命中时的回退模式")
 
 
 class ApiQueryAuditRuntime(BaseModel):
     enabled: bool = Field(False, description="是否启用写前快照审计")
     snapshot_required: bool = Field(False, description="是否要求生成快照")
     snapshot_id: str | None = Field(None, description="快照 ID，未生成时为空")
+    risk_level: str = Field("none", description="审计风险等级")
 
 
 class ApiQueryUIRuntime(BaseModel):
@@ -132,6 +171,7 @@ class ApiQueryUIRuntime(BaseModel):
         default_factory=ApiQueryPaginationRuntime,
         description="分页运行时提示",
     )
+    template: ApiQueryTemplateRuntime = Field(default_factory=ApiQueryTemplateRuntime, description="模板运行时提示")
     audit: ApiQueryAuditRuntime = Field(default_factory=ApiQueryAuditRuntime, description="审计运行时提示")
 
 
@@ -144,6 +184,11 @@ class ApiQueryRuntimeMetadataResponse(BaseModel):
 
 class ApiQueryResponse(BaseModel):
     trace_id: str = Field(..., description="网关生成或透传的链路追踪 ID")
+    query_domains: list[str] = Field(default_factory=list, description="本次查询命中的业务域")
+    execution_status: ApiQueryExecutionStatus = Field(
+        ApiQueryExecutionStatus.SUCCESS,
+        description="本次接口执行状态",
+    )
     api_id: str | None = Field(None, description="命中的接口 ID")
     api_path: str | None = Field(None, description="接口路径")
     params: dict[str, Any] = Field(default_factory=dict, description="提取的参数")

@@ -25,6 +25,7 @@ from typing import Any
 import httpx
 
 from app.core.config import settings
+from app.models.schemas import ApiQueryExecutionResult, ApiQueryExecutionStatus
 from app.services.api_catalog.schema import ApiCatalogEntry
 
 logger = logging.getLogger(__name__)
@@ -53,7 +54,8 @@ class ApiExecutor:
         entry: ApiCatalogEntry,
         params: dict[str, Any],
         user_token: str | None = None,
-    ) -> tuple[list[dict[str, Any]] | dict[str, Any], int]:
+        trace_id: str | None = None,
+    ) -> ApiQueryExecutionResult:
         """
         调用 business-server 接口，返回规范化数据。
 
@@ -88,21 +90,21 @@ class ApiExecutor:
                     headers=headers,
                 )
         except httpx.TimeoutException:
-            raise ApiCallError(f"接口调用超时（{API_CALL_TIMEOUT}s）: {entry.path}", status_code=504)
+            return _error_result(f"接口调用超时（{API_CALL_TIMEOUT}s）: {entry.path}", trace_id=trace_id)
         except httpx.RequestError as exc:
-            raise ApiCallError(f"接口网络异常: {exc}", status_code=502)
+            return _error_result(f"接口网络异常: {exc}", trace_id=trace_id)
 
         # 错误状态码处理
         if response.status_code == 401:
-            raise ApiCallError("用户未登录或 Token 已过期，请重新登录", status_code=401)
+            return _error_result("用户未登录或 Token 已过期，请重新登录", trace_id=trace_id)
         if response.status_code == 403:
-            raise ApiCallError("无权限访问该接口，请联系管理员", status_code=403)
+            return _error_result("无权限访问该接口，请联系管理员", trace_id=trace_id)
         if response.status_code == 404:
-            raise ApiCallError(f"接口不存在: {entry.path}", status_code=404)
+            return _error_result(f"接口不存在: {entry.path}", trace_id=trace_id)
         if response.status_code >= 400:
             body = _safe_json(response)
             msg = body.get("message") or body.get("msg") or response.text[:200]
-            raise ApiCallError(f"业务接口返回错误 {response.status_code}: {msg}", status_code=response.status_code)
+            return _error_result(f"业务接口返回错误 {response.status_code}: {msg}", trace_id=trace_id)
 
         body = _safe_json(response)
 
@@ -111,8 +113,19 @@ class ApiExecutor:
 
         # 字段名中文映射
         normalized = _apply_field_labels(raw_data, entry.field_labels)
-
-        return normalized, total
+        if isinstance(normalized, list) and not normalized:
+            return ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.EMPTY,
+                data=[],
+                total=total,
+                trace_id=trace_id,
+            )
+        return ApiQueryExecutionResult(
+            status=ApiQueryExecutionStatus.SUCCESS,
+            data=normalized,
+            total=total,
+            trace_id=trace_id,
+        )
 
     async def close(self) -> None:
         """关闭 httpx 客户端（生命周期结束时调用）。"""
@@ -212,3 +225,13 @@ class ApiCallError(Exception):
         super().__init__(message)
         self.status_code = status_code
         self.user_message = message
+
+
+def _error_result(message: str, *, trace_id: str | None) -> ApiQueryExecutionResult:
+    return ApiQueryExecutionResult(
+        status=ApiQueryExecutionStatus.ERROR,
+        data=None,
+        total=0,
+        error=message,
+        trace_id=trace_id,
+    )

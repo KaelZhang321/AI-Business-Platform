@@ -19,7 +19,8 @@ from app.services.api_catalog.executor import (
     _safe_json,
 )
 from app.services.api_catalog.param_extractor import _coerce_type, _parse_json, _validate_params
-from app.services.api_catalog.schema import ApiCatalogEntry, ParamSchema
+from app.services.api_catalog.retriever import _build_filter_expr
+from app.services.api_catalog.schema import ApiCatalogEntry, ApiCatalogSearchFilters, ParamSchema
 
 
 # ── schema tests ─────────────────────────────────────────────────────────────
@@ -54,6 +55,16 @@ class TestApiCatalogEntry:
         assert entry.auth_required is True
         assert entry.ui_hint == "table"
         assert entry.response_data_path == "data"
+        assert entry.domain == "generic"
+        assert entry.env == "shared"
+        assert entry.status == "active"
+        assert entry.business_intents == ["query_business_data"]
+
+    def test_embed_text_includes_registry_fields(self):
+        entry = self._make_entry(domain="crm", tag_name="customer_management", business_intents=["query_business_data"])
+        assert "domain:crm" in entry.embed_text
+        assert "customer_management" in entry.embed_text
+        assert "query_business_data" in entry.embed_text
 
 
 # ── executor _extract_data tests ─────────────────────────────────────────────
@@ -174,3 +185,17 @@ class TestValidateParams:
         entry = ApiCatalogEntry(id="t", description="t", path="/t")
         params = {"anything": "value"}
         assert _validate_params(params, entry) == params
+
+
+class TestRetrieverFilters:
+    def test_build_filter_expr(self):
+        filters = ApiCatalogSearchFilters(domains=["crm"], envs=["shared"], statuses=["active"], tag_names=["customer_management"])
+        expr = _build_filter_expr(filters)
+        assert expr == (
+            'domain in ["crm"] and env in ["shared"] and status in ["active"] '
+            'and tag_name in ["customer_management"]'
+        )
+
+    def test_build_filter_expr_from_dict(self):
+        expr = _build_filter_expr({"domains": ["report"], "statuses": ["active"]})
+        assert expr == 'domain in ["report"] and status in ["active"]'

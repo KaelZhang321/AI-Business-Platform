@@ -24,7 +24,15 @@ from pymilvus import Collection, connections
 
 from app.core.config import settings
 from app.services.api_catalog.indexer import API_CATALOG_COLLECTION
-from app.services.api_catalog.schema import ApiCatalogEntry, ApiCatalogSearchResult, ParamSchema
+from app.services.api_catalog.schema import (
+    ApiCatalogDetailHint,
+    ApiCatalogEntry,
+    ApiCatalogPaginationHint,
+    ApiCatalogSearchFilters,
+    ApiCatalogSearchResult,
+    ApiCatalogTemplateHint,
+    ParamSchema,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +65,7 @@ class ApiCatalogRetriever:
         query: str,
         top_k: int = 3,
         score_threshold: float = 0.3,
+        filters: ApiCatalogSearchFilters | dict[str, list[str]] | None = None,
     ) -> list[ApiCatalogSearchResult]:
         """
         对用户自然语言查询做语义检索，返回 Top-K 候选接口。
@@ -76,19 +85,26 @@ class ApiCatalogRetriever:
 
         collection = self._get_collection()
         output_fields = [
-            "id", "description", "method", "path", "auth_required", "ui_hint",
-            "example_queries_json", "tags_json", "param_schema_json",
-            "response_data_path", "field_labels_json",
+            "id", "description", "domain", "env", "status", "tag_name",
+            "method", "path", "auth_required", "ui_hint",
+            "example_queries_json", "tags_json", "business_intents_json",
+            "param_schema_json", "response_data_path", "field_labels_json",
+            "executor_config_json", "security_rules_json",
+            "detail_hint_json", "pagination_hint_json", "template_hint_json",
         ]
+        expr = _build_filter_expr(filters)
 
         try:
-            raw_results = collection.search(
-                data=[query_emb],
-                anns_field="embedding",
-                param={"metric_type": "IP", "params": {"nprobe": 16}},
-                limit=top_k + 2,  # 多取几条，过滤后保证 top_k
-                output_fields=output_fields,
-            )
+            search_kwargs = {
+                "data": [query_emb],
+                "anns_field": "embedding",
+                "param": {"metric_type": "IP", "params": {"nprobe": 16}},
+                "limit": top_k + 2,
+                "output_fields": output_fields,
+            }
+            if expr:
+                search_kwargs["expr"] = expr
+            raw_results = collection.search(**search_kwargs)
         except Exception as exc:
             logger.warning("Milvus api_catalog search failed: %s", exc)
             return []
@@ -118,9 +134,12 @@ class ApiCatalogRetriever:
         """按 id 直接获取接口记录（用于二次调用确认）。"""
         collection = self._get_collection()
         output_fields = [
-            "id", "description", "method", "path", "auth_required", "ui_hint",
-            "example_queries_json", "tags_json", "param_schema_json",
-            "response_data_path", "field_labels_json",
+            "id", "description", "domain", "env", "status", "tag_name",
+            "method", "path", "auth_required", "ui_hint",
+            "example_queries_json", "tags_json", "business_intents_json",
+            "param_schema_json", "response_data_path", "field_labels_json",
+            "executor_config_json", "security_rules_json",
+            "detail_hint_json", "pagination_hint_json", "template_hint_json",
         ]
         try:
             results = collection.query(
@@ -142,15 +161,25 @@ def _build_entry_from_fields(fields: dict) -> ApiCatalogEntry:
     return ApiCatalogEntry(
         id=fields.get("id", ""),
         description=fields.get("description", ""),
+        domain=fields.get("domain", "generic"),
+        env=fields.get("env", "shared"),
+        status=fields.get("status", "active"),
+        tag_name=fields.get("tag_name") or None,
         method=fields.get("method", "GET"),
         path=fields.get("path", ""),
         auth_required=fields.get("auth_required", True),
         ui_hint=fields.get("ui_hint", "table"),
         example_queries=_safe_json_loads(fields.get("example_queries_json"), []),
         tags=_safe_json_loads(fields.get("tags_json"), []),
+        business_intents=_safe_json_loads(fields.get("business_intents_json"), ["query_business_data"]),
         param_schema=ParamSchema(**_safe_json_loads(fields.get("param_schema_json"), {})),
         response_data_path=fields.get("response_data_path", "data"),
         field_labels=_safe_json_loads(fields.get("field_labels_json"), {}),
+        executor_config=_safe_json_loads(fields.get("executor_config_json"), {}),
+        security_rules=_safe_json_loads(fields.get("security_rules_json"), {}),
+        detail_hint=ApiCatalogDetailHint(**_safe_json_loads(fields.get("detail_hint_json"), {})),
+        pagination_hint=ApiCatalogPaginationHint(**_safe_json_loads(fields.get("pagination_hint_json"), {})),
+        template_hint=ApiCatalogTemplateHint(**_safe_json_loads(fields.get("template_hint_json"), {})),
     )
 
 
@@ -161,3 +190,32 @@ def _safe_json_loads(value: str | None, default):
         return json.loads(value)
     except (json.JSONDecodeError, TypeError):
         return default
+
+
+def _build_filter_expr(filters: ApiCatalogSearchFilters | dict[str, list[str]] | None) -> str | None:
+    if filters is None:
+        return None
+    if isinstance(filters, dict):
+        normalized = ApiCatalogSearchFilters(
+            domains=list(filters.get("domains", [])),
+            envs=list(filters.get("envs", [])),
+            statuses=list(filters.get("statuses", [])),
+            tag_names=list(filters.get("tag_names", [])),
+        )
+    else:
+        normalized = filters
+
+    expressions: list[str] = []
+    expressions.extend(_build_in_expr("domain", normalized.domains))
+    expressions.extend(_build_in_expr("env", normalized.envs))
+    expressions.extend(_build_in_expr("status", normalized.statuses))
+    expressions.extend(_build_in_expr("tag_name", normalized.tag_names))
+    return " and ".join(expressions) if expressions else None
+
+
+def _build_in_expr(field: str, values: list[str]) -> list[str]:
+    filtered = [value for value in values if value]
+    if not filtered:
+        return []
+    quoted = ", ".join(f'"{value}"' for value in filtered)
+    return [f"{field} in [{quoted}]"]

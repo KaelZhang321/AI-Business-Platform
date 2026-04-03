@@ -35,7 +35,7 @@ from pymilvus import (
 )
 
 from app.core.config import settings
-from app.services.api_catalog.schema import ApiCatalogEntry, ParamSchema
+from app.services.api_catalog.schema import ApiCatalogEntry
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +51,10 @@ def _get_collection_schema() -> CollectionSchema:
     fields = [
         FieldSchema(name="id",           dtype=DataType.VARCHAR,       max_length=128,  is_primary=True),
         FieldSchema(name="description",  dtype=DataType.VARCHAR,       max_length=1024),
+        FieldSchema(name="domain",       dtype=DataType.VARCHAR,       max_length=64),
+        FieldSchema(name="env",          dtype=DataType.VARCHAR,       max_length=64),
+        FieldSchema(name="status",       dtype=DataType.VARCHAR,       max_length=32),
+        FieldSchema(name="tag_name",     dtype=DataType.VARCHAR,       max_length=128),
         FieldSchema(name="method",       dtype=DataType.VARCHAR,       max_length=16),
         FieldSchema(name="path",         dtype=DataType.VARCHAR,       max_length=512),
         FieldSchema(name="auth_required",dtype=DataType.BOOL),
@@ -58,13 +62,23 @@ def _get_collection_schema() -> CollectionSchema:
         # JSON 序列化存储复杂字段
         FieldSchema(name="example_queries_json", dtype=DataType.VARCHAR, max_length=2048),
         FieldSchema(name="tags_json",            dtype=DataType.VARCHAR, max_length=512),
+        FieldSchema(name="business_intents_json",dtype=DataType.VARCHAR, max_length=512),
         FieldSchema(name="param_schema_json",    dtype=DataType.VARCHAR, max_length=4096),
         FieldSchema(name="response_data_path",   dtype=DataType.VARCHAR, max_length=256),
         FieldSchema(name="field_labels_json",    dtype=DataType.VARCHAR, max_length=2048),
+        FieldSchema(name="executor_config_json", dtype=DataType.VARCHAR, max_length=2048),
+        FieldSchema(name="security_rules_json",  dtype=DataType.VARCHAR, max_length=2048),
+        FieldSchema(name="detail_hint_json",     dtype=DataType.VARCHAR, max_length=2048),
+        FieldSchema(name="pagination_hint_json", dtype=DataType.VARCHAR, max_length=2048),
+        FieldSchema(name="template_hint_json",   dtype=DataType.VARCHAR, max_length=2048),
         # 向量字段
         FieldSchema(name="embedding",    dtype=DataType.FLOAT_VECTOR,  dim=EMBEDDING_DIM),
     ]
     return CollectionSchema(fields=fields, description="Business API RAG catalog")
+
+
+def _expected_field_names() -> set[str]:
+    return {field.name for field in _get_collection_schema().fields}
 
 
 class ApiCatalogIndexer:
@@ -87,15 +101,17 @@ class ApiCatalogIndexer:
             connections.connect(alias="default", host=settings.milvus_host, port=settings.milvus_port)
             if not utility.has_collection(API_CATALOG_COLLECTION):
                 logger.info("Creating Milvus collection: %s", API_CATALOG_COLLECTION)
-                col = Collection(name=API_CATALOG_COLLECTION, schema=_get_collection_schema())
-                col.create_index(
-                    field_name="embedding",
-                    index_params={"metric_type": "IP", "index_type": "IVF_FLAT", "params": {"nlist": 128}},
-                )
-                col.load()
+                col = _create_collection()
             else:
                 col = Collection(name=API_CATALOG_COLLECTION)
-                col.load()
+                actual_fields = {field.name for field in col.schema.fields}
+                if actual_fields != _expected_field_names():
+                    logger.info("Recreating Milvus collection %s due to schema drift", API_CATALOG_COLLECTION)
+                    col.release()
+                    utility.drop_collection(API_CATALOG_COLLECTION)
+                    col = _create_collection()
+                else:
+                    col.load()
             self._collection = col
         return self._collection
 
@@ -146,15 +162,25 @@ class ApiCatalogIndexer:
         data = [
             [entry.id],
             [entry.description],
+            [entry.domain],
+            [entry.env],
+            [entry.status],
+            [entry.tag_name or ""],
             [entry.method],
             [entry.path],
             [entry.auth_required],
             [entry.ui_hint],
             [json.dumps(entry.example_queries, ensure_ascii=False)],
             [json.dumps(entry.tags, ensure_ascii=False)],
+            [json.dumps(entry.business_intents, ensure_ascii=False)],
             [json.dumps(entry.param_schema.model_dump(), ensure_ascii=False)],
             [entry.response_data_path],
             [json.dumps(entry.field_labels, ensure_ascii=False)],
+            [json.dumps(entry.executor_config, ensure_ascii=False)],
+            [json.dumps(entry.security_rules, ensure_ascii=False)],
+            [json.dumps(entry.detail_hint.model_dump(), ensure_ascii=False)],
+            [json.dumps(entry.pagination_hint.model_dump(), ensure_ascii=False)],
+            [json.dumps(entry.template_hint.model_dump(), ensure_ascii=False)],
             [embedding],
         ]
         collection.insert(data)
@@ -165,6 +191,16 @@ class ApiCatalogIndexer:
 
 def _default_config_path() -> str:
     return str(Path(__file__).resolve().parents[4] / "config" / "api_catalog.yaml")
+
+
+def _create_collection() -> Collection:
+    collection = Collection(name=API_CATALOG_COLLECTION, schema=_get_collection_schema())
+    collection.create_index(
+        field_name="embedding",
+        index_params={"metric_type": "IP", "index_type": "IVF_FLAT", "params": {"nlist": 128}},
+    )
+    collection.load()
+    return collection
 
 
 # ── CLI 入口 ────────────────────────────────────────────────────────────────

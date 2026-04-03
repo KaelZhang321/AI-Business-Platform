@@ -21,6 +21,7 @@ import json
 import logging
 from typing import Any
 
+from app.models.schemas import ApiQueryRoutingResult
 from app.services.api_catalog.schema import ApiCatalogEntry, ApiCatalogSearchResult
 
 logger = logging.getLogger(__name__)
@@ -57,15 +58,49 @@ class ApiParamExtractor:
             - selected_entry: 选中的接口，无法匹配时返回 None
             - params_dict: 提取到的参数字典，可能为空 {}
         """
+        routing_result = await self.extract_routing_result(query, candidates, user_context)
+        selected_id = routing_result.selected_api_id
+        entry = next((candidate.entry for candidate in candidates if candidate.entry.id == selected_id), None)
+        return entry, dict(routing_result.params)
+
+    async def extract_routing_result(
+        self,
+        query: str,
+        candidates: list[ApiCatalogSearchResult],
+        user_context: dict[str, Any] | None = None,
+        *,
+        allowed_business_intents: set[str] | None = None,
+    ) -> ApiQueryRoutingResult:
+        """
+        返回更完整的路由结果，显式表达 query_domains 与 business_intents。
+
+        该结果仍视为不可信输入，调用方需继续执行 allowlist / 只读校验。
+        """
         if not candidates:
-            return None, {}
+            return ApiQueryRoutingResult()
 
         # 单候选时跳过路由，直接提参数
         if len(candidates) == 1:
-            return candidates[0].entry, await self._extract_params(query, candidates[0].entry, user_context)
+            entry = candidates[0].entry
+            params = await self._extract_params(query, entry, user_context)
+            return ApiQueryRoutingResult(
+                selected_api_id=entry.id,
+                query_domains=[entry.domain],
+                business_intents=_sanitize_business_intents(
+                    entry.business_intents,
+                    allowed=allowed_business_intents,
+                    fallback=["query_business_data"],
+                ),
+                params=params,
+            )
 
         # 多候选：一次 LLM 调用完成「接口路由 + 参数提取」
-        return await self._route_and_extract(query, candidates, user_context)
+        return await self._route_and_extract(
+            query,
+            candidates,
+            user_context,
+            allowed_business_intents=allowed_business_intents,
+        )
 
     # ── 单接口参数提取 ──────────────────────────────────────────
 
@@ -87,7 +122,9 @@ class ApiParamExtractor:
         query: str,
         candidates: list[ApiCatalogSearchResult],
         user_context: dict[str, Any] | None,
-    ) -> tuple[ApiCatalogEntry | None, dict[str, Any]]:
+        *,
+        allowed_business_intents: set[str] | None,
+    ) -> ApiQueryRoutingResult:
         prompt = _build_route_and_extract_prompt(query, candidates, user_context)
         raw = await self._call_llm(prompt)
         result = _parse_json(raw)
@@ -105,7 +142,18 @@ class ApiParamExtractor:
             entry = candidates[0].entry
 
         params = _validate_params(raw_params, entry)
-        return entry, params
+        query_domains = _sanitize_query_domains(result.get("query_domains"), candidates, entry.domain)
+        business_intents = _sanitize_business_intents(
+            result.get("business_intents"),
+            allowed=allowed_business_intents,
+            fallback=entry.business_intents or ["query_business_data"],
+        )
+        return ApiQueryRoutingResult(
+            selected_api_id=entry.id,
+            query_domains=query_domains,
+            business_intents=business_intents,
+            params=params,
+        )
 
     async def _call_llm(self, prompt: str) -> str:
         llm = self._get_llm()
@@ -150,7 +198,13 @@ def _build_route_and_extract_prompt(
 ) -> str:
     ctx_str = json.dumps(user_context or {}, ensure_ascii=False)
     candidates_str = "\n".join(
-        f"- id: {c.entry.id}\n  描述: {c.entry.description}\n  参数Schema: {json.dumps(c.entry.param_schema.model_dump(), ensure_ascii=False)}"
+        (
+            f"- id: {c.entry.id}\n"
+            f"  domain: {c.entry.domain}\n"
+            f"  描述: {c.entry.description}\n"
+            f"  业务意图: {json.dumps(c.entry.business_intents, ensure_ascii=False)}\n"
+            f"  参数Schema: {json.dumps(c.entry.param_schema.model_dump(), ensure_ascii=False)}"
+        )
         for c in candidates
     )
     return f"""你是一个接口路由 + 参数提取助手。
@@ -163,14 +217,17 @@ def _build_route_and_extract_prompt(
 
 任务：
 1. 从候选接口中选择最匹配用户意图的接口（selected_api_id）
-2. 从用户输入 + 上下文中提取该接口的调用参数（params）
+2. 输出本次查询命中的业务域（query_domains）
+3. 从用户输入 + 上下文中提取该接口的调用参数（params）
+4. 输出业务意图编码列表（business_intents），仅可使用候选接口已有的意图或 query_business_data
 
 规则：
 - selected_api_id 必须是候选列表中的某个 id
+- query_domains 必须是候选接口中出现过的 domain
 - params 只包含选中接口 Schema 中定义的字段
 - 类型严格匹配
 - 用户未提及的可选参数不要包含
-- 直接输出 JSON，格式为 {{"selected_api_id": "...", "params": {{...}}}}
+- 直接输出 JSON，格式为 {{"selected_api_id": "...", "query_domains": ["..."], "business_intents": ["..."], "params": {{...}}}}
 
 输出："""
 
@@ -183,6 +240,10 @@ def _parse_json(raw: str) -> dict[str, Any]:
     if text.startswith("```"):
         lines = text.split("\n")
         text = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and start < end:
+        text = text[start : end + 1]
     try:
         result = json.loads(text)
         return result if isinstance(result, dict) else {}
@@ -226,3 +287,44 @@ def _coerce_type(value: Any, expected_type: str) -> Any:
         return str(value) if expected_type == "string" else value
     except (ValueError, TypeError):
         return value
+
+
+def _sanitize_query_domains(
+    raw_domains: Any,
+    candidates: list[ApiCatalogSearchResult],
+    fallback_domain: str,
+) -> list[str]:
+    allowed = {candidate.entry.domain for candidate in candidates if candidate.entry.domain}
+    if isinstance(raw_domains, str):
+        items = [raw_domains]
+    elif isinstance(raw_domains, list):
+        items = [str(item) for item in raw_domains if item]
+    else:
+        items = []
+
+    domains = [item for item in items if item in allowed]
+    if fallback_domain and fallback_domain not in domains:
+        domains.insert(0, fallback_domain)
+    return list(dict.fromkeys(domains))
+
+
+def _sanitize_business_intents(
+    raw_business_intents: Any,
+    *,
+    allowed: set[str] | None,
+    fallback: list[str],
+) -> list[str]:
+    if isinstance(raw_business_intents, str):
+        candidates = [raw_business_intents]
+    elif isinstance(raw_business_intents, list):
+        candidates = [str(item) for item in raw_business_intents if item]
+    else:
+        candidates = []
+
+    if allowed is not None:
+        candidates = [item for item in candidates if item in allowed]
+
+    if not candidates:
+        candidates = [item for item in fallback if allowed is None or item in allowed]
+
+    return list(dict.fromkeys(candidates))
