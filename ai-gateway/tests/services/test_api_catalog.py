@@ -8,6 +8,7 @@ Tests cover:
 - _validate_params: hallucination filtering
 - _coerce_type: type coercion
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -15,6 +16,7 @@ import asyncio
 from pymilvus import DataType
 
 import app.services.api_catalog.indexer as indexer_module
+from app.core.config import settings
 from app.services.api_catalog.executor import (
     _apply_field_labels,
     _extract_data,
@@ -27,10 +29,16 @@ from app.services.api_catalog.retriever import (
     _build_filter_expr,
     ApiCatalogRetriever,
 )
-from app.services.api_catalog.schema import ApiCatalogEntry, ApiCatalogSearchFilters, ApiCatalogSearchResult, ParamSchema
+from app.services.api_catalog.schema import (
+    ApiCatalogEntry,
+    ApiCatalogSearchFilters,
+    ApiCatalogSearchResult,
+    ParamSchema,
+)
 
 
 # ── schema tests ─────────────────────────────────────────────────────────────
+
 
 class TestApiCatalogEntry:
     def _make_entry(self, **kwargs) -> ApiCatalogEntry:
@@ -46,9 +54,7 @@ class TestApiCatalogEntry:
         assert "查询客户信息" in entry.embed_text
 
     def test_embed_text_includes_examples(self):
-        entry = self._make_entry(
-            example_queries=["我的客户", "名下客户列表"]
-        )
+        entry = self._make_entry(example_queries=["我的客户", "名下客户列表"])
         assert "我的客户" in entry.embed_text
         assert "名下客户列表" in entry.embed_text
 
@@ -100,6 +106,7 @@ class TestApiCatalogEntry:
 
 
 # ── executor _extract_data tests ─────────────────────────────────────────────
+
 
 class TestExtractData:
     def test_simple_data_path(self):
@@ -166,6 +173,7 @@ class TestApplyFieldLabels:
 
 # ── param_extractor utils tests ──────────────────────────────────────────────
 
+
 class TestCoerceType:
     def test_string_to_integer(self):
         assert _coerce_type("5", "integer") == 5
@@ -190,7 +198,7 @@ class TestParseJson:
         assert _parse_json('{"name": "张"}') == {"name": "张"}
 
     def test_markdown_code_block(self):
-        text = "```json\n{\"name\": \"张\"}\n```"
+        text = '```json\n{"name": "张"}\n```'
         assert _parse_json(text) == {"name": "张"}
 
     def test_invalid_returns_empty(self):
@@ -227,11 +235,12 @@ class TestValidateParams:
 
 class TestRetrieverFilters:
     def test_build_filter_expr(self):
-        filters = ApiCatalogSearchFilters(domains=["crm"], envs=["shared"], statuses=["active"], tag_names=["customer_management"])
+        filters = ApiCatalogSearchFilters(
+            domains=["crm"], envs=["shared"], statuses=["active"], tag_names=["customer_management"]
+        )
         expr = _build_filter_expr(filters)
         assert expr == (
-            'domain in ["crm"] and env in ["shared"] and status in ["active"] '
-            'and tag_name in ["customer_management"]'
+            'domain in ["crm"] and env in ["shared"] and status in ["active"] and tag_name in ["customer_management"]'
         )
 
     def test_build_filter_expr_from_dict(self):
@@ -271,6 +280,154 @@ class TestRetrieverFilters:
         )
 
         assert [result.entry.domain for result in results] == ["crm", "erp"]
+
+    def test_search_stratified_skips_exceptional_domain_and_keeps_others(self, monkeypatch):
+        retriever = ApiCatalogRetriever()
+
+        async def fake_encode_query(query: str):
+            return [0.1, 0.2]
+
+        async def fake_search_domain_with_timeout(**kwargs):
+            domain = kwargs["domain"]
+            if domain == "erp":
+                raise RuntimeError("milvus worker crashed")
+            return [
+                ApiCatalogSearchResult(
+                    entry=ApiCatalogEntry(
+                        id=f"{domain}_list",
+                        description=f"{domain} list",
+                        domain=domain,
+                        path=f"/api/{domain}/list",
+                    ),
+                    score=0.91,
+                )
+            ]
+
+        monkeypatch.setattr(retriever, "_encode_query", fake_encode_query)
+        monkeypatch.setattr(retriever, "_search_domain_with_timeout", fake_search_domain_with_timeout)
+
+        results = asyncio.run(
+            retriever.search_stratified(
+                "对比客户和订单",
+                domains=["crm", "erp"],
+                top_k=3,
+                filters=ApiCatalogSearchFilters(statuses=["active"]),
+            )
+        )
+
+        assert [result.entry.domain for result in results] == ["crm"]
+
+    def test_search_domain_with_timeout_returns_empty_when_single_domain_hangs(self, monkeypatch):
+        retriever = ApiCatalogRetriever()
+        monkeypatch.setattr(settings, "api_query_retrieval_timeout_seconds", 0.01)
+
+        async def fake_search_with_embedding(**kwargs):
+            await asyncio.sleep(0.05)
+            return [
+                ApiCatalogSearchResult(
+                    entry=ApiCatalogEntry(id="crm_list", description="crm list", domain="crm", path="/api/crm/list"),
+                    score=0.91,
+                )
+            ]
+
+        monkeypatch.setattr(retriever, "_search_with_embedding", fake_search_with_embedding)
+
+        results = asyncio.run(
+            retriever._search_domain_with_timeout(
+                query="查客户",
+                query_emb=[0.1, 0.2],
+                domain="crm",
+                top_k=2,
+                score_threshold=0.3,
+                base_filters=ApiCatalogSearchFilters(statuses=["active"]),
+            )
+        )
+
+        assert results == []
+
+    def test_search_with_embedding_filters_low_score_hits(self, monkeypatch):
+        retriever = ApiCatalogRetriever()
+
+        class FakeEntity:
+            def __init__(self, fields):
+                self._fields = fields
+
+            def get(self, key):
+                return self._fields.get(key)
+
+        class FakeHit:
+            def __init__(self, score, fields):
+                self.distance = score
+                self.entity = FakeEntity(fields)
+
+        class FakeCollection:
+            def search(self, **kwargs):
+                return [
+                    [
+                        FakeHit(
+                            0.75,
+                            {
+                                "id": "crm_high",
+                                "description": "高分客户查询",
+                                "domain": "crm",
+                                "env": "shared",
+                                "status": "active",
+                                "method": "GET",
+                                "path": "/api/crm/high",
+                                "auth_required": True,
+                                "ui_hint": "table",
+                                "api_schema": {"request": {"type": "object", "properties": {}}},
+                            },
+                        ),
+                        FakeHit(
+                            0.2,
+                            {
+                                "id": "crm_low",
+                                "description": "低分噪声接口",
+                                "domain": "crm",
+                                "env": "shared",
+                                "status": "active",
+                                "method": "GET",
+                                "path": "/api/crm/low",
+                                "auth_required": True,
+                                "ui_hint": "table",
+                                "api_schema": {"request": {"type": "object", "properties": {}}},
+                            },
+                        ),
+                    ]
+                ]
+
+        monkeypatch.setattr(retriever, "_get_collection", lambda: FakeCollection())
+        monkeypatch.setattr(
+            retriever,
+            "_get_output_fields",
+            lambda: [
+                "id",
+                "description",
+                "domain",
+                "env",
+                "status",
+                "method",
+                "path",
+                "auth_required",
+                "ui_hint",
+                "api_schema",
+            ],
+        )
+        monkeypatch.setattr(retriever, "_get_search_param", lambda: {"metric_type": "COSINE", "params": {"ef": 64}})
+
+        results = asyncio.run(
+            retriever._search_with_embedding(
+                query="查客户",
+                query_emb=[0.1, 0.2],
+                top_k=2,
+                score_threshold=0.6,
+                filters=ApiCatalogSearchFilters(domains=["crm"], statuses=["active"]),
+            )
+        )
+
+        assert len(results) == 1
+        assert results[0].entry.id == "crm_high"
 
 
 class TestIndexerSchema:

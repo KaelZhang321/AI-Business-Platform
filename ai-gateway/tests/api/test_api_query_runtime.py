@@ -11,8 +11,10 @@ from app.services.api_catalog.schema import ApiCatalogEntry, ApiCatalogSearchRes
 class StubRetriever:
     def __init__(self, entry: ApiCatalogEntry) -> None:
         self._entry = entry
+        self.last_filters = None
 
     async def search(self, query: str, top_k: int = 3, score_threshold: float = 0.3, filters=None):
+        self.last_filters = filters
         return [ApiCatalogSearchResult(entry=self._entry, score=0.95)]
 
     async def search_stratified(self, query: str, *, domains, top_k: int = 3, filters=None, **kwargs):

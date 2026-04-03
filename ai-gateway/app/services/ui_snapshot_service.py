@@ -31,15 +31,18 @@ class UISnapshotService:
     def __init__(self) -> None:
         self._store: dict[str, UISnapshotRecord] = {}
         self._high_risk_intent_codes = {
-            "prepare_high_risk_change",
-            "update_contract_amount",
-            "delete_customer_record",
+            "deleteCustomer",
         }
 
     def should_capture(self, business_intents: list[ApiQueryBusinessIntent]) -> bool:
-        """判断当前业务意图是否需要写前快照。"""
+        """判断当前业务意图是否需要写前快照。
+
+        功能：
+            第二阶段对外已经统一为 canonical business intents，不能再依赖历史别名做审计判断。
+            这里优先使用显式 `risk_level`，只在缺省时才回退到高风险业务意图编码。
+        """
         return any(
-            intent.category == "write" and intent.code in self._high_risk_intent_codes
+            intent.category == "write" and (intent.risk_level == "high" or intent.code in self._high_risk_intent_codes)
             for intent in business_intents
         )
 

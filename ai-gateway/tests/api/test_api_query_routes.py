@@ -21,8 +21,10 @@ from app.services.api_catalog.schema import (
 class StubRetriever:
     def __init__(self, entry: ApiCatalogEntry) -> None:
         self._entry = entry
+        self.last_filters = None
 
     async def search(self, query: str, top_k: int = 3, score_threshold: float = 0.3, filters=None):
+        self.last_filters = filters
         return [ApiCatalogSearchResult(entry=self._entry, score=0.91)]
 
     async def search_stratified(self, query: str, *, domains, top_k: int = 3, filters=None, **kwargs):
@@ -184,8 +186,9 @@ def _make_entry(**overrides) -> ApiCatalogEntry:
 
 def test_api_query_returns_runtime_contract(monkeypatch) -> None:
     entry = _make_entry()
+    stub_retriever = StubRetriever(entry)
     stub_services = (
-        StubRetriever(entry),
+        stub_retriever,
         StubExtractor(entry, {"pageNum": 1, "pageSize": 1}),
         StubExecutor(
             ApiQueryExecutionResult(
@@ -209,7 +212,7 @@ def test_api_query_returns_runtime_contract(monkeypatch) -> None:
     assert response.status_code == 200
     body = response.json()
     assert body["trace_id"] == "trace-query-001"
-    assert body["query_domains"] == ["crm"]
+    assert body["query_domains"] == ["CRM"]
     assert body["execution_status"] == "SUCCESS"
     assert body["api_id"] == "customer_list"
     assert body["business_intents"] == [
@@ -218,6 +221,7 @@ def test_api_query_returns_runtime_contract(monkeypatch) -> None:
             "name": "纯查询",
             "category": "read",
             "description": "当前请求仅包含读取诉求，不携带写前确认意图。",
+            "risk_level": None,
         }
     ]
     assert body["context_pool"]["step_customer_list"]["status"] == "SUCCESS"
@@ -235,6 +239,49 @@ def test_api_query_returns_runtime_contract(monkeypatch) -> None:
     assert body["ui_runtime"]["template"]["enabled"] is True
     action_codes = {item["code"] for item in body["ui_runtime"]["ui_actions"]}
     assert {"refresh", "export", "remoteQuery", "view_detail"} <= action_codes
+    assert stub_retriever.last_filters.model_dump() == {
+        "domains": [],
+        "envs": [],
+        "statuses": ["active"],
+        "tag_names": [],
+    }
+
+
+def test_api_query_passes_env_and_tag_filters_to_retriever(monkeypatch) -> None:
+    entry = _make_entry()
+    stub_retriever = StubRetriever(entry)
+    stub_services = (
+        stub_retriever,
+        StubExtractor(entry, {"pageNum": 1}),
+        StubExecutor(
+            ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.SUCCESS,
+                data=[{"customerId": "C001", "customerName": "张三"}],
+                total=1,
+            )
+        ),
+        StubDynamicUI(),
+        StubSnapshotService(),
+    )
+    monkeypatch.setattr(api_query_routes, "_get_services", lambda: stub_services)
+
+    client = TestClient(create_test_app())
+    response = client.post(
+        "/api/v1/api-query",
+        json={
+            "query": "查询张三客户",
+            "envs": ["PROD", "prod", ""],
+            "tag_names": ["合同管理", "合同管理", " "],
+        },
+    )
+
+    assert response.status_code == 200
+    assert stub_retriever.last_filters.model_dump() == {
+        "domains": [],
+        "envs": ["prod"],
+        "statuses": ["active"],
+        "tag_names": ["合同管理"],
+    }
 
 
 def test_api_query_blocks_non_read_method(monkeypatch) -> None:
@@ -262,7 +309,10 @@ def test_api_query_blocks_non_read_method(monkeypatch) -> None:
     )
 
     assert response.status_code == 422
-    assert response.json()["detail"] == "[trace-block-001] api_query 仅支持只读接口，当前命中 POST /api/v1/customers/update"
+    assert (
+        response.json()["detail"]
+        == "[trace-block-001] api_query 仅支持只读接口，当前命中 POST /api/v1/customers/update"
+    )
 
 
 def test_api_query_attaches_snapshot_for_high_risk_write_intent(monkeypatch) -> None:
@@ -287,6 +337,8 @@ def test_api_query_attaches_snapshot_for_high_risk_write_intent(monkeypatch) -> 
 
     assert response.status_code == 200
     body = response.json()
+    assert body["business_intents"][0]["code"] == "saveToServer"
+    assert body["business_intents"][0]["risk_level"] == "high"
     assert body["ui_runtime"]["audit"]["enabled"] is True
     assert body["ui_runtime"]["audit"]["snapshot_required"] is True
     assert body["ui_runtime"]["audit"]["snapshot_id"] == "snap_test_001"
@@ -321,6 +373,7 @@ def test_api_query_soft_degrades_when_route_query_fails(monkeypatch) -> None:
     assert response.status_code == 200
     body = response.json()
     assert body["execution_status"] == "SKIPPED"
+    assert body["query_domains"] == []
     assert body["context_pool"]["stage2_routing"]["status"] == "SKIPPED"
     assert body["context_pool"]["stage2_routing"]["error"]["code"] == "routing_parse_failed"
     assert body["business_intents"][0]["code"] == "none"

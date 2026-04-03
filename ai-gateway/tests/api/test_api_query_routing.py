@@ -4,6 +4,7 @@ import asyncio
 
 from app.services.api_catalog.param_extractor import (
     ApiParamExtractor,
+    _build_route_only_prompt,
     _parse_json,
     _sanitize_business_intents,
     _sanitize_query_domains,
@@ -38,13 +39,35 @@ def test_parse_json_strips_prefix_and_markdown() -> None:
     assert _parse_json(raw) == {"selected_api_id": "customer_list", "params": {"pageNum": 1}}
 
 
+def test_parse_json_strips_comments_and_trailing_commas() -> None:
+    raw = """```json
+{
+  // 这是一个客户 ID
+  "selected_api_id": "customer_list",
+  "params": {
+    "pageNum": 1,
+  },
+}
+```"""
+    assert _parse_json(raw) == {"selected_api_id": "customer_list", "params": {"pageNum": 1}}
+
+
 def test_sanitize_business_intents_intersects_allowlist() -> None:
     result = _sanitize_business_intents(
-        ["none", "delete_everything"],
-        allowed={"none", "prepare_high_risk_change"},
+        ["saveToServer", "delete_everything"],
+        allowed={"none", "saveToServer", "deleteCustomer"},
         fallback=["none"],
     )
-    assert result == ["none"]
+    assert result == ["saveToServer"]
+
+
+def test_sanitize_business_intents_maps_legacy_alias_to_canonical_code() -> None:
+    result = _sanitize_business_intents(
+        ["prepare_high_risk_change"],
+        allowed={"none", "saveToServer", "deleteCustomer"},
+        fallback=["none"],
+    )
+    assert result == ["saveToServer"]
 
 
 def test_sanitize_query_domains_falls_back_to_selected_entry_domain() -> None:
@@ -73,13 +96,28 @@ def test_route_query_returns_fallback_when_llm_json_invalid(monkeypatch) -> None
         extractor.route_query(
             "帮我处理下这个事情",
             {"userId": "u1"},
-            allowed_business_intents={"none", "prepare_high_risk_change"},
+            allowed_business_intents={"none", "saveToServer", "deleteCustomer"},
         )
     )
 
     assert result.route_status == "fallback"
     assert result.route_error_code == "routing_parse_failed"
     assert result.business_intents == ["none"]
+
+
+def test_route_prompt_contains_domain_mapping_action_mapping_and_examples() -> None:
+    prompt = _build_route_only_prompt(
+        "把客户目标改一下",
+        {"userId": "u1"},
+        {"none", "saveToServer", "deleteCustomer"},
+    )
+
+    assert "Domain Mapping Rules" in prompt
+    assert "Action Mapping Rules" in prompt
+    assert "Few-Shot Examples" in prompt
+    assert "saveToServer" in prompt
+    assert "deleteCustomer" in prompt
+    assert "CRM" in prompt and "IAM" in prompt
 
 
 def test_extract_routing_result_falls_back_unknown_api_and_filters_params(monkeypatch) -> None:
