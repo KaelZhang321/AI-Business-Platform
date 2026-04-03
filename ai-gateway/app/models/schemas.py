@@ -17,6 +17,7 @@ class IntentType(str, Enum):
 
 class SubIntentType(str, Enum):
     """二级意图分类"""
+
     # 知识问答
     KNOWLEDGE_POLICY = "knowledge_policy"
     KNOWLEDGE_PRODUCT = "knowledge_product"
@@ -36,12 +37,14 @@ class SubIntentType(str, Enum):
 
 class SSEEvent(BaseModel):
     """SSE 事件封装"""
+
     event_type: str = Field(..., description="事件类型: intent/content/ui_spec/sources/done")
     data: Any = Field(..., description="事件数据")
 
 
 class IntentResult(BaseModel):
     """意图分类结果。"""
+
     intent: IntentType = Field(..., description="识别的意图类型")
     sub_intent: SubIntentType = Field(SubIntentType.GENERAL, description="二级意图")
     confidence: float = Field(..., ge=0, le=1, description="置信度")
@@ -102,12 +105,22 @@ class ApiQueryRequest(BaseModel):
 
 
 class ApiQueryBusinessIntent(BaseModel):
-    """第二阶段输出的业务意图对象。"""
+    """第二阶段输出的业务意图对象。
+
+    功能：
+        把第二阶段识别出的业务写意图收敛成稳定契约，供前端渲染层、审计链路
+        与后续 Java 安全代理共同消费。
+
+    返回值约束：
+        - `code` 必须是对外稳定的业务意图编码，而不是前端物理动作名
+        - `risk_level` 仅表达审计提示，不授予任何真实写权限
+    """
 
     code: str = Field(..., description="业务意图编码")
     name: str = Field(..., description="业务意图名称")
     category: Literal["read", "write"] = Field(..., description="业务意图分类")
     description: str | None = Field(None, description="业务意图说明")
+    risk_level: str | None = Field(None, description="业务意图风险等级提示")
 
 
 class ApiQueryExecutionStatus(str, Enum):

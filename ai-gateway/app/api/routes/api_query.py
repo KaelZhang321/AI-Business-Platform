@@ -8,6 +8,7 @@ API Query 路由
     POST /api/v1/api-query       非流式，返回完整 UI Spec
     POST /api/v1/api-catalog/index  重建 API Catalog 向量索引（管理端）
 """
+
 from __future__ import annotations
 
 import logging
@@ -35,6 +36,11 @@ from app.models.schemas import (
     ApiQueryUIRuntime,
 )
 from app.services.api_catalog.executor import ApiExecutor
+from app.services.api_catalog.business_intents import (
+    CANONICAL_BUSINESS_INTENTS,
+    normalize_business_intent_codes,
+    resolve_business_intent_risk_level,
+)
 from app.services.api_catalog.schema import ApiCatalogEntry, ApiCatalogSearchFilters
 from app.services.api_catalog.param_extractor import ApiParamExtractor
 from app.services.api_catalog.retriever import ApiCatalogRetriever
@@ -134,25 +140,8 @@ _TEMPLATE_SCENARIOS = [
     },
 ]
 _RUNTIME_ACTION_CODES = {item["code"] for item in _UI_ACTION_DEFINITIONS}
-_ALLOWED_BUSINESS_INTENTS: dict[str, dict[str, str]] = {
-    "none": {
-        "name": "纯查询",
-        "category": "read",
-        "description": "当前请求仅包含读取诉求，不携带写前确认意图。",
-    },
-    "prepare_record_update": {
-        "name": "准备修改业务数据",
-        "category": "write",
-        "description": "仅表达写意图，不在 api_query 中直接执行。",
-    },
-    "prepare_high_risk_change": {
-        "name": "准备高风险变更",
-        "category": "write",
-        "description": "命中高风险写意图时，需要生成 UI 快照凭证。",
-    },
-}
+_ALLOWED_BUSINESS_INTENTS = CANONICAL_BUSINESS_INTENTS
 _ROUTE_ALLOWED_BUSINESS_INTENT_CODES = set(_ALLOWED_BUSINESS_INTENTS)
-_LEGACY_READ_BUSINESS_INTENT_CODES = {"none", "query_business_data", "query_detail_data"}
 
 
 def _get_services() -> tuple[ApiCatalogRetriever, ApiParamExtractor, ApiExecutor, DynamicUIService, UISnapshotService]:
@@ -175,6 +164,7 @@ def _get_services() -> tuple[ApiCatalogRetriever, ApiParamExtractor, ApiExecutor
 
 
 # ── 主接口：自然语言 → 数据 + UI ────────────────────────────────
+
 
 @router.post("", response_model=ApiQueryResponse, summary="自然语言业务接口查询")
 async def api_query(
@@ -295,9 +285,7 @@ async def api_query(
     _ensure_read_only_entry(selected_entry, trace_id)
     params = dict(routing_result.params)
     query_domains = routing_result.query_domains or route_hint.query_domains or [selected_entry.domain]
-    business_intents = _build_business_intents(
-        routing_result.business_intents or route_hint.business_intents
-    )
+    business_intents = _build_business_intents(routing_result.business_intents or route_hint.business_intents)
 
     # Step 3: 调用 business-server
     missing_required_params = _find_missing_required_params(selected_entry, params)
@@ -325,10 +313,7 @@ async def api_query(
             "error": execution_result.error,
             "empty_message": "未查到符合条件的数据，请调整筛选条件后重试。",
             "skip_message": _build_skip_message(execution_result),
-            "context_pool": {
-                step_id: step.model_dump(exclude_none=True)
-                for step_id, step in context_pool.items()
-            },
+            "context_pool": {step_id: step.model_dump(exclude_none=True) for step_id, step in context_pool.items()},
             "business_intents": [intent.model_dump() for intent in business_intents],
         },
         status=execution_result.status,
@@ -397,6 +382,7 @@ async def get_runtime_metadata() -> ApiQueryRuntimeMetadataResponse:
 
 # ── 管理端：重建向量索引 ──────────────────────────────────────────
 
+
 class IndexRequest(BaseModel):
     config_path: str | None = None
 
@@ -405,6 +391,7 @@ class IndexRequest(BaseModel):
 async def rebuild_catalog_index(body: IndexRequest | None = None) -> dict[str, Any]:
     """从 config/api_catalog.yaml 重新入库所有接口到 Milvus。"""
     from app.services.api_catalog.indexer import ApiCatalogIndexer
+
     indexer = ApiCatalogIndexer()
     config_path = body.config_path if body else None
     result = await indexer.index_all(config_path)
@@ -412,6 +399,7 @@ async def rebuild_catalog_index(body: IndexRequest | None = None) -> dict[str, A
 
 
 # ── 辅助函数 ─────────────────────────────────────────────────────
+
 
 def _extract_user_context(request: Request) -> dict[str, Any]:
     """从请求中提取可自动填充的上下文（如 user_id）。
@@ -458,7 +446,21 @@ def _ensure_read_only_entry(entry: ApiCatalogEntry, trace_id: str) -> None:
 
 
 def _build_business_intents(intent_codes: list[str]) -> list[ApiQueryBusinessIntent]:
-    """将业务意图编码转换为对外响应对象。"""
+    """将业务意图编码转换为对外响应对象。
+
+    功能：
+        第二阶段内部允许保留历史别名，但对外响应必须收敛成设计文档中的稳定业务语义。
+
+    Args:
+        intent_codes: 第二阶段原始业务意图编码，可能混入历史别名或旧版只读编码。
+
+    Returns:
+        归一化后的业务意图对象列表；同一 canonical code 只保留一份。
+
+    Edge Cases:
+        - 历史高风险别名会被折叠成 canonical code，同时保留 `risk_level=high`
+        - 纯读旧编码会统一折叠为 `none`
+    """
     codes = _normalize_business_intent_codes(intent_codes)
     return [
         ApiQueryBusinessIntent(
@@ -466,24 +468,20 @@ def _build_business_intents(intent_codes: list[str]) -> list[ApiQueryBusinessInt
             name=_ALLOWED_BUSINESS_INTENTS[code]["name"],
             category=_ALLOWED_BUSINESS_INTENTS[code]["category"],
             description=_ALLOWED_BUSINESS_INTENTS[code]["description"],
+            risk_level=resolve_business_intent_risk_level(code, intent_codes),
         )
         for code in dict.fromkeys(codes)
     ]
 
 
 def _normalize_business_intent_codes(intent_codes: list[str]) -> list[str]:
-    """把历史读意图与空结果统一折叠成 `none`。
+    """把历史别名与旧只读编码折叠成稳定业务意图。
 
     功能：
-        文档层已经把第二阶段语义收敛为“写意图 or none”，这里负责兼容旧 catalog
-        中残留的 `query_business_data` / `query_detail_data` 等只读编码。
+        文档层已经把第二阶段语义收敛为 `saveToServer / deleteCustomer / none`，
+        这里负责吸收旧 Prompt、旧 catalog 与高风险别名的历史债务，避免外部契约继续漂移。
     """
-    write_codes = [
-        code
-        for code in intent_codes
-        if code in _ALLOWED_BUSINESS_INTENTS and code not in _LEGACY_READ_BUSINESS_INTENT_CODES
-    ]
-    return list(dict.fromkeys(write_codes)) or ["none"]
+    return normalize_business_intent_codes(intent_codes)
 
 
 def _build_runtime_actions(action_codes: set[str] | None = None) -> list[ApiQueryUIAction]:
@@ -912,10 +910,7 @@ async def _build_stage2_degrade_response(
             "user_query": query,
             "skip_message": message,
             "error": message,
-            "context_pool": {
-                step_id: step.model_dump(exclude_none=True)
-                for step_id, step in context_pool.items()
-            },
+            "context_pool": {step_id: step.model_dump(exclude_none=True) for step_id, step in context_pool.items()},
             "business_intents": [intent.model_dump() for intent in business_intents],
         },
         status=execution_result.status,
