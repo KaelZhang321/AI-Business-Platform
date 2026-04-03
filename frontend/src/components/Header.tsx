@@ -3,7 +3,6 @@ import React from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Volume2, Zap, Bell, Stethoscope, Activity } from 'lucide-react';
 import { NOTICES } from '../data/mockData';
-import { exportToHtml, exportToImage } from '../lib/exportUtils';
 import type { AppPage } from '../navigation';
 import { PAGE_TITLES } from '../navigation';
 
@@ -14,15 +13,6 @@ interface HeaderProps {
 }
 
 export function Header({ currentNoticeIndex, currentPage, currentUserName }: HeaderProps) {
-  const handleExportHtml = () => {
-    const fileName = `丽滋卡尔_${currentPage}_${new Date().toISOString().split('T')[0]}.html`;
-    exportToHtml('root-app-container', fileName);
-  };
-
-  const handleExportImage = () => {
-    const fileName = `丽滋卡尔_${currentPage}_${new Date().toISOString().split('T')[0]}.png`;
-    exportToImage('root-app-container', fileName);
-  };
 
   return (
     <header className="h-20 bg-white/40 backdrop-blur-xl border-b border-slate-200/60 flex items-center justify-between px-8 shrink-0 z-20">

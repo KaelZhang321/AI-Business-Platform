@@ -27,7 +27,7 @@ export interface AiQueryResponse {
 }
 
 export const postAiQuery = (question: string) =>
-  client.post<ApiResponse<AiQueryResponse>>('/v1/ai/query', { question }).then(r => r.data.data)
+  client.post<ApiResponse<AiQueryResponse>>('/api/v1/bi/ai/query', { question }).then(r => r.data.data)
 
 export type SseEventType = 'sql' | 'data' | 'chart' | 'answer' | 'error'
 
@@ -40,7 +40,7 @@ export interface SseCallback {
 }
 
 export async function streamAiQuery(question: string, callbacks: SseCallback, conversationId?: string) {
-  const response = await fetch(`${apiBasePath}/v1/ai/query/stream`, {
+  const response = await fetch(`${apiBasePath}/api/v1/bi/ai/query/stream`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ question, conversation_id: conversationId }),

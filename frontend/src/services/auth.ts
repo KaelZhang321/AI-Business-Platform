@@ -48,9 +48,23 @@ export const authService = {
     return loginData;
   },
 
+  async iamLogin(code: string): Promise<LoginResponse> {
+    const response = await businessClient.get<LoginResponse>('/api/v1/auth/getAuthTokenByCode', {
+      params: { code },
+    });
+    const loginData = response.data;
+    localStorage.setItem(TOKEN_KEY, loginData.token);
+    if (loginData.refreshToken) {
+      localStorage.setItem(REFRESH_TOKEN_KEY, loginData.refreshToken);
+    }
+    console.log(loginData)
+
+    return loginData;
+  },
+
   async getMe(): Promise<UserPermission> {
     const response = await businessClient.get<UserPermission | WrappedUserPermission>(
-      '/api/v1/auth/me',
+      '/api/v1/auth/info',
     );
 
     if ('data' in response.data) {
