@@ -27,6 +27,26 @@ class DynamicUIService:
         status: ApiQueryExecutionStatus | str | None = None,
         runtime: ApiQueryUIRuntime | None = None,
     ) -> dict[str, Any] | None:
+        """按执行状态和数据形状生成 json-render 规范。
+
+        功能：
+            将 `api_query` 的执行状态机翻译为可渲染的 UI 结果，避免前端直接暴露
+            上游报错、空结果或网关跳过执行等底层细节。
+
+        Args:
+            intent: 当前 UI 生成意图，例如 `query`、`knowledge`。
+            data: 已经过网关裁剪后的渲染数据。
+            context: 渲染上下文，至少可包含 `user_query`、`context_pool`、提示文案等。
+            status: 当前主步骤的执行状态。
+            runtime: 当前查询可用的前端运行时能力定义。
+
+        Returns:
+            合法的 json-render Spec；若当前场景不适合生成 UI，则返回 `None`。
+
+        Edge Cases:
+            - `ERROR` / `EMPTY` / `SKIPPED` 优先返回 Notice，防止前端误渲染半成品表格
+            - `PARTIAL_SUCCESS` 会在正常内容上叠加风险提示，而不是直接吞掉成功数据
+        """
         execution_status = ApiQueryExecutionStatus(status) if status else None
 
         if execution_status == ApiQueryExecutionStatus.ERROR:
@@ -41,10 +61,16 @@ class DynamicUIService:
                 message=(context or {}).get("empty_message", "未查到符合条件的数据"),
                 level="info",
             )
+        if execution_status == ApiQueryExecutionStatus.SKIPPED:
+            return self._notice_spec(
+                title=(context or {}).get("title", "查询已跳过"),
+                message=(context or {}).get("skip_message", "由于缺少必要条件，当前查询未被执行。"),
+                level="info",
+            )
         if not data:
             return None
 
-        # LLM 模式：启用后优先尝试 LLM 生成，失败时回退到规则模式
+        # 规则模式是当前生产兜底，LLM 只是在满足开关时尝试提升展示质量。
         if settings.llm_ui_spec_enabled:
             try:
                 spec = await self._llm_generate_spec(intent, data, context)
@@ -58,7 +84,14 @@ class DynamicUIService:
             return self._knowledge_spec(data, context)
 
         if intent == "query" and isinstance(data, list) and data and isinstance(data[0], dict):
-            return self._query_spec(data, context, runtime)
+            spec = self._query_spec(data, context, runtime)
+            if execution_status == ApiQueryExecutionStatus.PARTIAL_SUCCESS:
+                # 保留成功数据，同时显式告诉前端这是局部成功而不是完整结果。
+                spec.setdefault("props", {})["notice"] = {
+                    "level": "warning",
+                    "message": (context or {}).get("partial_message", "部分步骤执行失败，当前仅展示成功返回的数据。"),
+                }
+            return spec
 
         if intent == "task" and isinstance(data, list):
             return self._task_spec(data)

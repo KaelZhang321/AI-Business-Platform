@@ -95,10 +95,21 @@ class ApiQueryBusinessIntent(BaseModel):
 
 
 class ApiQueryExecutionStatus(str, Enum):
+    """api_query 执行状态枚举。
+
+    约束：
+        - `SUCCESS` 表示成功拿到可渲染数据
+        - `EMPTY` 表示接口成功执行但无数据
+        - `ERROR` 表示上游调用失败
+        - `SKIPPED` 表示网关为保护链路主动跳过执行
+        - `PARTIAL_SUCCESS` 预留给未来多步骤场景
+    """
+
     SUCCESS = "SUCCESS"
     EMPTY = "EMPTY"
     ERROR = "ERROR"
     SKIPPED = "SKIPPED"
+    PARTIAL_SUCCESS = "PARTIAL_SUCCESS"
 
 
 class ApiQueryRoutingResult(BaseModel):
@@ -109,12 +120,69 @@ class ApiQueryRoutingResult(BaseModel):
 
 
 class ApiQueryExecutionResult(BaseModel):
+    """网关内部使用的执行结果包装。
+
+    功能：
+        把“成功 / 空结果 / 错误 / 跳过”统一成同一条只读执行总线，避免 route
+        层再用 `None`、异常或零散字符串去猜状态。
+
+    入参业务含义：
+        各字段由执行器或 route 填充，不直接暴露给前端动作层。
+
+    返回值约束：
+        - `status` 决定当前节点能否进入渲染
+        - `error_code` / `retryable` 只在错误或跳过场景下有意义
+        - `meta` 用于承载截断、缺参等运行时附加信息
+    """
+
     status: ApiQueryExecutionStatus = Field(..., description="执行结果状态")
     data: list[dict[str, Any]] | dict[str, Any] | None = Field(None, description="接口执行后的原始数据")
     total: int = Field(0, ge=0, description="总记录数")
     error: str | None = Field(None, description="错误信息")
+    error_code: str | None = Field(None, description="结构化错误码")
+    retryable: bool = Field(False, description="当前错误是否可重试")
     trace_id: str | None = Field(None, description="执行链路 Trace ID")
     skipped_reason: str | None = Field(None, description="跳过执行时的原因")
+    meta: dict[str, Any] = Field(default_factory=dict, description="执行附加元数据")
+
+
+class ApiQueryExecutionErrorDetail(BaseModel):
+    """供 `context_pool` 消费的结构化错误详情。
+
+    功能：
+        将上游 HTTP 错误、超时、缺参跳过等场景统一转换为 Renderer 可判别的错误对象。
+
+    返回值约束：
+        `message` 必须始终可展示给前端提示层；`code` 与 `retryable` 供后续策略判断。
+    """
+
+    code: str | None = Field(None, description="结构化错误码")
+    message: str = Field(..., description="错误信息")
+    retryable: bool = Field(False, description="是否可重试")
+
+
+class ApiQueryContextStepResult(BaseModel):
+    """`context_pool` 中单个步骤的强类型结果。
+
+    功能：
+        为 Renderer 提供稳定的步骤级事实输入，而不是把原始接口返回直接拍平成数组。
+
+    返回值约束：
+        - `data` 必须是已经过网关裁剪后的可渲染数据
+        - `error` 与 `skipped_reason` 二选一或同时为空
+        - `meta` 仅承载运行时说明，不承载前端动作定义
+    """
+
+    status: ApiQueryExecutionStatus = Field(..., description="步骤执行状态")
+    domain: str | None = Field(None, description="步骤所属业务域")
+    api_id: str | None = Field(None, description="步骤对应的接口 ID")
+    api_path: str | None = Field(None, description="步骤对应的接口路径")
+    method: str | None = Field(None, description="步骤对应的 HTTP 方法")
+    data: list[dict[str, Any]] | dict[str, Any] | None = Field(None, description="供渲染层消费的步骤数据")
+    total: int = Field(0, ge=0, description="步骤总记录数")
+    error: ApiQueryExecutionErrorDetail | None = Field(None, description="结构化错误信息")
+    skipped_reason: str | None = Field(None, description="步骤被跳过时的原因")
+    meta: dict[str, Any] = Field(default_factory=dict, description="步骤附加元数据")
 
 
 class ApiQueryUIAction(BaseModel):
@@ -193,6 +261,10 @@ class ApiQueryResponse(BaseModel):
     api_path: str | None = Field(None, description="接口路径")
     params: dict[str, Any] = Field(default_factory=dict, description="提取的参数")
     business_intents: list[ApiQueryBusinessIntent] = Field(default_factory=list, description="识别出的业务意图")
+    context_pool: dict[str, ApiQueryContextStepResult] = Field(
+        default_factory=dict,
+        description="强类型执行结果总线，供渲染层或调试使用",
+    )
     ui_runtime: ApiQueryUIRuntime | None = Field(None, description="前端运行时元数据")
     ui_spec: dict[str, Any] | None = Field(None, description="json-render UI Spec")
     data_count: int = Field(0, description="数据条数")

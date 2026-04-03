@@ -190,6 +190,10 @@ def test_api_query_returns_runtime_contract(monkeypatch) -> None:
             "description": "仅允许读操作进入 api_query 执行链路。",
         }
     ]
+    assert body["context_pool"]["step_customer_list"]["status"] == "SUCCESS"
+    assert body["context_pool"]["step_customer_list"]["domain"] == "crm"
+    assert body["context_pool"]["step_customer_list"]["api_id"] == "customer_list"
+    assert body["context_pool"]["step_customer_list"]["meta"]["render_row_limit"] == 5
     assert body["ui_runtime"]["mode"] == "read_only"
     assert set(body["ui_runtime"]["components"]) >= {"Card", "Table"}
     assert body["ui_runtime"]["detail"]["enabled"] is True

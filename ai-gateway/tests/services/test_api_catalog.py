@@ -10,8 +10,6 @@ Tests cover:
 """
 from __future__ import annotations
 
-import pytest
-
 from app.services.api_catalog.executor import (
     _apply_field_labels,
     _extract_data,
@@ -96,6 +94,12 @@ class TestExtractData:
         body = {"data": [{"id": 1}]}
         data, total = _extract_data(body, "wrong.path")
         assert len(data) == 1
+
+    def test_none_payload_becomes_empty_result(self):
+        body = {"data": None}
+        data, total = _extract_data(body, "data")
+        assert data == []
+        assert total == 0
 
 
 class TestApplyFieldLabels:

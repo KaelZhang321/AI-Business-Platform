@@ -20,7 +20,9 @@ from pydantic import BaseModel
 
 from app.models.schemas import (
     ApiQueryBusinessIntent,
+    ApiQueryContextStepResult,
     ApiQueryDetailRuntime,
+    ApiQueryExecutionErrorDetail,
     ApiQueryExecutionResult,
     ApiQueryExecutionStatus,
     ApiQueryPaginationRuntime,
@@ -50,6 +52,8 @@ _dynamic_ui: DynamicUIService | None = None
 _snapshot_service: UISnapshotService | None = None
 _bearer = HTTPBearer(auto_error=False)
 _READ_ONLY_METHODS = {"GET"}
+# 这里固定保留 5 条是为了给 Renderer 足够上下文，又避免把大结果集整包塞进生成链路导致注意力失焦。
+_CONTEXT_ROW_LIMIT = 5
 _DEFAULT_COMPONENT_TYPES = ["Card", "Metric", "Table", "List", "Form", "Tag", "Chart", "Notice"]
 _UI_ACTION_DEFINITIONS = [
     {
@@ -232,7 +236,15 @@ async def api_query(
     )
 
     # Step 3: 调用 business-server
-    execution_result = await executor.call(selected_entry, params, user_token, trace_id=trace_id)
+    missing_required_params = _find_missing_required_params(selected_entry, params)
+    if missing_required_params:
+        execution_result = _build_skipped_execution_result(
+            trace_id=trace_id,
+            missing_required_params=missing_required_params,
+        )
+    else:
+        execution_result = await executor.call(selected_entry, params, user_token, trace_id=trace_id)
+    context_pool = _build_context_pool(selected_entry, execution_result)
 
     # Step 4: 生成 UI Spec
     base_runtime = _build_ui_runtime(selected_entry, execution_result, params=params)
@@ -242,11 +254,18 @@ async def api_query(
         data=data_for_ui,
         context={
             "question": request_body.query,
+            "user_query": request_body.query,
             "title": selected_entry.description,
             "total": execution_result.total,
             "api_id": selected_entry.id,
             "error": execution_result.error,
             "empty_message": "未查到符合条件的数据，请调整筛选条件后重试。",
+            "skip_message": _build_skip_message(execution_result),
+            "context_pool": {
+                step_id: step.model_dump(exclude_none=True)
+                for step_id, step in context_pool.items()
+            },
+            "business_intents": [intent.model_dump() for intent in business_intents],
         },
         status=execution_result.status,
         runtime=base_runtime,
@@ -273,6 +292,7 @@ async def api_query(
         api_path=selected_entry.path,
         params=params,
         business_intents=business_intents,
+        context_pool=context_pool,
         ui_runtime=ui_runtime,
         ui_spec=ui_spec,
         data_count=_count_execution_rows(execution_result),
@@ -570,7 +590,8 @@ def _normalize_rows(data: list[dict[str, Any]] | dict[str, Any] | None) -> list[
 
 
 def _normalize_data_for_ui(execution_result: ApiQueryExecutionResult) -> list[dict[str, Any]]:
-    return _normalize_rows(execution_result.data)
+    data, _ = _shape_context_data(execution_result.data)
+    return _normalize_rows(data)
 
 
 def _count_execution_rows(execution_result: ApiQueryExecutionResult) -> int:
@@ -579,6 +600,157 @@ def _count_execution_rows(execution_result: ApiQueryExecutionResult) -> int:
     if isinstance(execution_result.data, list):
         return len(execution_result.data)
     return 1
+
+
+def _find_missing_required_params(
+    entry: ApiCatalogEntry,
+    params: dict[str, Any],
+) -> list[str]:
+    """找出当前请求缺失的必填参数。
+
+    功能：
+        在真正调用上游前先做一次“安全刹车”，避免因为 LLM 没抽到主键或筛选项，
+        反而触发宽查询、全表扫描或无意义的 4xx/5xx。
+
+    Args:
+        entry: 当前命中的注册表接口定义，包含 JSON Schema 的 `required` 声明。
+        params: 路由阶段提取并校验后的参数。
+
+    Returns:
+        缺失字段名列表；空列表表示可以安全执行。
+    """
+    missing: list[str] = []
+    for field in entry.param_schema.required:
+        value = params.get(field)
+        if value in (None, "", [], {}):
+            missing.append(field)
+    return missing
+
+
+def _build_skipped_execution_result(
+    *,
+    trace_id: str,
+    missing_required_params: list[str],
+) -> ApiQueryExecutionResult:
+    """为缺参场景构造 `SKIPPED` 结果。
+
+    功能：
+        把“网关主动放弃执行”的原因显式保存在状态总线里，而不是让前端只收到模糊错误。
+    """
+    return ApiQueryExecutionResult(
+        status=ApiQueryExecutionStatus.SKIPPED,
+        data=[],
+        total=0,
+        error=f"缺少必要参数：{', '.join(missing_required_params)}",
+        error_code="MISSING_REQUIRED_PARAMS",
+        trace_id=trace_id,
+        skipped_reason="missing_required_params",
+        meta={"missing_required_params": missing_required_params},
+    )
+
+
+def _build_context_pool(
+    entry: ApiCatalogEntry,
+    execution_result: ApiQueryExecutionResult,
+) -> dict[str, ApiQueryContextStepResult]:
+    """将单接口执行结果包装成 `context_pool` 结构。
+
+    功能：
+        当前 PoC 仍是单步骤执行，但这里先对齐成步骤总线形状，后续切到多步骤 DAG
+        时不需要推翻前后端契约。
+
+    Returns:
+        以 `step_<api_id>` 为 key 的步骤结果字典。
+    """
+    data, shape_meta = _shape_context_data(execution_result.data)
+    meta = dict(execution_result.meta)
+    meta.update(shape_meta)
+    return {
+        _build_step_id(entry): ApiQueryContextStepResult(
+            status=execution_result.status,
+            domain=entry.domain,
+            api_id=entry.id,
+            api_path=entry.path,
+            method=entry.method,
+            data=data,
+            total=execution_result.total,
+            error=_build_error_detail(execution_result),
+            skipped_reason=execution_result.skipped_reason,
+            meta=meta,
+        )
+    }
+
+
+def _build_step_id(entry: ApiCatalogEntry) -> str:
+    """生成稳定的步骤 ID，便于未来跨阶段引用和调试。"""
+    return f"step_{entry.id}"
+
+
+def _build_error_detail(
+    execution_result: ApiQueryExecutionResult,
+) -> ApiQueryExecutionErrorDetail | None:
+    """把内部错误语义折叠成 Renderer 可消费的结构化错误对象。"""
+    if not execution_result.error:
+        return None
+    return ApiQueryExecutionErrorDetail(
+        code=execution_result.error_code,
+        message=execution_result.error,
+        retryable=execution_result.retryable,
+    )
+
+
+def _shape_context_data(
+    data: list[dict[str, Any]] | dict[str, Any] | None,
+) -> tuple[list[dict[str, Any]] | dict[str, Any], dict[str, Any]]:
+    """裁剪进入 `context_pool` 和 Renderer 的数据体量。
+
+    功能：
+        把执行结果控制在一个稳定的上下文预算内，避免大列表在规则渲染或未来 LLM 渲染时
+        直接拖垮链路，同时通过 `meta` 保留真实行数和截断信息。
+
+    Returns:
+        `(shaped_data, meta)`，其中 `meta` 明确说明是否发生截断。
+    """
+    if data is None:
+        return [], {
+            "raw_row_count": 0,
+            "render_row_count": 0,
+            "render_row_limit": _CONTEXT_ROW_LIMIT,
+            "truncated": False,
+        }
+
+    if isinstance(data, dict):
+        return data, {
+            "raw_row_count": 1,
+            "render_row_count": 1,
+            "render_row_limit": _CONTEXT_ROW_LIMIT,
+            "truncated": False,
+        }
+
+    rows = _normalize_rows(data)
+    # 这里优先保留前几条样本，目的是服务查询结果预览，而不是在网关层承担完整翻页职责。
+    limited_rows = rows[:_CONTEXT_ROW_LIMIT]
+    truncated = len(rows) > len(limited_rows)
+    meta = {
+        "raw_row_count": len(rows),
+        "render_row_count": len(limited_rows),
+        "render_row_limit": _CONTEXT_ROW_LIMIT,
+        "truncated": truncated,
+    }
+    if truncated:
+        meta["truncated_count"] = len(rows) - len(limited_rows)
+    return limited_rows, meta
+
+
+def _build_skip_message(execution_result: ApiQueryExecutionResult) -> str:
+    """将跳过原因翻译为适合前端提示的中文文案。"""
+    if execution_result.skipped_reason == "missing_required_params":
+        missing_fields = execution_result.meta.get("missing_required_params", [])
+        if missing_fields:
+            return f"由于缺少必要参数 {', '.join(missing_fields)}，当前查询未被执行。"
+    if execution_result.error:
+        return execution_result.error
+    return "由于缺少必要条件，当前查询未被执行。"
 
 
 def _maybe_attach_snapshot(
