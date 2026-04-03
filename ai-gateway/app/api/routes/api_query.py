@@ -156,6 +156,7 @@ _LEGACY_READ_BUSINESS_INTENT_CODES = {"none", "query_business_data", "query_deta
 
 
 def _get_services() -> tuple[ApiCatalogRetriever, ApiParamExtractor, ApiExecutor, DynamicUIService, UISnapshotService]:
+    """获取 `api_query` 所需的单例服务。"""
     global _retriever, _extractor, _executor, _dynamic_ui, _snapshot_service
     if _retriever is None:
         _retriever = ApiCatalogRetriever()
@@ -430,11 +431,17 @@ def _extract_user_context(request: Request) -> dict[str, Any]:
 
 
 def _resolve_trace_id(request: Request) -> str:
+    """优先复用外部 Trace ID，缺失时由网关生成。"""
     header_trace_id = request.headers.get("X-Trace-Id") or request.headers.get("X-Request-Id")
     return header_trace_id or uuid4().hex
 
 
 def _ensure_read_only_entry(entry: ApiCatalogEntry, trace_id: str) -> None:
+    """强制拦截非只读接口。
+
+    功能：
+        `api_query` 当前阶段只允许 Read，不允许任何真实 Mutation 进入执行器。
+    """
     if entry.method in _READ_ONLY_METHODS:
         return
     logger.warning(
@@ -451,6 +458,7 @@ def _ensure_read_only_entry(entry: ApiCatalogEntry, trace_id: str) -> None:
 
 
 def _build_business_intents(intent_codes: list[str]) -> list[ApiQueryBusinessIntent]:
+    """将业务意图编码转换为对外响应对象。"""
     codes = _normalize_business_intent_codes(intent_codes)
     return [
         ApiQueryBusinessIntent(
@@ -479,6 +487,7 @@ def _normalize_business_intent_codes(intent_codes: list[str]) -> list[str]:
 
 
 def _build_runtime_actions(action_codes: set[str] | None = None) -> list[ApiQueryUIAction]:
+    """按当前运行时启用状态构造 UI 动作定义。"""
     actions: list[ApiQueryUIAction] = []
     for definition in _UI_ACTION_DEFINITIONS:
         if action_codes is not None and definition["code"] not in action_codes:
@@ -496,6 +505,12 @@ def _build_ui_runtime(
     *,
     params: dict[str, Any],
 ) -> ApiQueryUIRuntime:
+    """根据接口元数据和执行结果推导前端运行时契约。
+
+    功能：
+        把详情、分页、模板、审计等能力从“隐藏实现细节”提升为显式运行时元数据，
+        供前端决定如何做二次交互。
+    """
     rows = _normalize_rows(execution_result.data)
     action_codes = {"refresh", "export"}
     components = ["Card", "Table"]
@@ -558,6 +573,7 @@ def _finalize_ui_runtime(
     base_runtime: ApiQueryUIRuntime,
     ui_spec: dict[str, Any] | None,
 ) -> ApiQueryUIRuntime:
+    """用最终生成的 UI Spec 回填组件与动作清单。"""
     action_codes = {action.code for action in base_runtime.ui_actions}
     action_codes.update(_collect_action_types(ui_spec))
     components = _collect_component_types(ui_spec) or base_runtime.components
@@ -570,6 +586,7 @@ def _finalize_ui_runtime(
 
 
 def _collect_component_types(node: Any) -> list[str]:
+    """递归收集 UI Spec 中出现的组件类型。"""
     component_types: set[str] = set()
 
     def walk(current: Any) -> None:
@@ -588,6 +605,7 @@ def _collect_component_types(node: Any) -> list[str]:
 
 
 def _collect_action_types(node: Any) -> set[str]:
+    """递归收集 UI Spec 中出现的动作类型。"""
     action_types: set[str] = set()
 
     def walk(current: Any) -> None:
@@ -609,6 +627,7 @@ def _collect_action_types(node: Any) -> set[str]:
 
 
 def _infer_identifier_field(rows: list[dict[str, Any]]) -> str | None:
+    """从结果集字段中推测可用于详情跳转的主键列。"""
     if not rows or not isinstance(rows[0], dict):
         return None
 
@@ -627,6 +646,7 @@ def _infer_identifier_field(rows: list[dict[str, Any]]) -> str | None:
 
 
 def _infer_page_size(params: dict[str, Any], row_count: int) -> int | None:
+    """从查询参数中推断当前页大小。"""
     for key in ("pageSize", "page_size", "size", "limit"):
         value = params.get(key)
         if isinstance(value, int) and value > 0:
@@ -635,6 +655,7 @@ def _infer_page_size(params: dict[str, Any], row_count: int) -> int | None:
 
 
 def _infer_current_page(params: dict[str, Any]) -> int | None:
+    """从查询参数中推断当前页码。"""
     for key in ("page", "pageNum", "page_no", "pageIndex", "current"):
         value = params.get(key)
         if isinstance(value, int) and value > 0:
@@ -646,6 +667,7 @@ def _find_selected_entry(
     candidates: list[Any],
     routing_result: ApiQueryRoutingResult,
 ) -> ApiCatalogEntry | None:
+    """根据路由结果从候选集中找出最终命中接口。"""
     return next(
         (candidate.entry for candidate in candidates if candidate.entry.id == routing_result.selected_api_id),
         None,
@@ -653,6 +675,7 @@ def _find_selected_entry(
 
 
 def _normalize_rows(data: list[dict[str, Any]] | dict[str, Any] | None) -> list[dict[str, Any]]:
+    """把单对象或空值统一折叠成列表形态。"""
     if data is None:
         return []
     if isinstance(data, list):
@@ -663,11 +686,13 @@ def _normalize_rows(data: list[dict[str, Any]] | dict[str, Any] | None) -> list[
 
 
 def _normalize_data_for_ui(execution_result: ApiQueryExecutionResult) -> list[dict[str, Any]]:
+    """将执行结果转换成适合 UI 渲染的行列表。"""
     data, _ = _shape_context_data(execution_result.data)
     return _normalize_rows(data)
 
 
 def _count_execution_rows(execution_result: ApiQueryExecutionResult) -> int:
+    """统计当前执行结果包含的记录数。"""
     if execution_result.data is None:
         return 0
     if isinstance(execution_result.data, list):
@@ -920,6 +945,7 @@ def _maybe_attach_snapshot(
     ui_runtime: ApiQueryUIRuntime,
     metadata: dict[str, Any],
 ) -> ApiQueryUIRuntime:
+    """在高危写意图场景下挂载快照凭证。"""
     if not snapshot_service.should_capture(business_intents):
         return ui_runtime
 

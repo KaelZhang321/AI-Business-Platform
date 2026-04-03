@@ -7,6 +7,8 @@ from pydantic import BaseModel, Field
 
 
 class IntentType(str, Enum):
+    """聊天主工作流的一级意图枚举。"""
+
     CHAT = "chat"
     KNOWLEDGE = "knowledge"
     QUERY = "query"
@@ -39,13 +41,15 @@ class SSEEvent(BaseModel):
 
 
 class IntentResult(BaseModel):
-    """意图分类结果"""
+    """意图分类结果。"""
     intent: IntentType = Field(..., description="识别的意图类型")
     sub_intent: SubIntentType = Field(SubIntentType.GENERAL, description="二级意图")
     confidence: float = Field(..., ge=0, le=1, description="置信度")
 
 
 class ChatRequest(BaseModel):
+    """聊天入口请求模型。"""
+
     message: str = Field(..., description="用户输入消息")
     conversation_id: str | None = Field(None, description="会话ID，空则新建")
     user_id: str = Field(..., description="用户ID")
@@ -54,6 +58,8 @@ class ChatRequest(BaseModel):
 
 
 class ChatResponse(BaseModel):
+    """聊天入口响应模型。"""
+
     conversation_id: str
     intent: IntentType
     content: str
@@ -62,17 +68,23 @@ class ChatResponse(BaseModel):
 
 
 class KnowledgeSearchRequest(BaseModel):
+    """知识检索请求模型。"""
+
     query: str = Field(..., description="检索查询")
     top_k: int = Field(5, ge=1, le=20, description="返回结果数")
     doc_types: list[str] | None = Field(None, description="文档类型过滤")
 
 
 class KnowledgeSearchResponse(BaseModel):
+    """知识检索响应模型。"""
+
     results: list[KnowledgeResult]
     total: int
 
 
 class KnowledgeResult(BaseModel):
+    """知识检索命中结果。"""
+
     doc_id: str
     title: str
     content: str
@@ -82,12 +94,16 @@ class KnowledgeResult(BaseModel):
 
 
 class ApiQueryRequest(BaseModel):
+    """`api_query` 的自然语言请求模型。"""
+
     query: str = Field(..., min_length=1, max_length=500, description="用户自然语言输入")
     conversation_id: str | None = Field(None, description="对话 ID（保留，用于未来多轮记忆）")
     top_k: int = Field(3, ge=1, le=5, description="候选接口数量")
 
 
 class ApiQueryBusinessIntent(BaseModel):
+    """第二阶段输出的业务意图对象。"""
+
     code: str = Field(..., description="业务意图编码")
     name: str = Field(..., description="业务意图名称")
     category: Literal["read", "write"] = Field(..., description="业务意图分类")
@@ -113,6 +129,12 @@ class ApiQueryExecutionStatus(str, Enum):
 
 
 class ApiQueryRoutingResult(BaseModel):
+    """第二阶段内部路由结果。
+
+    功能：
+        同时承载轻量路由与候选内路由的结构化结果，避免两套临时 dict 并行存在。
+    """
+
     selected_api_id: str | None = Field(None, description="路由命中的接口 ID")
     query_domains: list[str] = Field(default_factory=list, description="本次查询命中的业务域")
     business_intents: list[str] = Field(default_factory=list, description="路由阶段识别出的业务意图编码")
@@ -190,6 +212,8 @@ class ApiQueryContextStepResult(BaseModel):
 
 
 class ApiQueryUIAction(BaseModel):
+    """前端运行时动作定义。"""
+
     code: str = Field(..., description="前端动作编码")
     description: str = Field(..., description="前端动作说明")
     enabled: bool = Field(True, description="当前运行时是否已启用")
@@ -197,6 +221,8 @@ class ApiQueryUIAction(BaseModel):
 
 
 class ApiQueryDetailRuntime(BaseModel):
+    """详情页运行时契约。"""
+
     enabled: bool = Field(False, description="是否具备详情运行时信息")
     api_id: str | None = Field(None, description="详情查询使用的接口 ID")
     route_url: str | None = Field(None, description="建议调用的网关路由")
@@ -208,6 +234,8 @@ class ApiQueryDetailRuntime(BaseModel):
 
 
 class ApiQueryPaginationRuntime(BaseModel):
+    """分页运行时契约。"""
+
     enabled: bool = Field(False, description="是否具备分页运行时信息")
     api_id: str | None = Field(None, description="分页刷新使用的接口 ID")
     total: int = Field(0, ge=0, description="总记录数")
@@ -220,6 +248,8 @@ class ApiQueryPaginationRuntime(BaseModel):
 
 
 class ApiQueryTemplateRuntime(BaseModel):
+    """模板快路运行时契约。"""
+
     enabled: bool = Field(False, description="是否命中模板快路")
     template_code: str | None = Field(None, description="模板编码")
     ui_action: str | None = Field(None, description="推荐的前端动作编码")
@@ -228,6 +258,8 @@ class ApiQueryTemplateRuntime(BaseModel):
 
 
 class ApiQueryAuditRuntime(BaseModel):
+    """写前快照审计运行时契约。"""
+
     enabled: bool = Field(False, description="是否启用写前快照审计")
     snapshot_required: bool = Field(False, description="是否要求生成快照")
     snapshot_id: str | None = Field(None, description="快照 ID，未生成时为空")
@@ -235,6 +267,8 @@ class ApiQueryAuditRuntime(BaseModel):
 
 
 class ApiQueryUIRuntime(BaseModel):
+    """`api_query` 返回给前端的运行时元数据总线。"""
+
     mode: Literal["read_only"] = Field("read_only", description="当前 `api_query` 的运行模式")
     components: list[str] = Field(default_factory=list, description="当前 spec 使用到的组件类型")
     ui_actions: list[ApiQueryUIAction] = Field(default_factory=list, description="当前运行时动作定义")
@@ -248,6 +282,8 @@ class ApiQueryUIRuntime(BaseModel):
 
 
 class ApiQueryRuntimeMetadataResponse(BaseModel):
+    """`runtime-metadata` 接口响应模型。"""
+
     version: str = Field("v1", description="运行时元数据版本")
     business_intent_categories: list[str] = Field(default_factory=lambda: ["read", "write"])
     ui_runtime: ApiQueryUIRuntime = Field(..., description="UI 运行时元数据")
@@ -255,6 +291,13 @@ class ApiQueryRuntimeMetadataResponse(BaseModel):
 
 
 class ApiQueryResponse(BaseModel):
+    """`api_query` 主接口响应模型。
+
+    功能：
+        把执行状态、上下文总线、运行时契约和最终 UI Spec 收敛在一个稳定 envelope 中，
+        供前端和后续 Java 集成同时消费。
+    """
+
     trace_id: str = Field(..., description="网关生成或透传的链路追踪 ID")
     query_domains: list[str] = Field(default_factory=list, description="本次查询命中的业务域")
     execution_status: ApiQueryExecutionStatus = Field(
@@ -277,11 +320,15 @@ class ApiQueryResponse(BaseModel):
 
 
 class QueryDomain(str, Enum):
+    """Text2SQL 当前支持的查询域枚举。"""
+
     GENERIC = "generic"
     MEETING_BI = "meeting_bi"
 
 
 class Text2SQLRequest(BaseModel):
+    """统一问数请求模型。"""
+
     question: str = Field(..., description="自然语言查询问题")
     database: str = Field("default", description="目标数据库")
     domain: QueryDomain | None = Field(None, description="查询域，空则由服务自动判定")
@@ -289,6 +336,8 @@ class Text2SQLRequest(BaseModel):
 
 
 class Text2SQLResponse(BaseModel):
+    """统一问数响应模型。"""
+
     sql: str = Field(..., description="生成的SQL")
     explanation: str = Field(..., description="SQL解释")
     domain: QueryDomain = Field(QueryDomain.GENERIC, description="实际命中的查询域")
@@ -298,20 +347,28 @@ class Text2SQLResponse(BaseModel):
 
 
 class TrainItem(BaseModel):
+    """Text2SQL 单条训练样本。"""
+
     question: str = Field(..., description="自然语言问题")
     sql: str = Field(..., description="对应的SQL语句")
 
 
 class TrainRequest(BaseModel):
+    """Text2SQL 训练请求。"""
+
     items: list[TrainItem] = Field(..., description="训练数据列表")
 
 
 class TrainResponse(BaseModel):
+    """Text2SQL 训练响应。"""
+
     status: str = "ok"
     count: int = Field(..., description="训练条目数")
 
 
 class HealthResponse(BaseModel):
+    """健康检查响应。"""
+
     status: str = "ok"
     version: str = "0.1.0"
     services: dict[str, str] = Field(default_factory=dict)
