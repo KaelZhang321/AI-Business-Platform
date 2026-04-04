@@ -169,6 +169,41 @@ class ApiQueryRoutingResult(BaseModel):
     params: dict[str, Any] = Field(default_factory=dict, description="提取后的接口参数")
 
 
+class ApiQueryPlanStep(BaseModel):
+    """第三阶段 DAG 中的单个只读执行步骤。
+
+    功能：
+        将 Planner 生成的图纸收敛成稳定的步骤对象，供网关做白名单校验、
+        JSONPath 依赖绑定与拓扑执行。
+
+    返回值约束：
+        - `api_path` 必须命中第二阶段召回出的 GET 接口
+        - `depends_on` 只描述前置步骤 ID，不描述执行器细节
+        - `params` 允许包含字面量和 JSONPath 绑定表达式
+    """
+
+    step_id: str = Field(..., min_length=1, description="DAG 内部唯一步骤标识")
+    api_path: str = Field(..., min_length=1, description="步骤对应的目标接口路径")
+    params: dict[str, Any] = Field(default_factory=dict, description="步骤参数，可包含 JSONPath 绑定")
+    depends_on: list[str] = Field(default_factory=list, description="前置依赖步骤 ID 列表")
+
+
+class ApiQueryExecutionPlan(BaseModel):
+    """第三阶段 Planner 输出的只读执行计划。
+
+    功能：
+        作为 Stage-3 的核心中间态，承接“大模型图纸”与“物理执行总线”之间的
+        契约，避免后续流程直接消费松散 dict。
+
+    返回值约束：
+        - `plan_id` 必须稳定存在，便于日志追踪和问题复盘
+        - `steps` 至少包含一个步骤
+    """
+
+    plan_id: str = Field(..., min_length=1, description="执行计划唯一标识")
+    steps: list[ApiQueryPlanStep] = Field(default_factory=list, min_length=1, description="执行步骤列表")
+
+
 class ApiQueryExecutionResult(BaseModel):
     """网关内部使用的执行结果包装。
 
@@ -328,6 +363,7 @@ class ApiQueryResponse(BaseModel):
         ApiQueryExecutionStatus.SUCCESS,
         description="本次接口执行状态",
     )
+    execution_plan: ApiQueryExecutionPlan | None = Field(None, description="第三阶段生成的只读执行计划")
     api_id: str | None = Field(None, description="命中的接口 ID")
     api_path: str | None = Field(None, description="接口路径")
     params: dict[str, Any] = Field(default_factory=dict, description="提取的参数")

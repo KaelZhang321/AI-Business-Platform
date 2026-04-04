@@ -36,6 +36,8 @@ from app.models.schemas import (
     ApiQueryUIRuntime,
 )
 from app.services.api_catalog.executor import ApiExecutor
+from app.services.api_catalog.dag_executor import ApiDagExecutor, DagExecutionReport, DagStepExecutionRecord
+from app.services.api_catalog.dag_planner import ApiDagPlanner, DagPlanValidationError, build_single_step_plan
 from app.services.api_catalog.business_intents import (
     CANONICAL_BUSINESS_INTENTS,
     normalize_business_intent_codes,
@@ -54,6 +56,7 @@ router = APIRouter(prefix="/api-query", tags=["API Query"])
 _retriever: ApiCatalogRetriever | None = None
 _extractor: ApiParamExtractor | None = None
 _executor: ApiExecutor | None = None
+_planner: ApiDagPlanner | None = None
 _dynamic_ui: DynamicUIService | None = None
 _snapshot_service: UISnapshotService | None = None
 _bearer = HTTPBearer(auto_error=False)
@@ -160,6 +163,14 @@ def _get_services() -> tuple[ApiCatalogRetriever, ApiParamExtractor, ApiExecutor
     return _retriever, _extractor, _executor, _dynamic_ui, _snapshot_service
 
 
+def _get_planner() -> ApiDagPlanner:
+    """获取第三阶段 Planner 单例。"""
+    global _planner
+    if _planner is None:
+        _planner = ApiDagPlanner()
+    return _planner
+
+
 # ── 请求 / 响应 Schema ───────────────────────────────────────────
 
 
@@ -241,87 +252,136 @@ async def api_query(
             reasoning=route_hint.reasoning,
         )
 
-    # Step 3: 在候选集中完成最终接口选择与参数提取。
-    routing_result = await extractor.extract_routing_result(
-        request_body.query,
-        candidates,
-        user_context,
-        allowed_business_intents=_ROUTE_ALLOWED_BUSINESS_INTENT_CODES,
-        routing_hints=route_hint,
-    )
-    if routing_result.route_status != "ok":
-        logger.info(
-            "api_query[%s] route-and-extract degraded code=%s query=%s",
-            trace_id,
-            routing_result.route_error_code,
-            request_body.query[:100],
+    # Step 3: 构造第三阶段执行计划。单候选仍走确定性一跳计划，避免把稳定链路暴露给额外模型波动。
+    planning_intent_codes = list(route_hint.business_intents)
+    if len(candidates) == 1:
+        routing_result = await extractor.extract_routing_result(
+            request_body.query,
+            candidates,
+            user_context,
+            allowed_business_intents=_ROUTE_ALLOWED_BUSINESS_INTENT_CODES,
+            routing_hints=route_hint,
         )
-        return await _build_stage2_degrade_response(
-            dynamic_ui,
-            trace_id=trace_id,
-            query=request_body.query,
-            title="无法确定查询接口",
-            message="我找到了相关业务域，但还无法稳定确定具体接口，请补充更明确的查询条件后重试。",
-            error_code=routing_result.route_error_code or "route_and_extract_failed",
-            query_domains=routing_result.query_domains or route_hint.query_domains,
-            business_intent_codes=routing_result.business_intents or route_hint.business_intents,
-            reasoning=routing_result.reasoning or route_hint.reasoning,
-        )
+        if routing_result.route_status != "ok":
+            logger.info(
+                "api_query[%s] route-and-extract degraded code=%s query=%s",
+                trace_id,
+                routing_result.route_error_code,
+                request_body.query[:100],
+            )
+            return await _build_stage2_degrade_response(
+                dynamic_ui,
+                trace_id=trace_id,
+                query=request_body.query,
+                title="无法确定查询接口",
+                message="我找到了相关业务域，但还无法稳定确定具体接口，请补充更明确的查询条件后重试。",
+                error_code=routing_result.route_error_code or "route_and_extract_failed",
+                query_domains=routing_result.query_domains or route_hint.query_domains,
+                business_intent_codes=routing_result.business_intents or route_hint.business_intents,
+                reasoning=routing_result.reasoning or route_hint.reasoning,
+            )
 
-    selected_entry = _find_selected_entry(candidates, routing_result)
-    if selected_entry is None:
-        logger.info("api_query[%s] extractor could not choose endpoint", trace_id)
-        return await _build_stage2_degrade_response(
-            dynamic_ui,
-            trace_id=trace_id,
-            query=request_body.query,
-            title="无法确定查询接口",
-            message="当前输入关联了多个候选接口，但仍缺少足够信息来确定最终查询目标。",
-            error_code="selected_api_unresolved",
-            query_domains=routing_result.query_domains or route_hint.query_domains,
-            business_intent_codes=routing_result.business_intents or route_hint.business_intents,
-            reasoning=routing_result.reasoning or route_hint.reasoning,
-        )
+        selected_entry = _find_selected_entry(candidates, routing_result)
+        if selected_entry is None:
+            logger.info("api_query[%s] extractor could not choose endpoint", trace_id)
+            return await _build_stage2_degrade_response(
+                dynamic_ui,
+                trace_id=trace_id,
+                query=request_body.query,
+                title="无法确定查询接口",
+                message="当前输入关联了多个候选接口，但仍缺少足够信息来确定最终查询目标。",
+                error_code="selected_api_unresolved",
+                query_domains=routing_result.query_domains or route_hint.query_domains,
+                business_intent_codes=routing_result.business_intents or route_hint.business_intents,
+                reasoning=routing_result.reasoning or route_hint.reasoning,
+            )
 
-    _ensure_read_only_entry(selected_entry, trace_id)
-    params = dict(routing_result.params)
-    internal_query_domains = routing_result.query_domains or route_hint.query_domains or [selected_entry.domain]
-    query_domains = _format_query_domains_for_response(internal_query_domains)
-    business_intents = _build_business_intents(routing_result.business_intents or route_hint.business_intents)
-
-    # Step 3: 调用 business-server
-    missing_required_params = _find_missing_required_params(selected_entry, params)
-    if missing_required_params:
-        execution_result = _build_skipped_execution_result(
-            trace_id=trace_id,
-            missing_required_params=missing_required_params,
+        _ensure_read_only_entry(selected_entry, trace_id)
+        planning_intent_codes = list(routing_result.business_intents or route_hint.business_intents)
+        plan = build_single_step_plan(
+            selected_entry,
+            routing_result.params,
+            step_id=_build_step_id(selected_entry),
+            plan_id=f"dag_{trace_id[:8]}",
         )
     else:
-        execution_result = await executor.call(selected_entry, params, user_token, trace_id=trace_id)
-    context_pool = _build_context_pool(selected_entry, execution_result)
+        planner = _get_planner()
+        try:
+            plan = await planner.build_plan(
+                request_body.query,
+                candidates,
+                user_context,
+                route_hint,
+            )
+        except DagPlanValidationError as exc:
+            logger.info("api_query[%s] planner degraded code=%s", trace_id, exc.code)
+            return await _build_stage3_degrade_response(
+                dynamic_ui,
+                trace_id=trace_id,
+                query=request_body.query,
+                title="数据执行计划生成失败",
+                message="我找到了相关接口，但当前还无法稳定生成可执行的数据流，请补充更明确的查询链路后重试。",
+                error_code=exc.code,
+                query_domains=route_hint.query_domains,
+                business_intent_codes=planning_intent_codes,
+                reasoning=str(exc),
+            )
 
-    # Step 4: 生成 UI Spec
-    base_runtime = _build_ui_runtime(selected_entry, execution_result, params=params)
-    data_for_ui = _normalize_data_for_ui(execution_result)
+    # Step 4: 对 DAG 做白名单与依赖校验，任何脏图纸都不能进入物理执行阶段。
+    planner = _get_planner()
+    try:
+        step_entries = planner.validate_plan(plan, candidates)
+    except DagPlanValidationError as exc:
+        logger.info("api_query[%s] planner validation degraded code=%s", trace_id, exc.code)
+        return await _build_stage3_degrade_response(
+            dynamic_ui,
+            trace_id=trace_id,
+            query=request_body.query,
+            title="数据执行计划校验失败",
+            message="系统生成的数据依赖图存在安全风险，已终止执行以保护业务系统。",
+            error_code=exc.code,
+            query_domains=route_hint.query_domains,
+            business_intent_codes=planning_intent_codes,
+            reasoning=str(exc),
+        )
+
+    dag_executor = ApiDagExecutor(executor)
+    execution_report = await dag_executor.execute_plan(
+        plan,
+        step_entries,
+        user_token=user_token,
+        trace_id=trace_id,
+    )
+    context_pool = _build_plan_context_pool(execution_report)
+    aggregate_status = _summarize_execution_report(execution_report)
+    anchor_record = _select_response_anchor(execution_report)
+    internal_query_domains = _collect_execution_domains(execution_report, route_hint.query_domains)
+    query_domains = _format_query_domains_for_response(internal_query_domains)
+    business_intents = _build_business_intents(planning_intent_codes)
+
+    # Step 5: 按多步骤执行结果构造当前规则渲染器仍能消费的数据视图。
+    data_for_ui = _build_ui_data_from_execution_report(execution_report, anchor_record)
+    runtime = _build_runtime_from_execution_report(execution_report, anchor_record)
     ui_spec = await dynamic_ui.generate_ui_spec(
         intent="query",
         data=data_for_ui,
         context={
             "question": request_body.query,
             "user_query": request_body.query,
-            "title": selected_entry.description,
-            "total": execution_result.total,
-            "api_id": selected_entry.id,
-            "error": execution_result.error,
+            "title": _build_execution_title(execution_report, anchor_record),
+            "total": _build_response_total(anchor_record),
+            "api_id": anchor_record.entry.id if anchor_record else None,
+            "error": _build_response_error(execution_report),
             "empty_message": "未查到符合条件的数据，请调整筛选条件后重试。",
-            "skip_message": _build_skip_message(execution_result),
+            "skip_message": _build_execution_skip_message(execution_report),
+            "partial_message": "部分步骤执行失败或被短路，当前仅展示可安全返回的数据。",
             "context_pool": {step_id: step.model_dump(exclude_none=True) for step_id, step in context_pool.items()},
             "business_intents": [intent.model_dump() for intent in business_intents],
         },
-        status=execution_result.status,
-        runtime=base_runtime,
+        status=aggregate_status,
+        runtime=runtime,
     )
-    ui_runtime = _finalize_ui_runtime(base_runtime, ui_spec)
+    ui_runtime = _finalize_ui_runtime(runtime, ui_spec)
     ui_runtime = _maybe_attach_snapshot(
         snapshot_service,
         trace_id=trace_id,
@@ -329,8 +389,10 @@ async def api_query(
         ui_spec=ui_spec,
         ui_runtime=ui_runtime,
         metadata={
-            "api_id": selected_entry.id,
-            "api_path": selected_entry.path,
+            "plan_id": plan.plan_id,
+            "step_ids": [step.step_id for step in plan.steps],
+            "api_id": anchor_record.entry.id if anchor_record else None,
+            "api_path": anchor_record.entry.path if anchor_record else None,
             "query_domains": query_domains,
             "retrieval_filters": retrieval_filters.model_dump(),
         },
@@ -339,17 +401,18 @@ async def api_query(
     return ApiQueryResponse(
         trace_id=trace_id,
         query_domains=query_domains,
-        execution_status=execution_result.status,
-        api_id=selected_entry.id,
-        api_path=selected_entry.path,
-        params=params,
+        execution_status=aggregate_status,
+        execution_plan=plan,
+        api_id=anchor_record.entry.id if anchor_record else None,
+        api_path=anchor_record.entry.path if anchor_record else None,
+        params=anchor_record.resolved_params if anchor_record else {},
         business_intents=business_intents,
         context_pool=context_pool,
         ui_runtime=ui_runtime,
         ui_spec=ui_spec,
-        data_count=_count_execution_rows(execution_result),
-        total=execution_result.total,
-        error=execution_result.error,
+        data_count=_count_ui_data_rows(data_for_ui, anchor_record, step_count=len(execution_report.records_by_step_id)),
+        total=_build_response_total(anchor_record),
+        error=_build_response_error(execution_report),
     )
 
 
@@ -725,6 +788,100 @@ def _find_selected_entry(
     )
 
 
+def _build_plan_context_pool(execution_report: DagExecutionReport) -> dict[str, ApiQueryContextStepResult]:
+    """将第三阶段执行报告转换成多步骤 `context_pool`。
+
+    功能：
+        `context_pool` 是第四、五阶段之间最关键的事实总线。这里必须保留每一步的
+        状态、数据与运行时元信息，避免 Renderer 在多步骤场景下重新“猜”来源。
+    """
+    context_pool: dict[str, ApiQueryContextStepResult] = {}
+
+    for step_id in execution_report.execution_order:
+        record = execution_report.records_by_step_id[step_id]
+        context_pool.update(
+            _build_context_pool(
+                record.entry,
+                record.execution_result,
+                step_id=record.step.step_id,
+                extra_meta={
+                    "plan_id": execution_report.plan.plan_id,
+                    "depends_on": list(record.step.depends_on),
+                    "resolved_params": record.resolved_params,
+                },
+            )
+        )
+
+    return context_pool
+
+
+def _summarize_execution_report(execution_report: DagExecutionReport) -> ApiQueryExecutionStatus:
+    """将多步骤执行结果收敛成对外主状态。
+
+    功能：
+        旧版 `api_query` 只有一个主步骤，现在需要在多步骤下给前端一个稳定总状态。
+        这里优先表达“是否还有可展示的成功数据”，其次再表达是否发生部分失败。
+    """
+    statuses = [record.execution_result.status for record in execution_report.records_by_step_id.values()]
+
+    if not statuses:
+        return ApiQueryExecutionStatus.SKIPPED
+
+    has_success = any(status == ApiQueryExecutionStatus.SUCCESS for status in statuses)
+    has_error = any(status == ApiQueryExecutionStatus.ERROR for status in statuses)
+    has_skipped = any(status == ApiQueryExecutionStatus.SKIPPED for status in statuses)
+
+    if has_success and (has_error or has_skipped):
+        return ApiQueryExecutionStatus.PARTIAL_SUCCESS
+    if has_success:
+        return ApiQueryExecutionStatus.SUCCESS
+    if has_error:
+        return ApiQueryExecutionStatus.ERROR
+    if all(status == ApiQueryExecutionStatus.EMPTY for status in statuses):
+        return ApiQueryExecutionStatus.EMPTY
+    if any(status == ApiQueryExecutionStatus.EMPTY for status in statuses):
+        return ApiQueryExecutionStatus.EMPTY
+    return ApiQueryExecutionStatus.SKIPPED
+
+
+def _select_response_anchor(execution_report: DagExecutionReport) -> DagStepExecutionRecord | None:
+    """选择对外响应锚点步骤。
+
+    功能：
+        当前规则渲染器仍然更擅长消费“一个主结果”。这里优先选择最后一个成功步骤，
+        若不存在，再回退到最后一个空结果或最后执行步骤，保证响应 envelope 有稳定锚点。
+    """
+    ordered_records = [
+        execution_report.records_by_step_id[step_id]
+        for step_id in execution_report.execution_order
+    ]
+
+    for candidate_status in (
+        ApiQueryExecutionStatus.SUCCESS,
+        ApiQueryExecutionStatus.EMPTY,
+        ApiQueryExecutionStatus.SKIPPED,
+        ApiQueryExecutionStatus.ERROR,
+    ):
+        for record in reversed(ordered_records):
+            if record.execution_result.status == candidate_status:
+                return record
+
+    return ordered_records[-1] if ordered_records else None
+
+
+def _collect_execution_domains(execution_report: DagExecutionReport, fallback_domains: list[str]) -> list[str]:
+    """汇总执行过程中实际涉及的业务域。"""
+    executed_domains = []
+    for step_id in execution_report.execution_order:
+        domain = execution_report.records_by_step_id[step_id].entry.domain
+        if domain and domain not in executed_domains:
+            executed_domains.append(domain)
+
+    if executed_domains:
+        return executed_domains
+    return list(fallback_domains)
+
+
 def _normalize_rows(data: list[dict[str, Any]] | dict[str, Any] | None) -> list[dict[str, Any]]:
     """把单对象或空值统一折叠成列表形态。"""
     if data is None:
@@ -734,6 +891,41 @@ def _normalize_rows(data: list[dict[str, Any]] | dict[str, Any] | None) -> list[
     if isinstance(data, dict):
         return [data]
     return []
+
+
+def _build_ui_data_from_execution_report(
+    execution_report: DagExecutionReport,
+    anchor_record: DagStepExecutionRecord | None,
+) -> list[dict[str, Any]]:
+    """为当前规则渲染器构造可展示的数据集。
+
+    功能：
+        多步骤 DAG 完成后，前端规则渲染器未必能直接理解整个 `context_pool`。
+        这里做一个保守桥接：
+
+        - 单步骤：继续展示原始业务数据
+        - 多步骤：展示步骤摘要表，至少保证用户能看到每一步做了什么、结果如何
+    """
+    if len(execution_report.records_by_step_id) <= 1 and anchor_record is not None:
+        return _normalize_data_for_ui(anchor_record.execution_result)
+
+    summary_rows: list[dict[str, Any]] = []
+    for step_id in execution_report.execution_order:
+        record = execution_report.records_by_step_id[step_id]
+        shaped_data, shaped_meta = _shape_context_data(record.execution_result.data)
+        summary_rows.append(
+            {
+                "stepId": step_id,
+                "domain": record.entry.domain,
+                "apiPath": record.entry.path,
+                "status": record.execution_result.status.value,
+                "recordCount": _count_execution_rows(record.execution_result),
+                "renderCount": shaped_meta["render_row_count"],
+                "truncated": shaped_meta["truncated"],
+            }
+        )
+
+    return summary_rows
 
 
 def _normalize_data_for_ui(execution_result: ApiQueryExecutionResult) -> list[dict[str, Any]]:
@@ -749,6 +941,80 @@ def _count_execution_rows(execution_result: ApiQueryExecutionResult) -> int:
     if isinstance(execution_result.data, list):
         return len(execution_result.data)
     return 1
+
+
+def _count_ui_data_rows(
+    ui_rows: list[dict[str, Any]],
+    anchor_record: DagStepExecutionRecord | None,
+    *,
+    step_count: int,
+) -> int:
+    """统计响应层对外展示的数据条数。"""
+    if step_count == 1 and anchor_record is not None and anchor_record.execution_result.status in {
+        ApiQueryExecutionStatus.SUCCESS,
+        ApiQueryExecutionStatus.EMPTY,
+    }:
+        return _count_execution_rows(anchor_record.execution_result)
+    return len(ui_rows)
+
+
+def _build_runtime_from_execution_report(
+    execution_report: DagExecutionReport,
+    anchor_record: DagStepExecutionRecord | None,
+) -> ApiQueryUIRuntime:
+    """根据执行报告推导前端运行时契约。
+
+    功能：
+        单步骤结果仍可复用原有详情/分页/模板契约；多步骤场景先收敛为保守的
+        只读工作台，避免把错误的详情/翻页动作挂到摘要表上。
+    """
+    if len(execution_report.records_by_step_id) == 1 and anchor_record is not None:
+        return _build_ui_runtime(
+            anchor_record.entry,
+            anchor_record.execution_result,
+            params=anchor_record.resolved_params,
+        )
+
+    return ApiQueryUIRuntime(
+        components=["Card", "Table", "Notice"],
+        ui_actions=_build_runtime_actions({"refresh", "export"}),
+    )
+
+
+def _build_execution_title(
+    execution_report: DagExecutionReport,
+    anchor_record: DagStepExecutionRecord | None,
+) -> str:
+    """生成多步骤查询在 UI 顶部展示的标题。"""
+    if len(execution_report.records_by_step_id) <= 1 and anchor_record is not None:
+        return anchor_record.entry.description
+    return f"执行计划 {execution_report.plan.plan_id}"
+
+
+def _build_response_total(anchor_record: DagStepExecutionRecord | None) -> int:
+    """提取当前响应锚点的总记录数。"""
+    if anchor_record is None:
+        return 0
+    return anchor_record.execution_result.total
+
+
+def _build_response_error(execution_report: DagExecutionReport) -> str | None:
+    """提取多步骤执行的代表性错误信息。"""
+    for step_id in execution_report.execution_order:
+        record = execution_report.records_by_step_id[step_id]
+        if record.execution_result.error:
+            return record.execution_result.error
+    return None
+
+
+def _build_execution_skip_message(execution_report: DagExecutionReport) -> str:
+    """把多步骤跳过原因收敛成适合前端展示的文案。"""
+    for step_id in execution_report.execution_order:
+        record = execution_report.records_by_step_id[step_id]
+        execution_result = record.execution_result
+        if execution_result.status == ApiQueryExecutionStatus.SKIPPED:
+            return _build_skip_message(execution_result)
+    return "由于缺少必要条件，当前查询未被执行。"
 
 
 def _find_missing_required_params(
@@ -801,21 +1067,26 @@ def _build_skipped_execution_result(
 def _build_context_pool(
     entry: ApiCatalogEntry,
     execution_result: ApiQueryExecutionResult,
+    *,
+    step_id: str | None = None,
+    extra_meta: dict[str, Any] | None = None,
 ) -> dict[str, ApiQueryContextStepResult]:
     """将单接口执行结果包装成 `context_pool` 结构。
 
     功能：
-        当前 PoC 仍是单步骤执行，但这里先对齐成步骤总线形状，后续切到多步骤 DAG
-        时不需要推翻前后端契约。
+        这里既服务当前的单步骤直达路径，也服务第三阶段多步骤 DAG 汇总。
+        因此步骤 ID 和附加元数据都允许由上层覆盖，避免未来再次改契约。
 
     Returns:
-        以 `step_<api_id>` 为 key 的步骤结果字典。
+        以 `step_id` 为 key 的步骤结果字典。
     """
     data, shape_meta = _shape_context_data(execution_result.data)
     meta = dict(execution_result.meta)
     meta.update(shape_meta)
+    if extra_meta:
+        meta.update(extra_meta)
     return {
-        _build_step_id(entry): ApiQueryContextStepResult(
+        step_id or _build_step_id(entry): ApiQueryContextStepResult(
             status=execution_result.status,
             domain=entry.domain,
             api_id=entry.id,
@@ -893,6 +1164,11 @@ def _shape_context_data(
 
 def _build_skip_message(execution_result: ApiQueryExecutionResult) -> str:
     """将跳过原因翻译为适合前端提示的中文文案。"""
+    if execution_result.skipped_reason == "skipped_due_to_empty_upstream":
+        empty_bindings = execution_result.meta.get("empty_bindings", [])
+        if empty_bindings:
+            return "由于上游步骤未返回可继续传递的数据，当前依赖步骤已被安全跳过。"
+        return "由于上游步骤没有返回可用数据，当前查询未继续执行。"
     if execution_result.skipped_reason == "missing_required_params":
         missing_fields = execution_result.meta.get("missing_required_params", [])
         if missing_fields:
@@ -947,6 +1223,84 @@ async def _build_stage2_degrade_response(
             skipped_reason=error_code,
             meta={
                 "stage": "stage2",
+                "query_domains": response_query_domains,
+                "reasoning": reasoning,
+            },
+        )
+    }
+    base_runtime = ApiQueryUIRuntime(
+        components=["Card", "Notice"],
+        ui_actions=_build_runtime_actions({"refresh"}),
+    )
+    ui_spec = await dynamic_ui.generate_ui_spec(
+        intent="query",
+        data=[],
+        context={
+            "title": title,
+            "user_query": query,
+            "skip_message": message,
+            "error": message,
+            "context_pool": {step_id: step.model_dump(exclude_none=True) for step_id, step in context_pool.items()},
+            "business_intents": [intent.model_dump() for intent in business_intents],
+        },
+        status=execution_result.status,
+        runtime=base_runtime,
+    )
+    ui_runtime = _finalize_ui_runtime(base_runtime, ui_spec)
+    return ApiQueryResponse(
+        trace_id=trace_id,
+        query_domains=response_query_domains,
+        execution_status=execution_result.status,
+        business_intents=business_intents,
+        context_pool=context_pool,
+        ui_runtime=ui_runtime,
+        ui_spec=ui_spec,
+        data_count=0,
+        total=0,
+        error=message,
+    )
+
+
+async def _build_stage3_degrade_response(
+    dynamic_ui: DynamicUIService,
+    *,
+    trace_id: str,
+    query: str,
+    title: str,
+    message: str,
+    error_code: str,
+    query_domains: list[str],
+    business_intent_codes: list[str],
+    reasoning: str | None = None,
+) -> ApiQueryResponse:
+    """把第三阶段规划或校验失败折叠为可渲染的安全 Notice。"""
+    response_query_domains = _format_query_domains_for_response(query_domains)
+    execution_result = ApiQueryExecutionResult(
+        status=ApiQueryExecutionStatus.SKIPPED,
+        data=[],
+        total=0,
+        error=message,
+        error_code=error_code,
+        retryable=True,
+        trace_id=trace_id,
+        skipped_reason=error_code,
+        meta={"stage": "stage3", "query": query, "reasoning": reasoning},
+    )
+    business_intents = _build_business_intents(business_intent_codes)
+    context_pool = {
+        "stage3_planner": ApiQueryContextStepResult(
+            status=ApiQueryExecutionStatus.SKIPPED,
+            domain=response_query_domains[0] if len(response_query_domains) == 1 else None,
+            data=[],
+            total=0,
+            error=ApiQueryExecutionErrorDetail(
+                code=error_code,
+                message=message,
+                retryable=True,
+            ),
+            skipped_reason=error_code,
+            meta={
+                "stage": "stage3",
                 "query_domains": response_query_domains,
                 "reasoning": reasoning,
             },
