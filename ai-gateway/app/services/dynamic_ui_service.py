@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import re
 from statistics import mean
@@ -9,6 +10,28 @@ from app.core.config import settings
 from app.models.schemas import ApiQueryExecutionStatus, ApiQueryUIRuntime, KnowledgeResult
 
 logger = logging.getLogger(__name__)
+
+_LLM_RENDER_ROW_LIMIT = 3
+_LLM_RENDER_KEY_LIMIT = 8
+_LLM_RENDER_STRING_LIMIT = 200
+_LLM_RENDER_MAX_ATTEMPTS = 2
+
+_QUERY_COMPONENT_CATALOG = {
+    "PlannerCard": "顶级卡片容器，props: title, subtitle",
+    "PlannerTable": "同质列表展示，props: columns, dataSource",
+    "PlannerDetailCard": "单对象详情展示，props: title, items",
+    "PlannerNotice": "状态提示条，props: text, tone(info/success)",
+}
+
+_GENERIC_COMPONENT_CATALOG = {
+    "Card": "通用容器卡片，props: title, subtitle, actions",
+    "Table": "通用表格，props: columns, dataSource, rowKey",
+    "Metric": "指标展示，props: label, value, trend",
+    "List": "列表展示，props: title, items, emptyText",
+    "Form": "表单容器，props: fields, submitLabel",
+    "Tag": "标签展示，props: label, color",
+    "Chart": "图表容器，props: option",
+}
 
 
 class DynamicUIService:
@@ -76,7 +99,7 @@ class DynamicUIService:
         # 规则模式是当前生产兜底，LLM 只是在满足开关时尝试提升展示质量。
         if settings.llm_ui_spec_enabled:
             try:
-                spec = await self._llm_generate_spec(intent, data, context)
+                spec = await self._llm_generate_spec(intent, data, context, runtime)
                 if spec:
                     normalized_spec = self._normalize_spec_shape(spec)
                     if normalized_spec:
@@ -108,60 +131,474 @@ class DynamicUIService:
             self._llm_service = LLMService()
         return self._llm_service
 
-    async def _llm_generate_spec(self, intent: str, data: Any, context: dict | None) -> dict[str, Any] | None:
-        """通过 LLM 生成 UI Spec（实验性）。
+    async def _llm_generate_spec(
+        self,
+        intent: str,
+        data: Any,
+        context: dict | None,
+        runtime: ApiQueryUIRuntime | None,
+    ) -> dict[str, Any] | None:
+        """通过正式 Renderer Prompt 调用 LLM 生成 UI Spec。
 
-        将数据摘要和意图发送给 LLM，要求返回 json-render 兼容的 JSON Spec。
-        支持的组件类型：Card / Table / Metric / List / Form / Tag / Chart。
+        功能：
+            第五阶段真正要解决的不是“让模型随便画页面”，而是把用户问题、裁剪后的
+            `context_pool`、运行时能力目录三者装配进一个受控 Prompt。这里统一承担：
 
-        返回 None 表示 LLM 未生成有效 Spec，调用方应回退到规则模式。
+            1. 构建 Renderer 专用的 system/user messages
+            2. 首次强制启用 JSON Mode，失败后再回退到纯文本解析
+            3. 对模型脏输出做 JSON 清洗，再交给出口归一化逻辑
+
+        Args:
+            intent: 当前渲染意图，例如 `query`、`knowledge`、`task`。
+            data: 当前视图最核心的数据载荷，不会在这里被原地修改。
+            context: 上游拼装好的渲染上下文，可能包含 `user_query`、`context_pool`、
+                `business_intents`、标题及提示文案。
+            runtime: 当前前端运行时契约，用于约束可用组件和动作。
+
+        Returns:
+            LLM 返回的原始 Spec 字典；若无法稳定生成，则返回 `None` 并由调用方回退规则模式。
+
+        Edge Cases:
+            - 某些兼容后端不支持 `response_format`，这里会自动退回普通文本模式再试一次
+            - 模型返回 Markdown 包裹、注释、尾逗号等脏 JSON 时，清洗后仍可解析
+            - 若模型捏造了非对象输出，直接视为失败，绝不把半成品交给前端
         """
-        import json as _json
-
         llm = self._get_llm_service()
+        messages = self._build_renderer_messages(intent, data, context, runtime)
 
-        # 构造数据摘要（避免发送完整数据给 LLM）
-        if isinstance(data, list):
-            sample = data[:3]
-            data_summary = f"共 {len(data)} 条记录，前3条样例：{_json.dumps(sample, ensure_ascii=False, default=str)[:800]}"
-        else:
-            data_summary = str(data)[:500]
+        for attempt in range(_LLM_RENDER_MAX_ATTEMPTS):
+            use_json_mode = attempt == 0
+            try:
+                reply = await llm.chat(
+                    messages=messages,
+                    temperature=0.0,
+                    response_format={"type": "json_object"} if use_json_mode else None,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "LLM UI Spec 生成失败，attempt=%s/%s intent=%s json_mode=%s error=%s",
+                    attempt + 1,
+                    _LLM_RENDER_MAX_ATTEMPTS,
+                    intent,
+                    use_json_mode,
+                    exc,
+                )
+                continue
 
-        prompt = (
-            "你是一个 UI 生成器。根据以下信息生成一个 json-render 兼容的 JSON UI Spec。\n"
-            f"意图：{intent}\n"
-            f"上下文：{_json.dumps(context or {}, ensure_ascii=False)}\n"
-            f"数据摘要：{data_summary}\n\n"
-            "可用组件类型：Card, Table, Metric, List, Form, Tag, Chart。\n"
-            "Chart 的 option 遵循 ECharts 格式，支持 bar/line/pie 类型。\n"
-            "请直接返回 JSON，不要包含 markdown 代码块或解释文字。"
+            spec = self._parse_llm_spec(reply)
+            if spec:
+                return spec
+
+            logger.warning(
+                "LLM UI Spec 返回了不可解析结果，attempt=%s/%s intent=%s",
+                attempt + 1,
+                _LLM_RENDER_MAX_ATTEMPTS,
+                intent,
+            )
+        return None
+
+    def _build_renderer_messages(
+        self,
+        intent: str,
+        data: Any,
+        context: dict[str, Any] | None,
+        runtime: ApiQueryUIRuntime | None,
+    ) -> list[dict[str, str]]:
+        """构建第五阶段 Renderer 的消息体。
+
+        功能：
+            将“Prompt 模板”和“本次请求的事实输入”拆成 system/user 两段，避免把动态数据
+            和静态规则混写到一大串字符串里，方便后续审计和测试断言。
+        """
+        renderer_payload = self._build_renderer_payload(intent, data, context, runtime)
+        user_prompt = (
+            "请基于以下输入生成 json-render Spec。必须且只能返回合法 JSON，不要输出解释文字。\n"
+            f"{json.dumps(renderer_payload, ensure_ascii=False, indent=2, default=str)}"
+        )
+        return [
+            {"role": "system", "content": self._build_renderer_system_prompt(intent, runtime)},
+            {"role": "user", "content": user_prompt},
+        ]
+
+    def _build_renderer_system_prompt(self, intent: str, runtime: ApiQueryUIRuntime | None) -> str:
+        """构建 Renderer 的系统提示词。
+
+        功能：
+            Prompt 的重点不是追求文采，而是建立稳定的“组件白名单 + 数据使用规则”。
+            这里按 `query` 与其他旧链路区分，确保 `api_query` 优先收敛到 `Planner*` 原语。
+        """
+        component_catalog = self._format_component_catalog(intent, runtime)
+        action_catalog = self._format_action_catalog(runtime)
+
+        if intent == "query":
+            return (
+                "# Role\n"
+                "你是一个资深的智能 UX 架构师 (Renderer Agent)。"
+                "你的任务是阅读用户原始请求、分析裁剪后的 context_pool 和主数据，"
+                "并在受控组件目录下生成一个符合 json-render 规范的声明式 UI JSON Spec。\n\n"
+                "# Input Rules\n"
+                "1. 用户原始请求是最高优先级文案来源。\n"
+                "2. context_pool 是事实总线，只能基于其中 status/data/error 做渲染，不得臆造缺失数据。\n"
+                "3. business_intents 只代表业务意图，不等于前端物理动作；若运行时未启用对应动作，不要生成写操作控件。\n\n"
+                "# UI Catalog\n"
+                f"{component_catalog}\n\n"
+                "# Runtime Actions\n"
+                f"{action_catalog}\n\n"
+                "# Rendering Rules\n"
+                "1. 同质数组优先使用 PlannerTable。\n"
+                "2. 单对象详情优先使用 PlannerDetailCard。\n"
+                "3. 如果存在局部失败或跳过信息，应使用 PlannerNotice 做显式提示。\n"
+                "4. 当前 read_only 链路优先返回 root/state/elements 结构；state 在纯读场景下通常为空对象。\n"
+                "5. 严禁捏造未注册的组件、动作、props 或数据字段。\n\n"
+                "# Output Constraints\n"
+                "必须且只能输出合法的纯 JSON 字符串。不要输出 Markdown、注释、解释性文字。"
+            )
+
+        return (
+            "# Role\n"
+            "你是一个通用 Renderer Agent，需要根据传入数据生成 json-render 兼容 Spec。\n\n"
+            "# UI Catalog\n"
+            f"{component_catalog}\n\n"
+            "# Runtime Actions\n"
+            f"{action_catalog}\n\n"
+            "# Output Constraints\n"
+            "必须只使用已注册组件，直接返回合法 JSON，不要输出 Markdown 或解释文字。"
         )
 
-        reply = await llm.chat(messages=[{"role": "user", "content": prompt}])
-        if not reply:
+    def _build_renderer_payload(
+        self,
+        intent: str,
+        data: Any,
+        context: dict[str, Any] | None,
+        runtime: ApiQueryUIRuntime | None,
+    ) -> dict[str, Any]:
+        """裁剪并组装喂给 Renderer 的动态输入。
+
+        功能：
+            网关返回给前端的 `ui_spec` 可以包含完整展示数据，但喂给 LLM 的输入必须更克制。
+            这里单独做 prompt 级裁剪，避免一次请求把整个 `context_pool`、所有分页结果和
+            冗长 runtime schema 一起塞进模型窗口。
+        """
+        renderer_context = context or {}
+        return {
+            "intent": intent,
+            "user_query": renderer_context.get("user_query") or renderer_context.get("question"),
+            "presentation": {
+                "title": renderer_context.get("title"),
+                "detail_title": renderer_context.get("detail_title"),
+                "render_mode": renderer_context.get("query_render_mode"),
+                "empty_message": renderer_context.get("empty_message"),
+                "skip_message": renderer_context.get("skip_message"),
+                "partial_message": renderer_context.get("partial_message"),
+            },
+            "business_intents": self._prune_business_intents(renderer_context.get("business_intents")),
+            "primary_data": self._prune_renderer_value(data),
+            "context_pool": self._prune_context_pool(renderer_context.get("context_pool")),
+            "runtime": self._prune_runtime(runtime),
+        }
+
+    def _prune_business_intents(self, business_intents: Any) -> list[dict[str, Any]]:
+        """裁剪业务意图输入，避免把上游模型对象原封不动再塞给 Renderer。"""
+        if not isinstance(business_intents, list):
+            return []
+
+        pruned_items: list[dict[str, Any]] = []
+        for item in business_intents:
+            if isinstance(item, dict):
+                pruned_items.append(
+                    {
+                        "code": item.get("code"),
+                        "category": item.get("category"),
+                        "risk_level": item.get("risk_level"),
+                    }
+                )
+            else:
+                pruned_items.append({"code": str(item)})
+        return pruned_items
+
+    def _prune_context_pool(self, context_pool: Any) -> dict[str, Any]:
+        """裁剪进入 Renderer 的 `context_pool`。
+
+        功能：
+            `context_pool` 是第五阶段最重要的事实输入，但也是最容易导致 token 爆炸的部分。
+            这里保留状态机决策所必需的字段，把执行细节、原始参数和大结果集缩减为摘要。
+        """
+        if not isinstance(context_pool, dict):
+            return {}
+
+        pruned_pool: dict[str, Any] = {}
+        for step_id, step_result in context_pool.items():
+            if not isinstance(step_result, dict):
+                continue
+
+            pruned_step: dict[str, Any] = {
+                "status": step_result.get("status"),
+                "domain": step_result.get("domain"),
+                "api_id": step_result.get("api_id"),
+                "total": step_result.get("total"),
+                "data": self._prune_renderer_value(step_result.get("data")),
+            }
+            if isinstance(step_result.get("error"), dict):
+                pruned_step["error"] = {
+                    "code": step_result["error"].get("code"),
+                    "message": step_result["error"].get("message"),
+                    "retryable": step_result["error"].get("retryable"),
+                }
+            if step_result.get("skipped_reason"):
+                pruned_step["skipped_reason"] = step_result.get("skipped_reason")
+
+            meta = step_result.get("meta")
+            if isinstance(meta, dict):
+                pruned_step["meta"] = {
+                    "raw_row_count": meta.get("raw_row_count"),
+                    "render_row_count": meta.get("render_row_count"),
+                    "render_row_limit": meta.get("render_row_limit"),
+                    "truncated": meta.get("truncated"),
+                    "truncated_count": meta.get("truncated_count"),
+                }
+            pruned_pool[str(step_id)] = pruned_step
+        return pruned_pool
+
+    def _prune_runtime(self, runtime: ApiQueryUIRuntime | None) -> dict[str, Any]:
+        """裁剪前端运行时能力目录。
+
+        功能：
+            Renderer 需要知道“能用什么”，但不需要把每个动作的完整 Schema 全量记住。
+            这里保留组件名、启用动作和关键读态能力，既能做约束，也不会把 prompt 撑大。
+        """
+        if runtime is None:
+            return {"mode": "read_only", "components": []}
+
+        return {
+            "mode": runtime.mode,
+            "components": list(runtime.components),
+            "ui_actions": [
+                {
+                    "code": action.code,
+                    "description": action.description,
+                    "enabled": action.enabled,
+                }
+                for action in runtime.ui_actions
+            ],
+            "detail": {
+                "enabled": runtime.detail.enabled,
+                "api_id": runtime.detail.api_id,
+                "identifier_field": runtime.detail.identifier_field,
+                "query_param": runtime.detail.query_param,
+                "ui_action": runtime.detail.ui_action,
+                "template_code": runtime.detail.template_code,
+                "fallback_mode": runtime.detail.fallback_mode,
+            },
+            "pagination": {
+                "enabled": runtime.pagination.enabled,
+                "api_id": runtime.pagination.api_id,
+                "total": runtime.pagination.total,
+                "current_page": runtime.pagination.current_page,
+                "page_size": runtime.pagination.page_size,
+                "ui_action": runtime.pagination.ui_action,
+                "mutation_target": runtime.pagination.mutation_target,
+            },
+            "template": {
+                "enabled": runtime.template.enabled,
+                "template_code": runtime.template.template_code,
+                "render_mode": runtime.template.render_mode,
+                "fallback_mode": runtime.template.fallback_mode,
+            },
+            "audit": {
+                "enabled": runtime.audit.enabled,
+                "snapshot_required": runtime.audit.snapshot_required,
+                "risk_level": runtime.audit.risk_level,
+            },
+        }
+
+    def _prune_renderer_value(self, value: Any, *, depth: int = 0) -> Any:
+        """对任意值做 prompt 级压缩。
+
+        功能：
+            规则渲染可以消费完整裁剪结果，LLM Renderer 则更怕无关噪音。
+            这里按深度、字段数和行数做二次收缩，把“足够理解业务”与“避免 token 爆炸”
+            两件事同时兼顾。
+        """
+        if value is None:
+            return None
+        if isinstance(value, (bool, int, float)):
+            return value
+        if isinstance(value, str):
+            if len(value) <= _LLM_RENDER_STRING_LIMIT:
+                return value
+            return f"{value[:_LLM_RENDER_STRING_LIMIT]}..."
+        if isinstance(value, list):
+            limited_items = value[:_LLM_RENDER_ROW_LIMIT]
+            return [self._prune_renderer_value(item, depth=depth + 1) for item in limited_items]
+        if isinstance(value, dict):
+            pruned_dict: dict[str, Any] = {}
+            for index, (key, item) in enumerate(value.items()):
+                if index >= _LLM_RENDER_KEY_LIMIT:
+                    pruned_dict["__truncated_keys__"] = len(value) - _LLM_RENDER_KEY_LIMIT
+                    break
+                if depth >= 2 and not isinstance(item, (str, int, float, bool, type(None))):
+                    pruned_dict[key] = str(item)[:_LLM_RENDER_STRING_LIMIT]
+                    continue
+                pruned_dict[key] = self._prune_renderer_value(item, depth=depth + 1)
+            return pruned_dict
+        return str(value)[:_LLM_RENDER_STRING_LIMIT]
+
+    def _format_component_catalog(self, intent: str, runtime: ApiQueryUIRuntime | None) -> str:
+        """格式化当前请求可用的组件目录。"""
+        requested_components = list(runtime.components) if runtime and runtime.components else []
+        if intent == "query":
+            catalog = _QUERY_COMPONENT_CATALOG
+        else:
+            catalog = _GENERIC_COMPONENT_CATALOG
+
+        component_names = requested_components or list(catalog.keys())
+        lines: list[str] = []
+        for component_name in component_names:
+            description = catalog.get(component_name)
+            if description:
+                lines.append(f"- `{component_name}`: {description}")
+        return "\n".join(lines) or "- 当前未注册可用组件"
+
+    @staticmethod
+    def _format_action_catalog(runtime: ApiQueryUIRuntime | None) -> str:
+        """格式化当前请求可用的动作目录。"""
+        if runtime is None or not runtime.ui_actions:
+            return "- 当前未注册可用动作"
+
+        lines = []
+        for action in runtime.ui_actions:
+            state = "enabled" if action.enabled else "disabled"
+            lines.append(f"- `{action.code}` ({state}): {action.description}")
+        return "\n".join(lines)
+
+    def _parse_llm_spec(self, raw_reply: str) -> dict[str, Any] | None:
+        """从 Renderer 原始输出中提取首个 JSON 对象。"""
+        if not raw_reply:
             return None
 
-        # 尝试从 LLM 回复中提取 JSON
-        cleaned = reply.strip()
-        if cleaned.startswith("```"):
-            # 移除 markdown 代码块
-            lines = cleaned.split("\n")
-            cleaned = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
+        json_text = self._extract_json_object(raw_reply)
+        if not json_text:
+            return None
 
         try:
-            spec = _json.loads(cleaned)
-            if isinstance(spec, dict) and (
-                "type" in spec
-                or (
-                    isinstance(spec.get("root"), str)
-                    and isinstance(spec.get("elements"), dict)
-                )
-            ):
-                return spec
-        except _json.JSONDecodeError:
-            logger.debug("LLM 返回的 UI Spec 不是有效 JSON: %s", cleaned[:200])
+            parsed = json.loads(json_text)
+        except json.JSONDecodeError:
+            logger.debug("Failed to parse renderer json: %s", raw_reply[:200])
+            return None
 
-        return None
+        return parsed if isinstance(parsed, dict) else None
+
+    def _extract_json_object(self, raw_reply: str) -> str:
+        """从模型输出中剥离首个 JSON 对象文本。
+
+        功能：
+            这里复用第二阶段的脏 JSON 清洗思路，但保持在第五阶段本地闭环，避免跨模块
+            直接依赖私有 helper。这样做虽然有少量重复代码，但能保持渲染链路独立可演进。
+        """
+        text = raw_reply.strip()
+        if text.startswith("```"):
+            lines = text.split("\n")
+            text = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
+
+        start = text.find("{")
+        end = text.rfind("}")
+        if start == -1 or end == -1 or start >= end:
+            return ""
+
+        json_text = text[start : end + 1]
+        json_text = self._strip_json_comments(json_text)
+        json_text = self._strip_trailing_commas(json_text)
+        return json_text
+
+    @staticmethod
+    def _strip_json_comments(text: str) -> str:
+        """删除 JSON 中的注释，同时保留字符串字面量原文。"""
+        result: list[str] = []
+        index = 0
+        in_string = False
+        escaped = False
+        length = len(text)
+
+        while index < length:
+            char = text[index]
+            next_char = text[index + 1] if index + 1 < length else ""
+
+            if in_string:
+                result.append(char)
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+                index += 1
+                continue
+
+            if char == '"':
+                in_string = True
+                result.append(char)
+                index += 1
+                continue
+
+            if char == "/" and next_char == "/":
+                index += 2
+                while index < length and text[index] not in ("\n", "\r"):
+                    index += 1
+                continue
+
+            if char == "/" and next_char == "*":
+                index += 2
+                while index + 1 < length and not (text[index] == "*" and text[index + 1] == "/"):
+                    index += 1
+                index += 2
+                continue
+
+            result.append(char)
+            index += 1
+
+        return "".join(result)
+
+    @staticmethod
+    def _strip_trailing_commas(text: str) -> str:
+        """删除对象和数组闭合前的尾逗号。"""
+        result: list[str] = []
+        index = 0
+        in_string = False
+        escaped = False
+        length = len(text)
+
+        while index < length:
+            char = text[index]
+
+            if in_string:
+                result.append(char)
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+                index += 1
+                continue
+
+            if char == '"':
+                in_string = True
+                result.append(char)
+                index += 1
+                continue
+
+            if char == ",":
+                lookahead = index + 1
+                while lookahead < length and text[lookahead].isspace():
+                    lookahead += 1
+                if lookahead < length and text[lookahead] in ("]", "}"):
+                    index += 1
+                    continue
+
+            result.append(char)
+            index += 1
+
+        return "".join(result)
 
     def _normalize_spec_shape(self, spec: dict[str, Any] | None) -> dict[str, Any] | None:
         """将第五阶段输出统一折叠为 flat spec。
