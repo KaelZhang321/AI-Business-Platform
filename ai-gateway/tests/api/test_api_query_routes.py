@@ -84,40 +84,42 @@ class StubDynamicUI:
     async def generate_ui_spec(self, intent: str, data, context=None, *, status=None, runtime=None):
         if status == ApiQueryExecutionStatus.ERROR:
             return _build_flat_stub_spec(
-                root_props={"title": "查询失败", "actions": [{"type": "refresh", "label": "重试"}]},
+                root_props={"title": "查询失败", "subtitle": None},
                 children=[
-                    {"type": "Notice", "props": {"level": "warning", "message": context["error"]}},
+                    {"type": "PlannerNotice", "props": {"tone": "info", "text": context["error"]}},
                 ],
             )
 
         if status == ApiQueryExecutionStatus.EMPTY:
             return _build_flat_stub_spec(
-                root_props={"title": "暂无数据", "actions": [{"type": "refresh", "label": "重试"}]},
+                root_props={"title": "暂无数据", "subtitle": None},
                 children=[
-                    {"type": "Notice", "props": {"level": "info", "message": context["empty_message"]}},
+                    {"type": "PlannerNotice", "props": {"tone": "info", "text": context["empty_message"]}},
                 ],
             )
 
         if status == ApiQueryExecutionStatus.SKIPPED:
             return _build_flat_stub_spec(
-                root_props={"title": context["title"], "actions": [{"type": "refresh", "label": "重试"}]},
+                root_props={"title": context["title"], "subtitle": None},
                 children=[
-                    {"type": "Notice", "props": {"level": "info", "message": context["skip_message"]}},
+                    {"type": "PlannerNotice", "props": {"tone": "info", "text": context["skip_message"]}},
                 ],
             )
 
         return _build_flat_stub_spec(
             root_props={
                 "title": "查询结果",
-                "actions": [{"type": "refresh", "label": "重新查询"}],
+                "subtitle": "当前展示 1 条",
             },
             children=[
                 {
-                    "type": "Table",
+                    "type": "PlannerTable",
                     "props": {
-                        "columns": ["customerId", "customerName"],
-                        "data": [["C001", "张三"]],
-                        "actions": [{"type": "export", "label": "导出"}],
+                        "columns": [
+                            {"key": "customerId", "title": "customerId", "dataIndex": "customerId"},
+                            {"key": "customerName", "title": "customerName", "dataIndex": "customerName"},
+                        ],
+                        "dataSource": [{"customerId": "C001", "customerName": "张三"}],
                         "rowActions": [
                             {
                                 "type": "remoteQuery",
@@ -163,7 +165,7 @@ def _build_flat_stub_spec(*, root_props: dict[str, object], children: list[dict[
     """
     elements: dict[str, object] = {
         "root": {
-            "type": "Card",
+            "type": "PlannerCard",
             "props": root_props,
             "children": [],
         }
@@ -256,7 +258,7 @@ def test_api_query_returns_runtime_contract(monkeypatch) -> None:
     assert body["context_pool"]["step_customer_list"]["api_id"] == "customer_list"
     assert body["context_pool"]["step_customer_list"]["meta"]["render_row_limit"] == 5
     assert body["ui_runtime"]["mode"] == "read_only"
-    assert set(body["ui_runtime"]["components"]) >= {"Card", "Table"}
+    assert set(body["ui_runtime"]["components"]) >= {"PlannerCard", "PlannerTable"}
     assert body["ui_runtime"]["detail"]["enabled"] is True
     assert body["ui_runtime"]["detail"]["api_id"] == "customer_detail"
     assert body["ui_runtime"]["detail"]["identifier_field"] == "customerId"

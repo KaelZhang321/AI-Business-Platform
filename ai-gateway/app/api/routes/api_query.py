@@ -63,7 +63,7 @@ _bearer = HTTPBearer(auto_error=False)
 _READ_ONLY_METHODS = {"GET"}
 # 这里固定保留 5 条是为了给 Renderer 足够上下文，又避免把大结果集整包塞进生成链路导致注意力失焦。
 _CONTEXT_ROW_LIMIT = 5
-_DEFAULT_COMPONENT_TYPES = ["Card", "Metric", "Table", "List", "Form", "Tag", "Chart", "Notice"]
+_DEFAULT_COMPONENT_TYPES = ["PlannerCard", "PlannerTable", "PlannerDetailCard", "PlannerNotice"]
 _UI_ACTION_DEFINITIONS = [
     {
         "code": "view_detail",
@@ -369,12 +369,14 @@ async def api_query(
             "question": request_body.query,
             "user_query": request_body.query,
             "title": _build_execution_title(execution_report, anchor_record),
+            "detail_title": anchor_record.entry.description if anchor_record else "详情信息",
             "total": _build_response_total(anchor_record),
             "api_id": anchor_record.entry.id if anchor_record else None,
             "error": _build_response_error(execution_report),
             "empty_message": "未查到符合条件的数据，请调整筛选条件后重试。",
             "skip_message": _build_execution_skip_message(execution_report),
             "partial_message": "部分步骤执行失败或被短路，当前仅展示可安全返回的数据。",
+            "query_render_mode": _infer_query_render_mode(execution_report, anchor_record),
             "context_pool": {step_id: step.model_dump(exclude_none=True) for step_id, step in context_pool.items()},
             "business_intents": [intent.model_dump() for intent in business_intents],
         },
@@ -627,7 +629,7 @@ def _build_ui_runtime(
     """
     rows = _normalize_rows(execution_result.data)
     action_codes = {"refresh", "export"}
-    components = ["Card", "Table"]
+    components = ["PlannerCard", "PlannerTable", "PlannerDetailCard", "PlannerNotice"]
 
     detail_hint = entry.detail_hint
     identifier_field = detail_hint.identifier_field or _infer_identifier_field(rows)
@@ -1018,9 +1020,36 @@ def _build_runtime_from_execution_report(
         )
 
     return ApiQueryUIRuntime(
-        components=["Card", "Table", "Notice"],
+        components=["PlannerCard", "PlannerTable", "PlannerNotice"],
         ui_actions=_build_runtime_actions({"refresh", "export"}),
     )
+
+
+def _infer_query_render_mode(
+    execution_report: DagExecutionReport,
+    anchor_record: DagStepExecutionRecord | None,
+) -> str:
+    """推断当前查询结果应使用的读态渲染模式。
+
+    功能：
+        规则 Renderer 需要区分“列表结果”、“单对象详情”和“多步骤摘要表”。
+        这里把判定收敛在 route 层，是为了让渲染器消费一个明确语义，而不是继续从
+        被裁剪后的 `data_for_ui` 反向猜测原始执行形态。
+
+    Returns:
+        `detail` / `table` / `summary_table` 三类之一。
+
+    Edge Cases:
+        - 多步骤结果即使最终只剩一行，也仍然视为 `summary_table`
+        - 单步骤命中 `dict` 原始数据时，才升级为 `detail`
+    """
+    if len(execution_report.records_by_step_id) > 1:
+        return "summary_table"
+    if anchor_record is None:
+        return "table"
+    if isinstance(anchor_record.execution_result.data, dict):
+        return "detail"
+    return "table"
 
 
 def _build_execution_title(
@@ -1271,7 +1300,7 @@ async def _build_stage2_degrade_response(
         )
     }
     base_runtime = ApiQueryUIRuntime(
-        components=["Card", "Notice"],
+        components=["PlannerCard", "PlannerNotice"],
         ui_actions=_build_runtime_actions({"refresh"}),
     )
     ui_spec = await dynamic_ui.generate_ui_spec(
@@ -1349,7 +1378,7 @@ async def _build_stage3_degrade_response(
         )
     }
     base_runtime = ApiQueryUIRuntime(
-        components=["Card", "Notice"],
+        components=["PlannerCard", "PlannerNotice"],
         ui_actions=_build_runtime_actions({"refresh"}),
     )
     ui_spec = await dynamic_ui.generate_ui_spec(

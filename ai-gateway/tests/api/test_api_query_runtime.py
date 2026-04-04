@@ -110,6 +110,14 @@ def _get_root_children(spec: dict[str, object]) -> list[dict[str, object]]:
     return children
 
 
+def _get_child_by_type(spec: dict[str, object], expected_type: str) -> dict[str, object]:
+    """按组件类型查找根卡片下的直接子元素。"""
+    for child in _get_root_children(spec):
+        if child.get("type") == expected_type:
+            return child
+    raise AssertionError(f"missing child type: {expected_type}")
+
+
 def test_api_query_returns_empty_notice_for_empty_execution(monkeypatch) -> None:
     entry = _make_entry()
     stub_services = (
@@ -137,8 +145,8 @@ def test_api_query_returns_empty_notice_for_empty_execution(monkeypatch) -> None
     assert body["ui_runtime"]["audit"]["enabled"] is False
     notice = _get_root_children(body["ui_spec"])[0]
     assert body["ui_spec"]["root"] == "root"
-    assert notice["type"] == "Notice"
-    assert notice["props"]["level"] == "info"
+    assert notice["type"] == "PlannerNotice"
+    assert notice["props"]["tone"] == "info"
 
 
 def test_api_query_returns_error_notice_for_error_execution(monkeypatch) -> None:
@@ -168,8 +176,8 @@ def test_api_query_returns_error_notice_for_error_execution(monkeypatch) -> None
     assert body["error"] == "业务接口超时"
     assert body["context_pool"]["step_customer_list"]["error"]["message"] == "业务接口超时"
     notice = _get_root_children(body["ui_spec"])[0]
-    assert notice["type"] == "Notice"
-    assert notice["props"]["level"] == "warning"
+    assert notice["type"] == "PlannerNotice"
+    assert notice["props"]["tone"] == "info"
 
 
 def test_api_query_returns_skipped_notice_for_missing_required_params(monkeypatch) -> None:
@@ -199,8 +207,8 @@ def test_api_query_returns_skipped_notice_for_missing_required_params(monkeypatc
     assert body["error"] == "缺少必要参数：customerId"
     assert body["context_pool"]["step_customer_list"]["skipped_reason"] == "missing_required_params"
     notice = _get_root_children(body["ui_spec"])[0]
-    assert notice["type"] == "Notice"
-    assert notice["props"]["message"] == "由于缺少必要参数 customerId，当前查询未被执行。"
+    assert notice["type"] == "PlannerNotice"
+    assert notice["props"]["text"] == "由于缺少必要参数 customerId，当前查询未被执行。"
 
 
 def test_api_query_truncates_context_pool_and_ui_rows(monkeypatch) -> None:
@@ -231,9 +239,39 @@ def test_api_query_truncates_context_pool_and_ui_rows(monkeypatch) -> None:
     assert body["context_pool"]["step_customer_list"]["meta"]["truncated"] is True
     assert body["context_pool"]["step_customer_list"]["meta"]["render_row_count"] == 5
     assert body["context_pool"]["step_customer_list"]["meta"]["truncated_count"] == 2
-    table = _get_root_children(body["ui_spec"])[-1]
-    assert table["type"] == "Table"
-    assert len(table["props"]["data"]) == 5
+    table = _get_child_by_type(body["ui_spec"], "PlannerTable")
+    assert table["props"]["columns"][0]["dataIndex"] == "customerId"
+    assert len(table["props"]["dataSource"]) == 5
+    assert set(body["ui_runtime"]["components"]) >= {"PlannerCard", "PlannerTable"}
+
+
+def test_api_query_renders_single_object_as_detail_card(monkeypatch) -> None:
+    entry = _make_entry()
+    stub_services = (
+        StubRetriever(entry),
+        StubExtractor(entry),
+        StubExecutor(
+            ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.SUCCESS,
+                data={"customerId": "C001", "customerName": "张三", "level": "VIP"},
+                total=1,
+            )
+        ),
+        api_query_routes.DynamicUIService(),
+        PassThroughSnapshotService(),
+    )
+    monkeypatch.setattr(api_query_routes, "_get_services", lambda: stub_services)
+
+    client = TestClient(create_test_app())
+    response = client.post("/api/v1/api-query", json={"query": "查询客户详情"})
+
+    assert response.status_code == 200
+    body = response.json()
+    detail_card = _get_child_by_type(body["ui_spec"], "PlannerDetailCard")
+    assert detail_card["props"]["title"] == "查询客户列表"
+    assert {"label": "customerId", "value": "C001"} in detail_card["props"]["items"]
+    assert {"label": "level", "value": "VIP"} in detail_card["props"]["items"]
+    assert "PlannerDetailCard" in body["ui_runtime"]["components"]
 
 
 def test_api_query_executes_multi_step_plan_and_returns_multi_step_context_pool(monkeypatch) -> None:
@@ -350,3 +388,117 @@ def test_api_query_executes_multi_step_plan_and_returns_multi_step_context_pool(
     assert body["query_domains"] == ["CRM", "ERP"]
     assert body["ui_spec"]["root"] == "root"
     assert isinstance(body["ui_spec"]["elements"], dict)
+    table = _get_child_by_type(body["ui_spec"], "PlannerTable")
+    assert table["props"]["columns"][0]["dataIndex"] == "stepId"
+
+
+def test_api_query_renders_partial_success_with_notice_and_table(monkeypatch) -> None:
+    customer_entry = ApiCatalogEntry(
+        id="customer_list",
+        description="查询客户列表",
+        domain="crm",
+        method="GET",
+        path="/api/v1/customers",
+        param_schema={
+            "type": "object",
+            "properties": {"owner_id": {"type": "string"}},
+            "required": ["owner_id"],
+        },
+    )
+    order_entry = ApiCatalogEntry(
+        id="order_stats",
+        description="查询客户订单统计",
+        domain="erp",
+        method="GET",
+        path="/api/v1/orders/stats",
+        param_schema={
+            "type": "object",
+            "properties": {"customer_ids": {"type": "array"}},
+            "required": ["customer_ids"],
+        },
+    )
+
+    class MultiRetriever:
+        async def search(self, query: str, top_k: int = 3, score_threshold: float = 0.3, filters=None):
+            return [
+                ApiCatalogSearchResult(entry=customer_entry, score=0.95),
+                ApiCatalogSearchResult(entry=order_entry, score=0.93),
+            ]
+
+        async def search_stratified(self, query: str, *, domains, top_k: int = 3, filters=None, **kwargs):
+            return await self.search(query, top_k=top_k, score_threshold=0.3, filters=filters)
+
+    class RouteOnlyExtractor:
+        async def route_query(self, query: str, user_context: dict[str, object], **kwargs):
+            return ApiQueryRoutingResult(
+                query_domains=["crm", "erp"],
+                business_intents=["none"],
+                is_multi_domain=True,
+                reasoning="partial-success runtime test",
+                route_status="ok",
+            )
+
+    class PlannerStub:
+        async def build_plan(self, query, candidates, user_context, route_hint):
+            return ApiQueryExecutionPlan(
+                plan_id="dag_customer_orders_partial",
+                steps=[
+                    ApiQueryPlanStep(
+                        step_id="step_customers",
+                        api_path="/api/v1/customers",
+                        params={"owner_id": "E8899"},
+                        depends_on=[],
+                    ),
+                    ApiQueryPlanStep(
+                        step_id="step_orders",
+                        api_path="/api/v1/orders/stats",
+                        params={"customer_ids": "$[step_customers.data][*].customerId"},
+                        depends_on=["step_customers"],
+                    ),
+                ],
+            )
+
+        def validate_plan(self, plan, candidates):
+            return {
+                "step_customers": customer_entry,
+                "step_orders": order_entry,
+            }
+
+    class PartialExecutor:
+        async def call(self, entry, params, user_token=None, trace_id: str | None = None):
+            if entry.id == "customer_list":
+                return ApiQueryExecutionResult(
+                    status=ApiQueryExecutionStatus.SUCCESS,
+                    data=[{"customerId": "C001", "customerName": "张三"}],
+                    total=1,
+                    trace_id=trace_id,
+                )
+            return ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.ERROR,
+                data=None,
+                total=0,
+                error="ERP 服务超时",
+                trace_id=trace_id,
+            )
+
+    stub_services = (
+        MultiRetriever(),
+        RouteOnlyExtractor(),
+        PartialExecutor(),
+        api_query_routes.DynamicUIService(),
+        PassThroughSnapshotService(),
+    )
+    monkeypatch.setattr(api_query_routes, "_get_services", lambda: stub_services)
+    monkeypatch.setattr(api_query_routes, "_get_planner", lambda: PlannerStub())
+
+    client = TestClient(create_test_app())
+    response = client.post("/api/v1/api-query", json={"query": "查我的客户，并看他们的订单统计"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["execution_status"] == "PARTIAL_SUCCESS"
+    notice = _get_child_by_type(body["ui_spec"], "PlannerNotice")
+    table = _get_child_by_type(body["ui_spec"], "PlannerTable")
+    assert notice["props"]["tone"] == "info"
+    assert "部分步骤执行失败" in notice["props"]["text"]
+    assert table["props"]["dataSource"][0]["stepId"] == "step_customers"
