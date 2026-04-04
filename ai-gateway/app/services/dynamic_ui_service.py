@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from statistics import mean
 from typing import Any
 
@@ -46,27 +47,29 @@ class DynamicUIService:
         Edge Cases:
             - `ERROR` / `EMPTY` / `SKIPPED` 优先返回 Notice，防止前端误渲染半成品表格
             - `PARTIAL_SUCCESS` 会在正常内容上叠加风险提示，而不是直接吞掉成功数据
+            - 旧版规则渲染器仍会先产出树形节点，本方法负责在出口统一折叠为
+              `root/state/elements`，避免 route 层同时兼容两套 Spec 契约
         """
         execution_status = ApiQueryExecutionStatus(status) if status else None
 
         if execution_status == ApiQueryExecutionStatus.ERROR:
-            return self._notice_spec(
+            return self._normalize_spec_shape(self._notice_spec(
                 title=(context or {}).get("title", "查询失败"),
                 message=(context or {}).get("error", "业务接口调用失败"),
                 level="warning",
-            )
+            ))
         if execution_status == ApiQueryExecutionStatus.EMPTY:
-            return self._notice_spec(
+            return self._normalize_spec_shape(self._notice_spec(
                 title=(context or {}).get("title", "暂无数据"),
                 message=(context or {}).get("empty_message", "未查到符合条件的数据"),
                 level="info",
-            )
+            ))
         if execution_status == ApiQueryExecutionStatus.SKIPPED:
-            return self._notice_spec(
+            return self._normalize_spec_shape(self._notice_spec(
                 title=(context or {}).get("title", "查询已跳过"),
                 message=(context or {}).get("skip_message", "由于缺少必要条件，当前查询未被执行。"),
                 level="info",
-            )
+            ))
         if not data:
             return None
 
@@ -75,13 +78,15 @@ class DynamicUIService:
             try:
                 spec = await self._llm_generate_spec(intent, data, context)
                 if spec:
-                    return spec
+                    normalized_spec = self._normalize_spec_shape(spec)
+                    if normalized_spec:
+                        return normalized_spec
             except Exception as exc:
                 logger.warning("LLM UI Spec 生成失败，回退规则模式: %s", exc)
 
         # 规则模式（默认）
         if intent == "knowledge" and isinstance(data, list):
-            return self._knowledge_spec(data, context)
+            return self._normalize_spec_shape(self._knowledge_spec(data, context))
 
         if intent == "query" and isinstance(data, list) and data and isinstance(data[0], dict):
             spec = self._query_spec(data, context, runtime)
@@ -91,10 +96,10 @@ class DynamicUIService:
                     "level": "warning",
                     "message": (context or {}).get("partial_message", "部分步骤执行失败，当前仅展示成功返回的数据。"),
                 }
-            return spec
+            return self._normalize_spec_shape(spec)
 
         if intent == "task" and isinstance(data, list):
-            return self._task_spec(data)
+            return self._normalize_spec_shape(self._task_spec(data))
 
         return None
 
@@ -147,12 +152,123 @@ class DynamicUIService:
 
         try:
             spec = _json.loads(cleaned)
-            if isinstance(spec, dict) and "type" in spec:
+            if isinstance(spec, dict) and (
+                "type" in spec
+                or (
+                    isinstance(spec.get("root"), str)
+                    and isinstance(spec.get("elements"), dict)
+                )
+            ):
                 return spec
         except _json.JSONDecodeError:
             logger.debug("LLM 返回的 UI Spec 不是有效 JSON: %s", cleaned[:200])
 
         return None
+
+    def _normalize_spec_shape(self, spec: dict[str, Any] | None) -> dict[str, Any] | None:
+        """将第五阶段输出统一折叠为 flat spec。
+
+        功能：
+            当前 `ai-gateway` 正处于旧树形 Spec 向 `root/state/elements` 过渡的阶段。
+            这里把所有出口统一成 flat spec，目的是让 route 层、测试和后续 `json-render`
+            主链只消费一套结构，而不是继续在边界层维护双协议。
+
+        Args:
+            spec: 规则模式或 LLM 模式生成的原始 Spec。
+
+        Returns:
+            标准化后的 flat spec；若输入无法识别，则返回 `None`。
+
+        Edge Cases:
+            - 已经是 flat spec 时只补齐空 `state`
+            - 旧树形 Spec 会被稳定转换，元素 ID 使用确定性命名，便于测试断言和快照比对
+        """
+        if not isinstance(spec, dict):
+            return None
+
+        if self._is_flat_spec(spec):
+            state = spec.get("state")
+            return {
+                **spec,
+                "state": state if isinstance(state, dict) else {},
+            }
+
+        if "type" not in spec:
+            return None
+
+        return self._legacy_tree_to_flat_spec(spec)
+
+    @staticmethod
+    def _is_flat_spec(spec: dict[str, Any]) -> bool:
+        """判断当前 Spec 是否已经符合 `root/state/elements` 契约。"""
+        return isinstance(spec.get("root"), str) and isinstance(spec.get("elements"), dict)
+
+    def _legacy_tree_to_flat_spec(self, root_node: dict[str, Any]) -> dict[str, Any]:
+        """把旧树形 UI 结构转换成 flat spec。
+
+        功能：
+            任务 1 的目标是“先统一契约，再继续演进组件语义”。因此这里不重写现有规则
+            渲染逻辑，而是在出口做一次结构归一化，让旧实现也能立刻进入新协议。
+
+        Args:
+            root_node: 旧版 `type/props/children` 根节点。
+
+        Returns:
+            `root/state/elements` 形态的 flat spec。
+
+        Edge Cases:
+            - 仅递归转换真正的子组件树，不会错误下钻到 `props.actions` 这类配置数组
+            - 子元素 ID 采用确定性前缀 + 递增序号，避免每次生成随机 ID 造成测试抖动
+        """
+        element_counter = 0
+        elements: dict[str, Any] = {}
+
+        def next_element_id(node_type: Any) -> str:
+            nonlocal element_counter
+            element_counter += 1
+            prefix = self._build_element_id_prefix(node_type)
+            return f"{prefix}_{element_counter}"
+
+        def materialize(node: dict[str, Any], *, element_id: str) -> None:
+            element_payload = {
+                key: value
+                for key, value in node.items()
+                if key != "children"
+            }
+            raw_children = node.get("children")
+            child_ids: list[str] = []
+
+            if isinstance(raw_children, list):
+                for child in raw_children:
+                    if not isinstance(child, dict) or "type" not in child:
+                        continue
+                    child_id = next_element_id(child.get("type"))
+                    child_ids.append(child_id)
+                    materialize(child, element_id=child_id)
+
+            if child_ids:
+                element_payload["children"] = child_ids
+
+            elements[element_id] = element_payload
+
+        root_id = "root"
+        materialize(root_node, element_id=root_id)
+        return {
+            "root": root_id,
+            "state": {},
+            "elements": elements,
+        }
+
+    @staticmethod
+    def _build_element_id_prefix(node_type: Any) -> str:
+        """生成稳定的元素 ID 前缀。
+
+        功能：
+            这里故意不用 UUID。第五阶段 Spec 在测试、日志和审计快照里都需要可对比性，
+            稳定前缀能显著降低调试噪音。
+        """
+        normalized = re.sub(r"[^a-z0-9]+", "_", str(node_type or "element").strip().lower()).strip("_")
+        return normalized or "element"
 
     def _knowledge_spec(self, results: list[KnowledgeResult], context: dict | None) -> dict[str, Any]:
         """把知识检索结果渲染成列表卡片。"""

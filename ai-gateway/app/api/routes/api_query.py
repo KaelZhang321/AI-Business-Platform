@@ -687,7 +687,12 @@ def _finalize_ui_runtime(
     base_runtime: ApiQueryUIRuntime,
     ui_spec: dict[str, Any] | None,
 ) -> ApiQueryUIRuntime:
-    """用最终生成的 UI Spec 回填组件与动作清单。"""
+    """用最终生成的 UI Spec 回填组件与动作清单。
+
+    功能：
+        第五阶段正在从旧树形 Spec 迁移到 flat spec。这里统一从最终返回给前端的
+        `ui_spec` 反推组件与动作，避免运行时元数据和真实 Spec 再次漂移。
+    """
     action_codes = {action.code for action in base_runtime.ui_actions}
     action_codes.update(_collect_action_types(ui_spec))
     components = _collect_component_types(ui_spec) or base_runtime.components
@@ -700,8 +705,22 @@ def _finalize_ui_runtime(
 
 
 def _collect_component_types(node: Any) -> list[str]:
-    """递归收集 UI Spec 中出现的组件类型。"""
+    """递归收集 UI Spec 中出现的组件类型。
+
+    功能：
+        同时兼容旧树形 Spec 和 `root/state/elements` 新协议，确保任务 1 切换契约后，
+        `ui_runtime.components` 仍然能如实反映最终下发给前端的组件目录。
+    """
     component_types: set[str] = set()
+
+    if _is_flat_ui_spec(node):
+        for element in node["elements"].values():
+            if not isinstance(element, dict):
+                continue
+            node_type = element.get("type")
+            if isinstance(node_type, str):
+                component_types.add(node_type)
+        return sorted(component_types)
 
     def walk(current: Any) -> None:
         if isinstance(current, dict):
@@ -719,25 +738,48 @@ def _collect_component_types(node: Any) -> list[str]:
 
 
 def _collect_action_types(node: Any) -> set[str]:
-    """递归收集 UI Spec 中出现的动作类型。"""
+    """递归收集 UI Spec 中出现的动作类型。
+
+    功能：
+        flat spec 把动作配置折叠进 `elements`，树形 Spec 则是直接嵌套在节点里。
+        这里统一抽出运行时动作，保证 `ui_runtime.ui_actions` 和真实 Spec 保持一致。
+    """
     action_types: set[str] = set()
 
-    def walk(current: Any) -> None:
-        if isinstance(current, dict):
-            action_type = current.get("type")
-            action_name = current.get("action")
-            if isinstance(action_type, str) and action_type in _RUNTIME_ACTION_CODES:
-                action_types.add(action_type)
-            if isinstance(action_name, str) and action_name in _RUNTIME_ACTION_CODES:
-                action_types.add(action_name)
-            for value in current.values():
-                walk(value)
-        elif isinstance(current, list):
-            for item in current:
-                walk(item)
+    if _is_flat_ui_spec(node):
+        for element in node["elements"].values():
+            if isinstance(element, dict):
+                _walk_action_payload(element, action_types)
+        return action_types
 
-    walk(node)
+    _walk_action_payload(node, action_types)
     return action_types
+
+
+def _is_flat_ui_spec(node: Any) -> bool:
+    """判断当前 UI Spec 是否已经是 `root/state/elements` 新协议。"""
+    return isinstance(node, dict) and isinstance(node.get("root"), str) and isinstance(node.get("elements"), dict)
+
+
+def _walk_action_payload(current: Any, action_types: set[str]) -> None:
+    """递归扫描动作定义载荷。
+
+    功能：
+        单独拆出这个 helper，是为了把“flat spec 扫 elements”和“旧树形 Spec 全量扫描”
+        复用到同一套动作识别逻辑里，避免任务 1 之后两条分支再度分叉。
+    """
+    if isinstance(current, dict):
+        action_type = current.get("type")
+        action_name = current.get("action")
+        if isinstance(action_type, str) and action_type in _RUNTIME_ACTION_CODES:
+            action_types.add(action_type)
+        if isinstance(action_name, str) and action_name in _RUNTIME_ACTION_CODES:
+            action_types.add(action_name)
+        for value in current.values():
+            _walk_action_payload(value, action_types)
+    elif isinstance(current, list):
+        for item in current:
+            _walk_action_payload(item, action_types)
 
 
 def _infer_identifier_field(rows: list[dict[str, Any]]) -> str | None:

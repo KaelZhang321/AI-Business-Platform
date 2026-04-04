@@ -78,6 +78,38 @@ def _make_entry() -> ApiCatalogEntry:
     )
 
 
+def _get_root_element(spec: dict[str, object]) -> dict[str, object]:
+    """读取 flat spec 的根元素。
+
+    功能：
+        任务 1 之后 `api_query` 的 `ui_spec` 统一切换为 `root/state/elements`。测试层也必须
+        改成消费新契约，避免继续把旧树形结构当成事实标准。
+    """
+    root_id = spec["root"]
+    elements = spec["elements"]
+    assert isinstance(root_id, str)
+    assert isinstance(elements, dict)
+    root_element = elements[root_id]
+    assert isinstance(root_element, dict)
+    return root_element
+
+
+def _get_root_children(spec: dict[str, object]) -> list[dict[str, object]]:
+    """按根节点 children 顺序取回子元素列表。"""
+    root_element = _get_root_element(spec)
+    elements = spec["elements"]
+    assert isinstance(elements, dict)
+    child_ids = root_element.get("children", [])
+    assert isinstance(child_ids, list)
+    children: list[dict[str, object]] = []
+    for child_id in child_ids:
+        assert isinstance(child_id, str)
+        child = elements[child_id]
+        assert isinstance(child, dict)
+        children.append(child)
+    return children
+
+
 def test_api_query_returns_empty_notice_for_empty_execution(monkeypatch) -> None:
     entry = _make_entry()
     stub_services = (
@@ -103,8 +135,10 @@ def test_api_query_returns_empty_notice_for_empty_execution(monkeypatch) -> None
     assert body["execution_status"] == "EMPTY"
     assert body["data_count"] == 0
     assert body["ui_runtime"]["audit"]["enabled"] is False
-    assert body["ui_spec"]["children"][0]["type"] == "Notice"
-    assert body["ui_spec"]["children"][0]["props"]["level"] == "info"
+    notice = _get_root_children(body["ui_spec"])[0]
+    assert body["ui_spec"]["root"] == "root"
+    assert notice["type"] == "Notice"
+    assert notice["props"]["level"] == "info"
 
 
 def test_api_query_returns_error_notice_for_error_execution(monkeypatch) -> None:
@@ -133,8 +167,9 @@ def test_api_query_returns_error_notice_for_error_execution(monkeypatch) -> None
     assert body["execution_status"] == "ERROR"
     assert body["error"] == "业务接口超时"
     assert body["context_pool"]["step_customer_list"]["error"]["message"] == "业务接口超时"
-    assert body["ui_spec"]["children"][0]["type"] == "Notice"
-    assert body["ui_spec"]["children"][0]["props"]["level"] == "warning"
+    notice = _get_root_children(body["ui_spec"])[0]
+    assert notice["type"] == "Notice"
+    assert notice["props"]["level"] == "warning"
 
 
 def test_api_query_returns_skipped_notice_for_missing_required_params(monkeypatch) -> None:
@@ -163,8 +198,9 @@ def test_api_query_returns_skipped_notice_for_missing_required_params(monkeypatc
     assert body["execution_status"] == "SKIPPED"
     assert body["error"] == "缺少必要参数：customerId"
     assert body["context_pool"]["step_customer_list"]["skipped_reason"] == "missing_required_params"
-    assert body["ui_spec"]["children"][0]["type"] == "Notice"
-    assert body["ui_spec"]["children"][0]["props"]["message"] == "由于缺少必要参数 customerId，当前查询未被执行。"
+    notice = _get_root_children(body["ui_spec"])[0]
+    assert notice["type"] == "Notice"
+    assert notice["props"]["message"] == "由于缺少必要参数 customerId，当前查询未被执行。"
 
 
 def test_api_query_truncates_context_pool_and_ui_rows(monkeypatch) -> None:
@@ -195,7 +231,9 @@ def test_api_query_truncates_context_pool_and_ui_rows(monkeypatch) -> None:
     assert body["context_pool"]["step_customer_list"]["meta"]["truncated"] is True
     assert body["context_pool"]["step_customer_list"]["meta"]["render_row_count"] == 5
     assert body["context_pool"]["step_customer_list"]["meta"]["truncated_count"] == 2
-    assert len(body["ui_spec"]["children"][-1]["props"]["data"]) == 5
+    table = _get_root_children(body["ui_spec"])[-1]
+    assert table["type"] == "Table"
+    assert len(table["props"]["data"]) == 5
 
 
 def test_api_query_executes_multi_step_plan_and_returns_multi_step_context_pool(monkeypatch) -> None:
@@ -310,3 +348,5 @@ def test_api_query_executes_multi_step_plan_and_returns_multi_step_context_pool(
     assert set(body["context_pool"]) == {"step_customers", "step_orders"}
     assert body["context_pool"]["step_orders"]["meta"]["resolved_params"] == {"customer_ids": ["C001"]}
     assert body["query_domains"] == ["CRM", "ERP"]
+    assert body["ui_spec"]["root"] == "root"
+    assert isinstance(body["ui_spec"]["elements"], dict)

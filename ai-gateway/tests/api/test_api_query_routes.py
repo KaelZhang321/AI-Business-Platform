@@ -83,33 +83,35 @@ class StubExecutor:
 class StubDynamicUI:
     async def generate_ui_spec(self, intent: str, data, context=None, *, status=None, runtime=None):
         if status == ApiQueryExecutionStatus.ERROR:
-            return {
-                "type": "Card",
-                "props": {"title": "查询失败", "actions": [{"type": "refresh", "label": "重试"}]},
-                "children": [{"type": "Notice", "props": {"level": "warning", "message": context["error"]}}],
-            }
+            return _build_flat_stub_spec(
+                root_props={"title": "查询失败", "actions": [{"type": "refresh", "label": "重试"}]},
+                children=[
+                    {"type": "Notice", "props": {"level": "warning", "message": context["error"]}},
+                ],
+            )
 
         if status == ApiQueryExecutionStatus.EMPTY:
-            return {
-                "type": "Card",
-                "props": {"title": "暂无数据", "actions": [{"type": "refresh", "label": "重试"}]},
-                "children": [{"type": "Notice", "props": {"level": "info", "message": context["empty_message"]}}],
-            }
+            return _build_flat_stub_spec(
+                root_props={"title": "暂无数据", "actions": [{"type": "refresh", "label": "重试"}]},
+                children=[
+                    {"type": "Notice", "props": {"level": "info", "message": context["empty_message"]}},
+                ],
+            )
 
         if status == ApiQueryExecutionStatus.SKIPPED:
-            return {
-                "type": "Card",
-                "props": {"title": context["title"], "actions": [{"type": "refresh", "label": "重试"}]},
-                "children": [{"type": "Notice", "props": {"level": "info", "message": context["skip_message"]}}],
-            }
+            return _build_flat_stub_spec(
+                root_props={"title": context["title"], "actions": [{"type": "refresh", "label": "重试"}]},
+                children=[
+                    {"type": "Notice", "props": {"level": "info", "message": context["skip_message"]}},
+                ],
+            )
 
-        return {
-            "type": "Card",
-            "props": {
+        return _build_flat_stub_spec(
+            root_props={
                 "title": "查询结果",
                 "actions": [{"type": "refresh", "label": "重新查询"}],
             },
-            "children": [
+            children=[
                 {
                     "type": "Table",
                     "props": {
@@ -129,7 +131,7 @@ class StubDynamicUI:
                     },
                 }
             ],
-        }
+        )
 
 
 class StubSnapshotService:
@@ -150,6 +152,31 @@ def create_test_app() -> FastAPI:
     app = FastAPI()
     app.include_router(api_query_routes.router, prefix="/api/v1")
     return app
+
+
+def _build_flat_stub_spec(*, root_props: dict[str, object], children: list[dict[str, object]]) -> dict[str, object]:
+    """为路由测试构造 flat spec。
+
+    功能：
+        任务 1 的目标是把 `api_query` 对外 Spec 契约统一为 `root/state/elements`。
+        路由测试桩也必须跟着切到新协议，否则测试会继续把旧结构误当成正确行为。
+    """
+    elements: dict[str, object] = {
+        "root": {
+            "type": "Card",
+            "props": root_props,
+            "children": [],
+        }
+    }
+    for index, child in enumerate(children, start=1):
+        child_id = f"child_{index}"
+        elements["root"]["children"].append(child_id)
+        elements[child_id] = child
+    return {
+        "root": "root",
+        "state": {},
+        "elements": elements,
+    }
 
 
 def _make_entry(**overrides) -> ApiCatalogEntry:
@@ -377,7 +404,8 @@ def test_api_query_soft_degrades_when_route_query_fails(monkeypatch) -> None:
     assert body["context_pool"]["stage2_routing"]["status"] == "SKIPPED"
     assert body["context_pool"]["stage2_routing"]["error"]["code"] == "routing_parse_failed"
     assert body["business_intents"][0]["code"] == "none"
-    assert body["ui_spec"]["props"]["title"] == "未识别到可用业务域"
+    root_id = body["ui_spec"]["root"]
+    assert body["ui_spec"]["elements"][root_id]["props"]["title"] == "未识别到可用业务域"
 
 
 def test_runtime_metadata_endpoint_returns_contract() -> None:
