@@ -31,6 +31,23 @@ class RecordingLLM:
         return self._replies.pop(0)
 
 
+class StubUICatalogService:
+    """为 Renderer Prompt 提供可控组件目录的测试替身。"""
+
+    def get_component_catalog(self, *, intent: str | None = None, requested_codes=None) -> dict[str, str]:
+        if intent == "query":
+            return {
+                "PlannerCard": "自定义卡片说明",
+                "PlannerTable": "自定义表格说明",
+                "PlannerDetailCard": "自定义详情说明",
+                "PlannerNotice": "自定义提示说明",
+            }
+        return {
+            "Card": "通用卡片说明",
+            "Table": "通用表格说明",
+        }
+
+
 def _make_runtime() -> ApiQueryUIRuntime:
     return ApiQueryUIRuntime(
         components=["PlannerCard", "PlannerTable", "PlannerDetailCard", "PlannerNotice"],
@@ -77,7 +94,7 @@ async def test_generate_ui_spec_uses_renderer_prompt_json_mode_and_pruned_contex
 ) -> None:
     """任务3核心验证：首轮必须走 JSON Mode，且 prompt 输入不能原样塞完整 context_pool。"""
     monkeypatch.setattr(settings, "llm_ui_spec_enabled", True)
-    service = DynamicUIService()
+    service = DynamicUIService(catalog_service=StubUICatalogService())
     service._llm_service = RecordingLLM(
         [
             """
@@ -148,6 +165,7 @@ async def test_generate_ui_spec_uses_renderer_prompt_json_mode_and_pruned_contex
     assert "Renderer Agent" in system_prompt
     assert "UI Catalog" in system_prompt
     assert "PlannerDetailCard" in system_prompt
+    assert "自定义表格说明" in system_prompt
     assert "business_intents" in user_prompt
     assert "context_pool" in user_prompt
     assert "C004" not in user_prompt
@@ -160,7 +178,7 @@ async def test_generate_ui_spec_retries_without_json_mode_when_backend_rejects_r
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(settings, "llm_ui_spec_enabled", True)
-    service = DynamicUIService()
+    service = DynamicUIService(catalog_service=StubUICatalogService())
     service._llm_service = RecordingLLM(
         [
             """
@@ -198,7 +216,7 @@ async def test_generate_ui_spec_parses_dirty_renderer_json_payload(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(settings, "llm_ui_spec_enabled", True)
-    service = DynamicUIService()
+    service = DynamicUIService(catalog_service=StubUICatalogService())
     service._llm_service = RecordingLLM(
         [
             """```json
@@ -237,7 +255,7 @@ async def test_generate_ui_spec_falls_back_to_rule_renderer_when_llm_output_is_i
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(settings, "llm_ui_spec_enabled", True)
-    service = DynamicUIService()
+    service = DynamicUIService(catalog_service=StubUICatalogService())
     service._llm_service = RecordingLLM(["not json", "still not json"])
 
     spec = await service.generate_ui_spec(

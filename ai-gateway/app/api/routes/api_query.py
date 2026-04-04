@@ -47,6 +47,7 @@ from app.services.api_catalog.schema import ApiCatalogEntry, ApiCatalogSearchFil
 from app.services.api_catalog.param_extractor import ApiParamExtractor
 from app.services.api_catalog.retriever import ApiCatalogRetriever
 from app.services.dynamic_ui_service import DynamicUIService
+from app.services.ui_catalog_service import UICatalogService
 from app.services.ui_snapshot_service import UISnapshotService
 
 logger = logging.getLogger(__name__)
@@ -58,91 +59,12 @@ _extractor: ApiParamExtractor | None = None
 _executor: ApiExecutor | None = None
 _planner: ApiDagPlanner | None = None
 _dynamic_ui: DynamicUIService | None = None
+_ui_catalog: UICatalogService | None = None
 _snapshot_service: UISnapshotService | None = None
 _bearer = HTTPBearer(auto_error=False)
 _READ_ONLY_METHODS = {"GET"}
 # 这里固定保留 5 条是为了给 Renderer 足够上下文，又避免把大结果集整包塞进生成链路导致注意力失焦。
 _CONTEXT_ROW_LIMIT = 5
-_DEFAULT_COMPONENT_TYPES = ["PlannerCard", "PlannerTable", "PlannerDetailCard", "PlannerNotice"]
-_UI_ACTION_DEFINITIONS = [
-    {
-        "code": "view_detail",
-        "description": "查看当前结果详情",
-        "enabled": True,
-        "params_schema": {
-            "type": "object",
-            "properties": {
-                "id": {"type": "string"},
-            },
-            "required": ["id"],
-        },
-    },
-    {
-        "code": "refresh",
-        "description": "重新发起当前查询",
-        "enabled": True,
-        "params_schema": {"type": "object", "properties": {}},
-    },
-    {
-        "code": "export",
-        "description": "导出当前查询结果",
-        "enabled": True,
-        "params_schema": {"type": "object", "properties": {}},
-    },
-    {
-        "code": "trigger_task",
-        "description": "触发任务型操作",
-        "enabled": True,
-        "params_schema": {"type": "object", "properties": {}},
-    },
-    {
-        "code": "remoteQuery",
-        "description": "用于详情拉取或分页刷新的通用查询动作",
-        "enabled": False,
-        "params_schema": {
-            "type": "object",
-            "properties": {
-                "api_id": {"type": "string"},
-                "route_url": {"type": "string"},
-                "params": {"type": "object"},
-                "mutation_target": {"type": "string"},
-            },
-            "required": ["api_id"],
-        },
-    },
-    {
-        "code": "remoteMutation",
-        "description": "用于确认式写入的通用动作，仅保留契约，不在 api_query 中执行",
-        "enabled": False,
-        "params_schema": {
-            "type": "object",
-            "properties": {
-                "api_id": {"type": "string"},
-                "payload": {"type": "object"},
-                "snapshot_id": {"type": "string"},
-            },
-            "required": ["api_id", "payload"],
-        },
-    },
-]
-_TEMPLATE_SCENARIOS = [
-    {
-        "code": "list_detail_template",
-        "description": "列表 + 详情页模板快路，命中模板时可直接落到固定详情 Spec。",
-        "enabled": False,
-    },
-    {
-        "code": "pagination_patch",
-        "description": "分页场景的数据数组局部刷新契约。",
-        "enabled": False,
-    },
-    {
-        "code": "wysiwyg_audit",
-        "description": "高危写场景的 UI 快照审计契约。",
-        "enabled": False,
-    },
-]
-_RUNTIME_ACTION_CODES = {item["code"] for item in _UI_ACTION_DEFINITIONS}
 _ALLOWED_BUSINESS_INTENTS = CANONICAL_BUSINESS_INTENTS
 _ROUTE_ALLOWED_BUSINESS_INTENT_CODES = set(_ALLOWED_BUSINESS_INTENTS)
 
@@ -157,10 +79,23 @@ def _get_services() -> tuple[ApiCatalogRetriever, ApiParamExtractor, ApiExecutor
     if _executor is None:
         _executor = ApiExecutor()
     if _dynamic_ui is None:
-        _dynamic_ui = DynamicUIService()
+        _dynamic_ui = DynamicUIService(catalog_service=_get_ui_catalog_service())
     if _snapshot_service is None:
         _snapshot_service = UISnapshotService()
     return _retriever, _extractor, _executor, _dynamic_ui, _snapshot_service
+
+
+def _get_ui_catalog_service() -> UICatalogService:
+    """获取 UI 目录单例。
+
+    功能：
+        `api_query` 路由与 `DynamicUIService` 必须共享同一份进程内目录快照，否则
+        `runtime-metadata`、Renderer Prompt 和最终 `ui_runtime` 很容易各说各话。
+    """
+    global _ui_catalog
+    if _ui_catalog is None:
+        _ui_catalog = UICatalogService()
+    return _ui_catalog
 
 
 def _get_planner() -> ApiDagPlanner:
@@ -421,10 +356,13 @@ async def api_query(
 @router.get("/runtime-metadata", response_model=ApiQueryRuntimeMetadataResponse, summary="获取 api_query 运行时元数据")
 async def get_runtime_metadata() -> ApiQueryRuntimeMetadataResponse:
     """返回 api_query 对外暴露的业务意图 / UI 运行时契约。"""
+    catalog_service = _get_ui_catalog_service()
+    # 这里主动预热目录，是为了让运营侧最先看到 MySQL 中维护的真实组件/动作说明。
+    await catalog_service.warmup()
     return ApiQueryRuntimeMetadataResponse(
         ui_runtime=ApiQueryUIRuntime(
-            components=_DEFAULT_COMPONENT_TYPES,
-            ui_actions=_build_runtime_actions(),
+            components=catalog_service.get_component_codes(intent="query"),
+            ui_actions=catalog_service.build_runtime_actions(),
             detail=ApiQueryDetailRuntime(
                 enabled=False,
                 route_url="/api/v1/api-query",
@@ -444,7 +382,7 @@ async def get_runtime_metadata() -> ApiQueryRuntimeMetadataResponse:
                 fallback_mode="dynamic_ui",
             ),
         ),
-        template_scenarios=_TEMPLATE_SCENARIOS,
+        template_scenarios=catalog_service.get_template_scenarios(),
     )
 
 
@@ -603,16 +541,13 @@ def _normalize_business_intent_codes(intent_codes: list[str]) -> list[str]:
 
 
 def _build_runtime_actions(action_codes: set[str] | None = None) -> list[ApiQueryUIAction]:
-    """按当前运行时启用状态构造 UI 动作定义。"""
-    actions: list[ApiQueryUIAction] = []
-    for definition in _UI_ACTION_DEFINITIONS:
-        if action_codes is not None and definition["code"] not in action_codes:
-            continue
-        payload = dict(definition)
-        if action_codes is not None:
-            payload["enabled"] = definition["code"] in action_codes
-        actions.append(ApiQueryUIAction(**payload))
-    return actions
+    """按当前运行时启用状态构造 UI 动作定义。
+
+    功能：
+        动作目录已经迁移到 `UICatalogService` 统一治理，路由层只保留“当前请求开放哪些动作”
+        这一层决策，避免组件目录和运行时开关继续写死在文件内。
+    """
+    return _get_ui_catalog_service().build_runtime_actions(action_codes)
 
 
 def _build_ui_runtime(
@@ -629,7 +564,7 @@ def _build_ui_runtime(
     """
     rows = _normalize_rows(execution_result.data)
     action_codes = {"refresh", "export"}
-    components = ["PlannerCard", "PlannerTable", "PlannerDetailCard", "PlannerNotice"]
+    components = _get_ui_catalog_service().get_component_codes(intent="query")
 
     detail_hint = entry.detail_hint
     identifier_field = detail_hint.identifier_field or _infer_identifier_field(rows)
@@ -748,13 +683,15 @@ def _collect_action_types(node: Any) -> set[str]:
     """
     action_types: set[str] = set()
 
+    known_action_codes = _get_ui_catalog_service().get_all_action_codes()
+
     if _is_flat_ui_spec(node):
         for element in node["elements"].values():
             if isinstance(element, dict):
-                _walk_action_payload(element, action_types)
+                _walk_action_payload(element, action_types, known_action_codes)
         return action_types
 
-    _walk_action_payload(node, action_types)
+    _walk_action_payload(node, action_types, known_action_codes)
     return action_types
 
 
@@ -763,7 +700,7 @@ def _is_flat_ui_spec(node: Any) -> bool:
     return isinstance(node, dict) and isinstance(node.get("root"), str) and isinstance(node.get("elements"), dict)
 
 
-def _walk_action_payload(current: Any, action_types: set[str]) -> None:
+def _walk_action_payload(current: Any, action_types: set[str], known_action_codes: set[str]) -> None:
     """递归扫描动作定义载荷。
 
     功能：
@@ -773,15 +710,15 @@ def _walk_action_payload(current: Any, action_types: set[str]) -> None:
     if isinstance(current, dict):
         action_type = current.get("type")
         action_name = current.get("action")
-        if isinstance(action_type, str) and action_type in _RUNTIME_ACTION_CODES:
+        if isinstance(action_type, str) and action_type in known_action_codes:
             action_types.add(action_type)
-        if isinstance(action_name, str) and action_name in _RUNTIME_ACTION_CODES:
+        if isinstance(action_name, str) and action_name in known_action_codes:
             action_types.add(action_name)
         for value in current.values():
-            _walk_action_payload(value, action_types)
+            _walk_action_payload(value, action_types, known_action_codes)
     elif isinstance(current, list):
         for item in current:
-            _walk_action_payload(item, action_types)
+            _walk_action_payload(item, action_types, known_action_codes)
 
 
 def _infer_identifier_field(rows: list[dict[str, Any]]) -> str | None:
@@ -1020,7 +957,10 @@ def _build_runtime_from_execution_report(
         )
 
     return ApiQueryUIRuntime(
-        components=["PlannerCard", "PlannerTable", "PlannerNotice"],
+        components=_get_ui_catalog_service().get_component_codes(
+            intent="query",
+            requested_codes=["PlannerCard", "PlannerTable", "PlannerNotice"],
+        ),
         ui_actions=_build_runtime_actions({"refresh", "export"}),
     )
 

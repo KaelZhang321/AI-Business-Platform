@@ -8,6 +8,7 @@ from app.models.schemas import (
     ApiQueryExecutionResult,
     ApiQueryExecutionStatus,
     ApiQueryRoutingResult,
+    ApiQueryUIAction,
 )
 from app.services.api_catalog.schema import (
     ApiCatalogDetailHint,
@@ -148,6 +149,46 @@ class StubSnapshotService:
             snapshot_id = "snap_test_001"
 
         return Snapshot()
+
+
+class StubUICatalogService:
+    """用于验证 `runtime-metadata` 已切到目录服务主链路。"""
+
+    def __init__(self) -> None:
+        self.warmup_called = False
+
+    async def warmup(self, *, force_refresh: bool = False) -> None:
+        self.warmup_called = True
+
+    def get_component_codes(self, *, intent: str | None = None, requested_codes=None) -> list[str]:
+        if intent == "query":
+            return ["PlannerCard", "PlannerNotice", "PlannerTable"]
+        return ["Card"]
+
+    def build_runtime_actions(self, action_codes=None) -> list[ApiQueryUIAction]:
+        return [
+            ApiQueryUIAction(
+                code="remoteQuery",
+                description="由目录服务提供的查询动作",
+                enabled=True,
+                params_schema={"type": "object"},
+            ),
+            ApiQueryUIAction(
+                code="remoteMutation",
+                description="由目录服务提供的写动作",
+                enabled=False,
+                params_schema={"type": "object"},
+            ),
+        ]
+
+    def get_template_scenarios(self) -> list[dict[str, object]]:
+        return [
+            {
+                "code": "custom_template",
+                "description": "自定义模板快路",
+                "enabled": True,
+            }
+        ]
 
 
 def create_test_app() -> FastAPI:
@@ -410,14 +451,19 @@ def test_api_query_soft_degrades_when_route_query_fails(monkeypatch) -> None:
     assert body["ui_spec"]["elements"][root_id]["props"]["title"] == "未识别到可用业务域"
 
 
-def test_runtime_metadata_endpoint_returns_contract() -> None:
+def test_runtime_metadata_endpoint_returns_contract(monkeypatch) -> None:
+    stub_catalog_service = StubUICatalogService()
+    monkeypatch.setattr(api_query_routes, "_get_ui_catalog_service", lambda: stub_catalog_service)
+
     client = TestClient(create_test_app())
     response = client.get("/api/v1/api-query/runtime-metadata")
 
     assert response.status_code == 200
     body = response.json()
     action_codes = {item["code"] for item in body["ui_runtime"]["ui_actions"]}
-    assert {"view_detail", "refresh", "export", "trigger_task", "remoteQuery", "remoteMutation"} <= action_codes
+    assert action_codes == {"remoteQuery", "remoteMutation"}
+    assert body["ui_runtime"]["components"] == ["PlannerCard", "PlannerNotice", "PlannerTable"]
     template_codes = {item["code"] for item in body["template_scenarios"]}
-    assert {"list_detail_template", "pagination_patch", "wysiwyg_audit"} <= template_codes
+    assert template_codes == {"custom_template"}
     assert body["ui_runtime"]["template"]["fallback_mode"] == "dynamic_ui"
+    assert stub_catalog_service.warmup_called is True

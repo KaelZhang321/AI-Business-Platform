@@ -8,6 +8,7 @@ from typing import Any
 
 from app.core.config import settings
 from app.models.schemas import ApiQueryExecutionStatus, ApiQueryUIRuntime, KnowledgeResult
+from app.services.ui_catalog_service import UICatalogService
 
 logger = logging.getLogger(__name__)
 
@@ -15,23 +16,6 @@ _LLM_RENDER_ROW_LIMIT = 3
 _LLM_RENDER_KEY_LIMIT = 8
 _LLM_RENDER_STRING_LIMIT = 200
 _LLM_RENDER_MAX_ATTEMPTS = 2
-
-_QUERY_COMPONENT_CATALOG = {
-    "PlannerCard": "顶级卡片容器，props: title, subtitle",
-    "PlannerTable": "同质列表展示，props: columns, dataSource",
-    "PlannerDetailCard": "单对象详情展示，props: title, items",
-    "PlannerNotice": "状态提示条，props: text, tone(info/success)",
-}
-
-_GENERIC_COMPONENT_CATALOG = {
-    "Card": "通用容器卡片，props: title, subtitle, actions",
-    "Table": "通用表格，props: columns, dataSource, rowKey",
-    "Metric": "指标展示，props: label, value, trend",
-    "List": "列表展示，props: title, items, emptyText",
-    "Form": "表单容器，props: fields, submitLabel",
-    "Tag": "标签展示，props: label, color",
-    "Chart": "图表容器，props: option",
-}
 
 
 class DynamicUIService:
@@ -41,6 +25,18 @@ class DynamicUIService:
     - 规则模式（默认）：基于硬编码模板，根据数据特征自动生成 UI Spec
     - LLM 模式（实验性）：通过 LLM 生成 UI Spec，需设置 LLM_UI_SPEC_ENABLED=true
     """
+
+    def __init__(self, catalog_service: UICatalogService | None = None) -> None:
+        """初始化动态渲染服务。
+
+        功能：
+            第五阶段 Prompt 的组件目录已经不应该再散落在各个模块里。
+            这里注入 `UICatalogService`，让规则渲染和 LLM 渲染都消费同一份目录快照。
+
+        Args:
+            catalog_service: 可选的 UI 目录服务。测试可注入替身，生产默认懒加载单例。
+        """
+        self._catalog_service = catalog_service
 
     async def generate_ui_spec(
         self,
@@ -130,6 +126,17 @@ class DynamicUIService:
             from app.services.llm_service import LLMService
             self._llm_service = LLMService()
         return self._llm_service
+
+    def _get_catalog_service(self) -> UICatalogService:
+        """懒加载 UI 目录服务。
+
+        功能：
+            `DynamicUIService` 既被 `api_query` 主链路复用，也会在测试中独立实例化。
+            这里用懒加载兜住默认依赖，避免为了目录服务把所有调用点都改成显式注入。
+        """
+        if self._catalog_service is None:
+            self._catalog_service = UICatalogService()
+        return self._catalog_service
 
     async def _llm_generate_spec(
         self,
@@ -446,10 +453,10 @@ class DynamicUIService:
     def _format_component_catalog(self, intent: str, runtime: ApiQueryUIRuntime | None) -> str:
         """格式化当前请求可用的组件目录。"""
         requested_components = list(runtime.components) if runtime and runtime.components else []
-        if intent == "query":
-            catalog = _QUERY_COMPONENT_CATALOG
-        else:
-            catalog = _GENERIC_COMPONENT_CATALOG
+        catalog = self._get_catalog_service().get_component_catalog(
+            intent=intent,
+            requested_codes=requested_components or None,
+        )
 
         component_names = requested_components or list(catalog.keys())
         lines: list[str] = []
