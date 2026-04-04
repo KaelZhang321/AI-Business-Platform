@@ -1,0 +1,121 @@
+from __future__ import annotations
+
+import pytest
+
+from app.models.schemas import ApiQueryExecutionPlan, ApiQueryExecutionResult, ApiQueryExecutionStatus, ApiQueryPlanStep
+from app.services.api_catalog.dag_executor import ApiDagExecutor
+from app.services.api_catalog.dag_planner import ApiDagPlanner, DagPlanValidationError
+from app.services.api_catalog.schema import ApiCatalogEntry, ApiCatalogSearchResult
+
+
+def _make_entry(
+    *,
+    entry_id: str,
+    path: str,
+    required: list[str] | None = None,
+) -> ApiCatalogEntry:
+    return ApiCatalogEntry(
+        id=entry_id,
+        description=f"查询 {entry_id}",
+        domain="crm",
+        method="GET",
+        path=path,
+        param_schema={
+            "type": "object",
+            "properties": {"customer_ids": {"type": "array"}, "owner_id": {"type": "string"}},
+            "required": required or [],
+        },
+    )
+
+
+def test_validate_plan_rejects_cycle() -> None:
+    planner = ApiDagPlanner()
+    customers_entry = _make_entry(entry_id="customers", path="/api/crm/customers")
+    orders_entry = _make_entry(entry_id="orders", path="/api/orders/stats", required=["customer_ids"])
+    candidates = [
+        ApiCatalogSearchResult(entry=customers_entry, score=0.9),
+        ApiCatalogSearchResult(entry=orders_entry, score=0.88),
+    ]
+    plan = ApiQueryExecutionPlan(
+        plan_id="dag_cycle",
+        steps=[
+            ApiQueryPlanStep(
+                step_id="step_customers",
+                api_path="/api/crm/customers",
+                depends_on=["step_orders"],
+            ),
+            ApiQueryPlanStep(
+                step_id="step_orders",
+                api_path="/api/orders/stats",
+                params={"customer_ids": "$[step_customers.data][*].id"},
+                depends_on=["step_customers"],
+            ),
+        ],
+    )
+
+    with pytest.raises(DagPlanValidationError) as exc_info:
+        planner.validate_plan(plan, candidates)
+
+    assert exc_info.value.code == "planner_cycle_detected"
+
+
+@pytest.mark.asyncio
+async def test_execute_plan_skips_downstream_when_json_binding_is_empty() -> None:
+    customers_entry = _make_entry(entry_id="customers", path="/api/crm/customers")
+    orders_entry = _make_entry(entry_id="orders", path="/api/orders/stats", required=["customer_ids"])
+    plan = ApiQueryExecutionPlan(
+        plan_id="dag_empty_upstream",
+        steps=[
+            ApiQueryPlanStep(
+                step_id="step_customers",
+                api_path="/api/crm/customers",
+                params={"owner_id": "E8899"},
+                depends_on=[],
+            ),
+            ApiQueryPlanStep(
+                step_id="step_orders",
+                api_path="/api/orders/stats",
+                params={"customer_ids": "$[step_customers.data][*].id"},
+                depends_on=["step_customers"],
+            ),
+        ],
+    )
+
+    class StubApiExecutor:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict[str, object]]] = []
+
+        async def call(self, entry, params, user_token=None, trace_id=None):
+            self.calls.append((entry.id, dict(params)))
+            if entry.id == "customers":
+                return ApiQueryExecutionResult(
+                    status=ApiQueryExecutionStatus.EMPTY,
+                    data=[],
+                    total=0,
+                    trace_id=trace_id,
+                )
+            return ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.SUCCESS,
+                data=[{"ok": True}],
+                total=1,
+                trace_id=trace_id,
+            )
+
+    stub_executor = StubApiExecutor()
+    dag_executor = ApiDagExecutor(stub_executor)
+    report = await dag_executor.execute_plan(
+        plan,
+        {
+            "step_customers": customers_entry,
+            "step_orders": orders_entry,
+        },
+        user_token=None,
+        trace_id="trace-dag-empty",
+    )
+
+    assert [call[0] for call in stub_executor.calls] == ["customers"]
+    assert report.records_by_step_id["step_customers"].execution_result.status == ApiQueryExecutionStatus.EMPTY
+    downstream_result = report.records_by_step_id["step_orders"].execution_result
+    assert downstream_result.status == ApiQueryExecutionStatus.SKIPPED
+    assert downstream_result.skipped_reason == "skipped_due_to_empty_upstream"
+    assert downstream_result.meta["empty_bindings"] == ["$[step_customers.data][*].id"]
