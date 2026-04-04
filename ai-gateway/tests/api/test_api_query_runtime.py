@@ -321,7 +321,7 @@ def test_api_query_executes_multi_step_plan_and_returns_multi_step_context_pool(
             )
 
     class PlannerStub:
-        async def build_plan(self, query, candidates, user_context, route_hint):
+        async def build_plan(self, query, candidates, user_context, route_hint, **kwargs):
             return ApiQueryExecutionPlan(
                 plan_id="dag_customer_orders",
                 steps=[
@@ -439,7 +439,7 @@ def test_api_query_renders_partial_success_with_notice_and_table(monkeypatch) ->
             )
 
     class PlannerStub:
-        async def build_plan(self, query, candidates, user_context, route_hint):
+        async def build_plan(self, query, candidates, user_context, route_hint, **kwargs):
             return ApiQueryExecutionPlan(
                 plan_id="dag_customer_orders_partial",
                 steps=[

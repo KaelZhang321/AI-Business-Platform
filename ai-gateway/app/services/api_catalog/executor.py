@@ -16,6 +16,7 @@ API Catalog — Business-Server 接口执行器
     executor = ApiExecutor()
     data, total = await executor.call(entry, params, user_token="Bearer xxx")
 """
+
 from __future__ import annotations
 
 import logging
@@ -105,6 +106,13 @@ class ApiExecutor:
                 )
         except httpx.TimeoutException:
             timeout_seconds = settings.business_server_timeout_seconds
+            logger.warning(
+                "stage4 upstream timeout trace_id=%s method=%s path=%s timeout_seconds=%s",
+                trace_id or "-",
+                entry.method,
+                entry.path,
+                timeout_seconds,
+            )
             return _error_result(
                 f"接口调用超时（{timeout_seconds}s）: {entry.path}",
                 trace_id=trace_id,
@@ -112,6 +120,13 @@ class ApiExecutor:
                 retryable=True,
             )
         except httpx.RequestError as exc:
+            logger.warning(
+                "stage4 upstream request error trace_id=%s method=%s path=%s error=%s",
+                trace_id or "-",
+                entry.method,
+                entry.path,
+                exc,
+            )
             return _error_result(
                 f"接口网络异常: {exc}",
                 trace_id=trace_id,
@@ -121,18 +136,42 @@ class ApiExecutor:
 
         # 这里把上游的 HTTP 语义提前折叠成统一错误码，避免 route 再次分支判断 transport 细节。
         if response.status_code == 401:
+            logger.warning(
+                "stage4 upstream rejected trace_id=%s method=%s path=%s status=%s code=%s",
+                trace_id or "-",
+                entry.method,
+                entry.path,
+                response.status_code,
+                "UPSTREAM_UNAUTHORIZED",
+            )
             return _error_result(
                 "用户未登录或 Token 已过期，请重新登录",
                 trace_id=trace_id,
                 error_code="UPSTREAM_UNAUTHORIZED",
             )
         if response.status_code == 403:
+            logger.warning(
+                "stage4 upstream rejected trace_id=%s method=%s path=%s status=%s code=%s",
+                trace_id or "-",
+                entry.method,
+                entry.path,
+                response.status_code,
+                "UPSTREAM_FORBIDDEN",
+            )
             return _error_result(
                 "无权限访问该接口，请联系管理员",
                 trace_id=trace_id,
                 error_code="UPSTREAM_FORBIDDEN",
             )
         if response.status_code == 404:
+            logger.warning(
+                "stage4 upstream rejected trace_id=%s method=%s path=%s status=%s code=%s",
+                trace_id or "-",
+                entry.method,
+                entry.path,
+                response.status_code,
+                "UPSTREAM_NOT_FOUND",
+            )
             return _error_result(
                 f"接口不存在: {entry.path}",
                 trace_id=trace_id,
@@ -141,6 +180,15 @@ class ApiExecutor:
         if response.status_code >= 400:
             body = _safe_json(response)
             msg = body.get("message") or body.get("msg") or response.text[:200]
+            logger.warning(
+                "stage4 upstream rejected trace_id=%s method=%s path=%s status=%s code=%s message=%s",
+                trace_id or "-",
+                entry.method,
+                entry.path,
+                response.status_code,
+                "UPSTREAM_HTTP_ERROR",
+                msg,
+            )
             return _error_result(
                 f"业务接口返回错误 {response.status_code}: {msg}",
                 trace_id=trace_id,
@@ -183,6 +231,7 @@ class ApiExecutor:
 
 
 # ── 数据规范化工具 ───────────────────────────────────────────────────────────
+
 
 def _safe_json(response: httpx.Response) -> dict[str, Any]:
     """安全解析上游 JSON，失败时回落为原始文本。"""
@@ -233,13 +282,7 @@ def _extract_data(
             parent = reduce(lambda obj, key: obj[key], keys[:-1], body)
         except (KeyError, TypeError):
             pass
-    total = (
-        parent.get("total")
-        or parent.get("totalCount")
-        or parent.get("count")
-        or body.get("total")
-        or 0
-    )
+    total = parent.get("total") or parent.get("totalCount") or parent.get("count") or body.get("total") or 0
 
     if isinstance(raw, list):
         data = [row if isinstance(row, dict) else {"value": row} for row in raw]

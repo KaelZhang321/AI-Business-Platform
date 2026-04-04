@@ -3,12 +3,14 @@ from __future__ import annotations
 import json
 import logging
 import re
+from dataclasses import dataclass, field
 from statistics import mean
 from typing import Any
 
 from app.core.config import settings
 from app.models.schemas import ApiQueryExecutionStatus, ApiQueryUIRuntime, KnowledgeResult
 from app.services.ui_catalog_service import UICatalogService
+from app.services.ui_spec_guard import UISpecGuard, UISpecValidationResult
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +18,25 @@ _LLM_RENDER_ROW_LIMIT = 3
 _LLM_RENDER_KEY_LIMIT = 8
 _LLM_RENDER_STRING_LIMIT = 200
 _LLM_RENDER_MAX_ATTEMPTS = 2
+
+
+@dataclass(slots=True)
+class UISpecBuildResult:
+    """第五阶段 UI Spec 构建结果。
+
+    功能：
+        把“渲染成功但需冻结”和“完全未产出 Spec”明确区分开，避免调用方继续依赖
+        `None` 或异常去猜测当前处于哪一种失败模式。
+
+    Args:
+        spec: 最终应返回给前端的 Spec。冻结场景下会是网关构造的安全兜底视图。
+        validation: Guard 校验结果；无 Spec 场景下通常为空结果。
+        frozen: 是否触发了“冻结当前操作视图”的硬失败策略。
+    """
+
+    spec: dict[str, Any] | None = None
+    validation: UISpecValidationResult = field(default_factory=UISpecValidationResult)
+    frozen: bool = False
 
 
 class DynamicUIService:
@@ -26,7 +47,11 @@ class DynamicUIService:
     - LLM 模式（实验性）：通过 LLM 生成 UI Spec，需设置 LLM_UI_SPEC_ENABLED=true
     """
 
-    def __init__(self, catalog_service: UICatalogService | None = None) -> None:
+    def __init__(
+        self,
+        catalog_service: UICatalogService | None = None,
+        guard: UISpecGuard | None = None,
+    ) -> None:
         """初始化动态渲染服务。
 
         功能：
@@ -37,6 +62,7 @@ class DynamicUIService:
             catalog_service: 可选的 UI 目录服务。测试可注入替身，生产默认懒加载单例。
         """
         self._catalog_service = catalog_service
+        self._guard = guard
 
     async def generate_ui_spec(
         self,
@@ -46,6 +72,7 @@ class DynamicUIService:
         *,
         status: ApiQueryExecutionStatus | str | None = None,
         runtime: ApiQueryUIRuntime | None = None,
+        trace_id: str | None = None,
     ) -> dict[str, Any] | None:
         """按执行状态和数据形状生成 json-render 规范。
 
@@ -69,6 +96,122 @@ class DynamicUIService:
             - 旧版规则渲染器仍会先产出树形节点，本方法负责在出口统一折叠为
               `root/state/elements`，避免 route 层同时兼容两套 Spec 契约
         """
+        result = await self.generate_ui_spec_result(
+            intent,
+            data,
+            context,
+            status=status,
+            runtime=runtime,
+            trace_id=trace_id,
+        )
+        return result.spec
+
+    async def generate_ui_spec_result(
+        self,
+        intent: str,
+        data: Any,
+        context: dict | None = None,
+        *,
+        status: ApiQueryExecutionStatus | str | None = None,
+        runtime: ApiQueryUIRuntime | None = None,
+        trace_id: str | None = None,
+    ) -> UISpecBuildResult:
+        """生成并校验第五阶段 UI Spec。
+
+        功能：
+            渲染器的职责不再只是“产出一个页面描述”，还要承担写链路的最后一道安全闸。
+            因此这里统一执行：
+
+            1. 生成候选 Spec
+            2. 归一化为 flat spec
+            3. 交给 `UISpecGuard` 做结构和绑定校验
+            4. 一旦失败，冻结为不可交互的安全提示视图
+
+        Args:
+            intent: 当前渲染意图。
+            data: 已经裁剪过的主数据载荷。
+            context: 渲染上下文，供标题、提示语和 `context_pool` 使用。
+            status: 当前执行状态。
+            runtime: 当前请求允许暴露的前端运行时契约。
+            trace_id: 当前请求链路追踪 ID，用于结构化失败日志。
+
+        Returns:
+            `UISpecBuildResult`。调用方可依据 `frozen` 决定是否继续暴露交互能力。
+
+        Edge Cases:
+            - 无数据且无需展示 Notice 时，返回 `spec=None`
+            - Guard 失败时绝不透传半成品 Spec，而是统一冻结为只读提示视图
+            - 冻结视图不依赖 LLM，确保在渲染链路失真时依旧可稳定返回
+        """
+        candidate_spec = await self._build_candidate_spec(
+            intent,
+            data,
+            context,
+            status=status,
+            runtime=runtime,
+            trace_id=trace_id,
+        )
+        if candidate_spec is None:
+            return UISpecBuildResult()
+
+        validation = self._get_guard().validate(candidate_spec, intent=intent, runtime=runtime)
+        if validation.is_valid:
+            return UISpecBuildResult(spec=candidate_spec, validation=validation, frozen=False)
+
+        logger.warning(
+            "UI Spec guard rejected output trace_id=%s intent=%s errors=%s spec_summary=%s",
+            trace_id or "-",
+            intent,
+            self._format_validation_errors(validation),
+            self._summarize_payload(candidate_spec),
+        )
+        return UISpecBuildResult(
+            spec=self._frozen_spec(context),
+            validation=validation,
+            frozen=True,
+        )
+
+    def _get_llm_service(self):
+        """懒加载 LLMService 单例，避免规则模式也承担额外初始化成本。"""
+        if not hasattr(self, "_llm_service") or self._llm_service is None:
+            from app.services.llm_service import LLMService
+
+            self._llm_service = LLMService()
+        return self._llm_service
+
+    def _get_catalog_service(self) -> UICatalogService:
+        """懒加载 UI 目录服务。
+
+        功能：
+            `DynamicUIService` 既被 `api_query` 主链路复用，也会在测试中独立实例化。
+            这里用懒加载兜住默认依赖，避免为了目录服务把所有调用点都改成显式注入。
+        """
+        if self._catalog_service is None:
+            self._catalog_service = UICatalogService()
+        return self._catalog_service
+
+    def _get_guard(self) -> UISpecGuard:
+        """懒加载 UI Spec Guard。
+
+        功能：
+            Guard 与目录服务必须消费同一份组件/动作快照，才能把“未注册”和“未启用”
+            清晰区分开来。因此默认与 `UICatalogService` 共享依赖，而不是各自独立初始化。
+        """
+        if self._guard is None:
+            self._guard = UISpecGuard(catalog_service=self._get_catalog_service())
+        return self._guard
+
+    async def _build_candidate_spec(
+        self,
+        intent: str,
+        data: Any,
+        context: dict | None,
+        *,
+        status: ApiQueryExecutionStatus | str | None,
+        runtime: ApiQueryUIRuntime | None,
+        trace_id: str | None,
+    ) -> dict[str, Any] | None:
+        """生成待 Guard 校验的候选 Spec。"""
         execution_status = ApiQueryExecutionStatus(status) if status else None
 
         if execution_status == ApiQueryExecutionStatus.ERROR:
@@ -95,13 +238,18 @@ class DynamicUIService:
         # 规则模式是当前生产兜底，LLM 只是在满足开关时尝试提升展示质量。
         if settings.llm_ui_spec_enabled:
             try:
-                spec = await self._llm_generate_spec(intent, data, context, runtime)
+                spec = await self._llm_generate_spec(intent, data, context, runtime, trace_id=trace_id)
                 if spec:
                     normalized_spec = self._normalize_spec_shape(spec)
                     if normalized_spec:
                         return normalized_spec
             except Exception as exc:
-                logger.warning("LLM UI Spec 生成失败，回退规则模式: %s", exc)
+                logger.warning(
+                    "LLM UI Spec 生成失败，回退规则模式 trace_id=%s intent=%s error=%s",
+                    trace_id or "-",
+                    intent,
+                    exc,
+                )
 
         # 规则模式（默认）
         if intent == "knowledge" and isinstance(data, list):
@@ -120,30 +268,14 @@ class DynamicUIService:
 
         return None
 
-    def _get_llm_service(self):
-        """懒加载 LLMService 单例，避免规则模式也承担额外初始化成本。"""
-        if not hasattr(self, "_llm_service") or self._llm_service is None:
-            from app.services.llm_service import LLMService
-            self._llm_service = LLMService()
-        return self._llm_service
-
-    def _get_catalog_service(self) -> UICatalogService:
-        """懒加载 UI 目录服务。
-
-        功能：
-            `DynamicUIService` 既被 `api_query` 主链路复用，也会在测试中独立实例化。
-            这里用懒加载兜住默认依赖，避免为了目录服务把所有调用点都改成显式注入。
-        """
-        if self._catalog_service is None:
-            self._catalog_service = UICatalogService()
-        return self._catalog_service
-
     async def _llm_generate_spec(
         self,
         intent: str,
         data: Any,
         context: dict | None,
         runtime: ApiQueryUIRuntime | None,
+        *,
+        trace_id: str | None = None,
     ) -> dict[str, Any] | None:
         """通过正式 Renderer Prompt 调用 LLM 生成 UI Spec。
 
@@ -183,7 +315,8 @@ class DynamicUIService:
                 )
             except Exception as exc:
                 logger.warning(
-                    "LLM UI Spec 生成失败，attempt=%s/%s intent=%s json_mode=%s error=%s",
+                    "LLM UI Spec 生成失败，trace_id=%s attempt=%s/%s intent=%s json_mode=%s error=%s",
+                    trace_id or "-",
                     attempt + 1,
                     _LLM_RENDER_MAX_ATTEMPTS,
                     intent,
@@ -197,10 +330,12 @@ class DynamicUIService:
                 return spec
 
             logger.warning(
-                "LLM UI Spec 返回了不可解析结果，attempt=%s/%s intent=%s",
+                "LLM UI Spec 返回了不可解析结果，trace_id=%s attempt=%s/%s intent=%s raw=%s",
+                trace_id or "-",
                 attempt + 1,
                 _LLM_RENDER_MAX_ATTEMPTS,
                 intent,
+                self._summarize_text(reply),
             )
         return None
 
@@ -672,11 +807,7 @@ class DynamicUIService:
             return f"{prefix}_{element_counter}"
 
         def materialize(node: dict[str, Any], *, element_id: str) -> None:
-            element_payload = {
-                key: value
-                for key, value in node.items()
-                if key != "children"
-            }
+            element_payload = {key: value for key, value in node.items() if key != "children"}
             raw_children = node.get("children")
             child_ids: list[str] = []
 
@@ -881,6 +1012,27 @@ class DynamicUIService:
             ],
         )
 
+    def _frozen_spec(self, context: dict[str, Any] | None) -> dict[str, Any]:
+        """构造冻结当前操作视图的系统级兜底 Spec。
+
+        功能：
+            当第五阶段发现组件、动作或绑定不可信时，绝不能把半成品表单交给前端。
+            这里统一返回无任何交互入口的提示卡，守住“不误写数据”的最后红线。
+        """
+        title = (context or {}).get("title", "界面已安全冻结")
+        return self._build_flat_card_spec(
+            root_props={"title": title, "subtitle": None},
+            children=[
+                {
+                    "type": "PlannerNotice",
+                    "props": {
+                        "text": "界面渲染组件存在异常，为保障您的数据安全，已冻结当前操作视图。",
+                        "tone": "info",
+                    },
+                }
+            ],
+        )
+
     def _task_spec(self, tasks: list[dict[str, Any]]) -> dict[str, Any]:
         """将待办列表渲染成带筛选器的工作台视图。"""
         items = [
@@ -891,11 +1043,7 @@ class DynamicUIService:
                 "status": task.get("status", "pending"),
                 "tags": [
                     {"label": task.get("priority", "普通"), "color": self._priority_color(task.get("priority", ""))},
-                    *(
-                        [{"label": task.get("sourceSystem", ""), "color": "cyan"}]
-                        if task.get("sourceSystem")
-                        else []
-                    ),
+                    *([{"label": task.get("sourceSystem", ""), "color": "cyan"}] if task.get("sourceSystem") else []),
                 ],
                 "assignee": task.get("owner"),
                 "dueDate": task.get("deadline"),
@@ -992,6 +1140,35 @@ class DynamicUIService:
         }
 
     @staticmethod
+    def _format_validation_errors(validation: UISpecValidationResult) -> str:
+        """压缩 Guard 错误列表，便于日志追踪。"""
+        if not validation.errors:
+            return "[]"
+        items = [f"{error.code}@{error.path}" for error in validation.errors[:5]]
+        if len(validation.errors) > 5:
+            items.append(f"...(+{len(validation.errors) - 5})")
+        return "[" + ", ".join(items) + "]"
+
+    @staticmethod
+    def _summarize_payload(payload: dict[str, Any] | None) -> str:
+        """压缩 Spec 日志摘要，避免把整页 JSON 打进日志。"""
+        if not payload:
+            return "<empty>"
+        try:
+            text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        except TypeError:
+            text = str(payload)
+        return DynamicUIService._summarize_text(text)
+
+    @staticmethod
+    def _summarize_text(text: str | None, *, limit: int = 240) -> str:
+        """压缩文本日志长度，保留定位非法输出所需的首段上下文。"""
+        normalized = re.sub(r"\s+", " ", (text or "").strip())
+        if len(normalized) <= limit:
+            return normalized
+        return f"{normalized[:limit]}..."
+
+    @staticmethod
     def _build_table_columns(sample_row: dict[str, Any]) -> list[dict[str, str]]:
         """把行对象字段映射成 `PlannerTable.columns`。
 
@@ -1074,19 +1251,25 @@ class DynamicUIService:
             # 根据值的分布选择最有意义的聚合方式
             if count > 1 and total != avg:
                 # 有多行数据，展示合计
-                metrics.append({
-                    "type": "Metric",
-                    "props": {"label": f"{column} (合计)", "value": f"{total:,.2f}", "format": "number"},
-                })
-                metrics.append({
-                    "type": "Metric",
-                    "props": {"label": f"{column} (均值)", "value": f"{avg:,.2f}", "format": "number"},
-                })
+                metrics.append(
+                    {
+                        "type": "Metric",
+                        "props": {"label": f"{column} (合计)", "value": f"{total:,.2f}", "format": "number"},
+                    }
+                )
+                metrics.append(
+                    {
+                        "type": "Metric",
+                        "props": {"label": f"{column} (均值)", "value": f"{avg:,.2f}", "format": "number"},
+                    }
+                )
             else:
-                metrics.append({
-                    "type": "Metric",
-                    "props": {"label": column, "value": f"{total:,.2f}", "format": "number"},
-                })
+                metrics.append(
+                    {
+                        "type": "Metric",
+                        "props": {"label": column, "value": f"{total:,.2f}", "format": "number"},
+                    }
+                )
 
             if len(metrics) >= 4:
                 break

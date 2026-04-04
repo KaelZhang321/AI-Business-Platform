@@ -10,6 +10,7 @@ API Catalog — 语义检索器
 - 第二阶段已经先拿到了 `query_domains`，这里必须尊重该结果做分层召回
 - 多域并发检索的目标不是“找全世界最像的 5 个接口”，而是“让每个目标域都至少带回自己的核心候选”
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -127,6 +128,7 @@ class ApiCatalogRetriever:
         top_k: int = 3,
         score_threshold: float | None = None,
         filters: ApiCatalogSearchFilters | dict[str, list[str]] | None = None,
+        trace_id: str | None = None,
     ) -> list[ApiCatalogSearchResult]:
         """执行一次普通语义检索。"""
         query_emb = await self._encode_query(query)
@@ -136,6 +138,7 @@ class ApiCatalogRetriever:
             top_k=top_k,
             score_threshold=score_threshold or settings.api_query_score_threshold,
             filters=filters,
+            trace_id=trace_id,
         )
 
     async def search_stratified(
@@ -147,6 +150,7 @@ class ApiCatalogRetriever:
         per_domain_top_k: int | None = None,
         score_threshold: float | None = None,
         filters: ApiCatalogSearchFilters | dict[str, list[str]] | None = None,
+        trace_id: str | None = None,
     ) -> list[ApiCatalogSearchResult]:
         """按业务域并发执行分层召回。
 
@@ -170,6 +174,15 @@ class ApiCatalogRetriever:
             return []
 
         threshold = score_threshold or settings.api_query_score_threshold
+        logger.info(
+            "stage2 stratified retrieval trace_id=%s domains=%s threshold=%.3f filters=%s top_k=%s per_domain_top_k=%s",
+            trace_id or "-",
+            normalized_domains,
+            threshold,
+            _summarize_filters(filters),
+            top_k,
+            per_domain_top_k,
+        )
         if len(normalized_domains) == 1:
             merged_filters = _merge_filters(filters, domains=normalized_domains)
             return await self.search(
@@ -177,6 +190,7 @@ class ApiCatalogRetriever:
                 top_k=max(1, top_k),
                 score_threshold=threshold,
                 filters=merged_filters,
+                trace_id=trace_id,
             )
 
         query_emb = await self._encode_query(query)
@@ -190,6 +204,7 @@ class ApiCatalogRetriever:
                 top_k=each_top_k,
                 score_threshold=threshold,
                 base_filters=base_filters,
+                trace_id=trace_id,
             )
             for domain in normalized_domains
         ]
@@ -228,6 +243,7 @@ class ApiCatalogRetriever:
         top_k: int,
         score_threshold: float,
         base_filters: ApiCatalogSearchFilters,
+        trace_id: str | None = None,
     ) -> list[ApiCatalogSearchResult]:
         """为单个 domain 包一层硬超时，防止最慢域拖垮整体体验。"""
         filters = _merge_filters(base_filters, domains=[domain])
@@ -239,11 +255,17 @@ class ApiCatalogRetriever:
                     top_k=top_k,
                     score_threshold=score_threshold,
                     filters=filters,
+                    trace_id=trace_id,
                 ),
                 timeout=settings.api_query_retrieval_timeout_seconds,
             )
         except asyncio.TimeoutError:
-            logger.warning("API catalog stratified search timed out for domain=%s", domain)
+            logger.warning(
+                "stage2 stratified retrieval timed out trace_id=%s domain=%s timeout_seconds=%s",
+                trace_id or "-",
+                domain,
+                settings.api_query_retrieval_timeout_seconds,
+            )
             return []
 
     async def _search_with_embedding(
@@ -254,6 +276,7 @@ class ApiCatalogRetriever:
         top_k: int,
         score_threshold: float,
         filters: ApiCatalogSearchFilters | dict[str, list[str]] | None,
+        trace_id: str | None = None,
     ) -> list[ApiCatalogSearchResult]:
         """用已生成好的 embedding 执行一次实际 Milvus 查询。"""
         collection = self._get_collection()
@@ -271,7 +294,13 @@ class ApiCatalogRetriever:
                 search_kwargs["expr"] = expr
             raw_results = await asyncio.to_thread(collection.search, **search_kwargs)
         except Exception as exc:
-            logger.warning("Milvus api_catalog search failed: %s", exc)
+            logger.warning(
+                "Milvus api_catalog search failed trace_id=%s expr=%s threshold=%.3f error=%s",
+                trace_id or "-",
+                expr,
+                score_threshold,
+                exc,
+            )
             return []
 
         results: list[ApiCatalogSearchResult] = []
@@ -287,10 +316,12 @@ class ApiCatalogRetriever:
                 break
 
         logger.debug(
-            "API catalog search '%s' -> %d results (expr=%s, top score=%.3f)",
+            "API catalog search trace_id=%s query=%s -> %d results (expr=%s, threshold=%.3f, top score=%.3f)",
+            trace_id or "-",
             query[:50],
             len(results),
             expr,
+            score_threshold,
             results[0].score if results else 0.0,
         )
         return results
@@ -326,7 +357,9 @@ def _build_entry_from_fields(fields: dict) -> ApiCatalogEntry:
         executor_config=_read_json_field(fields, "executor_config", "executor_config_json", {}),
         security_rules=_read_json_field(fields, "security_rules", "security_rules_json", {}),
         detail_hint=ApiCatalogDetailHint(**_read_json_field(fields, "detail_hint", "detail_hint_json", {})),
-        pagination_hint=ApiCatalogPaginationHint(**_read_json_field(fields, "pagination_hint", "pagination_hint_json", {})),
+        pagination_hint=ApiCatalogPaginationHint(
+            **_read_json_field(fields, "pagination_hint", "pagination_hint_json", {})
+        ),
         template_hint=ApiCatalogTemplateHint(**_read_json_field(fields, "template_hint", "template_hint_json", {})),
     )
 
@@ -480,3 +513,16 @@ def _coerce_domain_results(
         normalized_results.append(result)
 
     return normalized_results
+
+
+def _summarize_filters(
+    filters: ApiCatalogSearchFilters | dict[str, list[str]] | None,
+) -> dict[str, list[str]]:
+    """把过滤条件收敛为日志友好的轻量结构。"""
+    normalized = _normalize_filters(filters)
+    return {
+        "domains": list(normalized.domains),
+        "envs": list(normalized.envs),
+        "statuses": list(normalized.statuses),
+        "tag_names": list(normalized.tag_names),
+    }

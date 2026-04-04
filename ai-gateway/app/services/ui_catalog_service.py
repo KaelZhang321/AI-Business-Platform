@@ -174,9 +174,11 @@ class UICatalogService:
             - 运行时引用到未注册动作时，仍会补一个占位定义，保证诊断链路可见
         """
         definitions = self._snapshot.actions
-        ordered_codes = list(definitions.keys()) if action_codes is None else [
-            code for code in definitions.keys() if code in action_codes
-        ]
+        ordered_codes = (
+            list(definitions.keys())
+            if action_codes is None
+            else [code for code in definitions.keys() if code in action_codes]
+        )
 
         if action_codes is not None:
             for code in sorted(action_codes):
@@ -215,6 +217,24 @@ class UICatalogService:
             暴露动作全集，避免路由层再维护一份手写白名单。
         """
         return set(self._snapshot.actions.keys())
+
+    def get_all_component_codes(self) -> set[str]:
+        """返回当前目录中的全部组件编码。
+
+        功能：
+            渲染安全校验不能只依赖当前 runtime 的局部视图，还需要知道“系统真正认识哪些组件”，
+            这样才能把“组件未注册”和“组件未在当前运行时启用”区分开来。
+        """
+        return set(self._snapshot.components.keys())
+
+    def get_action_definition(self, code: str) -> UIActionDefinition | None:
+        """按动作编码读取目录定义。
+
+        功能：
+            `UI Spec Guard` 需要根据动作目录读取 `params_schema.required`，
+            这里统一暴露查询入口，避免外部直接窥探内部快照结构。
+        """
+        return self._snapshot.actions.get(code)
 
     def get_template_scenarios(self) -> list[dict[str, Any]]:
         """返回 `runtime-metadata` 对外暴露的模板场景说明。"""

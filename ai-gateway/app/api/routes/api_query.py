@@ -46,7 +46,8 @@ from app.services.api_catalog.business_intents import (
 from app.services.api_catalog.schema import ApiCatalogEntry, ApiCatalogSearchFilters
 from app.services.api_catalog.param_extractor import ApiParamExtractor
 from app.services.api_catalog.retriever import ApiCatalogRetriever
-from app.services.dynamic_ui_service import DynamicUIService
+from app.services.dynamic_ui_service import DynamicUIService, UISpecBuildResult
+from app.services.ui_spec_guard import UISpecValidationResult
 from app.services.ui_catalog_service import UICatalogService
 from app.services.ui_snapshot_service import UISnapshotService
 
@@ -140,6 +141,7 @@ async def api_query(
         request_body.query,
         user_context,
         allowed_business_intents=_ROUTE_ALLOWED_BUSINESS_INTENT_CODES,
+        trace_id=trace_id,
     )
     if route_hint.route_status != "ok":
         logger.info(
@@ -167,6 +169,7 @@ async def api_query(
         domains=route_hint.query_domains,
         top_k=request_body.top_k,
         filters=retrieval_filters,
+        trace_id=trace_id,
     )
     if not candidates:
         logger.info(
@@ -196,6 +199,7 @@ async def api_query(
             user_context,
             allowed_business_intents=_ROUTE_ALLOWED_BUSINESS_INTENT_CODES,
             routing_hints=route_hint,
+            trace_id=trace_id,
         )
         if routing_result.route_status != "ok":
             logger.info(
@@ -247,6 +251,7 @@ async def api_query(
                 candidates,
                 user_context,
                 route_hint,
+                trace_id=trace_id,
             )
         except DagPlanValidationError as exc:
             logger.info("api_query[%s] planner degraded code=%s", trace_id, exc.code)
@@ -297,7 +302,8 @@ async def api_query(
     # Step 5: 按多步骤执行结果构造当前规则渲染器仍能消费的数据视图。
     data_for_ui = _build_ui_data_from_execution_report(execution_report, anchor_record)
     runtime = _build_runtime_from_execution_report(execution_report, anchor_record)
-    ui_spec = await dynamic_ui.generate_ui_spec(
+    ui_build_result = await _generate_ui_spec_result(
+        dynamic_ui,
         intent="query",
         data=data_for_ui,
         context={
@@ -317,23 +323,32 @@ async def api_query(
         },
         status=aggregate_status,
         runtime=runtime,
-    )
-    ui_runtime = _finalize_ui_runtime(runtime, ui_spec)
-    ui_runtime = _maybe_attach_snapshot(
-        snapshot_service,
         trace_id=trace_id,
-        business_intents=business_intents,
-        ui_spec=ui_spec,
-        ui_runtime=ui_runtime,
-        metadata={
-            "plan_id": plan.plan_id,
-            "step_ids": [step.step_id for step in plan.steps],
-            "api_id": anchor_record.entry.id if anchor_record else None,
-            "api_path": anchor_record.entry.path if anchor_record else None,
-            "query_domains": query_domains,
-            "retrieval_filters": retrieval_filters.model_dump(),
-        },
     )
+    ui_spec = ui_build_result.spec
+    ui_runtime = _finalize_render_runtime(runtime, ui_spec, ui_build_result)
+    if ui_build_result.frozen:
+        logger.warning(
+            "api_query[%s] stage5 ui frozen errors=%s",
+            trace_id,
+            _summarize_validation_errors(ui_build_result.validation),
+        )
+    else:
+        ui_runtime = _maybe_attach_snapshot(
+            snapshot_service,
+            trace_id=trace_id,
+            business_intents=business_intents,
+            ui_spec=ui_spec,
+            ui_runtime=ui_runtime,
+            metadata={
+                "plan_id": plan.plan_id,
+                "step_ids": [step.step_id for step in plan.steps],
+                "api_id": anchor_record.entry.id if anchor_record else None,
+                "api_path": anchor_record.entry.path if anchor_record else None,
+                "query_domains": query_domains,
+                "retrieval_filters": retrieval_filters.model_dump(),
+            },
+        )
 
     return ApiQueryResponse(
         trace_id=trace_id,
@@ -641,6 +656,33 @@ def _finalize_ui_runtime(
     )
 
 
+def _finalize_render_runtime(
+    base_runtime: ApiQueryUIRuntime,
+    ui_spec: dict[str, Any] | None,
+    build_result: UISpecBuildResult,
+) -> ApiQueryUIRuntime:
+    """根据第五阶段结果收口最终运行时契约。
+
+    功能：
+        正常渲染时继续按 Spec 回填组件和动作；一旦触发 Guard 冻结，则主动清空交互能力，
+        避免前端在“安全提示页”上仍然暴露详情、分页或潜在写动作。
+    """
+    finalized_runtime = _finalize_ui_runtime(base_runtime, ui_spec)
+    if not build_result.frozen:
+        return finalized_runtime
+
+    components = _collect_component_types(ui_spec) or ["PlannerCard", "PlannerNotice"]
+    return finalized_runtime.model_copy(
+        update={
+            "components": components,
+            "ui_actions": [],
+            "detail": ApiQueryDetailRuntime(),
+            "pagination": ApiQueryPaginationRuntime(),
+            "template": ApiQueryTemplateRuntime(),
+        }
+    )
+
+
 def _collect_component_types(node: Any) -> list[str]:
     """递归收集 UI Spec 中出现的组件类型。
 
@@ -832,10 +874,7 @@ def _select_response_anchor(execution_report: DagExecutionReport) -> DagStepExec
         当前规则渲染器仍然更擅长消费“一个主结果”。这里优先选择最后一个成功步骤，
         若不存在，再回退到最后一个空结果或最后执行步骤，保证响应 envelope 有稳定锚点。
     """
-    ordered_records = [
-        execution_report.records_by_step_id[step_id]
-        for step_id in execution_report.execution_order
-    ]
+    ordered_records = [execution_report.records_by_step_id[step_id] for step_id in execution_report.execution_order]
 
     for candidate_status in (
         ApiQueryExecutionStatus.SUCCESS,
@@ -931,10 +970,15 @@ def _count_ui_data_rows(
     step_count: int,
 ) -> int:
     """统计响应层对外展示的数据条数。"""
-    if step_count == 1 and anchor_record is not None and anchor_record.execution_result.status in {
-        ApiQueryExecutionStatus.SUCCESS,
-        ApiQueryExecutionStatus.EMPTY,
-    }:
+    if (
+        step_count == 1
+        and anchor_record is not None
+        and anchor_record.execution_result.status
+        in {
+            ApiQueryExecutionStatus.SUCCESS,
+            ApiQueryExecutionStatus.EMPTY,
+        }
+    ):
         return _count_execution_rows(anchor_record.execution_result)
     return len(ui_rows)
 
@@ -1243,7 +1287,8 @@ async def _build_stage2_degrade_response(
         components=["PlannerCard", "PlannerNotice"],
         ui_actions=_build_runtime_actions({"refresh"}),
     )
-    ui_spec = await dynamic_ui.generate_ui_spec(
+    ui_build_result = await _generate_ui_spec_result(
+        dynamic_ui,
         intent="query",
         data=[],
         context={
@@ -1256,8 +1301,9 @@ async def _build_stage2_degrade_response(
         },
         status=execution_result.status,
         runtime=base_runtime,
+        trace_id=trace_id,
     )
-    ui_runtime = _finalize_ui_runtime(base_runtime, ui_spec)
+    ui_runtime = _finalize_render_runtime(base_runtime, ui_build_result.spec, ui_build_result)
     return ApiQueryResponse(
         trace_id=trace_id,
         query_domains=response_query_domains,
@@ -1265,7 +1311,7 @@ async def _build_stage2_degrade_response(
         business_intents=business_intents,
         context_pool=context_pool,
         ui_runtime=ui_runtime,
-        ui_spec=ui_spec,
+        ui_spec=ui_build_result.spec,
         data_count=0,
         total=0,
         error=message,
@@ -1321,7 +1367,8 @@ async def _build_stage3_degrade_response(
         components=["PlannerCard", "PlannerNotice"],
         ui_actions=_build_runtime_actions({"refresh"}),
     )
-    ui_spec = await dynamic_ui.generate_ui_spec(
+    ui_build_result = await _generate_ui_spec_result(
+        dynamic_ui,
         intent="query",
         data=[],
         context={
@@ -1334,8 +1381,9 @@ async def _build_stage3_degrade_response(
         },
         status=execution_result.status,
         runtime=base_runtime,
+        trace_id=trace_id,
     )
-    ui_runtime = _finalize_ui_runtime(base_runtime, ui_spec)
+    ui_runtime = _finalize_render_runtime(base_runtime, ui_build_result.spec, ui_build_result)
     return ApiQueryResponse(
         trace_id=trace_id,
         query_domains=response_query_domains,
@@ -1343,7 +1391,7 @@ async def _build_stage3_degrade_response(
         business_intents=business_intents,
         context_pool=context_pool,
         ui_runtime=ui_runtime,
-        ui_spec=ui_spec,
+        ui_spec=ui_build_result.spec,
         data_count=0,
         total=0,
         error=message,
@@ -1382,3 +1430,69 @@ def _maybe_attach_snapshot(
             )
         }
     )
+
+
+async def _generate_ui_spec_result(
+    dynamic_ui: DynamicUIService,
+    *,
+    intent: str,
+    data: Any,
+    context: dict[str, Any] | None,
+    status: ApiQueryExecutionStatus | str | None,
+    runtime: ApiQueryUIRuntime | None,
+    trace_id: str,
+) -> UISpecBuildResult:
+    """兼容第五阶段新旧接口，统一返回带 Guard 状态的结果对象。
+
+    功能：
+        当前主链已经升级为“Spec + 校验结果”模型，但部分测试替身仍只实现旧
+        `generate_ui_spec`。这里提供一层兼容封装，保证路由逻辑先稳定切到新契约，
+        再逐步收敛测试和其他调用方。
+    """
+    if hasattr(dynamic_ui, "generate_ui_spec_result"):
+        try:
+            return await dynamic_ui.generate_ui_spec_result(
+                intent=intent,
+                data=data,
+                context=context,
+                status=status,
+                runtime=runtime,
+                trace_id=trace_id,
+            )
+        except TypeError:
+            return await dynamic_ui.generate_ui_spec_result(
+                intent=intent,
+                data=data,
+                context=context,
+                status=status,
+                runtime=runtime,
+            )
+
+    try:
+        spec = await dynamic_ui.generate_ui_spec(
+            intent=intent,
+            data=data,
+            context=context,
+            status=status,
+            runtime=runtime,
+            trace_id=trace_id,
+        )
+    except TypeError:
+        spec = await dynamic_ui.generate_ui_spec(
+            intent=intent,
+            data=data,
+            context=context,
+            status=status,
+            runtime=runtime,
+        )
+    return UISpecBuildResult(spec=spec, validation=UISpecValidationResult(), frozen=False)
+
+
+def _summarize_validation_errors(validation: UISpecValidationResult) -> str:
+    """压缩第五阶段 Guard 错误，便于 route 日志快速定位。"""
+    if not validation.errors:
+        return "[]"
+    items = [f"{error.code}@{error.path}" for error in validation.errors[:5]]
+    if len(validation.errors) > 5:
+        items.append(f"...(+{len(validation.errors) - 5})")
+    return "[" + ", ".join(items) + "]"

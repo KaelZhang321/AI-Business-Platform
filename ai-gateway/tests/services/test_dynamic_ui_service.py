@@ -5,6 +5,7 @@ import pytest
 from app.core.config import settings
 from app.models.schemas import ApiQueryUIAction, ApiQueryUIRuntime
 from app.services.dynamic_ui_service import DynamicUIService
+from app.services.ui_catalog_service import UIActionDefinition
 
 
 class RecordingLLM:
@@ -46,6 +47,28 @@ class StubUICatalogService:
             "Card": "通用卡片说明",
             "Table": "通用表格说明",
         }
+
+    def get_component_codes(self, *, intent: str | None = None, requested_codes=None) -> list[str]:
+        if intent == "query":
+            return ["PlannerCard", "PlannerTable", "PlannerDetailCard", "PlannerNotice"]
+        return ["Card", "Table"]
+
+    def get_all_component_codes(self) -> set[str]:
+        return {"PlannerCard", "PlannerTable", "PlannerDetailCard", "PlannerNotice", "Card", "Table"}
+
+    def get_all_action_codes(self) -> set[str]:
+        return {"remoteQuery"}
+
+    def get_action_definition(self, code: str) -> UIActionDefinition | None:
+        if code != "remoteQuery":
+            return None
+        return UIActionDefinition(
+            code="remoteQuery",
+            name="远程查询",
+            description="详情和分页刷新动作",
+            params_schema={"type": "object", "required": ["api_id"]},
+            enabled=True,
+        )
 
 
 def _make_runtime() -> ApiQueryUIRuntime:
@@ -272,3 +295,48 @@ async def test_generate_ui_spec_falls_back_to_rule_renderer_when_llm_output_is_i
     assert len(service._llm_service.calls) == 2
     table = _root_child_by_type(spec, "PlannerTable")
     assert table["props"]["dataSource"][0]["customerId"] == "C001"
+
+
+@pytest.mark.asyncio
+async def test_generate_ui_spec_result_freezes_invalid_renderer_spec(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Guard 命中未知组件时，必须冻结为无交互安全视图。"""
+    monkeypatch.setattr(settings, "llm_ui_spec_enabled", True)
+    service = DynamicUIService(catalog_service=StubUICatalogService())
+    service._llm_service = RecordingLLM(
+        [
+            """
+            {
+              "root": "root",
+              "state": {},
+              "elements": {
+                "root": {
+                  "type": "PlannerCard",
+                  "props": {"title": "危险视图"},
+                  "children": ["unknown_child"]
+                },
+                "unknown_child": {
+                  "type": "MagicPanel",
+                  "props": {"text": "非法组件"}
+                }
+              }
+            }
+            """
+        ]
+    )
+
+    result = await service.generate_ui_spec_result(
+        intent="query",
+        data=[{"customerId": "C001", "customerName": "张三"}],
+        context={"title": "客户详情"},
+        runtime=_make_runtime(),
+        trace_id="trace-freeze-001",
+    )
+
+    assert result.frozen is True
+    assert result.validation.is_valid is False
+    assert result.spec is not None
+    notice = _root_child_by_type(result.spec, "PlannerNotice")
+    assert result.spec["elements"]["root"]["props"]["title"] == "客户详情"
+    assert "已冻结当前操作视图" in notice["props"]["text"]

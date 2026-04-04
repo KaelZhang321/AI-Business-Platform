@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass
 from graphlib import TopologicalSorter
 from typing import Any
@@ -20,6 +21,8 @@ from app.models.schemas import ApiQueryExecutionResult, ApiQueryExecutionStatus,
 from app.services.api_catalog.dag_bindings import evaluate_binding_expression, is_dag_binding
 from app.services.api_catalog.executor import ApiExecutor
 from app.services.api_catalog.schema import ApiCatalogEntry
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -132,13 +135,18 @@ class ApiDagExecutor:
         trace_id: str,
     ) -> DagStepExecutionRecord:
         """执行单个 DAG 步骤。"""
-        step_data_by_id = {
-            step_id: record.execution_result.data
-            for step_id, record in upstream_records.items()
-        }
+        step_data_by_id = {step_id: record.execution_result.data for step_id, record in upstream_records.items()}
         resolved_params, empty_bindings = _resolve_step_params(step.params, step_data_by_id)
 
         if empty_bindings:
+            logger.info(
+                "stage3 dag step skipped trace_id=%s step_id=%s reason=%s depends_on=%s empty_bindings=%s",
+                trace_id,
+                step.step_id,
+                "skipped_due_to_empty_upstream",
+                list(step.depends_on),
+                empty_bindings,
+            )
             execution_result = _build_empty_upstream_skip_result(
                 trace_id=trace_id,
                 step=step,
@@ -153,6 +161,13 @@ class ApiDagExecutor:
 
         missing_required_params = _find_missing_required_params(entry, resolved_params)
         if missing_required_params:
+            logger.info(
+                "stage3 dag step skipped trace_id=%s step_id=%s reason=%s missing_required_params=%s",
+                trace_id,
+                step.step_id,
+                "missing_required_params",
+                missing_required_params,
+            )
             execution_result = _build_missing_param_skip_result(
                 trace_id=trace_id,
                 step=step,

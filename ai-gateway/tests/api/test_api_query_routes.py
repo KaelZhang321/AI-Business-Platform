@@ -17,6 +17,8 @@ from app.services.api_catalog.schema import (
     ApiCatalogSearchResult,
     ApiCatalogTemplateHint,
 )
+from app.services.dynamic_ui_service import UISpecBuildResult
+from app.services.ui_spec_guard import UISpecValidationError, UISpecValidationResult
 
 
 class StubRetriever:
@@ -149,6 +151,38 @@ class StubSnapshotService:
             snapshot_id = "snap_test_001"
 
         return Snapshot()
+
+
+class FrozenDynamicUI:
+    """模拟第五阶段 Guard 命中后的冻结视图输出。"""
+
+    async def generate_ui_spec_result(
+        self, intent: str, data, context=None, *, status=None, runtime=None, trace_id=None
+    ):
+        return UISpecBuildResult(
+            spec=_build_flat_stub_spec(
+                root_props={"title": (context or {}).get("title", "界面已安全冻结"), "subtitle": None},
+                children=[
+                    {
+                        "type": "PlannerNotice",
+                        "props": {
+                            "tone": "info",
+                            "text": "界面渲染组件存在异常，为保障您的数据安全，已冻结当前操作视图。",
+                        },
+                    }
+                ],
+            ),
+            validation=UISpecValidationResult(
+                errors=[
+                    UISpecValidationError(
+                        code="unknown_action",
+                        path="$.elements.child_1.props.action.type",
+                        message="动作未注册",
+                    )
+                ]
+            ),
+            frozen=True,
+        )
 
 
 class StubUICatalogService:
@@ -467,3 +501,37 @@ def test_runtime_metadata_endpoint_returns_contract(monkeypatch) -> None:
     assert template_codes == {"custom_template"}
     assert body["ui_runtime"]["template"]["fallback_mode"] == "dynamic_ui"
     assert stub_catalog_service.warmup_called is True
+
+
+def test_api_query_returns_frozen_runtime_when_renderer_guard_rejects_spec(monkeypatch) -> None:
+    entry = _make_entry()
+    stub_services = (
+        StubRetriever(entry),
+        StubExtractor(entry, {"pageNum": 1, "pageSize": 1}),
+        StubExecutor(
+            ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.SUCCESS,
+                data=[{"customerId": "C001", "customerName": "张三"}],
+                total=1,
+            )
+        ),
+        FrozenDynamicUI(),
+        StubSnapshotService(),
+    )
+    monkeypatch.setattr(api_query_routes, "_get_services", lambda: stub_services)
+
+    client = TestClient(create_test_app())
+    response = client.post("/api/v1/api-query", json={"query": "查询张三客户"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["execution_status"] == "SUCCESS"
+    assert body["ui_runtime"]["ui_actions"] == []
+    assert body["ui_runtime"]["detail"]["enabled"] is False
+    assert body["ui_runtime"]["pagination"]["enabled"] is False
+    assert body["ui_runtime"]["template"]["enabled"] is False
+    root_id = body["ui_spec"]["root"]
+    notice = body["ui_spec"]["elements"]["child_1"]
+    assert body["ui_spec"]["elements"][root_id]["type"] == "PlannerCard"
+    assert notice["type"] == "PlannerNotice"
+    assert "已冻结当前操作视图" in notice["props"]["text"]

@@ -69,6 +69,8 @@ class ApiDagPlanner:
         candidates: list[ApiCatalogSearchResult],
         user_context: dict[str, Any] | None,
         route_hint: ApiQueryRoutingResult,
+        *,
+        trace_id: str | None = None,
     ) -> ApiQueryExecutionPlan:
         """调用 LLM 生成第三阶段 DAG 草稿。
 
@@ -92,8 +94,14 @@ class ApiDagPlanner:
             raise DagPlanValidationError("planner_candidates_empty", "缺少可规划的候选接口。")
 
         prompt = _build_planner_prompt(query, candidates, user_context, route_hint)
-        raw_payload = await self._call_llm_json(prompt)
+        raw_payload = await self._call_llm_json(prompt, trace_id=trace_id)
         if not raw_payload:
+            logger.warning(
+                "stage3 planner degraded trace_id=%s code=%s query=%s",
+                trace_id or "-",
+                "planner_parse_failed",
+                _summarize_log_text(query),
+            )
             raise DagPlanValidationError("planner_parse_failed", "Planner 未返回可解析的 DAG JSON。")
 
         try:
@@ -181,7 +189,7 @@ class ApiDagPlanner:
 
         return step_entries
 
-    async def _call_llm_json(self, prompt: str) -> dict[str, Any]:
+    async def _call_llm_json(self, prompt: str, *, trace_id: str | None = None) -> dict[str, Any]:
         """调用 Planner 大模型并尽量提取合法 JSON。
 
         功能：
@@ -205,7 +213,8 @@ class ApiDagPlanner:
                 )
             except Exception as exc:
                 logger.warning(
-                    "Planner LLM call failed on attempt %s/%s: %s",
+                    "Planner LLM call failed trace_id=%s on attempt %s/%s: %s",
+                    trace_id or "-",
                     attempt + 1,
                     max_attempts,
                     exc,
@@ -217,9 +226,11 @@ class ApiDagPlanner:
                 return parsed
 
             logger.warning(
-                "Planner LLM returned non-json payload on attempt %s/%s",
+                "Planner LLM returned non-json payload trace_id=%s on attempt %s/%s raw=%s",
+                trace_id or "-",
                 attempt + 1,
                 max_attempts,
+                _summarize_log_text(raw),
             )
 
         return {}
@@ -382,6 +393,14 @@ def _parse_json_payload(raw: str) -> dict[str, Any]:
         return {}
 
     return payload if isinstance(payload, dict) else {}
+
+
+def _summarize_log_text(text: str | None, *, limit: int = 240) -> str:
+    """压缩日志文本，保留排查 DAG 脏输出所需的首段上下文。"""
+    normalized = " ".join((text or "").split())
+    if len(normalized) <= limit:
+        return normalized
+    return f"{normalized[:limit]}..."
 
 
 def _strip_json_comments(text: str) -> str:

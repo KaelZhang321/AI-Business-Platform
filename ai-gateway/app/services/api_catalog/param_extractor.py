@@ -61,6 +61,7 @@ class ApiParamExtractor:
         user_context: dict[str, Any] | None = None,
         *,
         allowed_business_intents: set[str] | None = None,
+        trace_id: str | None = None,
     ) -> ApiQueryRoutingResult:
         """在召回前执行轻量意图路由。
 
@@ -77,8 +78,14 @@ class ApiParamExtractor:
             - 若模型只给出 `unknown` 域，同样返回 fallback，避免后续误查全域
         """
         prompt = _build_route_only_prompt(query, user_context, allowed_business_intents)
-        result = await self._call_llm_json(prompt, scenario="route_query")
+        result = await self._invoke_llm_json(prompt, scenario="route_query", trace_id=trace_id)
         if not result:
+            logger.warning(
+                "stage2 routing degraded trace_id=%s code=%s query=%s",
+                trace_id or "-",
+                "routing_parse_failed",
+                _summarize_log_text(query),
+            )
             return ApiQueryRoutingResult(
                 business_intents=[_NOOP_BUSINESS_INTENT],
                 route_status="fallback",
@@ -96,6 +103,13 @@ class ApiParamExtractor:
         is_multi_domain = bool(result.get("is_multi_domain")) or len(query_domains) > 1
 
         if not query_domains:
+            logger.info(
+                "stage2 routing degraded trace_id=%s code=%s intents=%s reasoning=%s",
+                trace_id or "-",
+                "routing_unknown_domain",
+                business_intents,
+                reasoning or "",
+            )
             return ApiQueryRoutingResult(
                 business_intents=business_intents,
                 is_multi_domain=False,
@@ -132,6 +146,7 @@ class ApiParamExtractor:
         *,
         allowed_business_intents: set[str] | None = None,
         routing_hints: ApiQueryRoutingResult | None = None,
+        trace_id: str | None = None,
     ) -> ApiQueryRoutingResult:
         """在候选集内完成接口选择与参数提取。
 
@@ -166,7 +181,7 @@ class ApiParamExtractor:
         if len(candidates) == 1:
             entry = candidates[0].entry
             # 单候选时不再做“接口选择”，但参数仍必须经过 LLM + Schema 双重治理。
-            params = await self._extract_params(query, entry, user_context)
+            params = await self._extract_params(query, entry, user_context, trace_id=trace_id)
             return ApiQueryRoutingResult(
                 selected_api_id=entry.id,
                 query_domains=_sanitize_query_domains(
@@ -190,6 +205,7 @@ class ApiParamExtractor:
             user_context,
             allowed_business_intents=allowed_business_intents,
             routing_hints=routing_hints,
+            trace_id=trace_id,
         )
 
     async def _extract_params(
@@ -197,13 +213,15 @@ class ApiParamExtractor:
         query: str,
         entry: ApiCatalogEntry,
         user_context: dict[str, Any] | None,
+        *,
+        trace_id: str | None = None,
     ) -> dict[str, Any]:
         """单接口参数提取。
 
         这里复用同一套 JSON 调用治理，目的是让单候选路径也具备相同的抗脏输出能力。
         """
         prompt = _build_extract_only_prompt(query, entry, user_context)
-        params = await self._call_llm_json(prompt, scenario="extract_params")
+        params = await self._invoke_llm_json(prompt, scenario="extract_params", trace_id=trace_id)
         return _validate_params(params, entry)
 
     async def _route_and_extract(
@@ -214,6 +232,7 @@ class ApiParamExtractor:
         *,
         allowed_business_intents: set[str] | None,
         routing_hints: ApiQueryRoutingResult | None,
+        trace_id: str | None,
     ) -> ApiQueryRoutingResult:
         """多候选场景下的接口路由与参数提取。
 
@@ -221,8 +240,14 @@ class ApiParamExtractor:
             把“选哪个接口”和“提什么参数”绑定在一次结构化输出里，减少多次模型调用引入的漂移。
         """
         prompt = _build_route_and_extract_prompt(query, candidates, user_context, routing_hints)
-        result = await self._call_llm_json(prompt, scenario="route_and_extract")
+        result = await self._invoke_llm_json(prompt, scenario="route_and_extract", trace_id=trace_id)
         if not result:
+            logger.warning(
+                "stage2 route_and_extract degraded trace_id=%s code=%s domains=%s",
+                trace_id or "-",
+                "route_and_extract_parse_failed",
+                list(routing_hints.query_domains) if routing_hints else [],
+            )
             return ApiQueryRoutingResult(
                 query_domains=list(routing_hints.query_domains) if routing_hints else [],
                 business_intents=list(routing_hints.business_intents) if routing_hints else [_NOOP_BUSINESS_INTENT],
@@ -237,7 +262,12 @@ class ApiParamExtractor:
         entry = next((candidate.entry for candidate in candidates if candidate.entry.id == selected_id), None)
         if entry is None:
             # LLM 只能在候选集里选接口；一旦越界，只允许回退到当前最相关候选，避免误调不存在的 API。
-            logger.warning("LLM selected unknown api_id '%s', falling back to top candidate", selected_id)
+            logger.warning(
+                "stage2 extractor selected unknown api trace_id=%s selected_api_id=%s fallback_api_id=%s",
+                trace_id or "-",
+                selected_id,
+                candidates[0].entry.id,
+            )
             entry = candidates[0].entry
 
         query_domain_fallback = (
@@ -263,7 +293,13 @@ class ApiParamExtractor:
             params=_validate_params(raw_params, entry),
         )
 
-    async def _call_llm_json(self, prompt: str, *, scenario: str) -> dict[str, Any]:
+    async def _call_llm_json(
+        self,
+        prompt: str,
+        *,
+        scenario: str,
+        trace_id: str | None = None,
+    ) -> dict[str, Any]:
         """以“结构化优先、文本兜底”的方式调用 LLM。
 
         功能：
@@ -291,8 +327,9 @@ class ApiParamExtractor:
                 )
             except Exception as exc:
                 logger.warning(
-                    "LLM %s failed on attempt %s/%s: %s",
+                    "LLM %s failed trace_id=%s on attempt %s/%s: %s",
                     scenario,
+                    trace_id or "-",
                     attempt + 1,
                     max_attempts,
                     exc,
@@ -304,13 +341,34 @@ class ApiParamExtractor:
                 return parsed
 
             logger.warning(
-                "LLM %s returned non-json payload on attempt %s/%s",
+                "LLM %s returned non-json payload trace_id=%s on attempt %s/%s raw=%s",
                 scenario,
+                trace_id or "-",
                 attempt + 1,
                 max_attempts,
+                _summarize_log_text(raw),
             )
 
         return {}
+
+    async def _invoke_llm_json(
+        self,
+        prompt: str,
+        *,
+        scenario: str,
+        trace_id: str | None,
+    ) -> dict[str, Any]:
+        """兼容旧测试替身签名的 LLM JSON 调用包装器。
+
+        功能：
+            第二阶段已经需要把 `trace_id` 打进日志，但现有测试和少量替身仍只接受
+            `scenario` 参数。这里做一次兼容包装，确保主逻辑先平滑升级，不因测试桩签名
+            漂移阻断迭代。
+        """
+        try:
+            return await self._call_llm_json(prompt, scenario=scenario, trace_id=trace_id)
+        except TypeError:
+            return await self._call_llm_json(prompt, scenario=scenario)
 
 
 def _build_extract_only_prompt(
@@ -483,6 +541,14 @@ def _parse_json(raw: str) -> dict[str, Any]:
     except json.JSONDecodeError:
         logger.debug("Failed to parse LLM JSON: %s", raw[:200])
         return {}
+
+
+def _summarize_log_text(text: str | None, *, limit: int = 240) -> str:
+    """压缩日志文本长度，避免把整段脏输出原样写入日志。"""
+    normalized = " ".join((text or "").split())
+    if len(normalized) <= limit:
+        return normalized
+    return f"{normalized[:limit]}..."
 
 
 def _strip_json_comments(text: str) -> str:
