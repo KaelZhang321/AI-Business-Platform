@@ -101,12 +101,6 @@ class Settings(BaseSettings):
     identity_vault_enabled: bool = True
     gateway_jwt_secret: str = ""
 
-    # API Registry metadata source
-    api_catalog_source_mode: str = "hybrid"  # yaml | ui_builder(严格直连MySQL) | hybrid(MySQL失败时回退overlay)
-    ui_builder_metadata_timeout_seconds: float = 10.0  # legacy
-    ui_builder_metadata_page_size: int = 100  # legacy
-    ui_builder_metadata_token: str = ""  # legacy
-
     # 外部LLM API
     openai_api_key: str = ""
     openai_base_url: str = ""

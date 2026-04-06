@@ -17,7 +17,6 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel
 
 from app.models.schemas import (
     ApiQueryBusinessIntent,
@@ -401,21 +400,13 @@ async def get_runtime_metadata() -> ApiQueryRuntimeMetadataResponse:
     )
 
 
-# ── 管理端：重建向量索引 ──────────────────────────────────────────
-
-
-class IndexRequest(BaseModel):
-    config_path: str | None = None
-
-
 @router.post("/catalog/index", summary="重建 API Catalog 向量索引（管理端）")
-async def rebuild_catalog_index(body: IndexRequest | None = None) -> dict[str, Any]:
-    """从 config/api_catalog.yaml 重新入库所有接口到 Milvus。"""
+async def rebuild_catalog_index() -> dict[str, Any]:
+    """从业务 MySQL 重新入库所有接口到 Milvus。"""
     from app.services.api_catalog.indexer import ApiCatalogIndexer
 
     indexer = ApiCatalogIndexer()
-    config_path = body.config_path if body else None
-    result = await indexer.index_all(config_path)
+    result = await indexer.index_all()
     return result
 
 

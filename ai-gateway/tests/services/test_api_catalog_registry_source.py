@@ -4,10 +4,12 @@ import pytest
 
 import app.services.api_catalog.registry_source as registry_source_module
 from app.core.config import settings
-from app.services.api_catalog.registry_source import ApiCatalogRegistrySource
+from app.services.api_catalog.registry_source import ApiCatalogRegistrySource, ApiCatalogSourceError
 
 
 class FakeCursor:
+    """模拟 MySQL 游标，专门用于捕获 registry SQL 和回放固定结果。"""
+
     def __init__(self, rows: list[dict], capture: dict[str, object]) -> None:
         self._rows = rows
         self._capture = capture
@@ -20,6 +22,8 @@ class FakeCursor:
 
 
 class FakeCursorContext:
+    """让测试桩符合 aiomysql 的异步上下文协议。"""
+
     def __init__(self, cursor: FakeCursor) -> None:
         self._cursor = cursor
 
@@ -31,6 +35,8 @@ class FakeCursorContext:
 
 
 class FakeConnection:
+    """模拟连接对象，确保源码仍按 DictCursor 读取联表结果。"""
+
     def __init__(self, rows: list[dict], capture: dict[str, object]) -> None:
         self._rows = rows
         self._capture = capture
@@ -41,6 +47,8 @@ class FakeConnection:
 
 
 class FakeAcquireContext:
+    """模拟 `pool.acquire()` 返回值，复刻 aiomysql 的双层异步上下文。"""
+
     def __init__(self, rows: list[dict], capture: dict[str, object]) -> None:
         self._rows = rows
         self._capture = capture
@@ -53,6 +61,8 @@ class FakeAcquireContext:
 
 
 class FakePool:
+    """连接池测试桩，用来验证懒加载和 close 生命周期是否正确收口。"""
+
     def __init__(self, rows: list[dict], capture: dict[str, object]) -> None:
         self._rows = rows
         self._capture = capture
@@ -70,6 +80,7 @@ class FakePool:
 
 
 def _mysql_row() -> dict[str, object]:
+    """构造最小联表结果，覆盖目录主链路实际依赖的关键字段。"""
     return {
         "endpointId": "ep_1",
         "tagId": "tag_customer",
@@ -98,29 +109,8 @@ def _mysql_row() -> dict[str, object]:
 
 
 @pytest.mark.asyncio
-async def test_registry_source_loads_mysql_entries_and_merges_overlay(tmp_path, monkeypatch) -> None:
-    overlay = tmp_path / "api_catalog.yaml"
-    overlay.write_text(
-        """
-apis:
-  - id: customer_list_overlay
-    description: 查询客户列表
-    domain: crm
-    method: GET
-    path: /api/customer/list
-    response_data_path: data.list
-    field_labels:
-      customerId: 客户ID
-    pagination_hint:
-      enabled: true
-      api_id: customer_list_overlay
-      page_param: page
-      page_size_param: size
-      mutation_target: report-table.props.dataSource
-""".strip(),
-        encoding="utf-8",
-    )
-
+async def test_registry_source_loads_entries_from_mysql_and_appends_builtin_dict(monkeypatch) -> None:
+    """验证唯一主链路：MySQL 联表成功后产出标准目录并自动补齐 builtin 字典接口。"""
     capture: dict[str, object] = {}
     fake_pool = FakePool([_mysql_row()], capture)
 
@@ -128,7 +118,6 @@ apis:
         capture["conn_kwargs"] = kwargs
         return fake_pool
 
-    monkeypatch.setattr(settings, "api_catalog_source_mode", "ui_builder")
     monkeypatch.setattr(settings, "business_mysql_host", "ai-platform-mysql")
     monkeypatch.setattr(settings, "business_mysql_port", 3306)
     monkeypatch.setattr(settings, "business_mysql_user", "ai_platform")
@@ -137,7 +126,7 @@ apis:
     monkeypatch.setattr(registry_source_module.aiomysql, "create_pool", fake_create_pool)
 
     source = ApiCatalogRegistrySource()
-    entries = await source.load_entries(str(overlay))
+    entries = await source.load_entries()
     await source.close()
 
     assert capture["conn_kwargs"] == {
@@ -156,15 +145,13 @@ apis:
 
     entry_by_path = {entry.path: entry for entry in entries}
     customer_entry = entry_by_path["/api/customer/list"]
-    assert customer_entry.id == "customer_list_overlay"
+    assert customer_entry.id == "ep_1"
     assert customer_entry.domain == "crm"
     assert customer_entry.env == "prod"
     assert customer_entry.tag_name == "客户管理"
     assert customer_entry.executor_config["base_url"] == "http://business-server"
     assert customer_entry.security_rules["read_only"] is True
     assert customer_entry.response_data_path == "data.list"
-    assert customer_entry.pagination_hint.enabled is True
-    assert customer_entry.field_labels["customerId"] == "客户ID"
     assert customer_entry.response_schema["type"] == "object"
     assert customer_entry.sample_request == {"page": 1}
     assert customer_entry.api_schema["response_schema"]["type"] == "object"
@@ -182,43 +169,15 @@ apis:
 
 
 @pytest.mark.asyncio
-async def test_registry_source_falls_back_to_overlay_in_hybrid_mode_when_mysql_fails(tmp_path, monkeypatch) -> None:
-    overlay = tmp_path / "api_catalog.yaml"
-    overlay.write_text(
-        """
-apis:
-  - id: fallback_customer_list
-    description: 查询客户列表
-    domain: crm
-    method: GET
-    path: /api/customer/list
-""".strip(),
-        encoding="utf-8",
-    )
+async def test_registry_source_raises_when_mysql_load_fails(monkeypatch) -> None:
+    """MySQL 是唯一权威来源，连接失败时必须硬失败，避免静默回退到过期配置。"""
 
     async def failing_create_pool(**kwargs):  # pragma: no cover - invoked via registry source
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(settings, "api_catalog_source_mode", "hybrid")
     monkeypatch.setattr(registry_source_module.aiomysql, "create_pool", failing_create_pool)
 
     source = ApiCatalogRegistrySource()
-    entries = await source.load_entries(str(overlay))
-    await source.close()
-
-    assert any(entry.id == "fallback_customer_list" for entry in entries)
-    assert any(entry.path == "/api/system/dicts" for entry in entries)
-
-
-@pytest.mark.asyncio
-async def test_registry_source_raises_in_ui_builder_mode_when_mysql_fails(monkeypatch) -> None:
-    async def failing_create_pool(**kwargs):  # pragma: no cover - invoked via registry source
-        raise RuntimeError("boom")
-
-    monkeypatch.setattr(settings, "api_catalog_source_mode", "ui_builder")
-    monkeypatch.setattr(registry_source_module.aiomysql, "create_pool", failing_create_pool)
-
-    source = ApiCatalogRegistrySource()
-    with pytest.raises(registry_source_module.ApiCatalogSourceError, match="无法从 MySQL 加载注册表"):
+    with pytest.raises(ApiCatalogSourceError, match="无法从 MySQL 加载注册表"):
         await source.load_entries()
     await source.close()

@@ -1,7 +1,7 @@
 """
 API Catalog — 数据模型
 
-ApiCatalogEntry: 单条接口目录记录（YAML → Pydantic → Milvus 向量记录）
+ApiCatalogEntry: 单条接口目录记录（MySQL 注册表 → Pydantic → Milvus 向量记录）
 ApiCatalogSearchResult: 带相似度分数的检索结果
 """
 from __future__ import annotations
@@ -66,8 +66,9 @@ class ApiCatalogSearchFilters(BaseModel):
 class ApiCatalogEntry(BaseModel):
     """单条业务接口目录记录。
 
-    对应 config/api_catalog.yaml 中一个 api 条目，
-    也对应 Milvus `api_catalog` collection 中一条向量记录。
+    功能：
+        承接业务 MySQL 中 `ui_api_endpoints / ui_api_sources / ui_api_tags` 的联表结果，
+        并转成网关内部统一的 API Catalog 契约，再投影为 Milvus `api_catalog` 的一条向量记录。
     """
 
     # ---------- 标识 ----------

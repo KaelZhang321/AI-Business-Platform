@@ -4,10 +4,7 @@ import aiomysql
 import json
 import logging
 import re
-from pathlib import Path
 from typing import Any
-
-import yaml
 
 from app.core.config import settings
 from app.services.api_catalog.schema import (
@@ -60,50 +57,29 @@ class ApiCatalogRegistrySource:
     """从权威元数据源构建 `ApiCatalogEntry` 列表。
 
     功能：
-        统一承接 YAML、本地 overlay、ai-gateway 直连 MySQL 三类来源，产出可直接入库
-        到 Milvus 的标准化目录记录。
+        统一从业务 MySQL 直连抽取接口元数据，产出可直接入库到 Milvus 的标准化目录记录。
 
     Edge Cases:
-        - `ui_builder` 模式在切换后作为“严格直连 MySQL”兼容别名使用
-        - `hybrid` 模式下 MySQL 不可用时允许回退到 overlay，保障本地开发与演示链路可用
         - SQL 里显式 `CAST(JSON AS CHAR)`，是为了消除不同 MySQL 驱动对 JSON 返回类型的差异
     """
 
     def __init__(self) -> None:
         self._pool: aiomysql.Pool | None = None
 
-    async def load_entries(self, config_path: str | None = None) -> list[ApiCatalogEntry]:
-        """按配置模式加载接口目录记录。
-
-        Args:
-            config_path: overlay YAML 路径；为空时读取默认 `config/api_catalog.yaml`。
+    async def load_entries(self) -> list[ApiCatalogEntry]:
+        """仅从业务 MySQL 加载接口目录记录。
 
         Returns:
             标准化后的 `ApiCatalogEntry` 列表，且始终附带 builtin 字典接口。
 
         Raises:
-            ApiCatalogSourceError: 当 source mode 非法，或强制远端模式下元数据不可用。
+            ApiCatalogSourceError: 当 MySQL 元数据不可用或返回空结果时抛出。
         """
-        source_mode = settings.api_catalog_source_mode.strip().lower()
-        if source_mode not in {"yaml", "ui_builder", "hybrid"}:
-            raise ApiCatalogSourceError(f"Unsupported api catalog source mode: {source_mode}")
-        overlay_entries = _load_overlay_entries(config_path)
-
-        if source_mode == "yaml":
-            return _append_builtin_entries(overlay_entries)
-
-        remote_entries: list[ApiCatalogEntry] = []
         try:
             remote_entries = await self._load_mysql_entries()
         except Exception as exc:
-            if source_mode == "ui_builder":
-                raise ApiCatalogSourceError(f"无法从 MySQL 加载注册表: {exc}") from exc
-            logger.warning("Falling back to YAML api catalog source after MySQL load failed: %s", exc)
-
-        if not remote_entries:
-            return _append_builtin_entries(overlay_entries)
-
-        return _append_builtin_entries(_merge_overlay_entries(remote_entries, overlay_entries))
+            raise ApiCatalogSourceError(f"无法从 MySQL 加载注册表: {exc}") from exc
+        return _append_builtin_entries(remote_entries)
 
     async def _load_mysql_entries(self) -> list[ApiCatalogEntry]:
         """从业务 MySQL 直连抽取接口目录元数据。
@@ -269,97 +245,6 @@ def _build_entry(
     )
 
 
-def _merge_overlay_entries(remote_entries: list[ApiCatalogEntry], overlay_entries: list[ApiCatalogEntry]) -> list[ApiCatalogEntry]:
-    overlay_by_signature = {(entry.method, entry.path): entry for entry in overlay_entries}
-    merged: list[ApiCatalogEntry] = []
-    for remote_entry in remote_entries:
-        overlay = overlay_by_signature.get((remote_entry.method, remote_entry.path))
-        if overlay is None:
-            merged.append(remote_entry)
-            continue
-        merged.append(_merge_overlay(remote_entry, overlay))
-    return merged
-
-
-def _merge_overlay(remote_entry: ApiCatalogEntry, overlay_entry: ApiCatalogEntry) -> ApiCatalogEntry:
-    """合并远端权威元数据与本地 overlay。
-
-    设计意图：
-        overlay 的职责是“补丁”，不是“覆盖整个远端对象”。因此只让用户显式声明的字段
-        覆盖远端；其它字段继续继承 MySQL 主源提供的最新 schema 与运行时提示。
-    """
-    merged = overlay_entry.model_copy(deep=True)
-    merged.domain = remote_entry.domain or overlay_entry.domain
-    merged.env = remote_entry.env or overlay_entry.env
-    merged.status = remote_entry.status or overlay_entry.status
-    merged.tag_name = remote_entry.tag_name or overlay_entry.tag_name
-    merged.auth_required = remote_entry.auth_required
-    merged.executor_config = {**remote_entry.executor_config, **overlay_entry.executor_config}
-    merged.security_rules = {**remote_entry.security_rules, **overlay_entry.security_rules}
-    overlay_fields = set(overlay_entry.model_fields_set)
-
-    if "description" not in overlay_fields:
-        merged.description = remote_entry.description
-
-    if "example_queries" in overlay_fields:
-        merged.example_queries = _compact_list([*overlay_entry.example_queries, *remote_entry.example_queries])
-    else:
-        merged.example_queries = remote_entry.example_queries
-
-    if "tags" in overlay_fields:
-        merged.tags = _compact_list([*overlay_entry.tags, *remote_entry.tags])
-    else:
-        merged.tags = remote_entry.tags
-
-    if "business_intents" in overlay_fields:
-        merged.business_intents = _compact_list([*overlay_entry.business_intents, *remote_entry.business_intents])
-    else:
-        merged.business_intents = remote_entry.business_intents
-
-    merged.param_schema = _merge_model_field(
-        remote_entry.param_schema,
-        overlay_entry.param_schema,
-        explicit="param_schema" in overlay_fields,
-    )
-    merged.response_schema = (
-        {**remote_entry.response_schema, **overlay_entry.response_schema}
-        if "response_schema" in overlay_fields
-        else remote_entry.response_schema
-    )
-    merged.sample_request = (
-        overlay_entry.sample_request
-        if "sample_request" in overlay_fields
-        else remote_entry.sample_request
-    )
-    merged.response_data_path = (
-        overlay_entry.response_data_path
-        if "response_data_path" in overlay_fields
-        else remote_entry.response_data_path
-    )
-    merged.field_labels = (
-        {**remote_entry.field_labels, **overlay_entry.field_labels}
-        if "field_labels" in overlay_fields
-        else remote_entry.field_labels
-    )
-    merged.ui_hint = overlay_entry.ui_hint if "ui_hint" in overlay_fields else remote_entry.ui_hint
-    merged.detail_hint = _merge_model_field(
-        remote_entry.detail_hint,
-        overlay_entry.detail_hint,
-        explicit="detail_hint" in overlay_fields,
-    )
-    merged.pagination_hint = _merge_model_field(
-        remote_entry.pagination_hint,
-        overlay_entry.pagination_hint,
-        explicit="pagination_hint" in overlay_fields,
-    )
-    merged.template_hint = _merge_model_field(
-        remote_entry.template_hint,
-        overlay_entry.template_hint,
-        explicit="template_hint" in overlay_fields,
-    )
-    return merged
-
-
 def _append_builtin_entries(entries: list[ApiCatalogEntry]) -> list[ApiCatalogEntry]:
     by_signature = {(entry.method, entry.path): entry for entry in entries}
     dict_entry = _build_system_dict_entry()
@@ -436,41 +321,11 @@ def _build_system_dict_entry() -> ApiCatalogEntry:
     )
 
 
-def _load_overlay_entries(config_path: str | None) -> list[ApiCatalogEntry]:
-    path = Path(config_path or _default_overlay_path())
-    if not path.exists():
-        return []
-    with open(path, encoding="utf-8") as file:
-        raw = yaml.safe_load(file) or {}
-    return [ApiCatalogEntry(**item) for item in raw.get("apis", []) if isinstance(item, dict)]
-
-
-def _default_overlay_path() -> str:
-    return str(Path(__file__).resolve().parents[3] / "config" / "api_catalog.yaml")
-
-
 def _dedupe_by_signature(entries: list[ApiCatalogEntry]) -> list[ApiCatalogEntry]:
     by_signature: dict[tuple[str, str], ApiCatalogEntry] = {}
     for entry in entries:
         by_signature[(entry.method, entry.path)] = entry
     return list(by_signature.values())
-
-
-def _merge_model_field(remote_model: Any, overlay_model: Any, *, explicit: bool) -> Any:
-    """按字段粒度合并 Pydantic 子模型。
-
-    overlay 一旦显式声明某个复杂字段，通常只会改其中 1-2 个键。
-    这里保留远端元数据剩余字段，避免因为 overlay 的局部补丁把整段 schema 或 hint 覆盖成默认值。
-    """
-    if not explicit:
-        return remote_model
-    remote_payload = remote_model.model_dump() if hasattr(remote_model, "model_dump") else dict(remote_model or {})
-    overlay_fields = getattr(overlay_model, "model_fields_set", set())
-    merged_payload = dict(remote_payload)
-    for field_name in overlay_fields:
-        merged_payload[field_name] = getattr(overlay_model, field_name)
-    model_cls = type(remote_model)
-    return model_cls(**merged_payload) if hasattr(model_cls, "model_validate") else merged_payload
 
 
 def _normalize_domain(value: str) -> str:

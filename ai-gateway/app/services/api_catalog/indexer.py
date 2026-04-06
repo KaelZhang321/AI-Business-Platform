@@ -6,8 +6,6 @@ API Catalog — Milvus 向量入库器
 命令行使用::
 
     python -m app.services.api_catalog.indexer
-    # 或指定配置文件路径
-    python -m app.services.api_catalog.indexer --config /path/to/api_catalog.yaml
 
 编程接口::
 
@@ -237,22 +235,18 @@ class ApiCatalogIndexer:
 
     # ── 公共 API ────────────────────────────────────────────────
 
-    async def index_all(self, config_path: str | None = None) -> dict[str, int]:
-        """从配置的注册表源全量入库。
+    async def index_all(self) -> dict[str, int]:
+        """从业务 MySQL 注册表全量入库。
 
         Returns:
             {"indexed": N, "skipped": M}
         """
         source = ApiCatalogRegistrySource()
         try:
-            entries = await source.load_entries(config_path)
+            entries = await source.load_entries()
         finally:
             await source.close()
-        logger.info(
-            "Loaded %d API entries from source_mode=%s",
-            len(entries),
-            settings.api_catalog_source_mode,
-        )
+        logger.info("Loaded %d API entries from business MySQL registry", len(entries))
 
         results = await asyncio.gather(*[self.index_entry(e) for e in entries], return_exceptions=True)
         indexed = sum(1 for r in results if r is True)
@@ -330,14 +324,9 @@ def _create_collection() -> Collection:
 # ── CLI 入口 ────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser(description="Index API catalog into Milvus")
-    parser.add_argument("--config", default=None, help="Path to api_catalog.yaml")
-    args = parser.parse_args()
-
     async def main():
         indexer = ApiCatalogIndexer()
-        result = await indexer.index_all(args.config)
+        result = await indexer.index_all()
         print(f"Done: {result}")
 
     asyncio.run(main())
