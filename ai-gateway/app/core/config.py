@@ -7,12 +7,13 @@ class Settings(BaseSettings):
     app_debug: bool = True
     app_port: int = 8000
 
-    # MySQL
-    ai_mysql_host: str = "localhost"
-    ai_mysql_port: int = 3306
-    ai_mysql_user: str = "ai_platform"
-    ai_mysql_password: str = "ai_platform_dev"
-    ai_mysql_database: str = "ai_platform"
+    # Business MySQL
+    # ai-gateway 直连的治理元数据和问数库统一收敛到业务库配置，避免维护第二套网关专属 MySQL 变量。
+    business_mysql_host: str = Field(default="localhost")
+    business_mysql_port: int = Field(default=3306)
+    business_mysql_user: str = Field(default="ai_platform")
+    business_mysql_password: str = Field(default="ai_platform_dev")
+    business_mysql_database: str = Field(default="ai_platform_business")
 
     # Redis
     redis_url: str = "redis://:redis_dev@localhost:6379/0"

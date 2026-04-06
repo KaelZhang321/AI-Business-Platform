@@ -129,11 +129,11 @@ apis:
         return fake_pool
 
     monkeypatch.setattr(settings, "api_catalog_source_mode", "ui_builder")
-    monkeypatch.setattr(settings, "ai_mysql_host", "ai-platform-mysql")
-    monkeypatch.setattr(settings, "ai_mysql_port", 3306)
-    monkeypatch.setattr(settings, "ai_mysql_user", "ai_platform")
-    monkeypatch.setattr(settings, "ai_mysql_password", "ai_platform_dev")
-    monkeypatch.setattr(settings, "ai_mysql_database", "ai_platform_business")
+    monkeypatch.setattr(settings, "business_mysql_host", "ai-platform-mysql")
+    monkeypatch.setattr(settings, "business_mysql_port", 3306)
+    monkeypatch.setattr(settings, "business_mysql_user", "ai_platform")
+    monkeypatch.setattr(settings, "business_mysql_password", "ai_platform_dev")
+    monkeypatch.setattr(settings, "business_mysql_database", "ai_platform_business")
     monkeypatch.setattr(registry_source_module.aiomysql, "create_pool", fake_create_pool)
 
     source = ApiCatalogRegistrySource()

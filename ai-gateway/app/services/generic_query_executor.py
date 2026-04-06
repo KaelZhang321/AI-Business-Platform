@@ -26,17 +26,17 @@ _SQL_WRITE_OPERATORS = re.compile(
 
 
 def _parse_mysql_url() -> dict[str, str | int]:
-    """直接从 `AI_MYSQL_*` 生成连接参数。
+    """直接从 `BUSINESS_MYSQL_*` 生成连接参数。
 
     功能：
         避免再解析 `DATABASE_URL` 这类拼装串，减少环境变量来源不一致带来的隐式错误。
     """
     return {
-        "host": settings.ai_mysql_host,
-        "port": settings.ai_mysql_port,
-        "user": settings.ai_mysql_user,
-        "password": settings.ai_mysql_password,
-        "db": settings.ai_mysql_database,
+        "host": settings.business_mysql_host,
+        "port": settings.business_mysql_port,
+        "user": settings.business_mysql_user,
+        "password": settings.business_mysql_password,
+        "db": settings.business_mysql_database,
         "charset": "utf8mb4",
     }
 

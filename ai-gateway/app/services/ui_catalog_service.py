@@ -322,7 +322,7 @@ class UICatalogService:
         """执行元数据 SQL 并返回字典行。
 
         功能：
-            UI 目录和 API Catalog 共享同一组 `AI_MYSQL_*` 配置，这里复用相同连接参数，
+            UI 目录和 API Catalog 共享同一组 `BUSINESS_MYSQL_*` 配置，这里复用相同连接参数，
             让治理元数据与接口目录能够被同一套部署参数驱动。
         """
         pool = await self._get_pool()
@@ -338,11 +338,11 @@ class UICatalogService:
             self._pool = await aiomysql.create_pool(
                 minsize=1,
                 maxsize=3,
-                host=settings.ai_mysql_host,
-                port=settings.ai_mysql_port,
-                user=settings.ai_mysql_user,
-                password=settings.ai_mysql_password,
-                db=settings.ai_mysql_database,
+                host=settings.business_mysql_host,
+                port=settings.business_mysql_port,
+                user=settings.business_mysql_user,
+                password=settings.business_mysql_password,
+                db=settings.business_mysql_database,
                 charset="utf8mb4",
             )
         return self._pool

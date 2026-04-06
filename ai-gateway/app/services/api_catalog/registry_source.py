@@ -130,7 +130,7 @@ class ApiCatalogRegistrySource:
     async def _get_pool(self) -> aiomysql.Pool:
         """懒加载 API Catalog MySQL 连接池。"""
         if self._pool is None:
-            self._pool = await aiomysql.create_pool(minsize=1, maxsize=5, **_build_ai_mysql_conn_params())
+            self._pool = await aiomysql.create_pool(minsize=1, maxsize=5, **_build_business_mysql_conn_params())
         return self._pool
 
     async def close(self) -> None:
@@ -141,14 +141,19 @@ class ApiCatalogRegistrySource:
             self._pool = None
 
 
-def _build_ai_mysql_conn_params() -> dict[str, str | int]:
-    """从 `AI_MYSQL_*` 生成 API Catalog 直连配置。"""
+def _build_business_mysql_conn_params() -> dict[str, str | int]:
+    """从 `BUSINESS_MYSQL_*` 生成 API Catalog 直连配置。
+
+    功能：
+        API Catalog 的治理元数据本质属于业务库，不应再维持一套 `AI_MYSQL_*` 私有环境变量。
+        这里统一改读业务库配置，同时让部署侧只维护一份 MySQL 连接来源。
+    """
     return {
-        "host": settings.ai_mysql_host,
-        "port": settings.ai_mysql_port,
-        "user": settings.ai_mysql_user,
-        "password": settings.ai_mysql_password,
-        "db": settings.ai_mysql_database,
+        "host": settings.business_mysql_host,
+        "port": settings.business_mysql_port,
+        "user": settings.business_mysql_user,
+        "password": settings.business_mysql_password,
+        "db": settings.business_mysql_database,
         "charset": "utf8mb4",
     }
 
