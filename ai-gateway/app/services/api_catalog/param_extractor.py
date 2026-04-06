@@ -78,7 +78,7 @@ class ApiParamExtractor:
             - 若模型只给出 `unknown` 域，同样返回 fallback，避免后续误查全域
         """
         prompt = _build_route_only_prompt(query, user_context, allowed_business_intents)
-        result = await self._invoke_llm_json(prompt, scenario="route_query", trace_id=trace_id)
+        result = await self._call_llm_json(prompt, scenario="route_query", trace_id=trace_id)
         if not result:
             logger.warning(
                 "stage2 routing degraded trace_id=%s code=%s query=%s",

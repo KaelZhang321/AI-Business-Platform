@@ -87,7 +87,7 @@ def test_sanitize_route_domains_filters_unknown_and_normalizes_case() -> None:
 def test_route_query_returns_fallback_when_llm_json_invalid(monkeypatch) -> None:
     extractor = ApiParamExtractor()
 
-    async def fake_call_llm_json(prompt: str, *, scenario: str):
+    async def fake_call_llm_json(prompt: str, *, scenario: str, trace_id: str | None = None):
         return {}
 
     monkeypatch.setattr(extractor, "_call_llm_json", fake_call_llm_json)
