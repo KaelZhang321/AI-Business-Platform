@@ -140,8 +140,9 @@ def test_api_query_returns_empty_notice_for_empty_execution(monkeypatch) -> None
 
     assert response.status_code == 200
     body = response.json()
+    assert set(body.keys()) == {"trace_id", "execution_status", "execution_plan", "ui_runtime", "ui_spec", "error"}
     assert body["execution_status"] == "EMPTY"
-    assert body["data_count"] == 0
+    assert body["execution_plan"]["steps"][0]["step_id"] == "step_customer_list"
     assert body["ui_runtime"]["audit"]["enabled"] is False
     notice = _get_root_children(body["ui_spec"])[0]
     assert body["ui_spec"]["root"] == "root"
@@ -172,9 +173,10 @@ def test_api_query_returns_error_notice_for_error_execution(monkeypatch) -> None
 
     assert response.status_code == 200
     body = response.json()
+    assert set(body.keys()) == {"trace_id", "execution_status", "execution_plan", "ui_runtime", "ui_spec", "error"}
     assert body["execution_status"] == "ERROR"
     assert body["error"] == "业务接口超时"
-    assert body["context_pool"]["step_customer_list"]["error"]["message"] == "业务接口超时"
+    assert body["execution_plan"]["steps"][0]["step_id"] == "step_customer_list"
     notice = _get_root_children(body["ui_spec"])[0]
     assert notice["type"] == "PlannerNotice"
     assert notice["props"]["tone"] == "info"
@@ -203,9 +205,10 @@ def test_api_query_returns_skipped_notice_for_missing_required_params(monkeypatc
 
     assert response.status_code == 200
     body = response.json()
+    assert set(body.keys()) == {"trace_id", "execution_status", "execution_plan", "ui_runtime", "ui_spec", "error"}
     assert body["execution_status"] == "SKIPPED"
     assert body["error"] == "缺少必要参数：customerId"
-    assert body["context_pool"]["step_customer_list"]["skipped_reason"] == "missing_required_params"
+    assert body["execution_plan"]["steps"][0]["step_id"] == "step_customer_list"
     notice = _get_root_children(body["ui_spec"])[0]
     assert notice["type"] == "PlannerNotice"
     assert notice["props"]["text"] == "由于缺少必要参数 customerId，当前查询未被执行。"
@@ -234,11 +237,9 @@ def test_api_query_truncates_context_pool_and_ui_rows(monkeypatch) -> None:
 
     assert response.status_code == 200
     body = response.json()
-    assert body["data_count"] == 7
-    assert body["total"] == 20
-    assert body["context_pool"]["step_customer_list"]["meta"]["truncated"] is True
-    assert body["context_pool"]["step_customer_list"]["meta"]["render_row_count"] == 5
-    assert body["context_pool"]["step_customer_list"]["meta"]["truncated_count"] == 2
+    assert set(body.keys()) == {"trace_id", "execution_status", "execution_plan", "ui_runtime", "ui_spec", "error"}
+    assert body["execution_plan"]["steps"][0]["step_id"] == "step_customer_list"
+    assert body["ui_runtime"]["pagination"]["total"] == 20
     table = _get_child_by_type(body["ui_spec"], "PlannerTable")
     assert table["props"]["columns"][0]["dataIndex"] == "customerId"
     assert len(table["props"]["dataSource"]) == 5
@@ -267,6 +268,8 @@ def test_api_query_renders_single_object_as_detail_card(monkeypatch) -> None:
 
     assert response.status_code == 200
     body = response.json()
+    assert set(body.keys()) == {"trace_id", "execution_status", "execution_plan", "ui_runtime", "ui_spec", "error"}
+    assert body["execution_plan"]["steps"][0]["step_id"] == "step_customer_list"
     detail_card = _get_child_by_type(body["ui_spec"], "PlannerDetailCard")
     assert detail_card["props"]["title"] == "查询客户列表"
     assert {"label": "customerId", "value": "C001"} in detail_card["props"]["items"]
@@ -380,12 +383,10 @@ def test_api_query_executes_multi_step_plan_and_returns_multi_step_context_pool(
 
     assert response.status_code == 200
     body = response.json()
+    assert set(body.keys()) == {"trace_id", "execution_status", "execution_plan", "ui_runtime", "ui_spec", "error"}
     assert body["execution_plan"]["plan_id"] == "dag_customer_orders"
     assert [step["step_id"] for step in body["execution_plan"]["steps"]] == ["step_customers", "step_orders"]
     assert body["execution_status"] == "SUCCESS"
-    assert set(body["context_pool"]) == {"step_customers", "step_orders"}
-    assert body["context_pool"]["step_orders"]["meta"]["resolved_params"] == {"customer_ids": ["C001"]}
-    assert body["query_domains"] == ["CRM", "ERP"]
     assert body["ui_spec"]["root"] == "root"
     assert isinstance(body["ui_spec"]["elements"], dict)
     table = _get_child_by_type(body["ui_spec"], "PlannerTable")
@@ -496,6 +497,8 @@ def test_api_query_renders_partial_success_with_notice_and_table(monkeypatch) ->
 
     assert response.status_code == 200
     body = response.json()
+    assert set(body.keys()) == {"trace_id", "execution_status", "execution_plan", "ui_runtime", "ui_spec", "error"}
+    assert body["execution_plan"]["plan_id"] == "dag_customer_orders_partial"
     assert body["execution_status"] == "PARTIAL_SUCCESS"
     notice = _get_child_by_type(body["ui_spec"], "PlannerNotice")
     table = _get_child_by_type(body["ui_spec"], "PlannerTable")

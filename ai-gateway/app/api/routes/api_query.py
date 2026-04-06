@@ -368,19 +368,10 @@ async def api_query(
     )
     return ApiQueryResponse(
         trace_id=trace_id,
-        interaction_id=interaction_id,
-        query_domains=query_domains,
         execution_status=aggregate_status,
         execution_plan=plan,
-        api_id=anchor_record.entry.id if anchor_record else None,
-        api_path=anchor_record.entry.path if anchor_record else None,
-        params=anchor_record.resolved_params if anchor_record else {},
-        business_intents=business_intents,
-        context_pool=context_pool,
         ui_runtime=ui_runtime,
         ui_spec=ui_spec,
-        data_count=_count_ui_data_rows(data_for_ui, anchor_record, step_count=len(execution_report.records_by_step_id)),
-        total=_build_response_total(anchor_record),
         error=_build_response_error(execution_report),
     )
 
@@ -1378,15 +1369,9 @@ async def _build_stage2_degrade_response(
     ui_runtime = _finalize_render_runtime(base_runtime, ui_build_result.spec, ui_build_result)
     return ApiQueryResponse(
         trace_id=trace_id,
-        interaction_id=interaction_id,
-        query_domains=response_query_domains,
         execution_status=execution_result.status,
-        business_intents=business_intents,
-        context_pool=context_pool,
         ui_runtime=ui_runtime,
         ui_spec=ui_build_result.spec,
-        data_count=0,
-        total=0,
         error=message,
     )
 
@@ -1460,15 +1445,9 @@ async def _build_stage3_degrade_response(
     ui_runtime = _finalize_render_runtime(base_runtime, ui_build_result.spec, ui_build_result)
     return ApiQueryResponse(
         trace_id=trace_id,
-        interaction_id=interaction_id,
-        query_domains=response_query_domains,
         execution_status=execution_result.status,
-        business_intents=business_intents,
-        context_pool=context_pool,
         ui_runtime=ui_runtime,
         ui_spec=ui_build_result.spec,
-        data_count=0,
-        total=0,
         error=message,
     )
 

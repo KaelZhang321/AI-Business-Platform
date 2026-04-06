@@ -315,24 +315,10 @@ def test_api_query_returns_runtime_contract(monkeypatch) -> None:
 
     assert response.status_code == 200
     body = response.json()
+    assert set(body.keys()) == {"trace_id", "execution_status", "execution_plan", "ui_runtime", "ui_spec", "error"}
     assert body["trace_id"] == "trace-query-001"
-    assert body["interaction_id"] == "ia-query-001"
-    assert body["query_domains"] == ["CRM"]
     assert body["execution_status"] == "SUCCESS"
-    assert body["api_id"] == "customer_list"
-    assert body["business_intents"] == [
-        {
-            "code": "none",
-            "name": "纯查询",
-            "category": "read",
-            "description": "当前请求仅包含读取诉求，不携带写前确认意图。",
-            "risk_level": None,
-        }
-    ]
-    assert body["context_pool"]["step_customer_list"]["status"] == "SUCCESS"
-    assert body["context_pool"]["step_customer_list"]["domain"] == "crm"
-    assert body["context_pool"]["step_customer_list"]["api_id"] == "customer_list"
-    assert body["context_pool"]["step_customer_list"]["meta"]["render_row_limit"] == 5
+    assert body["execution_plan"]["steps"][0]["step_id"] == "step_customer_list"
     assert body["ui_runtime"]["mode"] == "read_only"
     assert set(body["ui_runtime"]["components"]) >= {"PlannerCard", "PlannerTable"}
     assert body["ui_runtime"]["detail"]["enabled"] is True
@@ -442,8 +428,8 @@ def test_api_query_attaches_snapshot_for_high_risk_write_intent(monkeypatch) -> 
 
     assert response.status_code == 200
     body = response.json()
-    assert body["business_intents"][0]["code"] == "saveToServer"
-    assert body["business_intents"][0]["risk_level"] == "high"
+    assert set(body.keys()) == {"trace_id", "execution_status", "execution_plan", "ui_runtime", "ui_spec", "error"}
+    assert body["execution_plan"]["steps"][0]["step_id"] == "step_customer_list"
     assert body["ui_runtime"]["audit"]["enabled"] is True
     assert body["ui_runtime"]["audit"]["snapshot_required"] is True
     assert body["ui_runtime"]["audit"]["snapshot_id"] == "snap_test_001"
@@ -482,13 +468,11 @@ def test_api_query_soft_degrades_when_route_query_fails(monkeypatch, caplog) -> 
 
     assert response.status_code == 200
     body = response.json()
+    assert set(body.keys()) == {"trace_id", "execution_status", "execution_plan", "ui_runtime", "ui_spec", "error"}
     assert body["trace_id"] == "trace-degrade-001"
-    assert body["interaction_id"] == "ia-degrade-001"
     assert body["execution_status"] == "SKIPPED"
-    assert body["query_domains"] == []
-    assert body["context_pool"]["stage2_routing"]["status"] == "SKIPPED"
-    assert body["context_pool"]["stage2_routing"]["error"]["code"] == "routing_parse_failed"
-    assert body["business_intents"][0]["code"] == "none"
+    assert body["execution_plan"] is None
+    assert body["error"] == "抱歉，我没有完全理解您的意图，或系统中暂未开放相关查询能力，请尝试换种说法。"
     root_id = body["ui_spec"]["root"]
     assert body["ui_spec"]["elements"][root_id]["props"]["title"] == "未识别到可用业务域"
     assert "interaction=ia-degrade-001" in caplog.text

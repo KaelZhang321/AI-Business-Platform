@@ -353,30 +353,18 @@ class ApiQueryResponse(BaseModel):
     """`api_query` 主接口响应模型。
 
     功能：
-        把执行状态、上下文总线、运行时契约和最终 UI Spec 收敛在一个稳定 envelope 中，
-        供前端和后续 Java 集成同时消费。
+        把前端真正需要的最小读写编排 envelope 固定为 6 个字段，避免把
+        `context_pool`、业务语义和调试锚点继续暴露到外部契约里。
     """
 
     trace_id: str = Field(..., description="网关生成或透传的链路追踪 ID")
-    interaction_id: str | None = Field(None, description="前端透传的用户交互关联 ID")
-    query_domains: list[str] = Field(default_factory=list, description="本次查询命中的业务域")
     execution_status: ApiQueryExecutionStatus = Field(
         ApiQueryExecutionStatus.SUCCESS,
         description="本次接口执行状态",
     )
-    execution_plan: ApiQueryExecutionPlan | None = Field(None, description="第三阶段生成的只读执行计划")
-    api_id: str | None = Field(None, description="命中的接口 ID")
-    api_path: str | None = Field(None, description="接口路径")
-    params: dict[str, Any] = Field(default_factory=dict, description="提取的参数")
-    business_intents: list[ApiQueryBusinessIntent] = Field(default_factory=list, description="识别出的业务意图")
-    context_pool: dict[str, ApiQueryContextStepResult] = Field(
-        default_factory=dict,
-        description="强类型执行结果总线，供渲染层或调试使用",
-    )
+    execution_plan: ApiQueryExecutionPlan | None = Field(None, description="执行计划；写场景前端可据此识别后续接口")
     ui_runtime: ApiQueryUIRuntime | None = Field(None, description="前端运行时元数据")
     ui_spec: dict[str, Any] | None = Field(None, description="json-render UI Spec")
-    data_count: int = Field(0, description="数据条数")
-    total: int = Field(0, description="总记录数（分页时）")
     error: str | None = Field(None, description="错误信息（接口调用失败时）")
 
 
