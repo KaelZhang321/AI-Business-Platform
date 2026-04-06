@@ -20,6 +20,7 @@ API Catalog — Business-Server 接口执行器
 from __future__ import annotations
 
 import logging
+from collections.abc import Collection
 from functools import reduce
 from typing import Any
 
@@ -30,6 +31,7 @@ from app.models.schemas import ApiQueryExecutionResult, ApiQueryExecutionStatus
 from app.services.api_catalog.schema import ApiCatalogEntry
 
 logger = logging.getLogger(__name__)
+_DEFAULT_ALLOWED_EXECUTOR_METHODS = frozenset({"GET"})
 
 
 class ApiExecutor:
@@ -64,6 +66,7 @@ class ApiExecutor:
         params: dict[str, Any],
         user_token: str | None = None,
         trace_id: str | None = None,
+        allow_methods: Collection[str] | None = None,
     ) -> ApiQueryExecutionResult:
         """
         调用 business-server 接口，返回规范化数据。
@@ -73,6 +76,8 @@ class ApiExecutor:
             params: 路由阶段提取出的接口参数，已完成字段过滤和基础类型修正。
             user_token: 用户 JWT Token（格式 `Bearer xxx`），仅在需要时透传给 business-server。
             trace_id: 当前请求链路的追踪 ID，用于把网关错误和上游日志串起来。
+            allow_methods: 当前调用链允许使用的 HTTP 方法白名单。默认只允许 `GET`，
+                用于把 `api_query` 的“只读查询”边界下沉到执行器层，防止未来上层漏校验时误发写请求。
 
         Returns:
             `ApiQueryExecutionResult`：
@@ -83,7 +88,24 @@ class ApiExecutor:
         Edge Cases:
             - 上游返回空对象或 `null` 时，降级为 `EMPTY`
             - 上游 5xx 会被标记为 `retryable=True`
+            - `allow_methods` 为空或大小写混杂时，会自动规范化并回退到默认只读白名单
         """
+        allowed_methods = _normalize_allowed_methods(allow_methods)
+        if entry.method not in allowed_methods:
+            # 先在执行器层挡住非白名单方法，避免“上层忘了校验”直接把写请求打到业务系统。
+            logger.warning(
+                "stage4 executor blocked method trace_id=%s method=%s path=%s allowed_methods=%s",
+                trace_id or "-",
+                entry.method,
+                entry.path,
+                sorted(allowed_methods),
+            )
+            return _error_result(
+                f"执行器已拦截非白名单接口调用: {entry.method} {entry.path}",
+                trace_id=trace_id,
+                error_code="EXECUTOR_METHOD_NOT_ALLOWED",
+            )
+
         client = self._get_client()
         headers = {"Content-Type": "application/json"}
         if user_token and entry.auth_required:
@@ -239,6 +261,38 @@ def _safe_json(response: httpx.Response) -> dict[str, Any]:
         return response.json()
     except Exception:
         return {"raw": response.text}
+
+
+def _normalize_allowed_methods(allow_methods: Collection[str] | None) -> set[str]:
+    """规范化执行器方法白名单。
+
+    功能：
+        执行器本身不应该依赖调用方永远传对大小写或完整白名单；这里统一做一次
+        标准化，确保“默认只读”是稳定生效的安全底线。
+
+    Args:
+        allow_methods: 调用方声明允许执行的 HTTP 方法集合。
+
+    Returns:
+        全部转成大写后的方法集合；若传入为空，则回退到默认 `{"GET"}`。
+
+    Edge Cases:
+        - 空字符串会被静默丢弃，避免把脏值误判成合法方法
+        - 若调用方误传单个字符串 `"GET"`，会被当成单元素白名单而不是拆成字符集合
+        - 归一化后若结果为空，仍回退到默认只读集合
+    """
+    raw_methods: Collection[str]
+    if isinstance(allow_methods, str):
+        raw_methods = [allow_methods]
+    else:
+        raw_methods = allow_methods or _DEFAULT_ALLOWED_EXECUTOR_METHODS
+
+    normalized_methods = {
+        method.strip().upper()
+        for method in raw_methods
+        if method and method.strip()
+    }
+    return normalized_methods or set(_DEFAULT_ALLOWED_EXECUTOR_METHODS)
 
 
 def _extract_data(

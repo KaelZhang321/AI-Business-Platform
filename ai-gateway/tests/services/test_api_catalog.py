@@ -13,11 +13,14 @@ from __future__ import annotations
 
 import asyncio
 
+import httpx
+import pytest
 from pymilvus import DataType
 
 import app.services.api_catalog.indexer as indexer_module
 from app.core.config import settings
 from app.services.api_catalog.executor import (
+    ApiExecutor,
     _apply_field_labels,
     _extract_data,
 )
@@ -169,6 +172,44 @@ class TestApplyFieldLabels:
         labels = {"totalAmount": "总金额"}
         result = _apply_field_labels(data, labels)
         assert result["总金额"] == 1000.0
+
+
+class TestApiExecutorGuard:
+    @pytest.mark.asyncio
+    async def test_call_blocks_non_get_method_before_sending_request(self):
+        """执行器默认只允许 GET，避免查询链路因为上层漏校验而误打写请求。"""
+
+        entry = ApiCatalogEntry(
+            id="customer_delete",
+            description="删除客户",
+            method="DELETE",
+            path="/api/customer/delete",
+        )
+        request_sent = False
+
+        async def fail_if_called(_: httpx.Request) -> httpx.Response:
+            nonlocal request_sent
+            request_sent = True
+            raise AssertionError("非 GET 方法不应该真正发出 HTTP 请求。")
+
+        executor = ApiExecutor()
+        executor._client = httpx.AsyncClient(
+            transport=httpx.MockTransport(fail_if_called),
+            base_url="http://testserver",
+        )
+        result = await executor.call(
+            entry,
+            {"customerId": "C001"},
+            trace_id="trace_executor_guard",
+        )
+
+        assert request_sent is False
+        assert result.status == "ERROR"
+        assert result.error_code == "EXECUTOR_METHOD_NOT_ALLOWED"
+        assert result.retryable is False
+        assert "DELETE /api/customer/delete" in (result.error or "")
+
+        await executor.close()
 
 
 # ── param_extractor utils tests ──────────────────────────────────────────────
