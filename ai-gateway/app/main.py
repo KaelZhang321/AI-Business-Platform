@@ -13,6 +13,10 @@ from app.api.routes.api_query import router as api_query_router
 from app.core.config import settings
 from app.core.error_codes import BusinessError, ErrorCode
 from app.models.schemas import HealthResponse
+from app.services.api_catalog.business_intents import (
+    close_business_intent_catalog_service,
+    get_business_intent_catalog_service,
+)
 from app.services.identity_vault import IdentityVault
 from app.services.rag_service import RAGService
 
@@ -81,6 +85,7 @@ async def lifespan(app: FastAPI):
 
     # 将共享服务实例挂载到 app.state，供 route 层按需获取
     app.state.rag_service = RAGService()
+    await get_business_intent_catalog_service().warmup()
 
     # ── 启动缓存失效监听器（S5-6 + S5-11 语义缓存联动）────
     cache_task = None
@@ -126,6 +131,12 @@ async def lifespan(app: FastAPI):
         await app.state.rag_service.close()
     except Exception as exc:
         logger.warning("关闭 RAGService 失败: %s", exc)
+
+    # Business intent catalog MySQL pool
+    try:
+        await close_business_intent_catalog_service()
+    except Exception as exc:
+        logger.warning("关闭 Business Intent Catalog 失败: %s", exc)
 
     # Elasticsearch
     if es_client:

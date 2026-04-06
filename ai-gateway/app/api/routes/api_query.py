@@ -38,7 +38,8 @@ from app.services.api_catalog.executor import ApiExecutor
 from app.services.api_catalog.dag_executor import ApiDagExecutor, DagExecutionReport, DagStepExecutionRecord
 from app.services.api_catalog.dag_planner import ApiDagPlanner, DagPlanValidationError, build_single_step_plan
 from app.services.api_catalog.business_intents import (
-    CANONICAL_BUSINESS_INTENTS,
+    NOOP_BUSINESS_INTENT,
+    get_business_intent_catalog_service,
     normalize_business_intent_codes,
     resolve_business_intent_risk_level,
 )
@@ -65,8 +66,6 @@ _bearer = HTTPBearer(auto_error=False)
 _READ_ONLY_METHODS = {"GET"}
 # 这里固定保留 5 条是为了给 Renderer 足够上下文，又避免把大结果集整包塞进生成链路导致注意力失焦。
 _CONTEXT_ROW_LIMIT = 5
-_ALLOWED_BUSINESS_INTENTS = CANONICAL_BUSINESS_INTENTS
-_ROUTE_ALLOWED_BUSINESS_INTENT_CODES = set(_ALLOWED_BUSINESS_INTENTS)
 
 
 def _get_services() -> tuple[ApiCatalogRetriever, ApiParamExtractor, ApiExecutor, DynamicUIService, UISnapshotService]:
@@ -134,12 +133,13 @@ async def api_query(
 
     # 用户 token（透传给 business-server）
     user_token = f"Bearer {credentials.credentials}" if credentials else None
+    allowed_business_intent_codes = _get_route_allowed_business_intent_codes()
 
     # Step 1: 轻量路由先产出 query_domains + business_intents，避免后续直接做全域 Top-K。
     route_hint = await extractor.route_query(
         request_body.query,
         user_context,
-        allowed_business_intents=_ROUTE_ALLOWED_BUSINESS_INTENT_CODES,
+        allowed_business_intents=allowed_business_intent_codes,
         trace_id=trace_id,
     )
     if route_hint.route_status != "ok":
@@ -196,7 +196,7 @@ async def api_query(
             request_body.query,
             candidates,
             user_context,
-            allowed_business_intents=_ROUTE_ALLOWED_BUSINESS_INTENT_CODES,
+            allowed_business_intents=allowed_business_intent_codes,
             routing_hints=route_hint,
             trace_id=trace_id,
         )
@@ -523,16 +523,37 @@ def _build_business_intents(intent_codes: list[str]) -> list[ApiQueryBusinessInt
         - 历史高风险别名会被折叠成 canonical code，同时保留 `risk_level=high`
         - 纯读旧编码会统一折叠为 `none`
     """
+    intent_catalog = get_business_intent_catalog_service()
     codes = _normalize_business_intent_codes(intent_codes)
+    business_intents: list[ApiQueryBusinessIntent] = []
+    for code in dict.fromkeys(codes):
+        definition = intent_catalog.get_definition(code)
+        if definition is None or not definition.enabled or not definition.allow_in_response:
+            continue
+        business_intents.append(
+            ApiQueryBusinessIntent(
+                code=code,
+                name=definition.name,
+                category="write" if definition.category == "write" else "read",
+                description=definition.description,
+                risk_level=resolve_business_intent_risk_level(code, intent_codes),
+            )
+        )
+
+    if business_intents:
+        return business_intents
+
+    fallback_definition = intent_catalog.get_definition(NOOP_BUSINESS_INTENT)
+    if fallback_definition is None:
+        return []
     return [
         ApiQueryBusinessIntent(
-            code=code,
-            name=_ALLOWED_BUSINESS_INTENTS[code]["name"],
-            category=_ALLOWED_BUSINESS_INTENTS[code]["category"],
-            description=_ALLOWED_BUSINESS_INTENTS[code]["description"],
-            risk_level=resolve_business_intent_risk_level(code, intent_codes),
+            code=fallback_definition.code,
+            name=fallback_definition.name,
+            category="write" if fallback_definition.category == "write" else "read",
+            description=fallback_definition.description,
+            risk_level=resolve_business_intent_risk_level(fallback_definition.code, intent_codes),
         )
-        for code in dict.fromkeys(codes)
     ]
 
 
@@ -544,6 +565,16 @@ def _normalize_business_intent_codes(intent_codes: list[str]) -> list[str]:
         这里负责吸收旧 Prompt、旧 catalog 与高风险别名的历史债务，避免外部契约继续漂移。
     """
     return normalize_business_intent_codes(intent_codes)
+
+
+def _get_route_allowed_business_intent_codes() -> set[str]:
+    """读取第二阶段 Router 白名单。
+
+    功能：
+        白名单来源已经迁移到业务意图目录服务，路由层不再维护模块级硬编码 set，
+        避免 MySQL 配置、Prompt 注入和响应契约继续各自漂移。
+    """
+    return get_business_intent_catalog_service().get_allowed_codes()
 
 
 def _build_runtime_actions(action_codes: set[str] | None = None) -> list[ApiQueryUIAction]:
