@@ -278,6 +278,8 @@ async def api_query(
     # Step 4: 对 DAG 做白名单与依赖校验，任何脏图纸都不能进入物理执行阶段。
     planner = _get_planner()
     try:
+        # 这里不是重复做一次 Planner，而是把 LLM 产出的“图纸”重新拉回确定性安全闸。
+        # 只有命中第二阶段候选白名单、依赖关系可拓扑执行、且不越过只读边界的步骤，才允许进入真实调用。
         step_entries = planner.validate_plan(plan, candidates)
     except DagPlanValidationError as exc:
         logger.info("%s planner validation degraded code=%s", log_prefix, exc.code)
@@ -295,12 +297,18 @@ async def api_query(
         )
 
     dag_executor = ApiDagExecutor(executor)
+    # 执行统一收口到 DAG executor，而不是在 route 层手写串/并行调用。
+    # 这样“上游空结果短路下游”“JSONPath 依赖绑定”“单节点失败不拖垮全链路”都由同一套状态机负责，
+    # 后续排障时只需要围绕 execution_report 回放，而不必回头拼接零散中间态。
     execution_report = await dag_executor.execute_plan(
         plan,
         step_entries,
         user_token=user_token,
         trace_id=trace_id,
     )
+    # Step 4 的真正产物不是某一个接口结果，而是一份跨步骤执行报告。
+    # 这里先把内部报告翻译成第五阶段能稳定消费的摘要：保留逐步事实总线、选出对外展示锚点，
+    # 再计算聚合状态，避免 Renderer 反向猜测“哪个步骤才是主结果”。
     context_pool = _build_plan_context_pool(execution_report)
     aggregate_status = _summarize_execution_report(execution_report)
     anchor_record = _select_response_anchor(execution_report)
