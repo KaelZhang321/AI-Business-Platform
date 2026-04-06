@@ -358,6 +358,7 @@ class ApiQueryResponse(BaseModel):
     """
 
     trace_id: str = Field(..., description="网关生成或透传的链路追踪 ID")
+    interaction_id: str | None = Field(None, description="前端透传的用户交互关联 ID")
     query_domains: list[str] = Field(default_factory=list, description="本次查询命中的业务域")
     execution_status: ApiQueryExecutionStatus = Field(
         ApiQueryExecutionStatus.SUCCESS,

@@ -129,7 +129,11 @@ async def api_query(
     """
     retriever, extractor, executor, dynamic_ui, snapshot_service = _get_services()
     trace_id = _resolve_trace_id(request)
+    interaction_id = _resolve_interaction_id(request)
     user_context = _extract_user_context(request)
+    log_prefix = _build_api_query_log_prefix(trace_id, interaction_id)
+
+    logger.info("%s request query=%s", log_prefix, request_body.query[:100])
 
     # 用户 token（透传给 business-server）
     user_token = f"Bearer {credentials.credentials}" if credentials else None
@@ -144,14 +148,15 @@ async def api_query(
     )
     if route_hint.route_status != "ok":
         logger.info(
-            "api_query[%s] stage2 route degraded code=%s query=%s",
-            trace_id,
+            "%s stage2 route degraded code=%s query=%s",
+            log_prefix,
             route_hint.route_error_code,
             request_body.query[:100],
         )
         return await _build_stage2_degrade_response(
             dynamic_ui,
             trace_id=trace_id,
+            interaction_id=interaction_id,
             query=request_body.query,
             title="未识别到可用业务域",
             message="抱歉，我没有完全理解您的意图，或系统中暂未开放相关查询能力，请尝试换种说法。",
@@ -172,14 +177,15 @@ async def api_query(
     )
     if not candidates:
         logger.info(
-            "api_query[%s] no candidates after stratified retrieval domains=%s query=%s",
-            trace_id,
+            "%s no candidates after stratified retrieval domains=%s query=%s",
+            log_prefix,
             route_hint.query_domains,
             request_body.query[:100],
         )
         return await _build_stage2_degrade_response(
             dynamic_ui,
             trace_id=trace_id,
+            interaction_id=interaction_id,
             query=request_body.query,
             title="未找到匹配接口",
             message="当前问题没有召回到可执行的查询接口，请调整表达方式后重试。",
@@ -202,14 +208,15 @@ async def api_query(
         )
         if routing_result.route_status != "ok":
             logger.info(
-                "api_query[%s] route-and-extract degraded code=%s query=%s",
-                trace_id,
+                "%s route-and-extract degraded code=%s query=%s",
+                log_prefix,
                 routing_result.route_error_code,
                 request_body.query[:100],
             )
             return await _build_stage2_degrade_response(
                 dynamic_ui,
                 trace_id=trace_id,
+                interaction_id=interaction_id,
                 query=request_body.query,
                 title="无法确定查询接口",
                 message="我找到了相关业务域，但还无法稳定确定具体接口，请补充更明确的查询条件后重试。",
@@ -221,10 +228,11 @@ async def api_query(
 
         selected_entry = _find_selected_entry(candidates, routing_result)
         if selected_entry is None:
-            logger.info("api_query[%s] extractor could not choose endpoint", trace_id)
+            logger.info("%s extractor could not choose endpoint", log_prefix)
             return await _build_stage2_degrade_response(
                 dynamic_ui,
                 trace_id=trace_id,
+                interaction_id=interaction_id,
                 query=request_body.query,
                 title="无法确定查询接口",
                 message="当前输入关联了多个候选接口，但仍缺少足够信息来确定最终查询目标。",
@@ -234,7 +242,7 @@ async def api_query(
                 reasoning=routing_result.reasoning or route_hint.reasoning,
             )
 
-        _ensure_read_only_entry(selected_entry, trace_id)
+        _ensure_read_only_entry(selected_entry, trace_id, interaction_id)
         planning_intent_codes = list(routing_result.business_intents or route_hint.business_intents)
         plan = build_single_step_plan(
             selected_entry,
@@ -253,10 +261,11 @@ async def api_query(
                 trace_id=trace_id,
             )
         except DagPlanValidationError as exc:
-            logger.info("api_query[%s] planner degraded code=%s", trace_id, exc.code)
+            logger.info("%s planner degraded code=%s", log_prefix, exc.code)
             return await _build_stage3_degrade_response(
                 dynamic_ui,
                 trace_id=trace_id,
+                interaction_id=interaction_id,
                 query=request_body.query,
                 title="数据执行计划生成失败",
                 message="我找到了相关接口，但当前还无法稳定生成可执行的数据流，请补充更明确的查询链路后重试。",
@@ -271,10 +280,11 @@ async def api_query(
     try:
         step_entries = planner.validate_plan(plan, candidates)
     except DagPlanValidationError as exc:
-        logger.info("api_query[%s] planner validation degraded code=%s", trace_id, exc.code)
+        logger.info("%s planner validation degraded code=%s", log_prefix, exc.code)
         return await _build_stage3_degrade_response(
             dynamic_ui,
             trace_id=trace_id,
+            interaction_id=interaction_id,
             query=request_body.query,
             title="数据执行计划校验失败",
             message="系统生成的数据依赖图存在安全风险，已终止执行以保护业务系统。",
@@ -328,8 +338,8 @@ async def api_query(
     ui_runtime = _finalize_render_runtime(runtime, ui_spec, ui_build_result)
     if ui_build_result.frozen:
         logger.warning(
-            "api_query[%s] stage5 ui frozen errors=%s",
-            trace_id,
+            "%s stage5 ui frozen errors=%s",
+            log_prefix,
             _summarize_validation_errors(ui_build_result.validation),
         )
     else:
@@ -349,8 +359,16 @@ async def api_query(
             },
         )
 
+    logger.info(
+        "%s success status=%s api_id=%s step_count=%s",
+        log_prefix,
+        aggregate_status,
+        anchor_record.entry.id if anchor_record else None,
+        len(execution_report.records_by_step_id),
+    )
     return ApiQueryResponse(
         trace_id=trace_id,
+        interaction_id=interaction_id,
         query_domains=query_domains,
         execution_status=aggregate_status,
         execution_plan=plan,
@@ -460,6 +478,37 @@ def _resolve_trace_id(request: Request) -> str:
     return header_trace_id or uuid4().hex
 
 
+def _resolve_interaction_id(request: Request) -> str | None:
+    """提取前端透传的交互 ID。
+
+    功能：
+        `interaction_id` 用来串起一次用户连续操作内的多次请求，例如“打开列表 -> 查看详情 ->
+        提交确认”。网关这里不负责生成，只做透传与回显，避免和 `trace_id` 的单请求语义混淆。
+
+    Args:
+        request: 当前 FastAPI 请求对象。
+
+    Returns:
+        头部中的 `X-Interaction-Id`；空字符串会被折叠为 `None`。
+
+    Edge Cases:
+        - 前端未传时返回 `None`，不自行兜底生成
+        - 仅做首尾空白裁剪，不在网关层擅自改写业务方生成的 ID
+    """
+    header_interaction_id = (request.headers.get("X-Interaction-Id") or "").strip()
+    return header_interaction_id or None
+
+
+def _build_api_query_log_prefix(trace_id: str, interaction_id: str | None) -> str:
+    """统一构造 `api_query` 日志前缀。
+
+    功能：
+        该接口已经长期依赖 `trace_id` 做单请求排障；本次补入 `interaction_id` 的目标，是让
+        运维可以把同一次用户操作拆出来看，而不需要去猜多条 trace 之间是否属于同一交互。
+    """
+    return f"api_query[trace={trace_id} interaction={interaction_id or '-'}]"
+
+
 def _format_query_domains_for_response(query_domains: list[str]) -> list[str]:
     """将内部 domain 编码转换成对外稳定展示格式。
 
@@ -486,7 +535,7 @@ def _dedupe_non_empty(values: list[str]) -> list[str]:
     return deduped
 
 
-def _ensure_read_only_entry(entry: ApiCatalogEntry, trace_id: str) -> None:
+def _ensure_read_only_entry(entry: ApiCatalogEntry, trace_id: str, interaction_id: str | None = None) -> None:
     """强制拦截非只读接口。
 
     功能：
@@ -495,8 +544,8 @@ def _ensure_read_only_entry(entry: ApiCatalogEntry, trace_id: str) -> None:
     if entry.method in _READ_ONLY_METHODS:
         return
     logger.warning(
-        "api_query[%s] blocked non-read endpoint id=%s method=%s path=%s",
-        trace_id,
+        "%s blocked non-read endpoint id=%s method=%s path=%s",
+        _build_api_query_log_prefix(trace_id, interaction_id),
         entry.id,
         entry.method,
         entry.path,
@@ -1259,6 +1308,7 @@ async def _build_stage2_degrade_response(
     dynamic_ui: DynamicUIService,
     *,
     trace_id: str,
+    interaction_id: str | None,
     query: str,
     title: str,
     message: str,
@@ -1328,6 +1378,7 @@ async def _build_stage2_degrade_response(
     ui_runtime = _finalize_render_runtime(base_runtime, ui_build_result.spec, ui_build_result)
     return ApiQueryResponse(
         trace_id=trace_id,
+        interaction_id=interaction_id,
         query_domains=response_query_domains,
         execution_status=execution_result.status,
         business_intents=business_intents,
@@ -1344,6 +1395,7 @@ async def _build_stage3_degrade_response(
     dynamic_ui: DynamicUIService,
     *,
     trace_id: str,
+    interaction_id: str | None,
     query: str,
     title: str,
     message: str,
@@ -1408,6 +1460,7 @@ async def _build_stage3_degrade_response(
     ui_runtime = _finalize_render_runtime(base_runtime, ui_build_result.spec, ui_build_result)
     return ApiQueryResponse(
         trace_id=trace_id,
+        interaction_id=interaction_id,
         query_domains=response_query_domains,
         execution_status=execution_result.status,
         business_intents=business_intents,

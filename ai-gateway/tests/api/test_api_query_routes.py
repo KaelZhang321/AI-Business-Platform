@@ -310,12 +310,13 @@ def test_api_query_returns_runtime_contract(monkeypatch) -> None:
     response = client.post(
         "/api/v1/api-query",
         json={"query": "查询张三客户"},
-        headers={"X-Trace-Id": "trace-query-001"},
+        headers={"X-Trace-Id": "trace-query-001", "X-Interaction-Id": "ia-query-001"},
     )
 
     assert response.status_code == 200
     body = response.json()
     assert body["trace_id"] == "trace-query-001"
+    assert body["interaction_id"] == "ia-query-001"
     assert body["query_domains"] == ["CRM"]
     assert body["execution_status"] == "SUCCESS"
     assert body["api_id"] == "customer_list"
@@ -449,7 +450,7 @@ def test_api_query_attaches_snapshot_for_high_risk_write_intent(monkeypatch) -> 
     assert body["ui_runtime"]["audit"]["risk_level"] == "high"
 
 
-def test_api_query_soft_degrades_when_route_query_fails(monkeypatch) -> None:
+def test_api_query_soft_degrades_when_route_query_fails(monkeypatch, caplog) -> None:
     entry = _make_entry()
     stub_services = (
         StubRetriever(entry),
@@ -472,10 +473,17 @@ def test_api_query_soft_degrades_when_route_query_fails(monkeypatch) -> None:
     monkeypatch.setattr(api_query_routes, "_get_services", lambda: stub_services)
 
     client = TestClient(create_test_app())
-    response = client.post("/api/v1/api-query", json={"query": "帮我处理那个事情"})
+    with caplog.at_level("INFO", logger=api_query_routes.logger.name):
+        response = client.post(
+            "/api/v1/api-query",
+            json={"query": "帮我处理那个事情"},
+            headers={"X-Trace-Id": "trace-degrade-001", "X-Interaction-Id": "ia-degrade-001"},
+        )
 
     assert response.status_code == 200
     body = response.json()
+    assert body["trace_id"] == "trace-degrade-001"
+    assert body["interaction_id"] == "ia-degrade-001"
     assert body["execution_status"] == "SKIPPED"
     assert body["query_domains"] == []
     assert body["context_pool"]["stage2_routing"]["status"] == "SKIPPED"
@@ -483,6 +491,7 @@ def test_api_query_soft_degrades_when_route_query_fails(monkeypatch) -> None:
     assert body["business_intents"][0]["code"] == "none"
     root_id = body["ui_spec"]["root"]
     assert body["ui_spec"]["elements"][root_id]["props"]["title"] == "未识别到可用业务域"
+    assert "interaction=ia-degrade-001" in caplog.text
 
 
 def test_runtime_metadata_endpoint_returns_contract(monkeypatch) -> None:
