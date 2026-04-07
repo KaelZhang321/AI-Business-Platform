@@ -58,6 +58,7 @@ class Settings(BaseSettings):
 
     # Embedding & Reranker
     embedding_model_name: str = "BAAI/bge-m3"
+    embedding_model_path: str = ""
     reranker_model_name: str = "BAAI/bge-reranker-large"
     rag_rerank_limit: int = 8
 

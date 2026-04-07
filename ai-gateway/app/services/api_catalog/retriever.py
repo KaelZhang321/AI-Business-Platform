@@ -21,6 +21,7 @@ from FlagEmbedding import BGEM3FlagModel
 from pymilvus import Collection, connections
 
 from app.core.config import settings
+from app.core.model_source import resolve_model_source
 from app.services.api_catalog.indexer import API_CATALOG_COLLECTION
 from app.services.api_catalog.schema import (
     ApiCatalogDetailHint,
@@ -90,9 +91,26 @@ class ApiCatalogRetriever:
         self._collection: Collection | None = None
 
     def _get_embedder(self) -> BGEM3FlagModel:
-        """懒加载查询向量模型。"""
+        """懒加载查询向量模型。
+
+        功能：
+            查询链路和索引链路必须命中同一份 embedding 模型，否则离线容器里会出现
+            “索引能跑、检索不能跑”或反过来的割裂状态。这里和索引器复用同一套本地目录优先规则。
+        """
         if self._embedder is None:
-            self._embedder = BGEM3FlagModel(settings.embedding_model_name, use_fp16=True)
+            model_source = resolve_model_source(
+                model_name=settings.embedding_model_name,
+                local_model_path=settings.embedding_model_path,
+            )
+            if model_source.source_kind == "local_path":
+                logger.info("Loading retrieval embedding model from local path: %s", model_source.source)
+            elif model_source.configured_path:
+                logger.warning(
+                    "Configured EMBEDDING_MODEL_PATH is unavailable, fallback to EMBEDDING_MODEL_NAME: path=%s model=%s",
+                    model_source.configured_path,
+                    settings.embedding_model_name,
+                )
+            self._embedder = BGEM3FlagModel(model_source.source, use_fp16=True)
         return self._embedder
 
     def _get_collection(self) -> Collection:

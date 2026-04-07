@@ -31,6 +31,7 @@ from pymilvus import (
 )
 
 from app.core.config import settings
+from app.core.model_source import resolve_model_source
 from app.services.api_catalog.registry_source import ApiCatalogRegistrySource
 from app.services.api_catalog.schema import ApiCatalogEntry
 
@@ -211,14 +212,32 @@ class ApiCatalogIndexer:
     # ── 懒加载 ──────────────────────────────────────────────────
 
     def _get_embedder(self) -> BGEM3FlagModel:
-        """懒加载 embedding 模型。"""
+        """懒加载 embedding 模型。
+
+        功能：
+            索引器通常跑在离线运维环境里，最怕运行到一半才因为外网不可达去拉 HuggingFace。
+            这里优先命中本地模型目录，让“离线全量重建索引”成为稳定能力，而不是碰运气依赖外网。
+        """
         if self._embedder is None:
             logger.info("Importing FlagEmbedding package")
             flag_embedding = importlib.import_module("FlagEmbedding")
             model_cls = getattr(flag_embedding, "BGEM3FlagModel")
-            logger.info("Loading embedding model: %s", settings.embedding_model_name)
-            self._embedder = model_cls(settings.embedding_model_name, use_fp16=True)
-            logger.info("Embedding model loaded: %s", settings.embedding_model_name)
+            model_source = resolve_model_source(
+                model_name=settings.embedding_model_name,
+                local_model_path=settings.embedding_model_path,
+            )
+            if model_source.source_kind == "local_path":
+                logger.info("Loading embedding model from local path: %s", model_source.source)
+            elif model_source.configured_path:
+                logger.warning(
+                    "Configured EMBEDDING_MODEL_PATH is unavailable, fallback to EMBEDDING_MODEL_NAME: path=%s model=%s",
+                    model_source.configured_path,
+                    settings.embedding_model_name,
+                )
+            else:
+                logger.info("Loading embedding model by name: %s", model_source.source)
+            self._embedder = model_cls(model_source.source, use_fp16=True)
+            logger.info("Embedding model loaded: %s", model_source.source)
         return self._embedder
 
     def _get_collection(self) -> Collection:

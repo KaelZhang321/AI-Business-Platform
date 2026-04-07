@@ -559,6 +559,49 @@ class TestIndexerSchema:
         assert captured["level"] == logging.INFO
         assert captured["force"] is True
 
+    def test_indexer_prefers_local_embedding_model_path(self, monkeypatch, tmp_path):
+        captured: dict[str, object] = {}
+        model_dir = tmp_path / "BAAI" / "bge-m3"
+        model_dir.mkdir(parents=True)
+
+        class FakeBGEM3FlagModel:
+            def __init__(self, source: str, use_fp16: bool) -> None:
+                captured["source"] = source
+                captured["use_fp16"] = use_fp16
+
+        fake_module = type("FakeFlagEmbeddingModule", (), {"BGEM3FlagModel": FakeBGEM3FlagModel})
+
+        monkeypatch.setattr(settings, "embedding_model_name", "BAAI/bge-m3")
+        monkeypatch.setattr(settings, "embedding_model_path", str(model_dir))
+        monkeypatch.setattr(indexer_module.importlib, "import_module", lambda name: fake_module)
+
+        indexer = indexer_module.ApiCatalogIndexer()
+        indexer._get_embedder()
+
+        assert captured["source"] == str(model_dir.resolve())
+        assert captured["use_fp16"] is True
+
+    def test_indexer_falls_back_to_embedding_model_name_when_local_path_is_invalid(self, monkeypatch, tmp_path):
+        captured: dict[str, object] = {}
+        missing_dir = tmp_path / "missing-bge-m3"
+
+        class FakeBGEM3FlagModel:
+            def __init__(self, source: str, use_fp16: bool) -> None:
+                captured["source"] = source
+                captured["use_fp16"] = use_fp16
+
+        fake_module = type("FakeFlagEmbeddingModule", (), {"BGEM3FlagModel": FakeBGEM3FlagModel})
+
+        monkeypatch.setattr(settings, "embedding_model_name", "BAAI/bge-m3")
+        monkeypatch.setattr(settings, "embedding_model_path", str(missing_dir))
+        monkeypatch.setattr(indexer_module.importlib, "import_module", lambda name: fake_module)
+
+        indexer = indexer_module.ApiCatalogIndexer()
+        indexer._get_embedder()
+
+        assert captured["source"] == "BAAI/bge-m3"
+        assert captured["use_fp16"] is True
+
 
 class TestRetrieverCompatibility:
     def test_build_entry_from_fields_supports_native_json_schema(self):
