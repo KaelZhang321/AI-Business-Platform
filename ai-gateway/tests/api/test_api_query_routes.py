@@ -153,6 +153,18 @@ class StubSnapshotService:
         return Snapshot()
 
 
+class StubRegistrySource:
+    """模拟 `direct` 模式按 api_id 精确查目录的主链路。"""
+
+    def __init__(self, entry: ApiCatalogEntry | None) -> None:
+        self._entry = entry
+        self.last_api_id: str | None = None
+
+    async def get_entry_by_id(self, api_id: str) -> ApiCatalogEntry | None:
+        self.last_api_id = api_id
+        return self._entry
+
+
 class FrozenDynamicUI:
     """模拟第五阶段 Guard 命中后的冻结视图输出。"""
 
@@ -336,6 +348,231 @@ def test_api_query_returns_runtime_contract(monkeypatch) -> None:
         "statuses": ["active"],
         "tag_names": [],
     }
+
+
+def test_api_query_direct_mode_bypasses_semantic_chain_and_returns_runtime_contract(monkeypatch) -> None:
+    detail_entry = _make_entry(
+        id="customer_detail",
+        description="查询客户详情",
+        path="/api/v1/customers/detail",
+        param_schema={"type": "object", "properties": {"customerId": {"type": "string"}}, "required": ["customerId"]},
+        pagination_hint=ApiCatalogPaginationHint(enabled=False),
+        template_hint=ApiCatalogTemplateHint(enabled=False),
+    )
+
+    class FailIfCalledRetriever:
+        async def search(self, *args, **kwargs):  # pragma: no cover - should never be invoked
+            raise AssertionError("direct mode should bypass retriever.search")
+
+        async def search_stratified(self, *args, **kwargs):  # pragma: no cover - should never be invoked
+            raise AssertionError("direct mode should bypass retriever.search_stratified")
+
+    class FailIfCalledExtractor:
+        async def route_query(self, *args, **kwargs):  # pragma: no cover - should never be invoked
+            raise AssertionError("direct mode should bypass extractor.route_query")
+
+        async def extract_routing_result(self, *args, **kwargs):  # pragma: no cover - should never be invoked
+            raise AssertionError("direct mode should bypass extractor.extract_routing_result")
+
+    class CapturingExecutor:
+        def __init__(self) -> None:
+            self.last_params = None
+
+        async def call(self, entry, params, user_token=None, trace_id: str | None = None):
+            self.last_params = params
+            return ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.SUCCESS,
+                data={"customerId": "C001", "customerName": "张三"},
+                total=1,
+                trace_id=trace_id,
+            )
+
+    registry_source = StubRegistrySource(detail_entry)
+    executor = CapturingExecutor()
+    stub_services = (
+        FailIfCalledRetriever(),
+        FailIfCalledExtractor(),
+        executor,
+        StubDynamicUI(),
+        StubSnapshotService(),
+    )
+    monkeypatch.setattr(api_query_routes, "_get_services", lambda: stub_services)
+    monkeypatch.setattr(api_query_routes, "_get_registry_source", lambda: registry_source)
+    monkeypatch.setattr(
+        api_query_routes,
+        "_get_planner",
+        lambda: (_ for _ in ()).throw(AssertionError("direct mode should bypass planner")),
+    )
+
+    client = TestClient(create_test_app())
+    response = client.post(
+        "/api/v1/api-query",
+        json={
+            "mode": "direct",
+            "conversation_id": "conv_001",
+            "direct_query": {
+                "api_id": "customer_detail",
+                "params": {"customerId": "C001"},
+            },
+        },
+        headers={"X-Trace-Id": "trace-direct-001"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert set(body.keys()) == {"trace_id", "execution_status", "execution_plan", "ui_runtime", "ui_spec", "error"}
+    assert body["trace_id"] == "trace-direct-001"
+    assert body["execution_status"] == "SUCCESS"
+    assert body["execution_plan"]["plan_id"] == "direct_trace-di"
+    assert body["execution_plan"]["steps"] == [
+        {
+            "step_id": "step_customer_detail",
+            "api_path": "/api/v1/customers/detail",
+            "params": {"customerId": "C001"},
+            "depends_on": [],
+        }
+    ]
+    assert body["ui_runtime"]["detail"]["enabled"] is True
+    assert body["ui_runtime"]["detail"]["api_id"] == "customer_detail"
+    assert body["ui_spec"]["elements"][body["ui_spec"]["root"]]["type"] == "PlannerCard"
+    assert registry_source.last_api_id == "customer_detail"
+    assert executor.last_params == {"customerId": "C001"}
+
+
+def test_api_query_direct_mode_requires_direct_query_payload() -> None:
+    client = TestClient(create_test_app())
+
+    response = client.post("/api/v1/api-query", json={"mode": "direct"})
+
+    assert response.status_code == 422
+    assert "mode=direct 时必须提供 direct_query" in str(response.json())
+
+
+def test_api_query_direct_mode_rejects_unknown_params(monkeypatch) -> None:
+    detail_entry = _make_entry(
+        id="customer_detail",
+        path="/api/v1/customers/detail",
+        param_schema={"type": "object", "properties": {"customerId": {"type": "string"}}, "required": ["customerId"]},
+    )
+    stub_services = (
+        object(),
+        object(),
+        StubExecutor(
+            ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.SUCCESS,
+                data={"ok": True},
+                total=1,
+            )
+        ),
+        StubDynamicUI(),
+        StubSnapshotService(),
+    )
+    monkeypatch.setattr(api_query_routes, "_get_services", lambda: stub_services)
+    monkeypatch.setattr(api_query_routes, "_get_registry_source", lambda: StubRegistrySource(detail_entry))
+
+    client = TestClient(create_test_app())
+    response = client.post(
+        "/api/v1/api-query",
+        json={
+            "mode": "direct",
+            "direct_query": {
+                "api_id": "customer_detail",
+                "params": {"customerId": "C001", "unexpected": "boom"},
+            },
+        },
+        headers={"X-Trace-Id": "trace-direct-params-001"},
+    )
+
+    assert response.status_code == 422
+    assert (
+        response.json()["detail"]
+        == "[trace-direct-params-001] direct 模式存在未声明参数：unexpected"
+    )
+
+
+def test_api_query_direct_mode_requires_required_params(monkeypatch) -> None:
+    detail_entry = _make_entry(
+        id="customer_detail",
+        path="/api/v1/customers/detail",
+        param_schema={"type": "object", "properties": {"customerId": {"type": "string"}}, "required": ["customerId"]},
+    )
+    stub_services = (
+        object(),
+        object(),
+        StubExecutor(
+            ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.SUCCESS,
+                data={"ok": True},
+                total=1,
+            )
+        ),
+        StubDynamicUI(),
+        StubSnapshotService(),
+    )
+    monkeypatch.setattr(api_query_routes, "_get_services", lambda: stub_services)
+    monkeypatch.setattr(api_query_routes, "_get_registry_source", lambda: StubRegistrySource(detail_entry))
+
+    client = TestClient(create_test_app())
+    response = client.post(
+        "/api/v1/api-query",
+        json={
+            "mode": "direct",
+            "direct_query": {
+                "api_id": "customer_detail",
+                "params": {},
+            },
+        },
+        headers={"X-Trace-Id": "trace-direct-required-001"},
+    )
+
+    assert response.status_code == 422
+    assert (
+        response.json()["detail"]
+        == "[trace-direct-required-001] direct 模式缺少必要参数：customerId"
+    )
+
+
+def test_api_query_direct_mode_blocks_non_read_method(monkeypatch) -> None:
+    write_entry = _make_entry(
+        id="customer_update",
+        method="POST",
+        path="/api/v1/customers/update",
+        detail_hint=ApiCatalogDetailHint(enabled=False),
+    )
+    stub_services = (
+        object(),
+        object(),
+        StubExecutor(
+            ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.SUCCESS,
+                data={"ok": True},
+                total=1,
+            )
+        ),
+        StubDynamicUI(),
+        StubSnapshotService(),
+    )
+    monkeypatch.setattr(api_query_routes, "_get_services", lambda: stub_services)
+    monkeypatch.setattr(api_query_routes, "_get_registry_source", lambda: StubRegistrySource(write_entry))
+
+    client = TestClient(create_test_app())
+    response = client.post(
+        "/api/v1/api-query",
+        json={
+            "mode": "direct",
+            "direct_query": {
+                "api_id": "customer_update",
+                "params": {"customerId": "C001"},
+            },
+        },
+        headers={"X-Trace-Id": "trace-direct-block-001"},
+    )
+
+    assert response.status_code == 422
+    assert (
+        response.json()["detail"]
+        == "[trace-direct-block-001] api_query 仅支持只读接口，当前命中 POST /api/v1/customers/update"
+    )
 
 
 def test_api_query_passes_env_and_tag_filters_to_retriever(monkeypatch) -> None:

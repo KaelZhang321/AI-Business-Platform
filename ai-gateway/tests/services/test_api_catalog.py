@@ -12,6 +12,7 @@ Tests cover:
 from __future__ import annotations
 
 import asyncio
+import logging
 
 import httpx
 import pytest
@@ -511,6 +512,52 @@ class TestIndexerSchema:
         assert index_map["status"] == {"index_type": "INVERTED"}
         assert index_map["tag_name"] == {"index_type": "INVERTED"}
         assert collection.loaded is True
+
+    def test_get_collection_passes_timeout_to_milvus_connect(self, monkeypatch):
+        captured: dict[str, object] = {}
+
+        class FakeCollection:
+            def __init__(self, name):
+                self.name = name
+                self.schema = type("FakeSchema", (), {"fields": _get_collection_schema().fields, "enable_dynamic_field": True})()
+                self.loaded = False
+
+            def load(self):
+                self.loaded = True
+
+        def fake_connect(**kwargs):
+            captured["connect_kwargs"] = kwargs
+
+        monkeypatch.setattr(settings, "milvus_host", "milvus.internal")
+        monkeypatch.setattr(settings, "milvus_port", 19530)
+        monkeypatch.setattr(settings, "api_catalog_milvus_connect_timeout_seconds", 4.5)
+        monkeypatch.setattr(indexer_module.connections, "connect", fake_connect)
+        monkeypatch.setattr(indexer_module.utility, "has_collection", lambda _: True)
+        monkeypatch.setattr(indexer_module, "Collection", FakeCollection)
+
+        collection = indexer_module.ApiCatalogIndexer()._get_collection()
+
+        assert captured["connect_kwargs"] == {
+            "alias": "default",
+            "host": "milvus.internal",
+            "port": 19530,
+            "timeout": 4.5,
+        }
+        assert collection.loaded is True
+
+    def test_configure_cli_logging_uses_info_in_debug_mode(self, monkeypatch):
+        captured: dict[str, object] = {}
+
+        def fake_basic_config(**kwargs):
+            captured.update(kwargs)
+
+        monkeypatch.setattr(settings, "app_debug", True)
+        monkeypatch.setattr(indexer_module.logging, "basicConfig", fake_basic_config)
+
+        indexer_module._configure_cli_logging()
+
+        assert captured["level"] == logging.INFO
+        assert captured["force"] is True
 
 
 class TestRetrieverCompatibility:

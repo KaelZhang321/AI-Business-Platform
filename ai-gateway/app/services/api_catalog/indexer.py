@@ -17,9 +17,10 @@ API Catalog — Milvus 向量入库器
 from __future__ import annotations
 
 import asyncio
+import importlib
 import logging
+from typing import TYPE_CHECKING
 
-from FlagEmbedding import BGEM3FlagModel
 from pymilvus import (
     Collection,
     CollectionSchema,
@@ -32,6 +33,9 @@ from pymilvus import (
 from app.core.config import settings
 from app.services.api_catalog.registry_source import ApiCatalogRegistrySource
 from app.services.api_catalog.schema import ApiCatalogEntry
+
+if TYPE_CHECKING:
+    from FlagEmbedding import BGEM3FlagModel
 
 logger = logging.getLogger(__name__)
 
@@ -209,14 +213,29 @@ class ApiCatalogIndexer:
     def _get_embedder(self) -> BGEM3FlagModel:
         """懒加载 embedding 模型。"""
         if self._embedder is None:
+            logger.info("Importing FlagEmbedding package")
+            flag_embedding = importlib.import_module("FlagEmbedding")
+            model_cls = getattr(flag_embedding, "BGEM3FlagModel")
             logger.info("Loading embedding model: %s", settings.embedding_model_name)
-            self._embedder = BGEM3FlagModel(settings.embedding_model_name, use_fp16=True)
+            self._embedder = model_cls(settings.embedding_model_name, use_fp16=True)
+            logger.info("Embedding model loaded: %s", settings.embedding_model_name)
         return self._embedder
 
     def _get_collection(self) -> Collection:
         """获取 Milvus collection，并在 schema 漂移时自动重建。"""
         if self._collection is None:
-            connections.connect(alias="default", host=settings.milvus_host, port=settings.milvus_port)
+            logger.info(
+                "Connecting to Milvus host=%s port=%s timeout=%ss",
+                settings.milvus_host,
+                settings.milvus_port,
+                settings.api_catalog_milvus_connect_timeout_seconds,
+            )
+            connections.connect(
+                alias="default",
+                host=settings.milvus_host,
+                port=settings.milvus_port,
+                timeout=settings.api_catalog_milvus_connect_timeout_seconds,
+            )
             if not utility.has_collection(API_CATALOG_COLLECTION):
                 logger.info("Creating Milvus collection: %s", API_CATALOG_COLLECTION)
                 col = _create_collection()
@@ -231,6 +250,7 @@ class ApiCatalogIndexer:
                 else:
                     col.load()
             self._collection = col
+            logger.info("Milvus collection ready: %s", API_CATALOG_COLLECTION)
         return self._collection
 
     # ── 公共 API ────────────────────────────────────────────────
@@ -241,12 +261,18 @@ class ApiCatalogIndexer:
         Returns:
             {"indexed": N, "skipped": M}
         """
+        logger.info("Starting API Catalog indexing job")
         source = ApiCatalogRegistrySource()
         try:
+            logger.info("Loading API registry entries from business MySQL")
             entries = await source.load_entries()
         finally:
             await source.close()
         logger.info("Loaded %d API entries from business MySQL registry", len(entries))
+
+        self._get_embedder()
+        self._get_collection()
+        logger.info("Indexer dependencies ready, processing %d API entries", len(entries))
 
         results = await asyncio.gather(*[self.index_entry(e) for e in entries], return_exceptions=True)
         indexed = sum(1 for r in results if r is True)
@@ -261,6 +287,7 @@ class ApiCatalogIndexer:
 
     async def index_entry(self, entry: ApiCatalogEntry) -> bool:
         """对单条 API 目录记录做 embedding 并写入 Milvus。"""
+        logger.debug("Indexing API entry started: id=%s method=%s path=%s", entry.id, entry.method, entry.path)
         embedder = self._get_embedder()
         collection = self._get_collection()
 
@@ -300,7 +327,7 @@ class ApiCatalogIndexer:
         ]
         collection.insert(data)
         collection.flush()
-        logger.debug("Indexed API entry: %s → %s %s", entry.id, entry.method, entry.path)
+        logger.debug("Indexing API entry finished: id=%s method=%s path=%s", entry.id, entry.method, entry.path)
         return True
 
 def _create_collection() -> Collection:
@@ -323,8 +350,19 @@ def _create_collection() -> Collection:
 
 # ── CLI 入口 ────────────────────────────────────────────────────────────────
 
+def _configure_cli_logging() -> None:
+    """给直接 `python -m ...indexer` 的场景补齐最小日志配置。"""
+    logging.basicConfig(
+        level=logging.INFO if settings.app_debug else logging.WARNING,
+        format="%(asctime)s %(levelname)s %(name)s - %(message)s",
+        force=True,
+    )
+
+
 if __name__ == "__main__":
     async def main():
+        _configure_cli_logging()
+        logger.info("API Catalog indexer CLI started")
         indexer = ApiCatalogIndexer()
         result = await indexer.index_all()
         print(f"Done: {result}")

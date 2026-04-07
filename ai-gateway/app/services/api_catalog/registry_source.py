@@ -17,7 +17,7 @@ from app.services.api_catalog.schema import (
 
 logger = logging.getLogger(__name__)
 
-_API_CATALOG_REGISTRY_SQL = """
+_API_CATALOG_REGISTRY_SELECT_SQL = """
 SELECT
     e.id AS endpointId,
     e.tag_id AS tagId,
@@ -45,8 +45,22 @@ SELECT
 FROM ui_api_endpoints e
 LEFT JOIN ui_api_sources s ON e.source_id = s.id
 LEFT JOIN ui_api_tags t ON e.tag_id = t.id
+"""
+
+_API_CATALOG_REGISTRY_SQL = (
+    _API_CATALOG_REGISTRY_SELECT_SQL
+    + """
 ORDER BY s.code, t.name, e.method, e.path
 """
+)
+
+_API_CATALOG_REGISTRY_BY_ID_SQL = (
+    _API_CATALOG_REGISTRY_SELECT_SQL
+    + """
+WHERE e.id = %s
+LIMIT 1
+"""
+)
 
 
 class ApiCatalogSourceError(RuntimeError):
@@ -81,6 +95,35 @@ class ApiCatalogRegistrySource:
             raise ApiCatalogSourceError(f"无法从 MySQL 加载注册表: {exc}") from exc
         return _append_builtin_entries(remote_entries)
 
+    async def get_entry_by_id(self, api_id: str) -> ApiCatalogEntry | None:
+        """按接口主键精确加载单条目录记录。
+
+        功能：
+            `direct` 快路不应该为了拿一条接口定义去重走 Milvus 或全量注册表加载。
+            这里提供精确查找路径，让二跳场景直接对齐 `ui_api_endpoints.id`。
+
+        Args:
+            api_id: 目标接口 ID，对应业务元数据表主键。
+
+        Returns:
+            命中时返回单条 `ApiCatalogEntry`；未命中返回 `None`。
+
+        Raises:
+            ApiCatalogSourceError: 当 MySQL 查询失败时抛出。
+        """
+        builtin_entry = _find_builtin_entry_by_id(api_id)
+        if builtin_entry is not None:
+            return builtin_entry
+
+        try:
+            rows = await self._fetch_mysql_rows(_API_CATALOG_REGISTRY_BY_ID_SQL, (api_id,))
+        except Exception as exc:
+            raise ApiCatalogSourceError(f"无法从 MySQL 加载接口 {api_id}: {exc}") from exc
+
+        if not rows:
+            return None
+        return _build_entry_from_mysql_row(rows[0])
+
     async def _load_mysql_entries(self) -> list[ApiCatalogEntry]:
         """从业务 MySQL 直连抽取接口目录元数据。
 
@@ -94,18 +137,37 @@ class ApiCatalogRegistrySource:
             raise ApiCatalogSourceError("MySQL metadata returned no endpoints")
         return _dedupe_by_signature(entries)
 
-    async def _fetch_mysql_rows(self, sql: str) -> list[dict[str, Any]]:
-        """执行注册表元数据 SQL，并返回字典行结果。"""
+    async def _fetch_mysql_rows(
+        self,
+        sql: str,
+        params: tuple[Any, ...] | None = None,
+    ) -> list[dict[str, Any]]:
+        """执行注册表元数据 SQL，并返回字典行结果。
+
+        功能：
+            全量加载和按主键精确查找共用同一套底层 SQL 访问入口，避免连接池和游标
+            生命周期分叉后出现“一个路径能查、另一个路径忘了关连接”的隐性问题。
+        """
         pool = await self._get_pool()
         async with pool.acquire() as conn:
             async with conn.cursor(aiomysql.DictCursor) as cursor:
-                await cursor.execute(sql)
+                if params is None:
+                    await cursor.execute(sql)
+                else:
+                    await cursor.execute(sql, params)
                 rows = await cursor.fetchall()
                 return [dict(row) for row in rows]
 
     async def _get_pool(self) -> aiomysql.Pool:
         """懒加载 API Catalog MySQL 连接池。"""
         if self._pool is None:
+            logger.info(
+                "Connecting to business MySQL host=%s port=%s db=%s timeout=%ss",
+                settings.business_mysql_host,
+                settings.business_mysql_port,
+                settings.business_mysql_database,
+                settings.api_catalog_mysql_connect_timeout_seconds,
+            )
             self._pool = await aiomysql.create_pool(minsize=1, maxsize=5, **_build_business_mysql_conn_params())
         return self._pool
 
@@ -117,7 +179,7 @@ class ApiCatalogRegistrySource:
             self._pool = None
 
 
-def _build_business_mysql_conn_params() -> dict[str, str | int]:
+def _build_business_mysql_conn_params() -> dict[str, str | int | float]:
     """从 `BUSINESS_MYSQL_*` 生成 API Catalog 直连配置。
 
     功能：
@@ -131,6 +193,7 @@ def _build_business_mysql_conn_params() -> dict[str, str | int]:
         "password": settings.business_mysql_password,
         "db": settings.business_mysql_database,
         "charset": "utf8mb4",
+        "connect_timeout": settings.api_catalog_mysql_connect_timeout_seconds,
     }
 
 
@@ -250,6 +313,19 @@ def _append_builtin_entries(entries: list[ApiCatalogEntry]) -> list[ApiCatalogEn
     dict_entry = _build_system_dict_entry()
     by_signature.setdefault((dict_entry.method, dict_entry.path), dict_entry)
     return list(by_signature.values())
+
+
+def _find_builtin_entry_by_id(api_id: str) -> ApiCatalogEntry | None:
+    """按 ID 匹配网关内置目录项。
+
+    功能：
+        内置字典接口不在业务 MySQL 中持久化；`direct` 快路如果命中这类接口，
+        必须先在网关内置目录里完成一次短路匹配，避免多打一趟注定为空的 SQL。
+    """
+    dict_entry = _build_system_dict_entry()
+    if dict_entry.id == api_id:
+        return dict_entry
+    return None
 
 
 def _build_system_dict_entry() -> ApiCatalogEntry:

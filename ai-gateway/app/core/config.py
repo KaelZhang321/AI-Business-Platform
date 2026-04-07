@@ -97,6 +97,10 @@ class Settings(BaseSettings):
     business_server_url: str = "http://localhost:8080"
     business_server_timeout_seconds: float = 15.0
 
+    # API Catalog Indexer
+    api_catalog_mysql_connect_timeout_seconds: float = Field(5.0, ge=0.1, le=60.0)
+    api_catalog_milvus_connect_timeout_seconds: float = Field(5.0, ge=0.1, le=60.0)
+
     # 身份金库
     identity_vault_enabled: bool = True
     gateway_jwt_secret: str = ""

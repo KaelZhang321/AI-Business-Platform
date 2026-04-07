@@ -62,6 +62,14 @@ class PassThroughSnapshotService:
         return False
 
 
+class StubRegistrySource:
+    def __init__(self, entry: ApiCatalogEntry | None) -> None:
+        self._entry = entry
+
+    async def get_entry_by_id(self, api_id: str) -> ApiCatalogEntry | None:
+        return self._entry
+
+
 def create_test_app() -> FastAPI:
     app = FastAPI()
     app.include_router(api_query_routes.router, prefix="/api/v1")
@@ -275,6 +283,70 @@ def test_api_query_renders_single_object_as_detail_card(monkeypatch) -> None:
     assert {"label": "customerId", "value": "C001"} in detail_card["props"]["items"]
     assert {"label": "level", "value": "VIP"} in detail_card["props"]["items"]
     assert "PlannerDetailCard" in body["ui_runtime"]["components"]
+
+
+def test_api_query_direct_mode_renders_detail_card_without_nl_chain(monkeypatch) -> None:
+    entry = _make_entry()
+    entry.param_schema.properties = {"customerId": {"type": "string"}}
+    entry.param_schema.required = ["customerId"]
+
+    class FailIfCalledRetriever:
+        async def search(self, *args, **kwargs):  # pragma: no cover - should never be invoked
+            raise AssertionError("direct mode should bypass retriever.search")
+
+        async def search_stratified(self, *args, **kwargs):  # pragma: no cover - should never be invoked
+            raise AssertionError("direct mode should bypass retriever.search_stratified")
+
+    class FailIfCalledExtractor:
+        async def route_query(self, *args, **kwargs):  # pragma: no cover - should never be invoked
+            raise AssertionError("direct mode should bypass extractor.route_query")
+
+        async def extract_routing_result(self, *args, **kwargs):  # pragma: no cover - should never be invoked
+            raise AssertionError("direct mode should bypass extractor.extract_routing_result")
+
+    class DetailExecutor:
+        async def call(self, entry, params, user_token=None, trace_id: str | None = None):
+            assert params == {"customerId": "C001"}
+            return ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.SUCCESS,
+                data={"customerId": "C001", "customerName": "张三", "level": "VIP"},
+                total=1,
+                trace_id=trace_id,
+            )
+
+    stub_services = (
+        FailIfCalledRetriever(),
+        FailIfCalledExtractor(),
+        DetailExecutor(),
+        api_query_routes.DynamicUIService(),
+        PassThroughSnapshotService(),
+    )
+    monkeypatch.setattr(api_query_routes, "_get_services", lambda: stub_services)
+    monkeypatch.setattr(api_query_routes, "_get_registry_source", lambda: StubRegistrySource(entry))
+    monkeypatch.setattr(
+        api_query_routes,
+        "_get_planner",
+        lambda: (_ for _ in ()).throw(AssertionError("direct mode should bypass planner")),
+    )
+
+    client = TestClient(create_test_app())
+    response = client.post(
+        "/api/v1/api-query",
+        json={
+            "mode": "direct",
+            "direct_query": {
+                "api_id": "customer_list",
+                "params": {"customerId": "C001"},
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["execution_plan"]["plan_id"].startswith("direct_")
+    detail_card = _get_child_by_type(body["ui_spec"], "PlannerDetailCard")
+    assert detail_card["props"]["title"] == "查询客户列表"
+    assert {"label": "customerId", "value": "C001"} in detail_card["props"]["items"]
 
 
 def test_api_query_executes_multi_step_plan_and_returns_multi_step_context_pool(monkeypatch) -> None:

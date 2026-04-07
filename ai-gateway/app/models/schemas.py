@@ -3,7 +3,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class IntentType(str, Enum):
@@ -96,23 +96,101 @@ class KnowledgeResult(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class ApiQueryMode(str, Enum):
+    """`api_query` 请求模式枚举。"""
+
+    NL = "nl"
+    DIRECT = "direct"
+
+
+class ApiQueryDirectQuery(BaseModel):
+    """`/api-query` 直达快路载荷。
+
+    功能：
+        承载“前端已经拿到目标接口 ID 与参数”的二跳场景输入，让详情、分页和刷新
+        不必再回到自然语言链路重复消耗 LLM 与 Milvus。
+
+    返回值约束：
+        - `api_id` 必须对应注册表中的稳定接口主键
+        - `params` 即使为空也必须显式传入，避免前后端对“缺省参数”理解不一致
+
+    Edge Cases:
+        - `params={}` 是合法输入，但 `params` 这个键本身不能缺失
+    """
+
+    api_id: str = Field(..., min_length=1, description="目标接口 ID，对应 `ui_api_endpoints.id`")
+    params: dict[str, Any] = Field(..., description="直达模式下的显式接口参数")
+
+
 class ApiQueryRequest(BaseModel):
     """`api_query` 的自然语言请求模型。
 
     功能：
-        承载第二阶段主链路所需的最小输入。除了自然语言问题本身，也允许调用方
-        显式附加环境与标签过滤，以便在多环境、多模块共享同一向量库时维持硬隔离。
+        同时承载两种入口模式：
+
+        1. `nl`：自然语言主链路，继续走路由、召回、参数提取和规划
+        2. `direct`：二跳快路，前端已知 `api_id + params` 时直接执行只读查询
 
     返回值约束：
-        - `envs` / `tag_names` 仅用于 Milvus 标量过滤，不参与业务写动作判断
-        - `top_k` 仍然只控制候选召回规模，不改变单域/多域的保底策略
+        - `mode` 缺省时必须按 `nl` 处理，以兼容历史前端
+        - `envs` / `tag_names` 仅在 `nl` 模式下参与 Milvus 标量过滤
+        - `direct` 模式下不要求 `query`，但必须提供 `direct_query`
+
+    Edge Cases:
+        - `direct` 模式不会因为 `query` 为空而失败；真正的硬校验落在 `direct_query`
+        - 历史请求只传 `query` 时，仍会被完整视作 `nl` 模式
     """
 
-    query: str = Field(..., min_length=1, max_length=500, description="用户自然语言输入")
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "mode": "nl",
+                    "query": "查询张三客户",
+                    "conversation_id": "conv_001",
+                    "top_k": 3,
+                    "envs": ["prod"],
+                    "tag_names": ["客户管理"],
+                },
+                {
+                    "mode": "direct",
+                    "conversation_id": "conv_001",
+                    "direct_query": {
+                        "api_id": "customer_detail",
+                        "params": {"customerId": "C001"},
+                    },
+                },
+            ]
+        }
+    )
+
+    mode: ApiQueryMode = Field(ApiQueryMode.NL, description="请求模式：`nl` 或 `direct`")
+    query: str | None = Field(None, min_length=1, max_length=500, description="用户自然语言输入")
     conversation_id: str | None = Field(None, description="对话 ID（保留，用于未来多轮记忆）")
     top_k: int = Field(3, ge=1, le=5, description="候选接口数量")
     envs: list[str] = Field(default_factory=list, description="可选的环境过滤，如 prod / dev")
     tag_names: list[str] = Field(default_factory=list, description="可选的业务标签过滤，如 合同管理")
+    direct_query: ApiQueryDirectQuery | None = Field(None, description="直达快路模式的显式接口调用信息")
+
+    @model_validator(mode="after")
+    def validate_mode_contract(self) -> ApiQueryRequest:
+        """校验 `nl/direct` 双模式请求契约。
+
+        功能：
+            这里把“入口长什么样”固定在 schema 层，而不是让 route 再手写多套
+            if/else 兜底。这样 OpenAPI、FastAPI 校验和实际实现可以共享同一份事实。
+
+        Raises:
+            ValueError: 当 `mode` 与实际载荷组合不合法时抛出。
+        """
+        if self.mode == ApiQueryMode.DIRECT:
+            if self.direct_query is None:
+                raise ValueError("mode=direct 时必须提供 direct_query")
+            return self
+
+        if not self.query:
+            raise ValueError("mode=nl 时必须提供 query")
+        return self
 
 
 class ApiQueryBusinessIntent(BaseModel):

@@ -14,8 +14,9 @@ class FakeCursor:
         self._rows = rows
         self._capture = capture
 
-    async def execute(self, sql: str) -> None:
+    async def execute(self, sql: str, params=None) -> None:
         self._capture["sql"] = sql
+        self._capture["params"] = params
 
     async def fetchall(self) -> list[dict]:
         return list(self._rows)
@@ -123,6 +124,7 @@ async def test_registry_source_loads_entries_from_mysql_and_appends_builtin_dict
     monkeypatch.setattr(settings, "business_mysql_user", "ai_platform")
     monkeypatch.setattr(settings, "business_mysql_password", "ai_platform_dev")
     monkeypatch.setattr(settings, "business_mysql_database", "ai_platform_business")
+    monkeypatch.setattr(settings, "api_catalog_mysql_connect_timeout_seconds", 7.5)
     monkeypatch.setattr(registry_source_module.aiomysql, "create_pool", fake_create_pool)
 
     source = ApiCatalogRegistrySource()
@@ -136,6 +138,7 @@ async def test_registry_source_loads_entries_from_mysql_and_appends_builtin_dict
         "password": "ai_platform_dev",
         "db": "ai_platform_business",
         "charset": "utf8mb4",
+        "connect_timeout": 7.5,
         "minsize": 1,
         "maxsize": 5,
     }
@@ -181,3 +184,45 @@ async def test_registry_source_raises_when_mysql_load_fails(monkeypatch) -> None
     with pytest.raises(ApiCatalogSourceError, match="无法从 MySQL 加载注册表"):
         await source.load_entries()
     await source.close()
+
+
+@pytest.mark.asyncio
+async def test_registry_source_get_entry_by_id_hits_mysql_exactly_once(monkeypatch) -> None:
+    """`direct` 快路必须支持按主键精确查目录，不能退化成全量加载。"""
+    capture: dict[str, object] = {}
+    fake_pool = FakePool([_mysql_row()], capture)
+
+    async def fake_create_pool(**kwargs):
+        return fake_pool
+
+    monkeypatch.setattr(registry_source_module.aiomysql, "create_pool", fake_create_pool)
+
+    source = ApiCatalogRegistrySource()
+    entry = await source.get_entry_by_id("ep_1")
+    await source.close()
+
+    assert entry is not None
+    assert entry.id == "ep_1"
+    assert "WHERE e.id = %s" in str(capture["sql"])
+    assert capture["params"] == ("ep_1",)
+
+
+@pytest.mark.asyncio
+async def test_registry_source_get_entry_by_id_returns_builtin_dict_without_mysql(monkeypatch) -> None:
+    """内置字典接口不在 MySQL 中持久化，快路必须能在网关内直接命中。"""
+    mysql_called = False
+
+    async def fake_create_pool(**kwargs):  # pragma: no cover - should never be invoked
+        nonlocal mysql_called
+        mysql_called = True
+        raise AssertionError("builtin dict lookup should not hit mysql")
+
+    monkeypatch.setattr(registry_source_module.aiomysql, "create_pool", fake_create_pool)
+
+    source = ApiCatalogRegistrySource()
+    entry = await source.get_entry_by_id("system_dicts_v1")
+    await source.close()
+
+    assert entry is not None
+    assert entry.id == "system_dicts_v1"
+    assert mysql_called is False

@@ -23,8 +23,10 @@ from app.models.schemas import (
     ApiQueryContextStepResult,
     ApiQueryDetailRuntime,
     ApiQueryExecutionErrorDetail,
+    ApiQueryExecutionPlan,
     ApiQueryExecutionResult,
     ApiQueryExecutionStatus,
+    ApiQueryMode,
     ApiQueryPaginationRuntime,
     ApiQueryRequest,
     ApiQueryResponse,
@@ -43,6 +45,7 @@ from app.services.api_catalog.business_intents import (
     normalize_business_intent_codes,
     resolve_business_intent_risk_level,
 )
+from app.services.api_catalog.registry_source import ApiCatalogRegistrySource, ApiCatalogSourceError
 from app.services.api_catalog.schema import ApiCatalogEntry, ApiCatalogSearchFilters
 from app.services.api_catalog.param_extractor import ApiParamExtractor
 from app.services.api_catalog.retriever import ApiCatalogRetriever
@@ -62,6 +65,7 @@ _planner: ApiDagPlanner | None = None
 _dynamic_ui: DynamicUIService | None = None
 _ui_catalog: UICatalogService | None = None
 _snapshot_service: UISnapshotService | None = None
+_registry_source: ApiCatalogRegistrySource | None = None
 _bearer = HTTPBearer(auto_error=False)
 _READ_ONLY_METHODS = {"GET"}
 # 这里固定保留 5 条是为了给 Renderer 足够上下文，又避免把大结果集整包塞进生成链路导致注意力失焦。
@@ -105,13 +109,26 @@ def _get_planner() -> ApiDagPlanner:
     return _planner
 
 
+def _get_registry_source() -> ApiCatalogRegistrySource:
+    """获取 API Catalog 注册表源单例。
+
+    功能：
+        `direct` 快路需要按 `api_id` 精确命中元数据，但不值得为每次详情/分页请求
+        都新建一次 MySQL 连接池。这里和其他 gateway 服务保持相同的进程级复用策略。
+    """
+    global _registry_source
+    if _registry_source is None:
+        _registry_source = ApiCatalogRegistrySource()
+    return _registry_source
+
+
 # ── 请求 / 响应 Schema ───────────────────────────────────────────
 
 
 # ── 主接口：自然语言 → 数据 + UI ────────────────────────────────
 
 
-@router.post("", response_model=ApiQueryResponse, summary="自然语言业务接口查询")
+@router.post("", response_model=ApiQueryResponse, summary="业务接口查询（支持自然语言与直达模式）")
 async def api_query(
     request_body: ApiQueryRequest,
     request: Request,
@@ -133,11 +150,36 @@ async def api_query(
     user_context = _extract_user_context(request)
     log_prefix = _build_api_query_log_prefix(trace_id, interaction_id)
 
-    logger.info("%s request query=%s", log_prefix, request_body.query[:100])
+    request_query = _summarize_request_query(request_body)
+    logger.info("%s request mode=%s query=%s", log_prefix, request_body.mode.value, request_query)
 
     # 用户 token（透传给 business-server）
     user_token = f"Bearer {credentials.credentials}" if credentials else None
+    if request_body.mode == ApiQueryMode.DIRECT:
+        plan, step_entries, query_domains, business_intent_codes, direct_query_text = await _prepare_direct_execution(
+            request_body,
+            trace_id=trace_id,
+            interaction_id=interaction_id,
+        )
+        return await _execute_prepared_plan(
+            executor=executor,
+            dynamic_ui=dynamic_ui,
+            snapshot_service=snapshot_service,
+            trace_id=trace_id,
+            interaction_id=interaction_id,
+            user_token=user_token,
+            query_text=direct_query_text,
+            plan=plan,
+            step_entries=step_entries,
+            query_domains_hint=query_domains,
+            business_intent_codes=business_intent_codes,
+            log_prefix=log_prefix,
+            request_mode=request_body.mode.value,
+            retrieval_filters=None,
+        )
+
     allowed_business_intent_codes = _get_route_allowed_business_intent_codes()
+    assert request_body.query is not None
 
     # Step 1: 轻量路由先产出 query_domains + business_intents，避免后续直接做全域 Top-K。
     route_hint = await extractor.route_query(
@@ -295,92 +337,21 @@ async def api_query(
             business_intent_codes=planning_intent_codes,
             reasoning=str(exc),
         )
-
-    dag_executor = ApiDagExecutor(executor)
-    # 执行统一收口到 DAG executor，而不是在 route 层手写串/并行调用。
-    # 这样“上游空结果短路下游”“JSONPath 依赖绑定”“单节点失败不拖垮全链路”都由同一套状态机负责，
-    # 后续排障时只需要围绕 execution_report 回放，而不必回头拼接零散中间态。
-    execution_report = await dag_executor.execute_plan(
-        plan,
-        step_entries,
+    return await _execute_prepared_plan(
+        executor=executor,
+        dynamic_ui=dynamic_ui,
+        snapshot_service=snapshot_service,
+        trace_id=trace_id,
+        interaction_id=interaction_id,
         user_token=user_token,
-        trace_id=trace_id,
-    )
-    # Step 4 的真正产物不是某一个接口结果，而是一份跨步骤执行报告。
-    # 这里先把内部报告翻译成第五阶段能稳定消费的摘要：保留逐步事实总线、选出对外展示锚点，
-    # 再计算聚合状态，避免 Renderer 反向猜测“哪个步骤才是主结果”。
-    context_pool = _build_plan_context_pool(execution_report)
-    aggregate_status = _summarize_execution_report(execution_report)
-    anchor_record = _select_response_anchor(execution_report)
-    internal_query_domains = _collect_execution_domains(execution_report, route_hint.query_domains)
-    query_domains = _format_query_domains_for_response(internal_query_domains)
-    business_intents = _build_business_intents(planning_intent_codes)
-
-    # Step 5: 按多步骤执行结果构造当前规则渲染器仍能消费的数据视图。
-    data_for_ui = _build_ui_data_from_execution_report(execution_report, anchor_record)
-    runtime = _build_runtime_from_execution_report(execution_report, anchor_record)
-    ui_build_result = await _generate_ui_spec_result(
-        dynamic_ui,
-        intent="query",
-        data=data_for_ui,
-        context={
-            "question": request_body.query,
-            "user_query": request_body.query,
-            "title": _build_execution_title(execution_report, anchor_record),
-            "detail_title": anchor_record.entry.description if anchor_record else "详情信息",
-            "total": _build_response_total(anchor_record),
-            "api_id": anchor_record.entry.id if anchor_record else None,
-            "error": _build_response_error(execution_report),
-            "empty_message": "未查到符合条件的数据，请调整筛选条件后重试。",
-            "skip_message": _build_execution_skip_message(execution_report),
-            "partial_message": "部分步骤执行失败或被短路，当前仅展示可安全返回的数据。",
-            "query_render_mode": _infer_query_render_mode(execution_report, anchor_record),
-            "context_pool": {step_id: step.model_dump(exclude_none=True) for step_id, step in context_pool.items()},
-            "business_intents": [intent.model_dump() for intent in business_intents],
-        },
-        status=aggregate_status,
-        runtime=runtime,
-        trace_id=trace_id,
-    )
-    ui_spec = ui_build_result.spec
-    ui_runtime = _finalize_render_runtime(runtime, ui_spec, ui_build_result)
-    if ui_build_result.frozen:
-        logger.warning(
-            "%s stage5 ui frozen errors=%s",
-            log_prefix,
-            _summarize_validation_errors(ui_build_result.validation),
-        )
-    else:
-        ui_runtime = _maybe_attach_snapshot(
-            snapshot_service,
-            trace_id=trace_id,
-            business_intents=business_intents,
-            ui_spec=ui_spec,
-            ui_runtime=ui_runtime,
-            metadata={
-                "plan_id": plan.plan_id,
-                "step_ids": [step.step_id for step in plan.steps],
-                "api_id": anchor_record.entry.id if anchor_record else None,
-                "api_path": anchor_record.entry.path if anchor_record else None,
-                "query_domains": query_domains,
-                "retrieval_filters": retrieval_filters.model_dump(),
-            },
-        )
-
-    logger.info(
-        "%s success status=%s api_id=%s step_count=%s",
-        log_prefix,
-        aggregate_status,
-        anchor_record.entry.id if anchor_record else None,
-        len(execution_report.records_by_step_id),
-    )
-    return ApiQueryResponse(
-        trace_id=trace_id,
-        execution_status=aggregate_status,
-        execution_plan=plan,
-        ui_runtime=ui_runtime,
-        ui_spec=ui_spec,
-        error=_build_response_error(execution_report),
+        query_text=request_body.query,
+        plan=plan,
+        step_entries=step_entries,
+        query_domains_hint=route_hint.query_domains,
+        business_intent_codes=planning_intent_codes,
+        log_prefix=log_prefix,
+        request_mode=request_body.mode.value,
+        retrieval_filters=retrieval_filters,
     )
 
 
@@ -445,6 +416,191 @@ def _extract_user_context(request: Request) -> dict[str, Any]:
     elif hasattr(request.state, "user_id"):
         ctx["userId"] = request.state.user_id
     return ctx
+
+
+def _summarize_request_query(request_body: ApiQueryRequest) -> str:
+    """生成适合日志与审计的请求摘要。
+
+    功能：
+        `direct` 模式本来就没有自然语言 query；这里主动收敛成“模式 + 关键锚点”，
+        避免日志系统里再次出现 `None[:100]` 这类无意义异常，也方便区分慢链路和快链路。
+    """
+    if request_body.mode == ApiQueryMode.DIRECT and request_body.direct_query is not None:
+        return f"direct:{request_body.direct_query.api_id}"
+    return (request_body.query or "")[:100]
+
+
+async def _prepare_direct_execution(
+    request_body: ApiQueryRequest,
+    *,
+    trace_id: str,
+    interaction_id: str | None,
+) -> tuple[ApiQueryExecutionPlan, dict[str, ApiCatalogEntry], list[str], list[str], str]:
+    """为 `direct` 快路准备单步执行计划。
+
+    功能：
+        二跳详情/分页/刷新场景已经拿到了 `api_id + params`，此时继续调用路由 LLM、
+        Milvus 和 Planner 只会平白增加延迟与抖动。这里把快路入口收敛成一条
+        确定性预处理链：查目录、做硬校验、构造单步计划。
+
+    Returns:
+        `(plan, step_entries, query_domains, business_intent_codes, query_text)`。
+
+    Raises:
+        HTTPException: 当接口不存在、未激活、方法越界或参数不合法时抛出。
+    """
+    assert request_body.direct_query is not None
+
+    registry_source = _get_registry_source()
+    direct_query = request_body.direct_query
+    try:
+        entry = await registry_source.get_entry_by_id(direct_query.api_id)
+    except ApiCatalogSourceError as exc:
+        logger.exception("direct registry lookup failed trace_id=%s api_id=%s", trace_id, direct_query.api_id)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"[{trace_id}] direct 模式加载接口目录失败：{exc}",
+        ) from exc
+
+    if entry is None:
+        _raise_direct_query_error(
+            trace_id=trace_id,
+            detail=f"direct 模式指定的接口不存在：{direct_query.api_id}",
+        )
+
+    _ensure_active_entry(entry, trace_id=trace_id, interaction_id=interaction_id)
+    _ensure_read_only_entry(entry, trace_id, interaction_id)
+    validated_params = _validate_direct_query_params(
+        entry,
+        direct_query.params,
+        trace_id=trace_id,
+        interaction_id=interaction_id,
+    )
+    plan = build_single_step_plan(
+        entry,
+        validated_params,
+        step_id=_build_step_id(entry),
+        plan_id=f"direct_{trace_id[:8]}",
+    )
+    query_text = request_body.query or _build_direct_query_text(entry, validated_params)
+    return plan, {_build_step_id(entry): entry}, [entry.domain], ["none"], query_text
+
+
+async def _execute_prepared_plan(
+    *,
+    executor: ApiExecutor,
+    dynamic_ui: DynamicUIService,
+    snapshot_service: UISnapshotService,
+    trace_id: str,
+    interaction_id: str | None,
+    user_token: str | None,
+    query_text: str,
+    plan: ApiQueryExecutionPlan,
+    step_entries: dict[str, ApiCatalogEntry],
+    query_domains_hint: list[str],
+    business_intent_codes: list[str],
+    log_prefix: str,
+    request_mode: str,
+    retrieval_filters: ApiCatalogSearchFilters | None,
+) -> ApiQueryResponse:
+    """执行已准备好的只读计划，并统一收口到渲染响应。
+
+    功能：
+        `nl` 与 `direct` 的差异只应停留在“计划怎么来”；一旦进入真实调用，就必须
+        共用同一套执行状态机、UI 渲染和快照治理，避免前端看到两种语义相近但细节漂移
+        的响应壳。
+    """
+    dag_executor = ApiDagExecutor(executor)
+    # 执行统一收口到 DAG executor，而不是在 route 层手写串/并行调用。
+    # 这样“上游空结果短路下游”“JSONPath 依赖绑定”“单节点失败不拖垮全链路”都由同一套状态机负责，
+    # 后续排障时只需要围绕 execution_report 回放，而不必回头拼接零散中间态。
+    execution_report = await dag_executor.execute_plan(
+        plan,
+        step_entries,
+        user_token=user_token,
+        trace_id=trace_id,
+    )
+    # 真正进入渲染层前，先把步骤级执行报告折叠为稳定摘要。
+    # 这里要保留逐步事实总线、选出主展示锚点，再计算聚合状态，避免 Renderer 反向猜“哪个步骤算主结果”。
+    context_pool = _build_plan_context_pool(execution_report)
+    aggregate_status = _summarize_execution_report(execution_report)
+    anchor_record = _select_response_anchor(execution_report)
+    internal_query_domains = _collect_execution_domains(execution_report, query_domains_hint)
+    query_domains = _format_query_domains_for_response(internal_query_domains)
+    business_intents = _build_business_intents(business_intent_codes)
+
+    # 这里继续复用第五阶段统一渲染入口，确保快路不会绕过 UI Guard。
+    data_for_ui = _build_ui_data_from_execution_report(execution_report, anchor_record)
+    runtime = _build_runtime_from_execution_report(execution_report, anchor_record)
+    ui_build_result = await _generate_ui_spec_result(
+        dynamic_ui,
+        intent="query",
+        data=data_for_ui,
+        context={
+            "question": query_text,
+            "user_query": query_text,
+            "title": _build_execution_title(execution_report, anchor_record),
+            "detail_title": anchor_record.entry.description if anchor_record else "详情信息",
+            "total": _build_response_total(anchor_record),
+            "api_id": anchor_record.entry.id if anchor_record else None,
+            "error": _build_response_error(execution_report),
+            "empty_message": "未查到符合条件的数据，请调整筛选条件后重试。",
+            "skip_message": _build_execution_skip_message(execution_report),
+            "partial_message": "部分步骤执行失败或被短路，当前仅展示可安全返回的数据。",
+            "query_render_mode": _infer_query_render_mode(execution_report, anchor_record),
+            "context_pool": {step_id: step.model_dump(exclude_none=True) for step_id, step in context_pool.items()},
+            "business_intents": [intent.model_dump() for intent in business_intents],
+        },
+        status=aggregate_status,
+        runtime=runtime,
+        trace_id=trace_id,
+    )
+    ui_spec = ui_build_result.spec
+    ui_runtime = _finalize_render_runtime(runtime, ui_spec, ui_build_result)
+    if ui_build_result.frozen:
+        logger.warning(
+            "%s stage5 ui frozen errors=%s",
+            log_prefix,
+            _summarize_validation_errors(ui_build_result.validation),
+        )
+    else:
+        snapshot_metadata = {
+            "request_mode": request_mode,
+            "plan_id": plan.plan_id,
+            "step_ids": [step.step_id for step in plan.steps],
+            "api_id": anchor_record.entry.id if anchor_record else None,
+            "api_path": anchor_record.entry.path if anchor_record else None,
+            "query_domains": query_domains,
+        }
+        if retrieval_filters is not None:
+            # 只有自然语言模式真的经过了召回链路，才保留检索过滤条件供排障复盘。
+            snapshot_metadata["retrieval_filters"] = retrieval_filters.model_dump()
+
+        ui_runtime = _maybe_attach_snapshot(
+            snapshot_service,
+            trace_id=trace_id,
+            business_intents=business_intents,
+            ui_spec=ui_spec,
+            ui_runtime=ui_runtime,
+            metadata=snapshot_metadata,
+        )
+
+    logger.info(
+        "%s success mode=%s status=%s api_id=%s step_count=%s",
+        log_prefix,
+        request_mode,
+        aggregate_status,
+        anchor_record.entry.id if anchor_record else None,
+        len(execution_report.records_by_step_id),
+    )
+    return ApiQueryResponse(
+        trace_id=trace_id,
+        execution_status=aggregate_status,
+        execution_plan=plan,
+        ui_runtime=ui_runtime,
+        ui_spec=ui_spec,
+        error=_build_response_error(execution_report),
+    )
 
 
 def _build_retrieval_filters(request_body: ApiQueryRequest) -> ApiCatalogSearchFilters:
@@ -552,6 +708,107 @@ def _ensure_read_only_entry(entry: ApiCatalogEntry, trace_id: str, interaction_i
     raise HTTPException(
         status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         detail=f"[{trace_id}] api_query 仅支持只读接口，当前命中 {entry.method} {entry.path}",
+    )
+
+
+def _ensure_active_entry(entry: ApiCatalogEntry, *, trace_id: str, interaction_id: str | None = None) -> None:
+    """拦截未激活目录项，保持 `direct` 与召回链路的一致安全边界。
+
+    功能：
+        `nl` 模式默认通过 `status=active` 做 Milvus 标量过滤；`direct` 模式绕过召回后，
+        必须在这里补上相同的治理红线，避免前端通过已下线接口 ID 直接穿透执行。
+    """
+    if entry.status == "active":
+        return
+    logger.warning(
+        "%s blocked inactive endpoint id=%s status=%s path=%s",
+        _build_api_query_log_prefix(trace_id, interaction_id),
+        entry.id,
+        entry.status,
+        entry.path,
+    )
+    raise HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        detail=f"[{trace_id}] direct 模式仅允许调用激活接口，当前接口状态为 {entry.status}",
+    )
+
+
+def _validate_direct_query_params(
+    entry: ApiCatalogEntry,
+    params: dict[str, Any],
+    *,
+    trace_id: str,
+    interaction_id: str | None,
+) -> dict[str, Any]:
+    """校验 `direct` 模式的显式参数。
+
+    功能：
+        机器构造的快路请求不应该再沿用自然语言链路的“尽量猜”策略。这里严格执行：
+
+        1. 参数名必须命中 schema
+        2. required 字段必须齐全
+
+        这样一旦前端拼错字段，就会在网关入口被立刻显式暴露，而不是静默打到业务系统。
+
+    Returns:
+        原样返回通过校验的参数字典，供执行计划直接复用。
+
+    Raises:
+        HTTPException: 当出现未声明参数或缺失必填参数时抛出 422。
+    """
+    declared_fields = set(entry.param_schema.properties.keys())
+    unknown_fields = [field for field in params if field not in declared_fields]
+    if unknown_fields:
+        logger.warning(
+            "%s direct params rejected id=%s unknown_fields=%s",
+            _build_api_query_log_prefix(trace_id, interaction_id),
+            entry.id,
+            unknown_fields,
+        )
+        _raise_direct_query_error(
+            trace_id=trace_id,
+            detail=f"direct 模式存在未声明参数：{', '.join(unknown_fields)}",
+        )
+
+    missing_required_params = _find_missing_required_params(entry, params)
+    if missing_required_params:
+        logger.warning(
+            "%s direct params rejected id=%s missing_required=%s",
+            _build_api_query_log_prefix(trace_id, interaction_id),
+            entry.id,
+            missing_required_params,
+        )
+        _raise_direct_query_error(
+            trace_id=trace_id,
+            detail=f"direct 模式缺少必要参数：{', '.join(missing_required_params)}",
+        )
+
+    return dict(params)
+
+
+def _build_direct_query_text(entry: ApiCatalogEntry, params: dict[str, Any]) -> str:
+    """为快路构造稳定的渲染上下文文本。
+
+    功能：
+        `direct` 模式没有自然语言 query，但第五阶段仍需要一段可追踪的 `user_query`
+        来参与标题、日志和冻结视图说明。这里用“接口描述 + 关键参数”生成一个稳定摘要。
+    """
+    if not params:
+        return f"直达查询：{entry.description}"
+    param_keys = ", ".join(sorted(params.keys()))
+    return f"直达查询：{entry.description}（参数：{param_keys}）"
+
+
+def _raise_direct_query_error(*, trace_id: str, detail: str) -> None:
+    """统一抛出 `direct` 模式的 422 错误。
+
+    功能：
+        快路失败不允许偷偷回退到自然语言模式；这里统一返回结构化 422，
+        让前端和联调日志都能明确感知是“快路契约错误”，而不是网关随机降级。
+    """
+    raise HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        detail=f"[{trace_id}] {detail}",
     )
 
 
