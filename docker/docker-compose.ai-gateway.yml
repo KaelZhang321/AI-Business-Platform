@@ -16,10 +16,14 @@ services:
       HF_HOME: /opt/model-cache/huggingface
       TRANSFORMERS_CACHE: /opt/model-cache/huggingface
       XDG_CACHE_HOME: /opt/model-cache
+      # 默认把宿主机预置的本地 embedding 模型挂到容器稳定路径，避免容器重建后模型目录丢失。
+      EMBEDDING_MODEL_PATH: ${EMBEDDING_MODEL_PATH:-/app/BAAI/bge-m3}
     ports:
       - "${AI_GATEWAY_HOST_PORT:-8000}:8000"
     volumes:
       - /data/ai_platform_infra/chroma:/opt/model-cache/.cache/chroma
+      # 把仓库内的模型目录直接 bind mount 到容器，确保 /app/BAAI 在重建后依然存在。
+      - ../ai-gateway/BAAI:/app/BAAI:ro
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
       interval: 30s
