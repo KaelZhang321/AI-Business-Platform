@@ -266,6 +266,7 @@ def build_single_step_plan(
         steps=[
             ApiQueryPlanStep(
                 step_id=step_id,
+                api_id=entry.id,
                 api_path=entry.path,
                 params=dict(params),
                 depends_on=[],

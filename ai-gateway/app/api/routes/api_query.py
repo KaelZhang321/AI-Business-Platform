@@ -597,6 +597,7 @@ async def _execute_prepared_plan(
     )
     ui_spec = ui_build_result.spec
     ui_runtime = _finalize_render_runtime(runtime, ui_spec, ui_build_result)
+    response_plan = _build_response_execution_plan(plan, step_entries)
     if ui_build_result.frozen:
         logger.warning(
             "%s stage5 ui frozen errors=%s",
@@ -636,7 +637,7 @@ async def _execute_prepared_plan(
     return ApiQueryResponse(
         trace_id=trace_id,
         execution_status=aggregate_status,
-        execution_plan=plan,
+        execution_plan=response_plan,
         ui_runtime=ui_runtime,
         ui_spec=ui_spec,
         error=_build_response_error(execution_report),
@@ -665,6 +666,42 @@ def _build_retrieval_filters(request_body: ApiQueryRequest) -> ApiCatalogSearchF
         envs=_dedupe_non_empty([item.strip().lower() for item in request_body.envs]),
         tag_names=_dedupe_non_empty([item.strip() for item in request_body.tag_names]),
     )
+
+
+def _build_response_execution_plan(
+    plan: ApiQueryExecutionPlan,
+    step_entries: dict[str, ApiCatalogEntry],
+) -> ApiQueryExecutionPlan:
+    """为响应层补齐步骤级 `api_id`。
+
+    功能：
+        第三阶段真正规划的是“路径依赖图”，而不是前端展示契约；但前端做详情跳转、
+        调试回放、审计留痕时，更需要稳定的接口实体 ID。这里在响应出口统一补齐
+        `ui_api_endpoints.id`，避免把这类展示诉求反向侵入 Planner Prompt。
+
+    Args:
+        plan: 内部执行计划。
+        step_entries: `step_id -> ApiCatalogEntry` 的白名单映射。
+
+    Returns:
+        适合直接回给前端的执行计划；每个可识别步骤都会补上 `api_id`。
+
+    Edge Cases:
+        - 若某个步骤在 `step_entries` 中缺失，则保留原值，避免为了展示字段破坏主流程响应
+        - 这里返回 plan 的浅拷贝，避免执行阶段与响应阶段共享同一可变对象
+    """
+    enriched_steps = []
+    for step in plan.steps:
+        entry = step_entries.get(step.step_id)
+        enriched_steps.append(
+            step.model_copy(
+                update={
+                    # 前端真正需要的是接口实体主键，而不是只在本次 DAG 内有效的 step_id。
+                    "api_id": entry.id if entry is not None else step.api_id,
+                }
+            )
+        )
+    return plan.model_copy(update={"steps": enriched_steps})
 
 
 def _resolve_trace_id(request: Request) -> str:

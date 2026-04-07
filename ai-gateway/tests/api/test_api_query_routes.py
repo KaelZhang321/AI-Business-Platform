@@ -331,6 +331,7 @@ def test_api_query_returns_runtime_contract(monkeypatch) -> None:
     assert body["trace_id"] == "trace-query-001"
     assert body["execution_status"] == "SUCCESS"
     assert body["execution_plan"]["steps"][0]["step_id"] == "step_customer_list"
+    assert body["execution_plan"]["steps"][0]["api_id"] == "customer_list"
     assert body["ui_runtime"]["mode"] == "read_only"
     assert set(body["ui_runtime"]["components"]) >= {"PlannerCard", "PlannerTable"}
     assert body["ui_runtime"]["detail"]["enabled"] is True
@@ -428,6 +429,7 @@ def test_api_query_direct_mode_bypasses_semantic_chain_and_returns_runtime_contr
     assert body["execution_plan"]["steps"] == [
         {
             "step_id": "step_customer_detail",
+            "api_id": "customer_detail",
             "api_path": "/api/v1/customers/detail",
             "params": {"customerId": "C001"},
             "depends_on": [],

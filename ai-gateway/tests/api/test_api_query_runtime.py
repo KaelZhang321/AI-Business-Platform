@@ -458,6 +458,7 @@ def test_api_query_executes_multi_step_plan_and_returns_multi_step_context_pool(
     assert set(body.keys()) == {"trace_id", "execution_status", "execution_plan", "ui_runtime", "ui_spec", "error"}
     assert body["execution_plan"]["plan_id"] == "dag_customer_orders"
     assert [step["step_id"] for step in body["execution_plan"]["steps"]] == ["step_customers", "step_orders"]
+    assert [step["api_id"] for step in body["execution_plan"]["steps"]] == ["customer_list", "order_stats"]
     assert body["execution_status"] == "SUCCESS"
     assert body["ui_spec"]["root"] == "root"
     assert isinstance(body["ui_spec"]["elements"], dict)

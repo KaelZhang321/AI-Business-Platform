@@ -255,12 +255,14 @@ class ApiQueryPlanStep(BaseModel):
         JSONPath 依赖绑定与拓扑执行。
 
     返回值约束：
+        - `api_id` 对应 `ui_api_endpoints.id`，供前端和审计链路稳定识别接口实体
         - `api_path` 必须命中第二阶段召回出的 GET 接口
         - `depends_on` 只描述前置步骤 ID，不描述执行器细节
         - `params` 允许包含字面量和 JSONPath 绑定表达式
     """
 
     step_id: str = Field(..., min_length=1, description="DAG 内部唯一步骤标识")
+    api_id: str | None = Field(None, description="步骤对应的接口 ID，对齐 ui_api_endpoints.id")
     api_path: str = Field(..., min_length=1, description="步骤对应的目标接口路径")
     params: dict[str, Any] = Field(default_factory=dict, description="步骤参数，可包含 JSONPath 绑定")
     depends_on: list[str] = Field(default_factory=list, description="前置依赖步骤 ID 列表")
