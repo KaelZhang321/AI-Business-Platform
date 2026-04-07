@@ -60,3 +60,4 @@ coverage/
 htmlcov/
 .coverage
 .gitnexus
+.claude
