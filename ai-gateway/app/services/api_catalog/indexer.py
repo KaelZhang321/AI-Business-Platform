@@ -46,6 +46,11 @@ API_CATALOG_COLLECTION = "api_catalog"
 # BGE-M3 dense vector 维度
 EMBEDDING_DIM = 1024
 
+# 这里故意使用一个极短的稳定文本做 warmup，而不是空字符串。
+# 原因不是“求语义准确”，而是强制触发底层 embedding runtime 的首次真实 encode，
+# 让它把线程池 / native runtime / 可能的子进程初始化都消耗在 Milvus gRPC 建连之前。
+_EMBEDDING_WARMUP_TEXT = "api catalog warmup"
+
 
 def _get_collection_schema() -> CollectionSchema:
     """定义 `api_catalog` 的 Milvus schema。
@@ -208,6 +213,7 @@ class ApiCatalogIndexer:
     def __init__(self) -> None:
         self._embedder: BGEM3FlagModel | None = None
         self._collection: Collection | None = None
+        self._embedder_warmed_up = False
 
     # ── 懒加载 ──────────────────────────────────────────────────
 
@@ -239,6 +245,34 @@ class ApiCatalogIndexer:
             self._embedder = model_cls(model_source.source, use_fp16=True)
             logger.info("Embedding model loaded: %s", model_source.source)
         return self._embedder
+
+    async def _ensure_embedder_warmed_up(self) -> BGEM3FlagModel:
+        """在 Milvus 建连前完成一次真实 embedding warmup。
+
+        功能：
+            某些 embedding 后端不会在构造模型对象时完成全部 native 初始化，而是把线程池、
+            gRPC 相关 runtime 或底层 fork-sensitive 资源延迟到第一次 `encode()` 才创建。
+            如果这一步发生在 Milvus 已经建立 gRPC 连接之后，就容易出现
+            “Other threads are currently calling into gRPC, skipping fork() handlers” 这类噪声告警。
+
+            因此这里把一次最小化的真实 encode 前置到任何 Milvus 建连之前，主动烧掉首次初始化成本，
+            让后续索引阶段只剩“稳定的向量计算 + 稳定的 Milvus 写入”。
+
+        Returns:
+            已完成 warmup 的 embedding 模型实例。
+
+        Raises:
+            透传底层模型加载或 encode 异常，避免在 warmup 失败后继续建立 Milvus 连接并制造半初始化状态。
+        """
+        embedder = self._get_embedder()
+        if self._embedder_warmed_up:
+            return embedder
+
+        logger.info("Running embedding warmup encode before connecting to Milvus")
+        await asyncio.to_thread(lambda: embedder.encode([_EMBEDDING_WARMUP_TEXT])["dense_vecs"][0])
+        self._embedder_warmed_up = True
+        logger.info("Embedding warmup finished")
+        return embedder
 
     def _get_collection(self) -> Collection:
         """获取 Milvus collection，并在 schema 漂移时自动重建。"""
@@ -289,7 +323,9 @@ class ApiCatalogIndexer:
             await source.close()
         logger.info("Loaded %d API entries from business MySQL registry", len(entries))
 
-        self._get_embedder()
+        # 先完成一次真实 encode，再去建立 Milvus gRPC 连接，尽量规避底层 runtime 在多线程场景下
+        # 把首次初始化延后到 collection 建连之后触发。
+        await self._ensure_embedder_warmed_up()
         self._get_collection()
         logger.info("Indexer dependencies ready, processing %d API entries", len(entries))
 
@@ -307,7 +343,9 @@ class ApiCatalogIndexer:
     async def index_entry(self, entry: ApiCatalogEntry) -> bool:
         """对单条 API 目录记录做 embedding 并写入 Milvus。"""
         logger.debug("Indexing API entry started: id=%s method=%s path=%s", entry.id, entry.method, entry.path)
-        embedder = self._get_embedder()
+        # 单条入库也必须遵守同一初始化顺序，否则 direct 调用 index_entry() 时仍会把首次 encode
+        # 拖到 Milvus 建连之后，warmup 的治理价值就被绕开了。
+        embedder = await self._ensure_embedder_warmed_up()
         collection = self._get_collection()
 
         # Embedding 是 CPU 密集型操作，放到线程池里避免卡住事件循环。

@@ -602,6 +602,73 @@ class TestIndexerSchema:
         assert captured["source"] == "BAAI/bge-m3"
         assert captured["use_fp16"] is True
 
+    @pytest.mark.asyncio
+    async def test_indexer_warms_up_embedder_only_once(self, monkeypatch):
+        calls: list[list[str]] = []
+
+        class FakeVector:
+            def tolist(self) -> list[float]:
+                return [0.1, 0.2]
+
+        class FakeEmbedder:
+            def encode(self, texts: list[str]) -> dict[str, list[FakeVector]]:
+                calls.append(list(texts))
+                return {"dense_vecs": [FakeVector()]}
+
+        indexer = indexer_module.ApiCatalogIndexer()
+        monkeypatch.setattr(indexer, "_get_embedder", lambda: FakeEmbedder())
+
+        await indexer._ensure_embedder_warmed_up()
+        await indexer._ensure_embedder_warmed_up()
+
+        assert calls == [["api catalog warmup"]]
+
+    @pytest.mark.asyncio
+    async def test_index_entry_warms_up_before_connecting_milvus(self, monkeypatch):
+        order: list[str] = []
+
+        class FakeVector:
+            def tolist(self) -> list[float]:
+                return [0.1, 0.2]
+
+        class FakeEmbedder:
+            def encode(self, texts: list[str]) -> dict[str, list[FakeVector]]:
+                text = texts[0]
+                if text == "api catalog warmup":
+                    order.append("warmup")
+                else:
+                    order.append("entry_encode")
+                return {"dense_vecs": [FakeVector()]}
+
+        class FakeCollection:
+            def delete(self, expr: str) -> None:
+                order.append("collection_delete")
+
+            def insert(self, data) -> None:
+                order.append("collection_insert")
+
+            def flush(self) -> None:
+                order.append("collection_flush")
+
+        indexer = indexer_module.ApiCatalogIndexer()
+        fake_embedder = FakeEmbedder()
+        fake_collection = FakeCollection()
+
+        monkeypatch.setattr(indexer, "_get_embedder", lambda: fake_embedder)
+        monkeypatch.setattr(indexer, "_get_collection", lambda: order.append("collection_connect") or fake_collection)
+
+        await indexer.index_entry(
+            ApiCatalogEntry(
+                id="customer_list",
+                description="查询客户列表",
+                domain="crm",
+                method="GET",
+                path="/api/v1/customers",
+            )
+        )
+
+        assert order[:3] == ["warmup", "collection_connect", "entry_encode"]
+
 
 class TestRetrieverCompatibility:
     def test_build_entry_from_fields_supports_native_json_schema(self):
