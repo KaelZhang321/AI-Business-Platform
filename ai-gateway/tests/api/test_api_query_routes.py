@@ -350,7 +350,7 @@ def test_api_query_returns_runtime_contract(monkeypatch) -> None:
     }
 
 
-def test_api_query_direct_mode_bypasses_semantic_chain_and_returns_runtime_contract(monkeypatch) -> None:
+def test_api_query_direct_mode_bypasses_semantic_chain_and_returns_runtime_contract(monkeypatch, caplog) -> None:
     detail_entry = _make_entry(
         id="customer_detail",
         description="查询客户详情",
@@ -405,18 +405,19 @@ def test_api_query_direct_mode_bypasses_semantic_chain_and_returns_runtime_contr
     )
 
     client = TestClient(create_test_app())
-    response = client.post(
-        "/api/v1/api-query",
-        json={
-            "mode": "direct",
-            "conversation_id": "conv_001",
-            "direct_query": {
-                "api_id": "customer_detail",
-                "params": {"customerId": "C001"},
+    with caplog.at_level("INFO", logger=api_query_routes.logger.name):
+        response = client.post(
+            "/api/v1/api-query",
+            json={
+                "mode": "direct",
+                "conversation_id": "conv_001",
+                "direct_query": {
+                    "api_id": "customer_detail",
+                    "params": {"customerId": "C001"},
+                },
             },
-        },
-        headers={"X-Trace-Id": "trace-direct-001"},
-    )
+            headers={"X-Trace-Id": "trace-direct-001"},
+        )
 
     assert response.status_code == 200
     body = response.json()
@@ -437,6 +438,7 @@ def test_api_query_direct_mode_bypasses_semantic_chain_and_returns_runtime_contr
     assert body["ui_spec"]["elements"][body["ui_spec"]["root"]]["type"] == "PlannerCard"
     assert registry_source.last_api_id == "customer_detail"
     assert executor.last_params == {"customerId": "C001"}
+    assert "conversation=conv_001" in caplog.text
 
 
 def test_api_query_direct_mode_requires_direct_query_payload() -> None:
@@ -699,7 +701,7 @@ def test_api_query_soft_degrades_when_route_query_fails(monkeypatch, caplog) -> 
     with caplog.at_level("INFO", logger=api_query_routes.logger.name):
         response = client.post(
             "/api/v1/api-query",
-            json={"query": "帮我处理那个事情"},
+            json={"query": "帮我处理那个事情", "conversation_id": "conv_degrade_001"},
             headers={"X-Trace-Id": "trace-degrade-001", "X-Interaction-Id": "ia-degrade-001"},
         )
 
@@ -713,6 +715,7 @@ def test_api_query_soft_degrades_when_route_query_fails(monkeypatch, caplog) -> 
     root_id = body["ui_spec"]["root"]
     assert body["ui_spec"]["elements"][root_id]["props"]["title"] == "未识别到可用业务域"
     assert "interaction=ia-degrade-001" in caplog.text
+    assert "conversation=conv_degrade_001" in caplog.text
 
 
 def test_runtime_metadata_endpoint_returns_contract(monkeypatch) -> None:

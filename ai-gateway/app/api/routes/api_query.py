@@ -147,8 +147,9 @@ async def api_query(
     retriever, extractor, executor, dynamic_ui, snapshot_service = _get_services()
     trace_id = _resolve_trace_id(request)
     interaction_id = _resolve_interaction_id(request)
+    conversation_id = _resolve_conversation_id(request_body)
     user_context = _extract_user_context(request)
-    log_prefix = _build_api_query_log_prefix(trace_id, interaction_id)
+    log_prefix = _build_api_query_log_prefix(trace_id, interaction_id, conversation_id)
 
     request_query = _summarize_request_query(request_body)
     logger.info("%s request mode=%s query=%s", log_prefix, request_body.mode.value, request_query)
@@ -160,6 +161,7 @@ async def api_query(
             request_body,
             trace_id=trace_id,
             interaction_id=interaction_id,
+            conversation_id=conversation_id,
         )
         return await _execute_prepared_plan(
             executor=executor,
@@ -167,6 +169,7 @@ async def api_query(
             snapshot_service=snapshot_service,
             trace_id=trace_id,
             interaction_id=interaction_id,
+            conversation_id=conversation_id,
             user_token=user_token,
             query_text=direct_query_text,
             plan=plan,
@@ -199,6 +202,7 @@ async def api_query(
             dynamic_ui,
             trace_id=trace_id,
             interaction_id=interaction_id,
+            conversation_id=conversation_id,
             query=request_body.query,
             title="未识别到可用业务域",
             message="抱歉，我没有完全理解您的意图，或系统中暂未开放相关查询能力，请尝试换种说法。",
@@ -228,6 +232,7 @@ async def api_query(
             dynamic_ui,
             trace_id=trace_id,
             interaction_id=interaction_id,
+            conversation_id=conversation_id,
             query=request_body.query,
             title="未找到匹配接口",
             message="当前问题没有召回到可执行的查询接口，请调整表达方式后重试。",
@@ -259,6 +264,7 @@ async def api_query(
                 dynamic_ui,
                 trace_id=trace_id,
                 interaction_id=interaction_id,
+                conversation_id=conversation_id,
                 query=request_body.query,
                 title="无法确定查询接口",
                 message="我找到了相关业务域，但还无法稳定确定具体接口，请补充更明确的查询条件后重试。",
@@ -275,6 +281,7 @@ async def api_query(
                 dynamic_ui,
                 trace_id=trace_id,
                 interaction_id=interaction_id,
+                conversation_id=conversation_id,
                 query=request_body.query,
                 title="无法确定查询接口",
                 message="当前输入关联了多个候选接口，但仍缺少足够信息来确定最终查询目标。",
@@ -284,7 +291,7 @@ async def api_query(
                 reasoning=routing_result.reasoning or route_hint.reasoning,
             )
 
-        _ensure_read_only_entry(selected_entry, trace_id, interaction_id)
+        _ensure_read_only_entry(selected_entry, trace_id, interaction_id, conversation_id)
         planning_intent_codes = list(routing_result.business_intents or route_hint.business_intents)
         plan = build_single_step_plan(
             selected_entry,
@@ -308,6 +315,7 @@ async def api_query(
                 dynamic_ui,
                 trace_id=trace_id,
                 interaction_id=interaction_id,
+                conversation_id=conversation_id,
                 query=request_body.query,
                 title="数据执行计划生成失败",
                 message="我找到了相关接口，但当前还无法稳定生成可执行的数据流，请补充更明确的查询链路后重试。",
@@ -329,6 +337,7 @@ async def api_query(
             dynamic_ui,
             trace_id=trace_id,
             interaction_id=interaction_id,
+            conversation_id=conversation_id,
             query=request_body.query,
             title="数据执行计划校验失败",
             message="系统生成的数据依赖图存在安全风险，已终止执行以保护业务系统。",
@@ -343,6 +352,7 @@ async def api_query(
         snapshot_service=snapshot_service,
         trace_id=trace_id,
         interaction_id=interaction_id,
+        conversation_id=conversation_id,
         user_token=user_token,
         query_text=request_body.query,
         plan=plan,
@@ -435,6 +445,7 @@ async def _prepare_direct_execution(
     *,
     trace_id: str,
     interaction_id: str | None,
+    conversation_id: str | None,
 ) -> tuple[ApiQueryExecutionPlan, dict[str, ApiCatalogEntry], list[str], list[str], str]:
     """为 `direct` 快路准备单步执行计划。
 
@@ -456,7 +467,11 @@ async def _prepare_direct_execution(
     try:
         entry = await registry_source.get_entry_by_id(direct_query.api_id)
     except ApiCatalogSourceError as exc:
-        logger.exception("direct registry lookup failed trace_id=%s api_id=%s", trace_id, direct_query.api_id)
+        logger.exception(
+            "%s direct registry lookup failed api_id=%s",
+            _build_api_query_log_prefix(trace_id, interaction_id, conversation_id),
+            direct_query.api_id,
+        )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=f"[{trace_id}] direct 模式加载接口目录失败：{exc}",
@@ -468,13 +483,19 @@ async def _prepare_direct_execution(
             detail=f"direct 模式指定的接口不存在：{direct_query.api_id}",
         )
 
-    _ensure_active_entry(entry, trace_id=trace_id, interaction_id=interaction_id)
-    _ensure_read_only_entry(entry, trace_id, interaction_id)
+    _ensure_active_entry(
+        entry,
+        trace_id=trace_id,
+        interaction_id=interaction_id,
+        conversation_id=conversation_id,
+    )
+    _ensure_read_only_entry(entry, trace_id, interaction_id, conversation_id)
     validated_params = _validate_direct_query_params(
         entry,
         direct_query.params,
         trace_id=trace_id,
         interaction_id=interaction_id,
+        conversation_id=conversation_id,
     )
     plan = build_single_step_plan(
         entry,
@@ -493,6 +514,7 @@ async def _execute_prepared_plan(
     snapshot_service: UISnapshotService,
     trace_id: str,
     interaction_id: str | None,
+    conversation_id: str | None,
     user_token: str | None,
     query_text: str,
     plan: ApiQueryExecutionPlan,
@@ -654,14 +676,44 @@ def _resolve_interaction_id(request: Request) -> str | None:
     return header_interaction_id or None
 
 
-def _build_api_query_log_prefix(trace_id: str, interaction_id: str | None) -> str:
+def _resolve_conversation_id(request_body: ApiQueryRequest) -> str | None:
+    """提取前端传入的会话 ID。
+
+    功能：
+        `conversation_id` 描述的是一段多轮业务会话，而不是单次点击。把它放进日志链路后，
+        运维可以把“列表 -> 详情 -> 下一步查询”这类连续请求聚成一条业务上下文，而不必只靠
+        多个 `trace_id` 人工拼接。
+
+    Args:
+        request_body: `/api-query` 当前请求体。
+
+    Returns:
+        请求体中的 `conversation_id`；空字符串和全空白会被折叠为 `None`。
+
+    Edge Cases:
+        - 前端未传时返回 `None`，网关不擅自生成，以免篡改业务会话语义
+        - 只做空白裁剪，保留前端定义的原始 ID 形态，方便跨端对账
+    """
+    conversation_id = (request_body.conversation_id or "").strip()
+    return conversation_id or None
+
+
+def _build_api_query_log_prefix(
+    trace_id: str,
+    interaction_id: str | None,
+    conversation_id: str | None,
+) -> str:
     """统一构造 `api_query` 日志前缀。
 
     功能：
         该接口已经长期依赖 `trace_id` 做单请求排障；本次补入 `interaction_id` 的目标，是让
-        运维可以把同一次用户操作拆出来看，而不需要去猜多条 trace 之间是否属于同一交互。
+        运维可以把同一次用户操作拆出来看；继续补入 `conversation_id`，则是为了把多轮问答
+        串成同一业务会话，避免列表页和详情页日志只能看见零散请求切片。
     """
-    return f"api_query[trace={trace_id} interaction={interaction_id or '-'}]"
+    return (
+        f"api_query[trace={trace_id} interaction={interaction_id or '-'} "
+        f"conversation={conversation_id or '-'}]"
+    )
 
 
 def _format_query_domains_for_response(query_domains: list[str]) -> list[str]:
@@ -690,7 +742,12 @@ def _dedupe_non_empty(values: list[str]) -> list[str]:
     return deduped
 
 
-def _ensure_read_only_entry(entry: ApiCatalogEntry, trace_id: str, interaction_id: str | None = None) -> None:
+def _ensure_read_only_entry(
+    entry: ApiCatalogEntry,
+    trace_id: str,
+    interaction_id: str | None = None,
+    conversation_id: str | None = None,
+) -> None:
     """强制拦截非只读接口。
 
     功能：
@@ -700,7 +757,7 @@ def _ensure_read_only_entry(entry: ApiCatalogEntry, trace_id: str, interaction_i
         return
     logger.warning(
         "%s blocked non-read endpoint id=%s method=%s path=%s",
-        _build_api_query_log_prefix(trace_id, interaction_id),
+        _build_api_query_log_prefix(trace_id, interaction_id, conversation_id),
         entry.id,
         entry.method,
         entry.path,
@@ -711,7 +768,13 @@ def _ensure_read_only_entry(entry: ApiCatalogEntry, trace_id: str, interaction_i
     )
 
 
-def _ensure_active_entry(entry: ApiCatalogEntry, *, trace_id: str, interaction_id: str | None = None) -> None:
+def _ensure_active_entry(
+    entry: ApiCatalogEntry,
+    *,
+    trace_id: str,
+    interaction_id: str | None = None,
+    conversation_id: str | None = None,
+) -> None:
     """拦截未激活目录项，保持 `direct` 与召回链路的一致安全边界。
 
     功能：
@@ -722,7 +785,7 @@ def _ensure_active_entry(entry: ApiCatalogEntry, *, trace_id: str, interaction_i
         return
     logger.warning(
         "%s blocked inactive endpoint id=%s status=%s path=%s",
-        _build_api_query_log_prefix(trace_id, interaction_id),
+        _build_api_query_log_prefix(trace_id, interaction_id, conversation_id),
         entry.id,
         entry.status,
         entry.path,
@@ -739,6 +802,7 @@ def _validate_direct_query_params(
     *,
     trace_id: str,
     interaction_id: str | None,
+    conversation_id: str | None,
 ) -> dict[str, Any]:
     """校验 `direct` 模式的显式参数。
 
@@ -761,7 +825,7 @@ def _validate_direct_query_params(
     if unknown_fields:
         logger.warning(
             "%s direct params rejected id=%s unknown_fields=%s",
-            _build_api_query_log_prefix(trace_id, interaction_id),
+            _build_api_query_log_prefix(trace_id, interaction_id, conversation_id),
             entry.id,
             unknown_fields,
         )
@@ -774,7 +838,7 @@ def _validate_direct_query_params(
     if missing_required_params:
         logger.warning(
             "%s direct params rejected id=%s missing_required=%s",
-            _build_api_query_log_prefix(trace_id, interaction_id),
+            _build_api_query_log_prefix(trace_id, interaction_id, conversation_id),
             entry.id,
             missing_required_params,
         )
@@ -1565,6 +1629,7 @@ async def _build_stage2_degrade_response(
     *,
     trace_id: str,
     interaction_id: str | None,
+    conversation_id: str | None,
     query: str,
     title: str,
     message: str,
@@ -1646,6 +1711,7 @@ async def _build_stage3_degrade_response(
     *,
     trace_id: str,
     interaction_id: str | None,
+    conversation_id: str | None,
     query: str,
     title: str,
     message: str,

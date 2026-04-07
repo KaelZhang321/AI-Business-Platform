@@ -45,6 +45,7 @@ SELECT
 FROM ui_api_endpoints e
 LEFT JOIN ui_api_sources s ON e.source_id = s.id
 LEFT JOIN ui_api_tags t ON e.tag_id = t.id
+WHERE e.status = "active"
 """
 
 _API_CATALOG_REGISTRY_SQL = (
