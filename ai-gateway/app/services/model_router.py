@@ -22,6 +22,10 @@ class ModelBackend:
     type: str  # ollama | vllm | openai
     base_url: str
     model: str
+    api_key: str | None = field(default=None, repr=False)
+    # 使用相对路径而不是以 `/` 开头的绝对路径，是为了兼容像 Ark 这类把 `/api/v3`
+    # 放在 base_url 里的 OpenAI-compatible 服务，避免请求时把基础路径前缀直接覆盖掉。
+    chat_path: str = "v1/chat/completions"
     priority: int = 0  # 越小优先级越高
     enabled: bool = True
     _client: httpx.AsyncClient | None = field(default=None, repr=False)
@@ -64,6 +68,7 @@ class ModelRouter:
                     type="openai",
                     base_url=settings.openai_base_url or "https://api.openai.com",
                     model="gpt-4o-mini",
+                    api_key=settings.openai_api_key,
                     priority=10,
                 )
             )
@@ -147,7 +152,7 @@ class ModelRouter:
             del payload["temperature"]
 
         resp = await client.post(
-            "/v1/chat/completions",
+            backend.chat_path,
             json=payload,
             headers=headers,
             timeout=timeout_seconds,
@@ -171,7 +176,7 @@ class ModelRouter:
             payload["options"] = {"temperature": temperature}
             del payload["temperature"]
 
-        async with client.stream("POST", "/v1/chat/completions", json=payload, headers=headers) as resp:
+        async with client.stream("POST", backend.chat_path, json=payload, headers=headers) as resp:
             resp.raise_for_status()
             async for line in resp.aiter_lines():
                 if not line or not line.startswith("data: "):
@@ -192,6 +197,6 @@ class ModelRouter:
     @staticmethod
     def _build_headers(backend: ModelBackend) -> dict[str, str]:
         headers: dict[str, str] = {}
-        if backend.type == "openai" and settings.openai_api_key:
-            headers["Authorization"] = f"Bearer {settings.openai_api_key}"
+        if backend.type == "openai" and backend.api_key:
+            headers["Authorization"] = f"Bearer {backend.api_key}"
         return headers

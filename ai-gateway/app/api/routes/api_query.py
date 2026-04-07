@@ -49,6 +49,7 @@ from app.services.api_catalog.registry_source import ApiCatalogRegistrySource, A
 from app.services.api_catalog.schema import ApiCatalogEntry, ApiCatalogSearchFilters
 from app.services.api_catalog.param_extractor import ApiParamExtractor
 from app.services.api_catalog.retriever import ApiCatalogRetriever
+from app.services.api_query_llm_service import ApiQueryLLMService
 from app.services.dynamic_ui_service import DynamicUIService, UISpecBuildResult
 from app.services.ui_spec_guard import UISpecValidationResult
 from app.services.ui_catalog_service import UICatalogService
@@ -66,6 +67,7 @@ _dynamic_ui: DynamicUIService | None = None
 _ui_catalog: UICatalogService | None = None
 _snapshot_service: UISnapshotService | None = None
 _registry_source: ApiCatalogRegistrySource | None = None
+_api_query_llm: ApiQueryLLMService | None = None
 _bearer = HTTPBearer(auto_error=False)
 _READ_ONLY_METHODS = {"GET"}
 # 这里固定保留 5 条是为了给 Renderer 足够上下文，又避免把大结果集整包塞进生成链路导致注意力失焦。
@@ -78,14 +80,30 @@ def _get_services() -> tuple[ApiCatalogRetriever, ApiParamExtractor, ApiExecutor
     if _retriever is None:
         _retriever = ApiCatalogRetriever()
     if _extractor is None:
-        _extractor = ApiParamExtractor()
+        _extractor = ApiParamExtractor(llm_service=_get_api_query_llm_service())
     if _executor is None:
         _executor = ApiExecutor()
     if _dynamic_ui is None:
-        _dynamic_ui = DynamicUIService(catalog_service=_get_ui_catalog_service())
+        _dynamic_ui = DynamicUIService(
+            catalog_service=_get_ui_catalog_service(),
+            llm_service=_get_api_query_llm_service(),
+        )
     if _snapshot_service is None:
         _snapshot_service = UISnapshotService()
     return _retriever, _extractor, _executor, _dynamic_ui, _snapshot_service
+
+
+def _get_api_query_llm_service() -> ApiQueryLLMService:
+    """获取 `/api_query` 专用 LLM 单例。
+
+    功能：
+        第二、三、五阶段必须共享同一模型配置，否则轻量路由、Planner 和 Renderer
+        可能分别命中不同后端，导致同一请求在阶段间出现风格漂移甚至结构不兼容。
+    """
+    global _api_query_llm
+    if _api_query_llm is None:
+        _api_query_llm = ApiQueryLLMService()
+    return _api_query_llm
 
 
 def _get_ui_catalog_service() -> UICatalogService:
@@ -105,7 +123,7 @@ def _get_planner() -> ApiDagPlanner:
     """获取第三阶段 Planner 单例。"""
     global _planner
     if _planner is None:
-        _planner = ApiDagPlanner()
+        _planner = ApiDagPlanner(llm_service=_get_api_query_llm_service())
     return _planner
 
 

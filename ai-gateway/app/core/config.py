@@ -83,6 +83,12 @@ class Settings(BaseSettings):
     # 动态UI
     llm_ui_spec_enabled: bool = False
 
+    # API Query 专用 LLM（Volcengine Ark）
+    # 这一组配置只服务 `/api/v1/api-query`，避免把网关内其他问答/聊天链路强行绑到同一供应商。
+    ark_api_key: str = ""
+    ark_api_base: str = "https://ark.cn-beijing.volces.com/api/v3"
+    ark_default_model: str = "doubao-1-5-pro-32k-250115"
+
     # API Query Stage-2
     api_query_route_timeout_seconds: float = 8.0
     api_query_route_retry_count: int = 1

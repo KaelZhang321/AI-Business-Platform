@@ -51,6 +51,7 @@ class DynamicUIService:
         self,
         catalog_service: UICatalogService | None = None,
         guard: UISpecGuard | None = None,
+        llm_service: Any | None = None,
     ) -> None:
         """初始化动态渲染服务。
 
@@ -60,9 +61,11 @@ class DynamicUIService:
 
         Args:
             catalog_service: 可选的 UI 目录服务。测试可注入替身，生产默认懒加载单例。
+            llm_service: 可选的 LLM 服务。`api_query` 会注入 Ark 专用实现，其他链路仍可沿用默认值。
         """
         self._catalog_service = catalog_service
         self._guard = guard
+        self._llm_service = llm_service
 
     async def generate_ui_spec(
         self,

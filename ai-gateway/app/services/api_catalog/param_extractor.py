@@ -44,8 +44,17 @@ class ApiParamExtractor:
         - 参数提取始终以 Schema 为准，防止宽查询或越权字段透传
     """
 
-    def __init__(self) -> None:
-        self._llm = None
+    def __init__(self, llm_service: Any | None = None) -> None:
+        """初始化第二阶段参数提取器。
+
+        Args:
+            llm_service: 可选的 LLM 调用服务。
+
+        功能：
+            `api_query` 现在要求全链路固定走 Ark，但其他测试和旧调用点仍可能依赖默认
+            `LLMService`。这里保留可注入能力，避免把模型供应商选择硬编码进业务逻辑。
+        """
+        self._llm = llm_service
 
     def _get_llm(self):
         """懒加载 LLM 服务，避免无调用时初始化模型客户端。"""

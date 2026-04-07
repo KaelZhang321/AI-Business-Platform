@@ -52,8 +52,17 @@ class ApiDagPlanner:
         - 任意一步引用候选集外接口、未声明依赖或形成环，都会被直接拦截
     """
 
-    def __init__(self) -> None:
-        self._llm = None
+    def __init__(self, llm_service: Any | None = None) -> None:
+        """初始化第三阶段 DAG Planner。
+
+        Args:
+            llm_service: 可选的 LLM 调用服务。
+
+        功能：
+            第三阶段最看重的是图纸稳定性，因此允许由外层把 `/api_query` 专用模型显式
+            注入进来，避免 Planner 在不同运行环境里命中不同默认后端。
+        """
+        self._llm = llm_service
 
     def _get_llm(self):
         """懒加载 LLM 服务，避免单接口直达路径也初始化 Planner 客户端。"""
