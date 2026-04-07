@@ -9,8 +9,7 @@ const configuredApiBase =
   import.meta.env.VITE_BUSINESS_API_URL?.trim() ||
   import.meta.env.VITE_API_BASE_URL?.trim()
 
-export const apiBasePath = configuredApiBase || (
-  normalizedBasePath
-    ? `${normalizedBasePath}/api`
-    : '/api'
-)
+// 开发模式下使用空字符串，让请求走 Vite 代理；生产模式下才使用配置的绝对地址。
+export const apiBasePath = import.meta.env.DEV
+  ? ''
+  : (configuredApiBase || (normalizedBasePath ? `${normalizedBasePath}/api` : '/api'))

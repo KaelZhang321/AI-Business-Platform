@@ -18,13 +18,13 @@ interface AIAssistantProps {
   setIsAIOpen: (val: boolean) => void;
 }
 
-export function AIAssistant({ 
-  messages, 
-  chatInput, 
-  setChatInput, 
-  handleSendMessage, 
-  isAIOpen, 
-  setIsAIOpen 
+export function AIAssistant({
+  messages,
+  chatInput,
+  setChatInput,
+  handleSendMessage,
+  isAIOpen,
+  setIsAIOpen
 }: AIAssistantProps) {
   const suggestedPrompts = [
     { id: 'inventory', text: '帮我查询王先生在云仓的剩余库存', tag: '客户云仓' },
@@ -32,7 +32,7 @@ export function AIAssistant({
     { id: 'report', text: '生成一份本周高端客户接待效能报告', tag: '数据分析' },
     { id: 'policy', text: '查看最新的合规审查红头文件', tag: '政策中心' },
   ] as const;
-  
+
   const renderMessageContent = (content: string) => {
     return content.split('\n').map((line) => (
       <React.Fragment key={`${content}-${line}`}>
@@ -63,11 +63,10 @@ export function AIAssistant({
             key={prompt.id}
             type="button"
             onClick={() => handleSendMessage(prompt.text)}
-            className={`${
-              isSmall 
+            className={`${isSmall
                 ? 'bg-white border border-slate-200 hover:border-brand-border text-slate-600 hover:text-brand text-xs px-3 py-1.5 rounded-full transition-colors truncate max-w-[200px]'
                 : 'bg-white hover:bg-brand-light/50 cursor-pointer p-5 rounded-2xl transition-all shadow-sm flex flex-col space-y-3 border border-transparent hover:border-brand-border text-left'
-            }`}
+              }`}
             title={prompt.text}
           >
             <span className={`${isSmall ? '' : 'text-sm font-bold text-slate-700'}`}>
@@ -82,7 +81,7 @@ export function AIAssistant({
 
   const ChatInput = ({ isFloating = false }: { isFloating?: boolean }) => (
     <div className={`relative group w-full shrink-0 ${isFloating ? '' : 'mb-6'}`}>
-      <motion.div 
+      <motion.div
         className="absolute -inset-0.5 rounded-full opacity-30 blur-md group-focus-within:opacity-60 transition-opacity duration-500"
         style={{
           backgroundImage: 'linear-gradient(to right, #3b82f6, #60a5fa, #93c5fd, #2563eb, #3b82f6)',
@@ -91,8 +90,8 @@ export function AIAssistant({
         animate={{ backgroundPosition: ['0% 50%', '100% 50%'] }}
         transition={{ duration: 4, repeat: Infinity, ease: 'linear' }}
       />
-      
-      <motion.div 
+
+      <motion.div
         className="absolute inset-0 rounded-full opacity-50 group-focus-within:opacity-100 transition-opacity duration-500"
         style={{
           backgroundImage: 'linear-gradient(to right, #3b82f6, #60a5fa, #93c5fd, #2563eb, #3b82f6)',
@@ -101,19 +100,19 @@ export function AIAssistant({
         animate={{ backgroundPosition: ['0% 50%', '100% 50%'] }}
         transition={{ duration: 4, repeat: Infinity, ease: 'linear' }}
       />
-      
+
       <div className="relative bg-white rounded-full m-[1.5px] flex items-center shadow-sm border border-slate-100">
-        <input 
-          type="text" 
+        <input
+          type="text"
           value={chatInput}
           onChange={(e) => setChatInput(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
-          placeholder="请告诉我需要协助的事情..." 
+          placeholder="请告诉我需要协助的事情..."
           className={`w-full bg-transparent rounded-full pl-6 pr-28 py-4 text-sm focus:outline-none text-slate-800 placeholder:text-slate-400 relative z-10 ${isFloating ? 'py-3.5' : ''}`}
         />
         <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center space-x-3 z-10">
           <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">{chatInput.length}/100</span>
-          <button 
+          <button
             type="button"
             onClick={() => chatInput.trim() && handleSendMessage()}
             disabled={!chatInput.trim()}
@@ -128,7 +127,7 @@ export function AIAssistant({
   );
 
   return (
-    <>
+    <div>
       <section className="xl:col-span-1 flex flex-col bg-slate-50/80 backdrop-blur-xl border border-white/60 rounded-3xl p-6 shadow-[0_8px_30px_rgb(0,0,0,0.02)] h-[600px]">
         {messages.length <= 1 && <ChatInput />}
 
@@ -143,11 +142,10 @@ export function AIAssistant({
                         <Sparkles className="w-4 h-4 text-brand" />
                       </div>
                     )}
-                    <div className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm leading-relaxed shadow-sm ${
-                      msg.role === 'user' 
-                        ? 'bg-blue-500 text-white rounded-tr-sm' 
+                    <div className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm leading-relaxed shadow-sm ${msg.role === 'user'
+                        ? 'bg-blue-500 text-white rounded-tr-sm'
                         : 'bg-white border border-slate-100 text-slate-700 rounded-tl-sm'
-                    }`}>
+                      }`}>
                       {renderMessageContent(msg.content)}
                     </div>
                   </div>
@@ -166,7 +164,7 @@ export function AIAssistant({
       <div className="fixed bottom-8 right-8 z-50 flex flex-col items-end">
         <AnimatePresence>
           {isAIOpen && (
-            <motion.div 
+            <motion.div
               initial={{ opacity: 0, y: 20, scale: 0.95 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={{ opacity: 0, y: 20, scale: 0.95 }}
@@ -184,7 +182,7 @@ export function AIAssistant({
                     <span className="text-[10px] text-cyan-100">Lizi Kar Workspace</span>
                   </div>
                 </div>
-                <button 
+                <button
                   type="button"
                   onClick={() => setIsAIOpen(false)}
                   className="w-8 h-8 flex items-center justify-center rounded-full bg-white/10 text-white hover:bg-white/20 transition-colors relative z-10"
@@ -201,11 +199,10 @@ export function AIAssistant({
                         <Sparkles className="w-4 h-4 text-white" />
                       </div>
                     )}
-                    <div className={`max-w-[80%] rounded-2xl px-4 py-3 text-sm leading-relaxed shadow-sm ${
-                      msg.role === 'user' 
-                        ? 'bg-gradient-to-br from-cyan-500 to-blue-600 text-white rounded-tr-sm' 
+                    <div className={`max-w-[80%] rounded-2xl px-4 py-3 text-sm leading-relaxed shadow-sm ${msg.role === 'user'
+                        ? 'bg-gradient-to-br from-cyan-500 to-blue-600 text-white rounded-tr-sm'
                         : 'bg-white border border-slate-100 text-slate-700 rounded-tl-sm'
-                    }`}>
+                      }`}>
                       {renderMessageContent(msg.content)}
                     </div>
                   </div>
@@ -214,15 +211,15 @@ export function AIAssistant({
 
               <div className="p-4 bg-white border-t border-slate-100 shrink-0">
                 <div className="relative flex items-center">
-                  <input 
-                    type="text" 
+                  <input
+                    type="text"
                     value={chatInput}
                     onChange={(e) => setChatInput(e.target.value)}
                     onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
                     placeholder="询问跨系统数据或SOP..."
                     className="w-full bg-slate-100/80 border-transparent rounded-2xl pl-4 pr-12 py-3.5 text-sm focus:bg-white focus:border-brand focus:ring-4 focus:ring-brand/10 transition-all outline-none"
                   />
-                  <button 
+                  <button
                     type="button"
                     onClick={() => handleSendMessage()}
                     disabled={!chatInput.trim()}
@@ -237,7 +234,7 @@ export function AIAssistant({
           )}
         </AnimatePresence>
 
-        <button 
+        <button
           type="button"
           onClick={() => setIsAIOpen(!isAIOpen)}
           aria-label={isAIOpen ? '关闭 AI 助手' : '打开 AI 助手'}
@@ -249,6 +246,6 @@ export function AIAssistant({
           )}
         </button>
       </div>
-    </>
+    </div>
   );
 }

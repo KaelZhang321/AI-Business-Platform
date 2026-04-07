@@ -7,6 +7,7 @@ interface AppState {
   user: UserPermission | null;
   isAuthenticated: boolean;
   login: (username: string, password: string) => Promise<void>;
+  iamLogin: (code: string) => Promise<void>;
   logout: () => void;
   restoreSession: () => Promise<void>;
 }
@@ -18,6 +19,15 @@ export const useAppStore = create<AppState>((set) => ({
 
   login: async (username, password) => {
     const loginData = await authService.login(username, password);
+    set({
+      token: loginData.token,
+      user: loginData.user,
+      isAuthenticated: true,
+    });
+  },
+
+  iamLogin: async (code) => {
+    const loginData = await authService.iamLogin(code);
     set({
       token: loginData.token,
       user: loginData.user,

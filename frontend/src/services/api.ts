@@ -31,7 +31,9 @@ function attachToken(config: InternalAxiosRequestConfig) {
   const token = getToken();
   if (token) {
     // 统一在请求发出前注入 Bearer token。
-    config.headers.Authorization = `Bearer ${token}`;
+    config.headers.CToken = `${token}`;
+    config.headers.DeviceId = `pc`;
+    config.headers['X-User-Id'] = `2`;
   }
   return config;
 }
@@ -47,7 +49,9 @@ async function refreshAccessToken(baseURL: string) {
     null,
     {
       headers: {
-        Authorization: `Bearer ${refreshToken}`,
+        CToken: `${refreshToken}`,
+        DeviceId: `pc`,
+        'X-User-Id': `2`,
       },
     },
   );
@@ -79,7 +83,7 @@ export function createClient(baseURL: string, timeout = 15_000): AxiosInstance {
         return Promise.reject(error);
       }
 
-      if (originalRequest._retried || originalRequest.url?.includes('/api/v1/auth/refresh')) {
+      if (originalRequest._retried || originalRequest.url?.includes('/api/v1/auth/refreshAuthToken')) {
         notifyAuthLogout();
         return Promise.reject(error);
       }
@@ -87,15 +91,15 @@ export function createClient(baseURL: string, timeout = 15_000): AxiosInstance {
       originalRequest._retried = true;
 
       try {
-      if (!refreshPromise) {
-        // 共享刷新 Promise，避免多个 401 同时触发多次 refresh 请求。
-        refreshPromise = refreshAccessToken(baseURL).finally(() => {
-          refreshPromise = null;
-        });
-      }
+        if (!refreshPromise) {
+          // 共享刷新 Promise，避免多个 401 同时触发多次 refresh 请求。
+          refreshPromise = refreshAccessToken(baseURL).finally(() => {
+            refreshPromise = null;
+          });
+        }
 
         const newToken = await refreshPromise;
-        originalRequest.headers.Authorization = `Bearer ${newToken}`;
+        originalRequest.headers.CToken = `${newToken}`;
         return client(originalRequest);
       } catch {
         notifyAuthLogout();
@@ -107,11 +111,9 @@ export function createClient(baseURL: string, timeout = 15_000): AxiosInstance {
   return client;
 }
 
-const getBaseUrl = (envUrl?: string) => {
-  if (envUrl?.trim()) return envUrl.trim();
-  const base = import.meta.env.BASE_URL || '';
-  return base.endsWith('/') ? base.slice(0, -1) : base;
-};
+// 开发模式下使用空字符串，让请求走 Vite 代理；生产模式下使用环境变量中的绝对地址。
+const resolveBase = (envKey: string) =>
+  import.meta.env.DEV ? '' : (import.meta.env[envKey]?.trim() || '');
 
-export const apiClient = createClient(getBaseUrl(import.meta.env.VITE_API_BASE_URL), 30_000);
-export const businessClient = createClient(getBaseUrl(import.meta.env.VITE_BUSINESS_API_URL), 15_000);
+export const apiClient = createClient(resolveBase('VITE_API_BASE_URL'), 30_000);
+export const businessClient = createClient(resolveBase('VITE_BUSINESS_API_URL') || resolveBase('VITE_API_BASE_URL'), 15_000);
