@@ -2142,7 +2142,10 @@ def _build_list_patch_spec(
     """
     mutation_target = runtime.list.pagination.mutation_target or requested_target or "report-table.props.dataSource"
     rows: list[dict[str, Any]] = []
-    if aggregate_status in {ApiQueryExecutionStatus.SUCCESS, ApiQueryExecutionStatus.EMPTY} and anchor_record is not None:
+    if (
+        aggregate_status in {ApiQueryExecutionStatus.SUCCESS, ApiQueryExecutionStatus.EMPTY}
+        and anchor_record is not None
+    ):
         rows = _normalize_rows(anchor_record.execution_result.data)
 
     operations: list[dict[str, Any]] = []

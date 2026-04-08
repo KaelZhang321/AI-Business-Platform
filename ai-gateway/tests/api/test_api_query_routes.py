@@ -520,7 +520,17 @@ def test_api_query_direct_mode_bypasses_semantic_chain_and_returns_runtime_contr
 
 
 def test_api_query_direct_mode_returns_list_patch_response(monkeypatch) -> None:
-    entry = _make_entry()
+    entry = _make_entry(
+        param_schema={
+            "type": "object",
+            "properties": {
+                "ownerId": {"type": "string"},
+                "pageNum": {"type": "integer"},
+                "pageSize": {"type": "integer"},
+            },
+            "required": ["ownerId", "pageNum", "pageSize"],
+        }
+    )
     stub_services = (
         object(),
         object(),
@@ -719,6 +729,15 @@ def test_api_query_direct_mode_rejects_patch_for_non_paginated_entry(monkeypatch
         id="customer_detail",
         path="/api/v1/customers/detail",
         pagination_hint=ApiCatalogPaginationHint(enabled=False),
+        param_schema={
+            "type": "object",
+            "properties": {
+                "customerId": {"type": "string"},
+                "pageNum": {"type": "integer"},
+                "pageSize": {"type": "integer"},
+            },
+            "required": ["customerId"],
+        },
     )
     stub_services = (
         object(),
@@ -760,7 +779,17 @@ def test_api_query_direct_mode_rejects_patch_for_non_paginated_entry(monkeypatch
 
 
 def test_api_query_direct_mode_rejects_patch_when_page_size_exceeds_limit(monkeypatch) -> None:
-    entry = _make_entry()
+    entry = _make_entry(
+        param_schema={
+            "type": "object",
+            "properties": {
+                "ownerId": {"type": "string"},
+                "pageNum": {"type": "integer"},
+                "pageSize": {"type": "integer"},
+            },
+            "required": ["ownerId", "pageNum", "pageSize"],
+        }
+    )
     stub_services = (
         object(),
         object(),
@@ -801,7 +830,18 @@ def test_api_query_direct_mode_rejects_patch_when_page_size_exceeds_limit(monkey
 
 
 def test_api_query_direct_mode_rejects_filter_submit_without_page_reset(monkeypatch) -> None:
-    entry = _make_entry()
+    entry = _make_entry(
+        param_schema={
+            "type": "object",
+            "properties": {
+                "ownerId": {"type": "string"},
+                "keyword": {"type": "string"},
+                "pageNum": {"type": "integer"},
+                "pageSize": {"type": "integer"},
+            },
+            "required": ["ownerId", "pageNum", "pageSize"],
+        }
+    )
     stub_services = (
         object(),
         object(),
