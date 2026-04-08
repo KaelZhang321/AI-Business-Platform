@@ -89,6 +89,10 @@ class ApiCatalogEntry(BaseModel):
         default_factory=lambda: ["query_business_data"],
         description="该接口可支持的业务意图编码",
     )
+    operation_safety: Literal["query", "mutation"] = Field(
+        "mutation",
+        description="接口安全语义。query 表示可进入 /api-query，mutation 表示必须被阻断。",
+    )
 
     # ---------- 调用元数据 ----------
     method: Literal["GET", "POST", "PUT", "DELETE", "PATCH"] = "GET"

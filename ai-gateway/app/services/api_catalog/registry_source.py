@@ -30,6 +30,7 @@ SELECT
     CAST(e.response_schema AS CHAR) AS responseSchema,
     CAST(e.sample_request AS CHAR) AS sampleRequest,
     CAST(e.sample_response AS CHAR) AS sampleResponse,
+    e.operation_safety AS operationSafety,
     e.status AS endpointStatus,
     s.id AS sourceId,
     s.code AS sourceCode,
@@ -45,12 +46,12 @@ SELECT
 FROM ui_api_endpoints e
 LEFT JOIN ui_api_sources s ON e.source_id = s.id
 LEFT JOIN ui_api_tags t ON e.tag_id = t.id
-WHERE e.status = "active"
 """
 
 _API_CATALOG_REGISTRY_SQL = (
     _API_CATALOG_REGISTRY_SELECT_SQL
     + """
+WHERE e.status = "active"
 ORDER BY s.code, t.name, e.method, e.path
 """
 )
@@ -58,7 +59,8 @@ ORDER BY s.code, t.name, e.method, e.path
 _API_CATALOG_REGISTRY_BY_ID_SQL = (
     _API_CATALOG_REGISTRY_SELECT_SQL
     + """
-WHERE e.id = %s
+WHERE e.status = "active"
+  AND e.id = %s
 LIMIT 1
 """
 )
@@ -230,6 +232,7 @@ def _build_entry_from_mysql_row(row: dict[str, Any]) -> ApiCatalogEntry:
         "responseSchema": row.get("responseSchema"),
         "sampleRequest": row.get("sampleRequest"),
         "sampleResponse": row.get("sampleResponse"),
+        "operationSafety": row.get("operationSafety"),
         "status": row.get("endpointStatus"),
     }
     return _build_entry(source_payload, endpoint_payload)
@@ -259,6 +262,7 @@ def _build_entry(
     response_schema = _safe_json_loads(endpoint.get("responseSchema"))
     sample_request = _safe_json_loads(endpoint.get("sampleRequest"))
     sample_response = _safe_json_loads(endpoint.get("sampleResponse"))
+    operation_safety = _normalize_operation_safety(endpoint.get("operationSafety"))
 
     auth_type = str(source.get("authType") or "").strip()
     auth_required = auth_type.lower() not in {"", "none", "public", "anonymous"}
@@ -276,10 +280,13 @@ def _build_entry(
         status=_normalize_status(endpoint.get("status") or source.get("status") or "active"),
         tag_name=_normalize_tag_name(tag_name),
         business_intents=_infer_business_intents(name, summary, path),
+        operation_safety=operation_safety,
         method=method,
         path=path,
         auth_required=auth_required,
         executor_config={
+            # registry 条目统一切到 runtime invoke；只有 builtin / 特殊条目继续走旧直连执行器。
+            "executor_type": "runtime_invoke",
             "source_id": source.get("id"),
             "source_code": source_code,
             "source_name": source_name,
@@ -293,6 +300,8 @@ def _build_entry(
         security_rules={
             "auth_required": auth_required,
             "read_only": method == "GET",
+            "operation_safety": operation_safety,
+            "query_safe": operation_safety == "query",
             "source_status": source.get("status"),
             "endpoint_status": endpoint.get("status"),
             "enforcement": "delegated_to_business_server",
@@ -347,10 +356,12 @@ def _build_system_dict_entry() -> ApiCatalogEntry:
         status="active",
         tag_name="dictionary",
         business_intents=["query_business_data"],
+        operation_safety="query",
         method="GET",
         path="/api/system/dicts",
         auth_required=True,
         executor_config={
+            "executor_type": "legacy_http",
             "source_id": "builtin",
             "source_code": "system",
             "source_name": "System Builtins",
@@ -359,6 +370,8 @@ def _build_system_dict_entry() -> ApiCatalogEntry:
         security_rules={
             "auth_required": True,
             "read_only": True,
+            "operation_safety": "query",
+            "query_safe": True,
             "enforcement": "delegated_to_business_server",
         },
         param_schema=ParamSchema(
@@ -425,6 +438,19 @@ def _normalize_status(value: Any) -> str:
     if normalized in {"deprecated", "archived"}:
         return "deprecated"
     return "inactive"
+
+
+def _normalize_operation_safety(value: Any) -> str:
+    """规范化接口安全语义。
+
+    功能：
+        `operation_safety` 是 /api-query 的硬安全边界。这里默认回退到 `mutation`，
+        目的是在元数据缺失或脏值混入时宁可阻断，也不把未确认的接口放行到真实执行链路。
+    """
+    normalized = str(value or "mutation").strip().lower()
+    if normalized == "query":
+        return "query"
+    return "mutation"
 
 
 def _build_example_queries(name: str, summary: str) -> list[str]:

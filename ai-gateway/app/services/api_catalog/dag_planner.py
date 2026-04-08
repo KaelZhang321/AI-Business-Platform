@@ -1,7 +1,7 @@
 """第三阶段 DAG Planner。
 
 功能：
-    把第二阶段召回出的候选 GET API 进一步编排成只读 DAG 计划，并在落地执行前
+    把第二阶段召回出的候选查询接口进一步编排成 DAG 计划，并在落地执行前
     完成白名单、环依赖和 JSONPath 引用的强校验。
 
 设计动机：
@@ -27,6 +27,7 @@ from app.services.api_catalog.dag_bindings import DagBindingSyntaxError, collect
 from app.services.api_catalog.schema import ApiCatalogEntry, ApiCatalogSearchResult
 
 logger = logging.getLogger(__name__)
+_QUERY_SAFE_METHODS = {"GET", "POST"}
 
 
 class DagPlanValidationError(ValueError):
@@ -39,10 +40,10 @@ class DagPlanValidationError(ValueError):
 
 
 class ApiDagPlanner:
-    """第三阶段只读 DAG 规划器。
+    """第三阶段查询 DAG 规划器。
 
     功能：
-        基于用户问题、阶段二召回候选和路由提示，输出只包含 GET 接口的执行计划。
+        基于用户问题、阶段二召回候选和路由提示，输出只包含查询安全接口的执行计划。
 
     Returns:
         `ApiQueryExecutionPlan`，后续仍需经过白名单与环检测才能进入执行器。
@@ -128,7 +129,7 @@ class ApiDagPlanner:
         plan: ApiQueryExecutionPlan,
         candidates: list[ApiCatalogSearchResult],
     ) -> dict[str, ApiCatalogEntry]:
-        """对白读 DAG 做结构与白名单校验。
+        """对查询 DAG 做结构与白名单校验。
 
         Args:
             plan: Planner 生成的 DAG。
@@ -144,6 +145,7 @@ class ApiDagPlanner:
             - 同一路径允许被多个步骤复用，但每个步骤 ID 必须唯一
             - JSONPath 引用到未声明依赖时直接拦截，避免执行阶段出现隐式依赖
         """
+        allowed_entries_by_id = _build_allowed_entries_by_id(candidates)
         allowed_entries_by_path = _build_allowed_entries_by_path(candidates)
         plan_steps_by_id = {step.step_id: step for step in plan.steps}
         step_entries: dict[str, ApiCatalogEntry] = {}
@@ -153,17 +155,29 @@ class ApiDagPlanner:
 
         dependency_graph: dict[str, set[str]] = {}
         for step in plan.steps:
-            entry = allowed_entries_by_path.get(step.api_path)
+            entry = _resolve_allowed_entry(step, allowed_entries_by_id, allowed_entries_by_path)
             if entry is None:
                 raise DagPlanValidationError(
                     "planner_unknown_api",
-                    f"Planner 引用了候选集外接口: {step.api_path}",
+                    f"Planner 引用了候选集外接口: {step.api_id or step.api_path}",
                 )
 
-            if entry.method != "GET":
+            if step.api_id and entry.id != step.api_id:
                 raise DagPlanValidationError(
-                    "planner_non_read_api",
-                    f"Planner 引入了非只读接口: {entry.method} {entry.path}",
+                    "planner_api_id_mismatch",
+                    f"步骤 {step.step_id} 的 api_id 与 api_path 不匹配: {step.api_id} != {entry.id}",
+                )
+
+            if entry.operation_safety != "query":
+                raise DagPlanValidationError(
+                    "planner_unsafe_api",
+                    f"Planner 引入了非查询语义接口: {entry.id}",
+                )
+
+            if entry.method not in _QUERY_SAFE_METHODS:
+                raise DagPlanValidationError(
+                    "planner_method_not_allowed",
+                    f"Planner 引入了不允许的接口方法: {entry.method} {entry.path}",
                 )
 
             missing_dependencies = [dep for dep in step.depends_on if dep not in plan_steps_by_id]
@@ -259,7 +273,7 @@ def build_single_step_plan(
         反而会把稳定的直达链路暴露给不必要的模型波动。
 
     Returns:
-        只包含一个 GET 步骤的执行计划。
+        只包含一个查询安全步骤的执行计划。
     """
     return ApiQueryExecutionPlan(
         plan_id=plan_id,
@@ -285,6 +299,33 @@ def _build_allowed_entries_by_path(candidates: list[ApiCatalogSearchResult]) -> 
     return allowed_entries
 
 
+def _build_allowed_entries_by_id(candidates: list[ApiCatalogSearchResult]) -> dict[str, ApiCatalogEntry]:
+    """按接口 ID 整理候选接口，避免同一路径不同方法时发生歧义。"""
+    allowed_entries: dict[str, ApiCatalogEntry] = {}
+    for candidate in candidates:
+        allowed_entries.setdefault(candidate.entry.id, candidate.entry)
+    return allowed_entries
+
+
+def _resolve_allowed_entry(
+    step: ApiQueryPlanStep,
+    allowed_entries_by_id: dict[str, ApiCatalogEntry],
+    allowed_entries_by_path: dict[str, ApiCatalogEntry],
+) -> ApiCatalogEntry | None:
+    """优先按 `api_id`，再按 `api_path` 命中白名单条目。
+
+    功能：
+        引入 POST 查询接口后，同一路径下可能同时存在 GET/POST 两个目录项。Planner 如果
+        只回 `api_path`，校验层就无法稳定判断它到底想调用哪一条接口，因此这里优先消费
+        `api_id`；只有兼容历史图纸时才回退到 `api_path`。
+    """
+    if step.api_id:
+        entry = allowed_entries_by_id.get(step.api_id)
+        if entry is not None:
+            return entry
+    return allowed_entries_by_path.get(step.api_path)
+
+
 def _build_planner_prompt(
     query: str,
     candidates: list[ApiCatalogSearchResult],
@@ -306,6 +347,7 @@ def _build_planner_prompt(
         candidate_lines.append(
             f"{index}. `{entry.method} {entry.path}`\n"
             f"   - api_id: {entry.id}\n"
+            f"   - operation_safety: {entry.operation_safety}\n"
             f"   - domain: {entry.domain}\n"
             f"   - description: {entry.description}\n"
             f"   - request_schema: {request_schema}\n"
@@ -322,8 +364,8 @@ def _build_planner_prompt(
 第二阶段路由提示：{json.dumps(route_hint_payload, ensure_ascii=False)}
 
 # Execution Rules (安全红线)
-1. 绝对禁止！你的 DAG 中不能包含任何 POST, PUT, DELETE, PATCH 类型的接口调用。
-2. 你只能使用以下 GET API 列表中的接口来拉取数据。
+1. 绝对禁止使用 `operation_safety != query` 的接口。
+2. 你只能使用以下 `operation_safety=query` 且 `method in [GET, POST]` 的接口来拉取数据。
 3. 你不能编造 API 路径、参数名或步骤 ID。
 
 # Available APIs
@@ -346,6 +388,7 @@ def _build_planner_prompt(
   "steps": [
     {{
       "step_id": "step_1",
+      "api_id": "endpoint_xxx",
       "api_path": "/api/xxx",
       "params": {{}},
       "depends_on": []
@@ -360,12 +403,14 @@ def _build_planner_prompt(
   "steps": [
     {{
       "step_id": "step_customers",
+      "api_id": "customer_list",
       "api_path": "/api/crm/customers",
       "params": {{"owner_id": "E8899"}},
       "depends_on": []
     }},
     {{
       "step_id": "step_orders",
+      "api_id": "order_stats",
       "api_path": "/api/orders/stats",
       "params": {{"customer_ids": "$[step_customers.data][*].id"}},
       "depends_on": ["step_customers"]

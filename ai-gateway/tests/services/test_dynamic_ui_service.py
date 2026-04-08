@@ -3,7 +3,16 @@ from __future__ import annotations
 import pytest
 
 from app.core.config import settings
-from app.models.schemas import ApiQueryUIAction, ApiQueryUIRuntime
+from app.models.schemas import (
+    ApiQueryDetailRequestRuntime,
+    ApiQueryDetailRuntime,
+    ApiQueryDetailSourceRuntime,
+    ApiQueryListPaginationRuntime,
+    ApiQueryListQueryContextRuntime,
+    ApiQueryListRuntime,
+    ApiQueryUIAction,
+    ApiQueryUIRuntime,
+)
 from app.services.dynamic_ui_service import DynamicUIService
 from app.services.ui_catalog_service import UIActionDefinition
 
@@ -82,6 +91,54 @@ def _make_runtime() -> ApiQueryUIRuntime:
                 params_schema={"type": "object"},
             )
         ],
+    )
+
+
+def _make_list_runtime() -> ApiQueryUIRuntime:
+    """构造带分页与详情能力的列表运行时契约。"""
+    runtime = _make_runtime()
+    return runtime.model_copy(
+        update={
+            "list": ApiQueryListRuntime(
+                enabled=True,
+                api_id="customer_list",
+                route_url="/api/v1/api-query",
+                ui_action="remoteQuery",
+                param_source="queryParams",
+                pagination=ApiQueryListPaginationRuntime(
+                    enabled=True,
+                    total=68,
+                    current_page=2,
+                    page_size=20,
+                    page_param="pageNum",
+                    page_size_param="pageSize",
+                    mutation_target="report-table.props.dataSource",
+                ),
+                query_context=ApiQueryListQueryContextRuntime(
+                    enabled=True,
+                    current_params={"ownerId": "E8899", "pageNum": 2, "pageSize": 20},
+                    page_param="pageNum",
+                    page_size_param="pageSize",
+                    preserve_on_pagination=["ownerId"],
+                    reset_page_on_filter_change=True,
+                ),
+            ),
+            "detail": ApiQueryDetailRuntime(
+                enabled=True,
+                api_id="customer_detail",
+                route_url="/api/v1/api-query",
+                ui_action="remoteQuery",
+                request=ApiQueryDetailRequestRuntime(
+                    param_source="queryParams",
+                    identifier_param="customerId",
+                ),
+                source=ApiQueryDetailSourceRuntime(
+                    identifier_field="customerId",
+                    value_type="string",
+                    required=True,
+                ),
+            ),
+        }
     )
 
 
@@ -340,3 +397,29 @@ async def test_generate_ui_spec_result_freezes_invalid_renderer_spec(
     notice = _root_child_by_type(result.spec, "PlannerNotice")
     assert result.spec["elements"]["root"]["props"]["title"] == "客户详情"
     assert "已冻结当前操作视图" in notice["props"]["text"]
+
+
+@pytest.mark.asyncio
+async def test_rule_query_spec_exposes_patch_metadata_for_pagination() -> None:
+    """首跳列表页必须把 patch 二跳所需元信息直接挂到分页动作里。"""
+    service = DynamicUIService(catalog_service=StubUICatalogService())
+
+    spec = await service.generate_ui_spec(
+        intent="query",
+        data=[
+            {"customerId": "C021", "customerName": "客户21"},
+            {"customerId": "C022", "customerName": "客户22"},
+        ],
+        context={"question": "查询客户列表"},
+        runtime=_make_list_runtime(),
+    )
+
+    assert spec is not None
+    table = _root_child_by_type(spec, "PlannerTable")
+    pagination = table["props"]["pagination"]
+    assert pagination["action"]["params"]["response_mode"] == "patch"
+    assert pagination["action"]["params"]["patch_context"] == {
+        "patch_type": "list_query",
+        "trigger": "pagination",
+        "mutation_target": "report-table.props.dataSource",
+    }

@@ -15,8 +15,13 @@ logger = logging.getLogger(__name__)
 
 _QUERY_DEFAULT_COMPONENT_CODES = [
     "PlannerCard",
+    "PlannerMetric",
     "PlannerTable",
     "PlannerDetailCard",
+    "PlannerForm",
+    "PlannerInput",
+    "PlannerSelect",
+    "PlannerButton",
     "PlannerNotice",
 ]
 _GENERIC_DEFAULT_COMPONENT_CODES = [
@@ -367,10 +372,36 @@ def _build_builtin_snapshot() -> UICatalogSnapshot:
             name="规划表格",
             description="同质列表展示，props: columns, dataSource",
         ),
+        "PlannerMetric": UIComponentDefinition(
+            code="PlannerMetric",
+            name="规划指标",
+            description="只读指标展示，props: label, value",
+        ),
         "PlannerDetailCard": UIComponentDefinition(
             code="PlannerDetailCard",
             name="详情卡片",
             description="单对象详情展示，props: title, items",
+        ),
+        "PlannerForm": UIComponentDefinition(
+            code="PlannerForm",
+            name="规划表单",
+            description="表单容器，负责组织可编辑字段",
+            is_container=True,
+        ),
+        "PlannerInput": UIComponentDefinition(
+            code="PlannerInput",
+            name="规划输入框",
+            description="文本输入组件，props: label, value, placeholder",
+        ),
+        "PlannerSelect": UIComponentDefinition(
+            code="PlannerSelect",
+            name="规划下拉框",
+            description="单选下拉组件，props: label, value, options",
+        ),
+        "PlannerButton": UIComponentDefinition(
+            code="PlannerButton",
+            name="规划按钮",
+            description="触发动作的按钮组件，props: label",
         ),
         "PlannerNotice": UIComponentDefinition(
             code="PlannerNotice",

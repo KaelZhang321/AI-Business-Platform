@@ -98,6 +98,12 @@ def _get_collection_schema() -> CollectionSchema:
             description="更稳定的一级业务标签，辅助细粒度过滤和 Prompt 语义压缩。",
         ),
         FieldSchema(
+            name="operation_safety",
+            dtype=DataType.VARCHAR,
+            max_length=16,
+            description="接口安全语义。用于在候选后校验、Planner 和执行器阶段硬拦截 mutation 接口。",
+        ),
+        FieldSchema(
             name="method",
             dtype=DataType.VARCHAR,
             max_length=16,
@@ -365,6 +371,7 @@ class ApiCatalogIndexer:
             [entry.env],
             [entry.status],
             [entry.tag_name or ""],
+            [entry.operation_safety],
             [entry.method],
             [entry.path],
             [entry.auth_required],
@@ -399,7 +406,7 @@ def _create_collection() -> Collection:
             "params": {"M": 16, "efConstruction": 200},
         },
     )
-    for field_name in ("domain", "env", "status", "tag_name"):
+    for field_name in ("domain", "env", "status", "tag_name", "operation_safety"):
         collection.create_index(field_name=field_name, index_params={"index_type": "INVERTED"})
     collection.load()
     return collection

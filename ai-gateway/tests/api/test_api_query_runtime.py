@@ -81,6 +81,7 @@ def _make_entry() -> ApiCatalogEntry:
         id="customer_list",
         description="查询客户列表",
         domain="crm",
+        operation_safety="query",
         method="GET",
         path="/api/v1/customers",
     )
@@ -247,7 +248,7 @@ def test_api_query_truncates_context_pool_and_ui_rows(monkeypatch) -> None:
     body = response.json()
     assert set(body.keys()) == {"trace_id", "execution_status", "execution_plan", "ui_runtime", "ui_spec", "error"}
     assert body["execution_plan"]["steps"][0]["step_id"] == "step_customer_list"
-    assert body["ui_runtime"]["pagination"]["total"] == 20
+    assert body["ui_runtime"]["list"]["pagination"]["total"] == 20
     table = _get_child_by_type(body["ui_spec"], "PlannerTable")
     assert table["props"]["columns"][0]["dataIndex"] == "customerId"
     assert len(table["props"]["dataSource"]) == 5
@@ -354,6 +355,7 @@ def test_api_query_executes_multi_step_plan_and_returns_multi_step_context_pool(
         id="customer_list",
         description="查询客户列表",
         domain="crm",
+        operation_safety="query",
         method="GET",
         path="/api/v1/customers",
         param_schema={
@@ -366,6 +368,7 @@ def test_api_query_executes_multi_step_plan_and_returns_multi_step_context_pool(
         id="order_stats",
         description="查询客户订单统计",
         domain="erp",
+        operation_safety="query",
         method="GET",
         path="/api/v1/orders/stats",
         param_schema={
@@ -471,6 +474,7 @@ def test_api_query_renders_partial_success_with_notice_and_table(monkeypatch) ->
         id="customer_list",
         description="查询客户列表",
         domain="crm",
+        operation_safety="query",
         method="GET",
         path="/api/v1/customers",
         param_schema={
@@ -483,6 +487,7 @@ def test_api_query_renders_partial_success_with_notice_and_table(monkeypatch) ->
         id="order_stats",
         description="查询客户订单统计",
         domain="erp",
+        operation_safety="query",
         method="GET",
         path="/api/v1/orders/stats",
         param_schema={

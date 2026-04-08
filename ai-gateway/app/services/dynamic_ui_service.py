@@ -525,29 +525,52 @@ class DynamicUIService:
                 }
                 for action in runtime.ui_actions
             ],
+            "list": {
+                "enabled": runtime.list.enabled,
+                "api_id": runtime.list.api_id,
+                "route_url": runtime.list.route_url,
+                "ui_action": runtime.list.ui_action,
+                "param_source": runtime.list.param_source,
+                "pagination": {
+                    "enabled": runtime.list.pagination.enabled,
+                    "total": runtime.list.pagination.total,
+                    "current_page": runtime.list.pagination.current_page,
+                    "page_size": runtime.list.pagination.page_size,
+                    "page_param": runtime.list.pagination.page_param,
+                    "page_size_param": runtime.list.pagination.page_size_param,
+                    "mutation_target": runtime.list.pagination.mutation_target,
+                },
+                "filters": {
+                    "enabled": runtime.list.filters.enabled,
+                    "fields": [field.model_dump(exclude_none=True) for field in runtime.list.filters.fields],
+                },
+                "query_context": {
+                    "enabled": runtime.list.query_context.enabled,
+                    "current_params": dict(runtime.list.query_context.current_params),
+                    "page_param": runtime.list.query_context.page_param,
+                    "page_size_param": runtime.list.query_context.page_size_param,
+                    "preserve_on_pagination": list(runtime.list.query_context.preserve_on_pagination),
+                    "reset_page_on_filter_change": runtime.list.query_context.reset_page_on_filter_change,
+                },
+            },
             "detail": {
                 "enabled": runtime.detail.enabled,
                 "api_id": runtime.detail.api_id,
-                "identifier_field": runtime.detail.identifier_field,
-                "query_param": runtime.detail.query_param,
+                "route_url": runtime.detail.route_url,
                 "ui_action": runtime.detail.ui_action,
-                "template_code": runtime.detail.template_code,
-                "fallback_mode": runtime.detail.fallback_mode,
+                "request": runtime.detail.request.model_dump(exclude_none=True),
+                "source": runtime.detail.source.model_dump(exclude_none=True),
             },
-            "pagination": {
-                "enabled": runtime.pagination.enabled,
-                "api_id": runtime.pagination.api_id,
-                "total": runtime.pagination.total,
-                "current_page": runtime.pagination.current_page,
-                "page_size": runtime.pagination.page_size,
-                "ui_action": runtime.pagination.ui_action,
-                "mutation_target": runtime.pagination.mutation_target,
-            },
-            "template": {
-                "enabled": runtime.template.enabled,
-                "template_code": runtime.template.template_code,
-                "render_mode": runtime.template.render_mode,
-                "fallback_mode": runtime.template.fallback_mode,
+            "form": {
+                "enabled": runtime.form.enabled,
+                "form_code": runtime.form.form_code,
+                "mode": runtime.form.mode,
+                "api_id": runtime.form.api_id,
+                "route_url": runtime.form.route_url,
+                "ui_action": runtime.form.ui_action,
+                "state_path": runtime.form.state_path,
+                "fields": [field.model_dump(exclude_none=True) for field in runtime.form.fields],
+                "submit": runtime.form.submit.model_dump(exclude_none=True),
             },
             "audit": {
                 "enabled": runtime.audit.enabled,
@@ -964,32 +987,37 @@ class DynamicUIService:
                     "params": {
                         "api_id": runtime.detail.api_id,
                         "route_url": runtime.detail.route_url,
-                        "identifier_field": runtime.detail.identifier_field,
-                        "query_param": runtime.detail.query_param,
-                        "template_code": runtime.detail.template_code,
-                        "fallback_mode": runtime.detail.fallback_mode,
+                        "request": runtime.detail.request.model_dump(exclude_none=True),
+                        "source": runtime.detail.source.model_dump(exclude_none=True),
                     },
                 }
             ]
-        if runtime and runtime.pagination.enabled:
+        if runtime and runtime.list.pagination.enabled:
             # 分页后续走 remoteQuery + mutation_target 做局部补丁，不重新生成整页 UI。
             table_props["pagination"] = {
                 "enabled": True,
-                "total": runtime.pagination.total,
-                "currentPage": runtime.pagination.current_page,
-                "pageSize": runtime.pagination.page_size,
+                "total": runtime.list.pagination.total,
+                "currentPage": runtime.list.pagination.current_page,
+                "pageSize": runtime.list.pagination.page_size,
                 "action": {
-                    "type": runtime.pagination.ui_action or "remoteQuery",
+                    "type": runtime.list.ui_action or "remoteQuery",
                     "params": {
-                        "api_id": runtime.pagination.api_id,
-                        "page_param": runtime.pagination.page_param,
-                        "page_size_param": runtime.pagination.page_size_param,
-                        "mutation_target": runtime.pagination.mutation_target,
+                        "api_id": runtime.list.api_id,
+                        "route_url": runtime.list.route_url,
+                        "response_mode": "patch",
+                        "param_source": runtime.list.param_source,
+                        "pagination": runtime.list.pagination.model_dump(exclude_none=True),
+                        "filters": runtime.list.filters.model_dump(exclude_none=True),
+                        "query_context": runtime.list.query_context.model_dump(exclude_none=True),
+                        "patch_context": {
+                            "patch_type": "list_query",
+                            "trigger": "pagination",
+                            "mutation_target": runtime.list.pagination.mutation_target,
+                        },
+                        "mutation_target": runtime.list.pagination.mutation_target,
                     },
                 },
             }
-        if runtime and runtime.template.enabled:
-            table_props["templateHint"] = runtime.template.model_dump(exclude_none=True)
 
         children.append({"type": "PlannerTable", "props": table_props})
         return self._build_flat_card_spec(root_props=root_props, children=children)
