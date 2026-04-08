@@ -2,6 +2,9 @@ import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
+import sys
 
 import httpx
 from fastapi import FastAPI, Request
@@ -22,6 +25,118 @@ from app.services.rag_service import RAGService
 
 logger = logging.getLogger(__name__)
 
+_APP_LOG_FILE_PATH = Path("app/logs/app.log")
+_APP_LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s - %(message)s"
+_APP_LOG_MAX_BYTES = 10 * 1024 * 1024
+_APP_LOG_BACKUP_COUNT = 5
+_ROOT_STREAM_HANDLER_NAME = "ai_gateway.stdout"
+_ROOT_FILE_HANDLER_NAME = "ai_gateway.file"
+_UVICORN_FILE_HANDLER_NAME = "ai_gateway.uvicorn.file"
+_UVICORN_LOGGER_NAMES = ("uvicorn", "uvicorn.error", "uvicorn.access")
+
+
+def _logger_has_named_handler(target_logger: logging.Logger, handler_name: str) -> bool:
+    """判断目标 logger 是否已经挂载指定名称的 handler。
+
+    功能：
+        `uvicorn --reload` 会重复导入应用模块。日志配置如果不做幂等保护，最直观的故障
+        就是同一条日志被打印两遍、三遍。这里用 handler 名称做稳定指纹，避免每次热重载
+        都把文件/终端输出器再挂一层。
+
+    Args:
+        target_logger: 需要检查的 logger。
+        handler_name: 预期的 handler 名称。
+
+    Returns:
+        若已存在同名 handler，则返回 `True`。
+    """
+    return any(handler.get_name() == handler_name for handler in target_logger.handlers)
+
+
+def _build_stream_handler() -> logging.Handler:
+    """构造标准输出日志 handler。
+
+    功能：
+        本地开发与容器场景都依赖 stdout/stderr 被宿主机采集，因此终端输出不能因为
+        “补文件日志”而被意外替换。这里显式绑定 `sys.stdout`，保持开发者和容器编排层
+        的既有观测入口不变。
+    """
+    handler = logging.StreamHandler(sys.stdout)
+    handler.set_name(_ROOT_STREAM_HANDLER_NAME)
+    handler.setFormatter(logging.Formatter(_APP_LOG_FORMAT))
+    return handler
+
+
+def _build_file_handler(handler_name: str) -> RotatingFileHandler:
+    """构造滚动文件日志 handler。
+
+    功能：
+        网关日志既要稳定落盘，方便排查跨请求链路，又不能因为单文件无限增长把容器磁盘
+        慢慢吃满。这里选择按大小滚动，是为了在高频访问日志场景下保持简单可控的上限。
+
+    Args:
+        handler_name: 当前 handler 的唯一名称。
+
+    Returns:
+        已绑定统一 formatter 的 `RotatingFileHandler`。
+    """
+    handler = RotatingFileHandler(
+        _APP_LOG_FILE_PATH,
+        maxBytes=_APP_LOG_MAX_BYTES,
+        backupCount=_APP_LOG_BACKUP_COUNT,
+        encoding="utf-8",
+    )
+    handler.set_name(handler_name)
+    handler.setFormatter(logging.Formatter(_APP_LOG_FORMAT))
+    return handler
+
+
+def _configure_application_logging() -> Path:
+    """配置 ai-gateway 的双通道日志输出。
+
+    功能：
+        当前网关默认只把日志打到终端，不会在仓库内保留稳定文件。为了让联调、回放和
+        容器运行时都能在固定位置找到日志，这里统一把应用日志收口为：
+
+        1. 终端继续输出，保持现有开发体验与 Docker stdout 采集链路不变
+        2. 额外落盘到 `app/logs/app.log`
+        3. 对 `uvicorn.access` / `uvicorn.error` 这类默认不向 root 冒泡的 logger
+           单独补文件 handler，确保访问日志也能进入同一份文件
+
+    Returns:
+        实际生效的日志文件路径，便于启动阶段写入确认日志。
+
+    Edge Cases:
+        - `uvicorn --reload` 多次导入模块时，不会重复挂载同名 handler
+        - 日志目录不存在时会自动创建
+    """
+    _APP_LOG_FILE_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+    root_logger = logging.getLogger()
+    if root_logger.level == logging.NOTSET or root_logger.level > logging.INFO:
+        root_logger.setLevel(logging.INFO)
+
+    # 终端输出原本就存在于多数 uvicorn 启动场景；只有在缺失时才补，避免重复打印。
+    has_stream_handler = any(
+        isinstance(handler, logging.StreamHandler) and not isinstance(handler, logging.FileHandler)
+        for handler in root_logger.handlers
+    )
+    if not has_stream_handler and not _logger_has_named_handler(root_logger, _ROOT_STREAM_HANDLER_NAME):
+        root_logger.addHandler(_build_stream_handler())
+
+    if not _logger_has_named_handler(root_logger, _ROOT_FILE_HANDLER_NAME):
+        root_logger.addHandler(_build_file_handler(_ROOT_FILE_HANDLER_NAME))
+
+    # uvicorn 的访问日志通常不向 root 冒泡；如果不单独补文件 handler，app.log 会缺失
+    # 最关键的请求入口事实，排查“请求到了没、状态码是多少”会断档。
+    for logger_name in _UVICORN_LOGGER_NAMES:
+        uvicorn_logger = logging.getLogger(logger_name)
+        if not uvicorn_logger.propagate and not _logger_has_named_handler(uvicorn_logger, _UVICORN_FILE_HANDLER_NAME):
+            uvicorn_logger.addHandler(_build_file_handler(_UVICORN_FILE_HANDLER_NAME))
+
+    return _APP_LOG_FILE_PATH
+
+
 # 全局服务连接状态，lifespan 写入，health_check 读取
 _service_status: dict[str, str] = {}
 _identity_vault = IdentityVault()
@@ -29,6 +144,9 @@ _identity_vault = IdentityVault()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    log_file_path = _configure_application_logging()
+    logger.info("AI网关日志双写已启用, file=%s", log_file_path)
+
     # ── 启动时：LangSmith 初始化 ─────────────────────────
     if settings.langsmith_tracing and settings.langsmith_api_key:
         os.environ["LANGCHAIN_TRACING_V2"] = "true"
@@ -99,9 +217,11 @@ async def lifespan(app: FastAPI):
         if settings.semantic_cache_enabled:
             semantic_cache = SemanticCacheService()
             set_semantic_cache_service(semantic_cache)
-            logger.info("语义缓存服务已初始化 (threshold=%.2f, ttl=%dh)",
-                        settings.semantic_cache_similarity_threshold,
-                        settings.semantic_cache_ttl_hours)
+            logger.info(
+                "语义缓存服务已初始化 (threshold=%.2f, ttl=%dh)",
+                settings.semantic_cache_similarity_threshold,
+                settings.semantic_cache_ttl_hours,
+            )
 
         cache_task = asyncio.create_task(start_cache_invalidation_listener())
         logger.info("缓存失效监听器已启动")
@@ -121,6 +241,7 @@ async def lifespan(app: FastAPI):
     # ChatWorkflow httpx 客户端
     try:
         from app.api.routes.chat import workflow as chat_workflow
+
         await chat_workflow.close()
         logger.info("ChatWorkflow HTTP 客户端已关闭")
     except Exception as exc:
@@ -224,6 +345,7 @@ def _error_code_to_http_status(ec: ErrorCode) -> int:
     if ec.code < 3000:
         return 401
     return 500
+
 
 app.include_router(chat.router, prefix="/api/v1", tags=["对话"])
 app.include_router(knowledge.router, prefix="/api/v1", tags=["知识库"])
