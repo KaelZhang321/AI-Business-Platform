@@ -6,9 +6,12 @@ from typing import Any, TypedDict
 from pydantic import BaseModel, Field
 
 from app.models.schemas import (
+    ApiQueryPatchContext,
     ApiQueryExecutionPlan,
     ApiQueryExecutionStatus,
+    ApiQueryRequest,
     ApiQueryResponse,
+    ApiQueryResponseMode,
     ApiQueryRoutingResult,
     ApiQueryUIRuntime,
 )
@@ -47,10 +50,15 @@ class ApiQueryState(TypedDict, total=False):
     conversation_id: str | None
     route_hint_summary: ApiQueryRouteHintSummary | None
     candidate_ids: list[str]
+    query_domains_hint: list[str]
+    business_intent_codes: list[str]
     plan: ApiQueryExecutionPlan | None
     execution_status: ApiQueryExecutionStatus | None
+    response_mode: ApiQueryResponseMode
+    patch_context: ApiQueryPatchContext | None
     error_code: str | None
     degrade_reason: str | None
+    degrade_stage: str | None
     ui_spec: dict[str, Any] | None
     ui_runtime: ApiQueryUIRuntime | None
     response: ApiQueryResponse | None
@@ -73,6 +81,25 @@ class ApiQueryExecutionState(TypedDict, total=False):
 
 
 @dataclass(slots=True)
+class ApiQueryDegradeContext:
+    """统一降级出口的运行时事实。
+
+    功能：
+        外层 workflow 要把第二、三阶段失败统一汇总到 `build_response`。这些失败场景除了
+        `error_code` 之外，还需要标题、提示文案和域/意图上下文，因此单独抽成请求期
+        运行时对象，避免把一批只服务最终收口的字段继续塞进 control state。
+    """
+
+    stage: str
+    title: str
+    message: str
+    error_code: str
+    query_domains: list[str] = field(default_factory=list)
+    business_intent_codes: list[str] = field(default_factory=list)
+    reasoning: str | None = None
+
+
+@dataclass(slots=True)
 class ApiQueryRuntimeContext:
     """`/api-query` 运行时上下文。
 
@@ -86,6 +113,10 @@ class ApiQueryRuntimeContext:
         - `retrieval_filters`：自然语言链路下的检索过滤条件，供响应快照复盘
         - `candidates`：原始候选对象，仅请求期内使用
         - `step_entries`：`step_id -> ApiCatalogEntry` 的执行白名单
+        - `route_hint`：第二阶段原始路由结果，仅供后续规划节点消费
+        - `request_body`：原始请求对象，只在节点内部拆字段，不进入 graph state
+        - `degrade_context`：待统一收口的降级事实
+        - `execution_state`：执行节点生成的内层状态快照
         - `log_prefix`：当前请求统一日志前缀
     """
 
@@ -94,6 +125,10 @@ class ApiQueryRuntimeContext:
     retrieval_filters: ApiCatalogSearchFilters | None = None
     candidates: list[Any] = field(default_factory=list)
     step_entries: dict[str, ApiCatalogEntry] = field(default_factory=dict)
+    route_hint: ApiQueryRoutingResult | None = None
+    request_body: ApiQueryRequest | None = None
+    degrade_context: ApiQueryDegradeContext | None = None
+    execution_state: ApiQueryExecutionState | None = None
     log_prefix: str = ""
 
 

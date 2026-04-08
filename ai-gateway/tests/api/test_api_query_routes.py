@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 
 from app.api.routes import api_query as api_query_routes
 from app.models.schemas import (
+    ApiQueryResponse,
     ApiQueryExecutionResult,
     ApiQueryExecutionStatus,
     ApiQueryRoutingResult,
@@ -304,6 +305,65 @@ def create_test_app() -> FastAPI:
     app = FastAPI()
     app.include_router(api_query_routes.router, prefix="/api/v1")
     return app
+
+
+def test_api_query_route_delegates_to_workflow(monkeypatch) -> None:
+    """路由层应只做 HTTP 适配，并把上下文交给 workflow。"""
+
+    captured: dict[str, object] = {}
+
+    class FakeWorkflow:
+        async def run(
+            self,
+            request_body,
+            *,
+            trace_id: str,
+            interaction_id: str | None,
+            conversation_id: str | None,
+            user_context: dict[str, object],
+            user_token: str | None,
+        ):
+            captured.update(
+                {
+                    "request_body": request_body.model_dump(mode="json", exclude_none=True),
+                    "trace_id": trace_id,
+                    "interaction_id": interaction_id,
+                    "conversation_id": conversation_id,
+                    "user_context": user_context,
+                    "user_token": user_token,
+                }
+            )
+            return ApiQueryResponse(
+                trace_id=trace_id,
+                execution_status=ApiQueryExecutionStatus.SUCCESS,
+                execution_plan=None,
+                ui_runtime=None,
+                ui_spec={"root": "page", "state": {}, "elements": {"page": {"id": "page", "type": "PlannerCard"}}},
+                error=None,
+            )
+
+    monkeypatch.setattr(api_query_routes, "_get_workflow", lambda: FakeWorkflow())
+
+    client = TestClient(create_test_app())
+    response = client.post(
+        "/api/v1/api-query",
+        json={"query": "查询张三客户", "conversation_id": "conv-route-001"},
+        headers={
+            "X-Trace-Id": "trace-route-001",
+            "X-Interaction-Id": "ia-route-001",
+            "Authorization": "Bearer route-token",
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured == {
+        "request_body": {"mode": "nl", "response_mode": "full_spec", "query": "查询张三客户", "conversation_id": "conv-route-001", "top_k": 3, "envs": [], "tag_names": []},
+        "trace_id": "trace-route-001",
+        "interaction_id": "ia-route-001",
+        "conversation_id": "conv-route-001",
+        "user_context": {},
+        "user_token": "Bearer route-token",
+    }
 
 
 def _build_flat_stub_spec(

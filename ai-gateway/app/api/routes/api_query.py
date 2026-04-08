@@ -69,6 +69,7 @@ from app.services.api_query_state import (
     build_execution_state,
     summarize_route_hint,
 )
+from app.services.api_query_workflow import ApiQueryWorkflow
 from app.services.dynamic_ui_service import DynamicUIService, UISpecBuildResult
 from app.services.ui_spec_guard import UISpecValidationResult
 from app.services.ui_catalog_service import UICatalogService
@@ -87,6 +88,7 @@ _ui_catalog: UICatalogService | None = None
 _snapshot_service: UISnapshotService | None = None
 _registry_source: ApiCatalogRegistrySource | None = None
 _api_query_llm: ApiQueryLLMService | None = None
+_workflow: ApiQueryWorkflow | None = None
 _bearer = HTTPBearer(auto_error=False)
 _QUERY_SAFE_METHODS = {"GET", "POST"}
 _QUERY_PARAM_SOURCE_BY_METHOD = {"GET": "queryParams", "POST": "body"}
@@ -178,6 +180,25 @@ def _get_response_builder() -> ApiQueryResponseBuilder:
     )
 
 
+def _get_workflow() -> ApiQueryWorkflow:
+    """获取 `/api-query` 外层工作流单例。
+
+    功能：
+        工作流图需要编译复用，但测试又会 monkeypatch route 级 getter。这里通过 lambda 延迟
+        读取当前模块的 getter，保证单例 graph 与动态替身装配可以同时成立。
+    """
+    global _workflow
+    if _workflow is None:
+        _workflow = ApiQueryWorkflow(
+            services_getter=lambda: _get_services(),
+            planner_getter=lambda: _get_planner(),
+            response_builder_getter=lambda: _get_response_builder(),
+            registry_source_getter=lambda: _get_registry_source(),
+            allowed_business_intent_codes_getter=lambda: _get_route_allowed_business_intent_codes(),
+        )
+    return _workflow
+
+
 # ── 请求 / 响应 Schema ───────────────────────────────────────────
 
 
@@ -200,213 +221,22 @@ async def api_query(
     4. 透传 Token 调用 business-server
     5. 响应规范化 → DynamicUIService → UI Spec
     """
-    retriever, extractor, executor, _, _ = _get_services()
-    response_builder = _get_response_builder()
     trace_id = _resolve_trace_id(request)
     interaction_id = _resolve_interaction_id(request)
     conversation_id = _resolve_conversation_id(request_body)
     user_context = _extract_user_context(request)
     log_prefix = _build_api_query_log_prefix(trace_id, interaction_id, conversation_id)
 
-    request_query = _summarize_request_query(request_body)
-    logger.info("%s request mode=%s query=%s", log_prefix, request_body.mode.value, request_query)
-
     # 用户 token（透传给 business-server）
     user_token = f"Bearer {credentials.credentials}" if credentials else None
-    base_state: ApiQueryState = {
-        "request_mode": request_body.mode.value,
-        "query_text": request_query,
-        "trace_id": trace_id,
-        "interaction_id": interaction_id,
-        "conversation_id": conversation_id,
-    }
-    if request_body.mode == ApiQueryMode.DIRECT:
-        plan, step_entries, query_domains, business_intent_codes, direct_query_text = await _prepare_direct_execution(
-            request_body,
-            trace_id=trace_id,
-            interaction_id=interaction_id,
-            conversation_id=conversation_id,
-        )
-        direct_state: ApiQueryState = dict(base_state)
-        direct_state["query_text"] = direct_query_text
-        direct_state["plan"] = plan
-        return await _execute_prepared_plan(
-            executor=executor,
-            response_builder=response_builder,
-            state=direct_state,
-            runtime_context=ApiQueryRuntimeContext(
-                user_context=user_context,
-                user_token=user_token,
-                step_entries=step_entries,
-                log_prefix=log_prefix,
-            ),
-            query_domains_hint=query_domains,
-            business_intent_codes=business_intent_codes,
-            response_mode=request_body.response_mode,
-            patch_context=request_body.patch_context,
-        )
-
-    allowed_business_intent_codes = _get_route_allowed_business_intent_codes()
-    assert request_body.query is not None
-
-    # Step 1: 轻量路由先产出 query_domains + business_intents，避免后续直接做全域 Top-K。
-    route_hint = await extractor.route_query(
-        request_body.query,
-        user_context,
-        allowed_business_intents=allowed_business_intent_codes,
+    logger.info("%s dispatch mode=%s", log_prefix, request_body.mode.value)
+    return await _get_workflow().run(
+        request_body,
         trace_id=trace_id,
-    )
-    base_state["route_hint_summary"] = summarize_route_hint(route_hint)
-    if route_hint.route_status != "ok":
-        logger.info(
-            "%s stage2 route degraded code=%s query=%s",
-            log_prefix,
-            route_hint.route_error_code,
-            request_body.query[:100],
-        )
-        return await response_builder.build_stage2_degrade_response(
-            state=base_state,
-            title="未识别到可用业务域",
-            message="抱歉，我没有完全理解您的意图，或系统中暂未开放相关查询能力，请尝试换种说法。",
-            error_code=route_hint.route_error_code or "routing_failed",
-            query_domains=route_hint.query_domains,
-            business_intent_codes=route_hint.business_intents,
-            reasoning=route_hint.reasoning,
-        )
-
-    # Step 2: 按 query_domains 做分层召回，避免多域场景被单一 domain 吞掉 Top-K。
-    retrieval_filters = _build_retrieval_filters(request_body)
-    candidates = await retriever.search_stratified(
-        request_body.query,
-        domains=route_hint.query_domains,
-        top_k=request_body.top_k,
-        filters=retrieval_filters,
-        trace_id=trace_id,
-    )
-    base_state["candidate_ids"] = [candidate.entry.id for candidate in candidates]
-    if not candidates:
-        logger.info(
-            "%s no candidates after stratified retrieval domains=%s query=%s",
-            log_prefix,
-            route_hint.query_domains,
-            request_body.query[:100],
-        )
-        return await response_builder.build_stage2_degrade_response(
-            state=base_state,
-            title="未找到匹配接口",
-            message="当前问题没有召回到可执行的查询接口，请调整表达方式后重试。",
-            error_code="no_catalog_match",
-            query_domains=route_hint.query_domains,
-            business_intent_codes=route_hint.business_intents,
-            reasoning=route_hint.reasoning,
-        )
-
-    # Step 3: 构造第三阶段执行计划。单候选仍走确定性一跳计划，避免把稳定链路暴露给额外模型波动。
-    planning_intent_codes = list(route_hint.business_intents)
-    if len(candidates) == 1:
-        routing_result = await extractor.extract_routing_result(
-            request_body.query,
-            candidates,
-            user_context,
-            allowed_business_intents=allowed_business_intent_codes,
-            routing_hints=route_hint,
-            trace_id=trace_id,
-        )
-        if routing_result.route_status != "ok":
-            logger.info(
-                "%s route-and-extract degraded code=%s query=%s",
-                log_prefix,
-                routing_result.route_error_code,
-                request_body.query[:100],
-            )
-            return await response_builder.build_stage2_degrade_response(
-                state=base_state,
-                title="无法确定查询接口",
-                message="我找到了相关业务域，但还无法稳定确定具体接口，请补充更明确的查询条件后重试。",
-                error_code=routing_result.route_error_code or "route_and_extract_failed",
-                query_domains=routing_result.query_domains or route_hint.query_domains,
-                business_intent_codes=routing_result.business_intents or route_hint.business_intents,
-                reasoning=routing_result.reasoning or route_hint.reasoning,
-            )
-
-        selected_entry = _find_selected_entry(candidates, routing_result)
-        if selected_entry is None:
-            logger.info("%s extractor could not choose endpoint", log_prefix)
-            return await response_builder.build_stage2_degrade_response(
-                state=base_state,
-                title="无法确定查询接口",
-                message="当前输入关联了多个候选接口，但仍缺少足够信息来确定最终查询目标。",
-                error_code="selected_api_unresolved",
-                query_domains=routing_result.query_domains or route_hint.query_domains,
-                business_intent_codes=routing_result.business_intents or route_hint.business_intents,
-                reasoning=routing_result.reasoning or route_hint.reasoning,
-            )
-
-        _ensure_query_safe_entry(selected_entry, trace_id, interaction_id, conversation_id)
-        planning_intent_codes = list(routing_result.business_intents or route_hint.business_intents)
-        plan = build_single_step_plan(
-            selected_entry,
-            routing_result.params,
-            step_id=_build_step_id(selected_entry),
-            plan_id=f"dag_{trace_id[:8]}",
-        )
-    else:
-        planner = _get_planner()
-        try:
-            plan = await planner.build_plan(
-                request_body.query,
-                candidates,
-                user_context,
-                route_hint,
-                trace_id=trace_id,
-            )
-        except DagPlanValidationError as exc:
-            logger.info("%s planner degraded code=%s", log_prefix, exc.code)
-            return await response_builder.build_stage3_degrade_response(
-                state=base_state,
-                title="数据执行计划生成失败",
-                message="我找到了相关接口，但当前还无法稳定生成可执行的数据流，请补充更明确的查询链路后重试。",
-                error_code=exc.code,
-                query_domains=route_hint.query_domains,
-                business_intent_codes=planning_intent_codes,
-                reasoning=str(exc),
-            )
-
-    # Step 4: 对 DAG 做白名单与依赖校验，任何脏图纸都不能进入物理执行阶段。
-    planner = _get_planner()
-    try:
-        # 这里不是重复做一次 Planner，而是把 LLM 产出的“图纸”重新拉回确定性安全闸。
-        # 只有命中第二阶段候选白名单、依赖关系可拓扑执行、且不越过查询安全边界的步骤，才允许进入真实调用。
-        step_entries = planner.validate_plan(plan, candidates)
-    except DagPlanValidationError as exc:
-        logger.info("%s planner validation degraded code=%s", log_prefix, exc.code)
-        return await response_builder.build_stage3_degrade_response(
-            state=base_state,
-            title="数据执行计划校验失败",
-            message="系统生成的数据依赖图存在安全风险，已终止执行以保护业务系统。",
-            error_code=exc.code,
-            query_domains=route_hint.query_domains,
-            business_intent_codes=planning_intent_codes,
-            reasoning=str(exc),
-        )
-    nl_state: ApiQueryState = dict(base_state)
-    nl_state["plan"] = plan
-    return await _execute_prepared_plan(
-        executor=executor,
-        response_builder=response_builder,
-        state=nl_state,
-        runtime_context=ApiQueryRuntimeContext(
-            user_context=user_context,
-            user_token=user_token,
-            retrieval_filters=retrieval_filters,
-            candidates=candidates,
-            step_entries=step_entries,
-            log_prefix=log_prefix,
-        ),
-        query_domains_hint=route_hint.query_domains,
-        business_intent_codes=planning_intent_codes,
-        response_mode=request_body.response_mode,
-        patch_context=request_body.patch_context,
+        interaction_id=interaction_id,
+        conversation_id=conversation_id,
+        user_context=user_context,
+        user_token=user_token,
     )
 
 
@@ -496,187 +326,6 @@ def _summarize_request_query(request_body: ApiQueryRequest) -> str:
     if request_body.mode == ApiQueryMode.DIRECT and request_body.direct_query is not None:
         return f"direct:{request_body.direct_query.api_id}"
     return (request_body.query or "")[:100]
-
-
-async def _prepare_direct_execution(
-    request_body: ApiQueryRequest,
-    *,
-    trace_id: str,
-    interaction_id: str | None,
-    conversation_id: str | None,
-) -> tuple[ApiQueryExecutionPlan, dict[str, ApiCatalogEntry], list[str], list[str], str]:
-    """为 `direct` 快路准备单步执行计划。
-
-    功能：
-        二跳详情/分页/刷新场景已经拿到了 `api_id + params`，此时继续调用路由 LLM、
-        Milvus 和 Planner 只会平白增加延迟与抖动。这里把快路入口收敛成一条
-        确定性预处理链：查目录、做硬校验、构造单步计划。
-
-    Returns:
-        `(plan, step_entries, query_domains, business_intent_codes, query_text)`。
-
-    Raises:
-        HTTPException: 当接口不存在、未激活、方法越界或参数不合法时抛出。
-    """
-    assert request_body.direct_query is not None
-
-    registry_source = _get_registry_source()
-    direct_query = request_body.direct_query
-    try:
-        entry = await registry_source.get_entry_by_id(direct_query.api_id)
-    except ApiCatalogSourceError as exc:
-        logger.exception(
-            "%s direct registry lookup failed api_id=%s",
-            _build_api_query_log_prefix(trace_id, interaction_id, conversation_id),
-            direct_query.api_id,
-        )
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"[{trace_id}] direct 模式加载接口目录失败：{exc}",
-        ) from exc
-
-    if entry is None:
-        _raise_direct_query_error(
-            trace_id=trace_id,
-            detail=f"direct 模式指定的接口不存在：{direct_query.api_id}",
-        )
-
-    _ensure_active_entry(
-        entry,
-        trace_id=trace_id,
-        interaction_id=interaction_id,
-        conversation_id=conversation_id,
-    )
-    _ensure_query_safe_entry(entry, trace_id, interaction_id, conversation_id)
-    validated_params = _validate_direct_query_params(
-        entry,
-        direct_query.params,
-        trace_id=trace_id,
-        interaction_id=interaction_id,
-        conversation_id=conversation_id,
-    )
-    _validate_direct_patch_request(
-        request_body,
-        entry,
-        validated_params,
-        trace_id=trace_id,
-        interaction_id=interaction_id,
-        conversation_id=conversation_id,
-    )
-    plan = build_single_step_plan(
-        entry,
-        validated_params,
-        step_id=_build_step_id(entry),
-        plan_id=f"direct_{trace_id[:8]}",
-    )
-    query_text = request_body.query or _build_direct_query_text(entry, validated_params)
-    return plan, {_build_step_id(entry): entry}, [entry.domain], ["none"], query_text
-
-
-async def _execute_prepared_plan(
-    *,
-    executor: ApiExecutor,
-    response_builder: ApiQueryResponseBuilder,
-    state: ApiQueryState,
-    runtime_context: ApiQueryRuntimeContext,
-    query_domains_hint: list[str],
-    business_intent_codes: list[str],
-    response_mode: ApiQueryResponseMode,
-    patch_context: ApiQueryPatchContext | None,
-) -> ApiQueryResponse:
-    """执行已准备好的查询计划，并统一收口到渲染响应。
-
-    功能：
-        `nl` 与 `direct` 的差异只应停留在“计划怎么来”；一旦进入真实调用，就必须
-        共用同一套执行状态机、UI 渲染和快照治理，避免前端看到两种语义相近但细节漂移
-        的响应壳。
-    """
-    dag_executor = ApiDagExecutor(executor)
-    # 执行统一收口到 DAG executor，而不是在 route 层手写串/并行调用。
-    # 这样“上游空结果短路下游”“JSONPath 依赖绑定”“单节点失败不拖垮全链路”都由同一套状态机负责，
-    # 后续排障时只需要围绕 execution_report 回放，而不必回头拼接零散中间态。
-    plan = state["plan"]
-    execution_report = await dag_executor.execute_plan(
-        plan,
-        runtime_context.step_entries,
-        user_token=runtime_context.user_token,
-        trace_id=state["trace_id"],
-    )
-    execution_state = build_execution_state(
-        plan=plan,
-        trace_id=state["trace_id"],
-        records_by_step_id=execution_report.records_by_step_id,
-        execution_order=execution_report.execution_order,
-    )
-    return await response_builder.build_execution_response(
-        state=state,
-        runtime_context=runtime_context,
-        execution_state=execution_state,
-        query_domains_hint=query_domains_hint,
-        business_intent_codes=business_intent_codes,
-        response_mode=response_mode,
-        patch_context=patch_context,
-    )
-
-
-def _build_retrieval_filters(request_body: ApiQueryRequest) -> ApiCatalogSearchFilters:
-    """构造第二阶段召回使用的标量过滤器。
-
-    功能：
-        `status=active` 是第二阶段默认的安全护栏；`envs / tag_names` 则允许上层在
-        不改 Prompt 的前提下，把环境隔离和业务标签收紧到硬过滤表达式里。
-
-    Args:
-        request_body: 当前 `api_query` 请求体。
-
-    Returns:
-        已去空、去重后的 Milvus 标量过滤器。
-
-    Edge Cases:
-        - 空字符串会被静默丢弃，避免拼出无意义的 `in [""]`
-        - 标签名保留原始大小写和中文，以适配数据库中的稳定业务标签
-    """
-    return ApiCatalogSearchFilters(
-        statuses=["active"],
-        envs=_dedupe_non_empty([item.strip().lower() for item in request_body.envs]),
-        tag_names=_dedupe_non_empty([item.strip() for item in request_body.tag_names]),
-    )
-
-
-def _build_response_execution_plan(
-    plan: ApiQueryExecutionPlan,
-    step_entries: dict[str, ApiCatalogEntry],
-) -> ApiQueryExecutionPlan:
-    """为响应层补齐步骤级 `api_id`。
-
-    功能：
-        第三阶段真正规划的是“路径依赖图”，而不是前端展示契约；但前端做详情跳转、
-        调试回放、审计留痕时，更需要稳定的接口实体 ID。这里在响应出口统一补齐
-        `ui_api_endpoints.id`，避免把这类展示诉求反向侵入 Planner Prompt。
-
-    Args:
-        plan: 内部执行计划。
-        step_entries: `step_id -> ApiCatalogEntry` 的白名单映射。
-
-    Returns:
-        适合直接回给前端的执行计划；每个可识别步骤都会补上 `api_id`。
-
-    Edge Cases:
-        - 若某个步骤在 `step_entries` 中缺失，则保留原值，避免为了展示字段破坏主流程响应
-        - 这里返回 plan 的浅拷贝，避免执行阶段与响应阶段共享同一可变对象
-    """
-    enriched_steps = []
-    for step in plan.steps:
-        entry = step_entries.get(step.step_id)
-        enriched_steps.append(
-            step.model_copy(
-                update={
-                    # 前端真正需要的是接口实体主键，而不是只在本次 DAG 内有效的 step_id。
-                    "api_id": entry.id if entry is not None else step.api_id,
-                }
-            )
-        )
-    return plan.model_copy(update={"steps": enriched_steps})
 
 
 def _resolve_trace_id(request: Request) -> str:
@@ -2278,165 +1927,6 @@ def _build_skip_message(execution_result: ApiQueryExecutionResult) -> str:
     if execution_result.error:
         return execution_result.error
     return "由于缺少必要条件，当前查询未被执行。"
-
-
-async def _build_stage2_degrade_response(
-    dynamic_ui: DynamicUIService,
-    *,
-    trace_id: str,
-    interaction_id: str | None,
-    conversation_id: str | None,
-    query: str,
-    title: str,
-    message: str,
-    error_code: str,
-    query_domains: list[str],
-    business_intent_codes: list[str],
-    reasoning: str | None = None,
-) -> ApiQueryResponse:
-    """把第二阶段失败统一折叠为可渲染的安全 Notice。
-
-    功能：
-        路由失败、无候选、候选内无法定点等场景都属于“未进入真实执行”的安全失败，
-        不应该再抛裸 HTTP 错，而应返回一份冻结的只读 UI envelope 给前端。
-    """
-    response_query_domains = _format_query_domains_for_response(query_domains)
-    execution_result = ApiQueryExecutionResult(
-        status=ApiQueryExecutionStatus.SKIPPED,
-        data=[],
-        total=0,
-        error=message,
-        error_code=error_code,
-        retryable=True,
-        trace_id=trace_id,
-        skipped_reason=error_code,
-        meta={"stage": "stage2", "query": query, "reasoning": reasoning},
-    )
-    business_intents = _build_business_intents(business_intent_codes)
-    context_pool = {
-        "stage2_routing": ApiQueryContextStepResult(
-            status=ApiQueryExecutionStatus.SKIPPED,
-            domain=response_query_domains[0] if len(response_query_domains) == 1 else None,
-            data=[],
-            total=0,
-            error=ApiQueryExecutionErrorDetail(
-                code=error_code,
-                message=message,
-                retryable=True,
-            ),
-            skipped_reason=error_code,
-            meta={
-                "stage": "stage2",
-                "query_domains": response_query_domains,
-                "reasoning": reasoning,
-            },
-        )
-    }
-    base_runtime = ApiQueryUIRuntime(
-        components=["PlannerCard", "PlannerNotice"],
-        ui_actions=_build_runtime_actions({"refresh"}),
-    )
-    ui_build_result = await _generate_ui_spec_result(
-        dynamic_ui,
-        intent="query",
-        data=[],
-        context={
-            "title": title,
-            "user_query": query,
-            "skip_message": message,
-            "error": message,
-            "context_pool": {step_id: step.model_dump(exclude_none=True) for step_id, step in context_pool.items()},
-            "business_intents": [intent.model_dump() for intent in business_intents],
-        },
-        status=execution_result.status,
-        runtime=base_runtime,
-        trace_id=trace_id,
-    )
-    ui_runtime = _finalize_render_runtime(base_runtime, ui_build_result.spec, ui_build_result)
-    return ApiQueryResponse(
-        trace_id=trace_id,
-        execution_status=execution_result.status,
-        ui_runtime=ui_runtime,
-        ui_spec=ui_build_result.spec,
-        error=message,
-    )
-
-
-async def _build_stage3_degrade_response(
-    dynamic_ui: DynamicUIService,
-    *,
-    trace_id: str,
-    interaction_id: str | None,
-    conversation_id: str | None,
-    query: str,
-    title: str,
-    message: str,
-    error_code: str,
-    query_domains: list[str],
-    business_intent_codes: list[str],
-    reasoning: str | None = None,
-) -> ApiQueryResponse:
-    """把第三阶段规划或校验失败折叠为可渲染的安全 Notice。"""
-    response_query_domains = _format_query_domains_for_response(query_domains)
-    execution_result = ApiQueryExecutionResult(
-        status=ApiQueryExecutionStatus.SKIPPED,
-        data=[],
-        total=0,
-        error=message,
-        error_code=error_code,
-        retryable=True,
-        trace_id=trace_id,
-        skipped_reason=error_code,
-        meta={"stage": "stage3", "query": query, "reasoning": reasoning},
-    )
-    business_intents = _build_business_intents(business_intent_codes)
-    context_pool = {
-        "stage3_planner": ApiQueryContextStepResult(
-            status=ApiQueryExecutionStatus.SKIPPED,
-            domain=response_query_domains[0] if len(response_query_domains) == 1 else None,
-            data=[],
-            total=0,
-            error=ApiQueryExecutionErrorDetail(
-                code=error_code,
-                message=message,
-                retryable=True,
-            ),
-            skipped_reason=error_code,
-            meta={
-                "stage": "stage3",
-                "query_domains": response_query_domains,
-                "reasoning": reasoning,
-            },
-        )
-    }
-    base_runtime = ApiQueryUIRuntime(
-        components=["PlannerCard", "PlannerNotice"],
-        ui_actions=_build_runtime_actions({"refresh"}),
-    )
-    ui_build_result = await _generate_ui_spec_result(
-        dynamic_ui,
-        intent="query",
-        data=[],
-        context={
-            "title": title,
-            "user_query": query,
-            "skip_message": message,
-            "error": message,
-            "context_pool": {step_id: step.model_dump(exclude_none=True) for step_id, step in context_pool.items()},
-            "business_intents": [intent.model_dump() for intent in business_intents],
-        },
-        status=execution_result.status,
-        runtime=base_runtime,
-        trace_id=trace_id,
-    )
-    ui_runtime = _finalize_render_runtime(base_runtime, ui_build_result.spec, ui_build_result)
-    return ApiQueryResponse(
-        trace_id=trace_id,
-        execution_status=execution_result.status,
-        ui_runtime=ui_runtime,
-        ui_spec=ui_build_result.spec,
-        error=message,
-    )
 
 
 def _maybe_attach_snapshot(
