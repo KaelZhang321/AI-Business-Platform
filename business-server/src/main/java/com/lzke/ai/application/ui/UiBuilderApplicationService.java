@@ -552,6 +552,7 @@ public class UiBuilderApplicationService {
                 endpoint.setMethod(method.toUpperCase(Locale.ROOT));
                 endpoint.setPath(path);
                 endpoint.setName(firstNonBlank(summary, endpoint.getMethod() + " " + path));
+                endpoint.setOperationSafety(defaultIfBlank(endpoint.getOperationSafety(), "query"));
                 endpoint.setSummary(summary);
                 endpoint.setRequestContentType(extractRequestContentType(operationNode));
                 endpoint.setRequestSchema(toJsonString(extractRequestSchema(rootNode, operationNode)));
@@ -1209,6 +1210,10 @@ public class UiBuilderApplicationService {
         if (!allowPartial || StringUtils.hasText(request.getMethod())) {
             requireText(request.getMethod(), "HTTP 方法不能为空");
         }
+        if (StringUtils.hasText(request.getOperationSafety())
+                && !List.of("query", "list", "mutation").contains(request.getOperationSafety().trim().toLowerCase(Locale.ROOT))) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "operationSafety 仅支持 query、list、mutation");
+        }
     }
 
     /**
@@ -1319,6 +1324,7 @@ public class UiBuilderApplicationService {
         endpoint.setName(request.getName());
         endpoint.setPath(request.getPath());
         endpoint.setMethod(request.getMethod() != null ? request.getMethod().toUpperCase(Locale.ROOT) : null);
+        endpoint.setOperationSafety(defaultIfBlank(trimToNull(request.getOperationSafety()), "query"));
         endpoint.setSummary(request.getSummary());
         endpoint.setRequestContentType(request.getRequestContentType());
         endpoint.setRequestSchema(defaultIfBlank(request.getRequestSchema(), "{}"));

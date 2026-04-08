@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS ui_api_endpoints (
     name                 VARCHAR(128) NOT NULL COMMENT '接口名称',
     path                 VARCHAR(255) NOT NULL COMMENT '接口路径',
     method               VARCHAR(16) NOT NULL COMMENT 'HTTP方法',
+    operation_safety     VARCHAR(16) NOT NULL DEFAULT 'query' COMMENT '操作安全等级: query/list/mutation',
     summary              VARCHAR(255) NULL COMMENT '接口摘要',
     request_content_type VARCHAR(64) NULL COMMENT '请求内容类型',
     request_schema       JSON NULL COMMENT '请求Schema',

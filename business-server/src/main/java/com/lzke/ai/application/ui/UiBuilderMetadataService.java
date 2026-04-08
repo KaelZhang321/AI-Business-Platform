@@ -143,6 +143,7 @@ public class UiBuilderMetadataService {
                         new UiBuilderFieldResponse("source_id", "varchar(64)", "所属接口源"),
                         new UiBuilderFieldResponse("tag_id", "varchar(64)", "所属标签"),
                         new UiBuilderFieldResponse("method", "varchar(16)", "HTTP 方法"),
+                        new UiBuilderFieldResponse("operation_safety", "varchar(16)", "操作安全等级 query/list/mutation"),
                         new UiBuilderFieldResponse("request_schema", "json", "请求结构"),
                         new UiBuilderFieldResponse("response_schema", "json", "响应结构")
                 )),
