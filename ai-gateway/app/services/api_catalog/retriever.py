@@ -42,6 +42,7 @@ _OUTPUT_FIELDS = [
     "env",
     "status",
     "tag_name",
+    "operation_safety",
     "method",
     "path",
     "auth_required",
@@ -130,7 +131,9 @@ class ApiCatalogRetriever:
         """
         field_names = {field.name for field in self._get_collection().schema.fields}
         if "api_schema" in field_names:
-            return _OUTPUT_FIELDS
+            # schema 演进期间允许“代码先发，索引后重建”；这里只请求 collection 真实存在的字段，
+            # 避免新增顶层字段尚未入库时把整条检索链路打挂。
+            return [field_name for field_name in _OUTPUT_FIELDS if field_name in field_names]
         return _LEGACY_OUTPUT_FIELDS
 
     def _get_search_param(self) -> dict[str, object]:
@@ -301,12 +304,13 @@ class ApiCatalogRetriever:
         expr = _build_filter_expr(filters)
 
         try:
+            output_fields = self._get_output_fields()
             search_kwargs = {
                 "data": [query_emb],
                 "anns_field": "embedding",
                 "param": self._get_search_param(),
                 "limit": top_k + 2,
-                "output_fields": self._get_output_fields(),
+                "output_fields": output_fields,
             }
             if expr:
                 search_kwargs["expr"] = expr
@@ -328,7 +332,7 @@ class ApiCatalogRetriever:
             if score < score_threshold:
                 continue
 
-            fields = {field: hit.entity.get(field) for field in _OUTPUT_FIELDS}
+            fields = {field: hit.entity.get(field) for field in output_fields}
             results.append(ApiCatalogSearchResult(entry=_build_entry_from_fields(fields), score=score))
             if len(results) >= top_k:
                 break
@@ -360,6 +364,12 @@ def _build_entry_from_fields(fields: dict) -> ApiCatalogEntry:
         env=fields.get("env", "shared"),
         status=fields.get("status", "active"),
         tag_name=fields.get("tag_name") or None,
+        operation_safety=fields.get("operation_safety") or _read_json_field(
+            fields,
+            "security_rules",
+            "security_rules_json",
+            {},
+        ).get("operation_safety", "mutation"),
         method=fields.get("method", "GET"),
         path=fields.get("path", ""),
         auth_required=fields.get("auth_required", True),

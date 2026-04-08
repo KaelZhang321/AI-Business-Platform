@@ -21,17 +21,29 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from app.models.schemas import (
     ApiQueryBusinessIntent,
     ApiQueryContextStepResult,
+    ApiQueryDetailRequestRuntime,
     ApiQueryDetailRuntime,
+    ApiQueryDetailSourceRuntime,
     ApiQueryExecutionErrorDetail,
     ApiQueryExecutionPlan,
     ApiQueryExecutionResult,
     ApiQueryExecutionStatus,
+    ApiQueryFormFieldRuntime,
+    ApiQueryFormOptionSourceRuntime,
+    ApiQueryFormRuntime,
+    ApiQueryFormSubmitRuntime,
+    ApiQueryListFilterFieldRuntime,
+    ApiQueryListFiltersRuntime,
+    ApiQueryListPaginationRuntime,
+    ApiQueryListQueryContextRuntime,
+    ApiQueryListRuntime,
     ApiQueryMode,
-    ApiQueryPaginationRuntime,
+    ApiQueryPatchContext,
+    ApiQueryPatchTrigger,
     ApiQueryRequest,
+    ApiQueryResponseMode,
     ApiQueryResponse,
     ApiQueryRoutingResult,
-    ApiQueryTemplateRuntime,
     ApiQueryRuntimeMetadataResponse,
     ApiQueryUIAction,
     ApiQueryUIRuntime,
@@ -69,7 +81,10 @@ _snapshot_service: UISnapshotService | None = None
 _registry_source: ApiCatalogRegistrySource | None = None
 _api_query_llm: ApiQueryLLMService | None = None
 _bearer = HTTPBearer(auto_error=False)
-_READ_ONLY_METHODS = {"GET"}
+_QUERY_SAFE_METHODS = {"GET", "POST"}
+_QUERY_PARAM_SOURCE_BY_METHOD = {"GET": "queryParams", "POST": "body"}
+_LIST_FILTER_EXCLUDED_FIELDS = {"id", "page", "pageNum", "pageSize", "size", "limit"}
+_PATCH_PAGE_SIZE_MAX = 50
 # 这里固定保留 5 条是为了给 Renderer 足够上下文，又避免把大结果集整包塞进生成链路导致注意力失焦。
 _CONTEXT_ROW_LIMIT = 5
 
@@ -197,6 +212,8 @@ async def api_query(
             log_prefix=log_prefix,
             request_mode=request_body.mode.value,
             retrieval_filters=None,
+            response_mode=request_body.response_mode,
+            patch_context=request_body.patch_context,
         )
 
     allowed_business_intent_codes = _get_route_allowed_business_intent_codes()
@@ -309,7 +326,7 @@ async def api_query(
                 reasoning=routing_result.reasoning or route_hint.reasoning,
             )
 
-        _ensure_read_only_entry(selected_entry, trace_id, interaction_id, conversation_id)
+        _ensure_query_safe_entry(selected_entry, trace_id, interaction_id, conversation_id)
         planning_intent_codes = list(routing_result.business_intents or route_hint.business_intents)
         plan = build_single_step_plan(
             selected_entry,
@@ -347,7 +364,7 @@ async def api_query(
     planner = _get_planner()
     try:
         # 这里不是重复做一次 Planner，而是把 LLM 产出的“图纸”重新拉回确定性安全闸。
-        # 只有命中第二阶段候选白名单、依赖关系可拓扑执行、且不越过只读边界的步骤，才允许进入真实调用。
+        # 只有命中第二阶段候选白名单、依赖关系可拓扑执行、且不越过查询安全边界的步骤，才允许进入真实调用。
         step_entries = planner.validate_plan(plan, candidates)
     except DagPlanValidationError as exc:
         logger.info("%s planner validation degraded code=%s", log_prefix, exc.code)
@@ -380,6 +397,8 @@ async def api_query(
         log_prefix=log_prefix,
         request_mode=request_body.mode.value,
         retrieval_filters=retrieval_filters,
+        response_mode=request_body.response_mode,
+        patch_context=request_body.patch_context,
     )
 
 
@@ -393,23 +412,36 @@ async def get_runtime_metadata() -> ApiQueryRuntimeMetadataResponse:
         ui_runtime=ApiQueryUIRuntime(
             components=catalog_service.get_component_codes(intent="query"),
             ui_actions=catalog_service.build_runtime_actions(),
+            list=ApiQueryListRuntime(
+                enabled=False,
+                route_url="/api/v1/api-query",
+                ui_action="remoteQuery",
+                param_source="queryParams",
+                pagination=ApiQueryListPaginationRuntime(
+                    enabled=False,
+                    page_param="pageNum",
+                    page_size_param="pageSize",
+                ),
+                filters=ApiQueryListFiltersRuntime(enabled=False),
+                query_context=ApiQueryListQueryContextRuntime(
+                    enabled=False,
+                    page_param="pageNum",
+                    page_size_param="pageSize",
+                ),
+            ),
             detail=ApiQueryDetailRuntime(
                 enabled=False,
                 route_url="/api/v1/api-query",
                 ui_action="remoteQuery",
-                fallback_mode="dynamic_ui",
+                request=ApiQueryDetailRequestRuntime(
+                    param_source="queryParams",
+                ),
+                source=ApiQueryDetailSourceRuntime(),
             ),
-            pagination=ApiQueryPaginationRuntime(
+            form=ApiQueryFormRuntime(
                 enabled=False,
-                page_param="pageNum",
-                page_size_param="pageSize",
-                ui_action="remoteQuery",
-            ),
-            template=ApiQueryTemplateRuntime(
-                enabled=False,
-                ui_action="remoteQuery",
-                render_mode="dynamic_ui",
-                fallback_mode="dynamic_ui",
+                route_url="/api/v1/api-query",
+                ui_action="remoteMutation",
             ),
         ),
         template_scenarios=catalog_service.get_template_scenarios(),
@@ -507,10 +539,18 @@ async def _prepare_direct_execution(
         interaction_id=interaction_id,
         conversation_id=conversation_id,
     )
-    _ensure_read_only_entry(entry, trace_id, interaction_id, conversation_id)
+    _ensure_query_safe_entry(entry, trace_id, interaction_id, conversation_id)
     validated_params = _validate_direct_query_params(
         entry,
         direct_query.params,
+        trace_id=trace_id,
+        interaction_id=interaction_id,
+        conversation_id=conversation_id,
+    )
+    _validate_direct_patch_request(
+        request_body,
+        entry,
+        validated_params,
         trace_id=trace_id,
         interaction_id=interaction_id,
         conversation_id=conversation_id,
@@ -542,8 +582,10 @@ async def _execute_prepared_plan(
     log_prefix: str,
     request_mode: str,
     retrieval_filters: ApiCatalogSearchFilters | None,
+    response_mode: ApiQueryResponseMode,
+    patch_context: ApiQueryPatchContext | None,
 ) -> ApiQueryResponse:
-    """执行已准备好的只读计划，并统一收口到渲染响应。
+    """执行已准备好的查询计划，并统一收口到渲染响应。
 
     功能：
         `nl` 与 `direct` 的差异只应停留在“计划怎么来”；一旦进入真实调用，就必须
@@ -571,7 +613,23 @@ async def _execute_prepared_plan(
 
     # 这里继续复用第五阶段统一渲染入口，确保快路不会绕过 UI Guard。
     data_for_ui = _build_ui_data_from_execution_report(execution_report, anchor_record)
-    runtime = _build_runtime_from_execution_report(execution_report, anchor_record)
+    runtime = _build_runtime_from_execution_report(
+        execution_report,
+        anchor_record,
+        business_intents=business_intents,
+    )
+    response_plan = _build_response_execution_plan(plan, step_entries)
+    if response_mode == ApiQueryResponseMode.PATCH:
+        return _build_patch_mode_response(
+            trace_id=trace_id,
+            execution_report=execution_report,
+            aggregate_status=aggregate_status,
+            anchor_record=anchor_record,
+            response_plan=response_plan,
+            runtime=runtime,
+            patch_context=patch_context,
+        )
+
     ui_build_result = await _generate_ui_spec_result(
         dynamic_ui,
         intent="query",
@@ -596,8 +654,13 @@ async def _execute_prepared_plan(
         trace_id=trace_id,
     )
     ui_spec = ui_build_result.spec
+    runtime = await _enrich_runtime_from_ui_spec(
+        runtime,
+        ui_spec,
+        business_intents=business_intents,
+        trace_id=trace_id,
+    )
     ui_runtime = _finalize_render_runtime(runtime, ui_spec, ui_build_result)
-    response_plan = _build_response_execution_plan(plan, step_entries)
     if ui_build_result.frozen:
         logger.warning(
             "%s stage5 ui frozen errors=%s",
@@ -765,10 +828,7 @@ def _build_api_query_log_prefix(
         运维可以把同一次用户操作拆出来看；继续补入 `conversation_id`，则是为了把多轮问答
         串成同一业务会话，避免列表页和详情页日志只能看见零散请求切片。
     """
-    return (
-        f"api_query[trace={trace_id} interaction={interaction_id or '-'} "
-        f"conversation={conversation_id or '-'}]"
-    )
+    return f"api_query[trace={trace_id} interaction={interaction_id or '-'} conversation={conversation_id or '-'}]"
 
 
 def _format_query_domains_for_response(query_domains: list[str]) -> list[str]:
@@ -797,21 +857,37 @@ def _dedupe_non_empty(values: list[str]) -> list[str]:
     return deduped
 
 
-def _ensure_read_only_entry(
+def _ensure_query_safe_entry(
     entry: ApiCatalogEntry,
     trace_id: str,
     interaction_id: str | None = None,
     conversation_id: str | None = None,
 ) -> None:
-    """强制拦截非只读接口。
+    """强制拦截非查询安全接口。
 
     功能：
-        `api_query` 当前阶段只允许 Read，不允许任何真实 Mutation 进入执行器。
+        `/api-query` 的安全边界已经从“只允许 GET”升级为“只允许显式标记为查询语义的接口”。
+        因此这里同时校验 `operation_safety=query` 和 `method in {GET, POST}`，把 mutation 接口
+        尽量拦在候选刚被选中的第一时间。
     """
-    if entry.method in _READ_ONLY_METHODS:
+    if entry.operation_safety != "query":
+        logger.warning(
+            "%s blocked non-query-safe endpoint id=%s safety=%s method=%s path=%s",
+            _build_api_query_log_prefix(trace_id, interaction_id, conversation_id),
+            entry.id,
+            entry.operation_safety,
+            entry.method,
+            entry.path,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"[{trace_id}] api_query 仅支持查询安全接口，当前接口语义为 {entry.operation_safety}",
+        )
+
+    if entry.method in _QUERY_SAFE_METHODS:
         return
     logger.warning(
-        "%s blocked non-read endpoint id=%s method=%s path=%s",
+        "%s blocked non-query-method endpoint id=%s method=%s path=%s",
         _build_api_query_log_prefix(trace_id, interaction_id, conversation_id),
         entry.id,
         entry.method,
@@ -819,7 +895,7 @@ def _ensure_read_only_entry(
     )
     raise HTTPException(
         status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-        detail=f"[{trace_id}] api_query 仅支持只读接口，当前命中 {entry.method} {entry.path}",
+        detail=f"[{trace_id}] api_query 仅支持 GET/POST 查询接口，当前命中 {entry.method} {entry.path}",
     )
 
 
@@ -903,6 +979,90 @@ def _validate_direct_query_params(
         )
 
     return dict(params)
+
+
+def _validate_direct_patch_request(
+    request_body: ApiQueryRequest,
+    entry: ApiCatalogEntry,
+    params: dict[str, Any],
+    *,
+    trace_id: str,
+    interaction_id: str | None,
+    conversation_id: str | None,
+) -> None:
+    """校验列表 patch 快路的专属约束。
+
+    功能：
+        `mode=direct` 只是说明“不再走自然语言链路”，并不代表任何直达请求都适合返回 patch。
+        这里把设计文档里对 patch 模式的硬边界收口成确定性校验：
+
+        1. 只能用于单步只读列表接口
+        2. 只能用于开启了分页 hint 的 GET 接口
+        3. `pageSize` 必须受上限保护
+        4. 改筛选条件时必须显式回到第一页
+
+    Raises:
+        HTTPException: 当 patch 请求违反运行时契约时抛出 422。
+    """
+    if request_body.response_mode != ApiQueryResponseMode.PATCH:
+        return
+
+    log_prefix = _build_api_query_log_prefix(trace_id, interaction_id, conversation_id)
+    pagination_hint = entry.pagination_hint
+    if entry.method != "GET" or not pagination_hint.enabled:
+        logger.warning("%s direct patch rejected id=%s reason=unsupported_entry", log_prefix, entry.id)
+        _raise_direct_query_error(
+            trace_id=trace_id,
+            detail="PATCH_MODE_NOT_SUPPORTED: 当前接口不是开启分页能力的只读 GET 列表接口",
+        )
+
+    page_param = pagination_hint.page_param or "pageNum"
+    page_size_param = pagination_hint.page_size_param or "pageSize"
+    missing_pagination_params = [param_name for param_name in (page_param, page_size_param) if param_name not in params]
+    if missing_pagination_params:
+        logger.warning(
+            "%s direct patch rejected id=%s missing_pagination_params=%s",
+            log_prefix,
+            entry.id,
+            missing_pagination_params,
+        )
+        _raise_direct_query_error(
+            trace_id=trace_id,
+            detail=f"PATCH_MODE_NOT_SUPPORTED: patch 模式必须显式提供分页参数：{', '.join(missing_pagination_params)}",
+        )
+
+    page_size_value = params.get(page_size_param)
+    if isinstance(page_size_value, (int, float)) and int(page_size_value) > _PATCH_PAGE_SIZE_MAX:
+        logger.warning(
+            "%s direct patch rejected id=%s page_size=%s over_limit=%s",
+            log_prefix,
+            entry.id,
+            page_size_value,
+            _PATCH_PAGE_SIZE_MAX,
+        )
+        _raise_direct_query_error(
+            trace_id=trace_id,
+            detail=f"patch 模式下 {page_size_param} 不能超过 {_PATCH_PAGE_SIZE_MAX}",
+        )
+
+    patch_context = request_body.patch_context
+    if patch_context is None:
+        return
+
+    if patch_context.trigger in {ApiQueryPatchTrigger.FILTER_SUBMIT, ApiQueryPatchTrigger.FILTER_RESET}:
+        page_value = params.get(page_param)
+        if page_value != 1:
+            logger.warning(
+                "%s direct patch rejected id=%s trigger=%s invalid_page_reset=%s",
+                log_prefix,
+                entry.id,
+                patch_context.trigger.value,
+                page_value,
+            )
+            _raise_direct_query_error(
+                trace_id=trace_id,
+                detail=f"patch 模式下触发 {patch_context.trigger.value} 时必须将 {page_param} 重置为 1",
+            )
 
 
 def _build_direct_query_text(entry: ApiCatalogEntry, params: dict[str, Any]) -> str:
@@ -1011,21 +1171,102 @@ def _build_runtime_actions(action_codes: set[str] | None = None) -> list[ApiQuer
     return _get_ui_catalog_service().build_runtime_actions(action_codes)
 
 
+def _infer_param_source(method: str | None) -> str:
+    """推导当前接口参数的承载位置。
+
+    功能：
+        前端二跳不应该自己猜“同样一个 params 最终该进 query string 还是 body”。
+        这里把 HTTP 方法到参数归属的约定固定在网关里，保证详情、分页和后续表单契约
+        使用同一份事实。
+    """
+    normalized_method = (method or "GET").strip().upper()
+    return _QUERY_PARAM_SOURCE_BY_METHOD.get(normalized_method, "queryParams")
+
+
+def _normalize_runtime_value_type(schema_type: Any, *, fallback_value: Any = None) -> str:
+    """把 schema 类型压成前端运行时契约可消费的轻量值类型。"""
+    normalized_type = str(schema_type or "").strip().lower()
+    if normalized_type in {"string", "number", "integer", "boolean", "array", "object"}:
+        return "number" if normalized_type == "integer" else normalized_type
+
+    if isinstance(fallback_value, bool):
+        return "boolean"
+    if isinstance(fallback_value, (int, float)):
+        return "number"
+    if isinstance(fallback_value, list):
+        return "array"
+    if isinstance(fallback_value, dict):
+        return "object"
+    return "string"
+
+
+def _build_list_filter_fields(
+    entry: ApiCatalogEntry,
+    *,
+    page_param: str | None,
+    page_size_param: str | None,
+) -> list[ApiQueryListFilterFieldRuntime]:
+    """根据目录参数 schema 推导列表筛选字段。
+
+    功能：
+        筛选字段本质上是“允许前端继续提交哪些查询参数”。这里优先信任目录 schema，
+        再排除分页字段和网关保留字段，避免前端误把保留协议当成业务筛选条件展示出去。
+    """
+    excluded_fields = set(_LIST_FILTER_EXCLUDED_FIELDS)
+    if page_param:
+        excluded_fields.add(page_param)
+    if page_size_param:
+        excluded_fields.add(page_size_param)
+
+    filter_fields: list[ApiQueryListFilterFieldRuntime] = []
+    required_fields = set(entry.param_schema.required)
+    for field_name, field_schema in entry.param_schema.properties.items():
+        if field_name in excluded_fields:
+            continue
+
+        label = (
+            str(field_schema.get("title") or "").strip() or str(field_schema.get("label") or "").strip() or field_name
+        )
+        filter_fields.append(
+            ApiQueryListFilterFieldRuntime(
+                name=field_name,
+                label=label,
+                value_type=_normalize_runtime_value_type(field_schema.get("type")),
+                required=field_name in required_fields,
+            )
+        )
+    return filter_fields
+
+
+def _has_write_business_intent(business_intents: list[ApiQueryBusinessIntent]) -> bool:
+    """判断当前请求是否存在合法写意图。"""
+    return any(intent.category == "write" and intent.code != NOOP_BUSINESS_INTENT for intent in business_intents)
+
+
 def _build_ui_runtime(
     entry: ApiCatalogEntry,
     execution_result: ApiQueryExecutionResult,
     *,
     params: dict[str, Any],
+    business_intents: list[ApiQueryBusinessIntent],
 ) -> ApiQueryUIRuntime:
     """根据接口元数据和执行结果推导前端运行时契约。
 
     功能：
-        把详情、分页、模板、审计等能力从“隐藏实现细节”提升为显式运行时元数据，
-        供前端决定如何做二次交互。
+        这层要解决两个长期漂移问题：
+        1. 把列表、详情、表单的二跳能力统一上移到 `ui_runtime`
+        2. 不再让前端从 `execution_plan` 或 UI 组件树里反向猜交互契约
     """
     rows = _normalize_rows(execution_result.data)
     action_codes = {"refresh", "export"}
-    components = _get_ui_catalog_service().get_component_codes(intent="query")
+    requested_component_codes = ["PlannerCard", "PlannerTable", "PlannerDetailCard", "PlannerNotice"]
+    if _has_write_business_intent(business_intents):
+        requested_component_codes.extend(["PlannerForm", "PlannerInput", "PlannerSelect", "PlannerButton"])
+    components = _get_ui_catalog_service().get_component_codes(
+        intent="query",
+        requested_codes=requested_component_codes,
+    )
+    param_source = _infer_param_source(entry.method)
 
     detail_hint = entry.detail_hint
     identifier_field = detail_hint.identifier_field or _infer_identifier_field(rows)
@@ -1034,51 +1275,371 @@ def _build_ui_runtime(
         and bool(identifier_field)
         and (detail_hint.enabled or identifier_field is not None)
     )
+
     pagination_hint = entry.pagination_hint
+    page_param = pagination_hint.page_param or "pageNum"
+    page_size_param = pagination_hint.page_size_param or "pageSize"
+    filter_fields = _build_list_filter_fields(
+        entry,
+        page_param=page_param,
+        page_size_param=page_size_param,
+    )
+    is_list_payload = isinstance(execution_result.data, list)
     pagination_enabled = (
         execution_result.status in {ApiQueryExecutionStatus.SUCCESS, ApiQueryExecutionStatus.EMPTY}
         and (pagination_hint.enabled or execution_result.total > len(rows))
         and (execution_result.total > 0 or bool(rows))
     )
-    template_hint = entry.template_hint
+    list_enabled = execution_result.status in {
+        ApiQueryExecutionStatus.SUCCESS,
+        ApiQueryExecutionStatus.EMPTY,
+    } and (is_list_payload or pagination_enabled or bool(filter_fields))
 
-    if detail_enabled or pagination_enabled or template_hint.enabled:
+    if detail_enabled or list_enabled:
         action_codes.add("remoteQuery")
     if detail_enabled:
         action_codes.add("view_detail")
+    if _has_write_business_intent(business_intents):
+        action_codes.add("remoteMutation")
+
+    current_params = dict(params)
+    preserve_on_pagination = [
+        field_name for field_name in current_params if field_name not in {page_param, page_size_param, "id"}
+    ]
+    list_api_id = pagination_hint.api_id or entry.id
 
     return ApiQueryUIRuntime(
         components=components,
         ui_actions=_build_runtime_actions(action_codes),
+        list=ApiQueryListRuntime(
+            enabled=list_enabled,
+            api_id=list_api_id if list_enabled else None,
+            route_url="/api/v1/api-query" if list_enabled else None,
+            ui_action=(pagination_hint.ui_action or "remoteQuery") if list_enabled else None,
+            param_source=param_source if list_enabled else None,
+            pagination=ApiQueryListPaginationRuntime(
+                enabled=pagination_enabled,
+                total=execution_result.total,
+                page_size=_infer_page_size(params, len(rows)),
+                current_page=_infer_current_page(params),
+                page_param=page_param if list_enabled else None,
+                page_size_param=page_size_param if list_enabled else None,
+                mutation_target=pagination_hint.mutation_target if pagination_enabled else None,
+            ),
+            filters=ApiQueryListFiltersRuntime(
+                enabled=bool(filter_fields),
+                fields=filter_fields,
+            ),
+            query_context=ApiQueryListQueryContextRuntime(
+                enabled=list_enabled,
+                current_params=current_params,
+                page_param=page_param if list_enabled else None,
+                page_size_param=page_size_param if list_enabled else None,
+                preserve_on_pagination=preserve_on_pagination,
+                reset_page_on_filter_change=True,
+            ),
+        ),
         detail=ApiQueryDetailRuntime(
             enabled=detail_enabled,
             api_id=(detail_hint.api_id or entry.id) if detail_enabled else None,
-            route_url="/api/v1/api-query",
-            identifier_field=identifier_field,
-            query_param=detail_hint.query_param or identifier_field,
-            ui_action=detail_hint.ui_action if detail_enabled else None,
-            template_code=detail_hint.template_code,
-            fallback_mode=detail_hint.fallback_mode if detail_enabled else None,
-        ),
-        pagination=ApiQueryPaginationRuntime(
-            enabled=pagination_enabled,
-            api_id=pagination_hint.api_id or entry.id,
-            total=execution_result.total,
-            page_size=_infer_page_size(params, len(rows)),
-            current_page=_infer_current_page(params),
-            page_param=pagination_hint.page_param if pagination_enabled else None,
-            page_size_param=pagination_hint.page_size_param if pagination_enabled else None,
-            ui_action=pagination_hint.ui_action if pagination_enabled else None,
-            mutation_target=pagination_hint.mutation_target if pagination_enabled else None,
-        ),
-        template=ApiQueryTemplateRuntime(
-            enabled=template_hint.enabled,
-            template_code=template_hint.template_code,
-            ui_action="remoteQuery" if template_hint.enabled else None,
-            render_mode=template_hint.render_mode if template_hint.enabled else None,
-            fallback_mode=template_hint.fallback_mode if template_hint.enabled else None,
+            route_url="/api/v1/api-query" if detail_enabled else None,
+            ui_action=(detail_hint.ui_action or "remoteQuery") if detail_enabled else None,
+            request=ApiQueryDetailRequestRuntime(
+                param_source=param_source if detail_enabled else None,
+                identifier_param=(detail_hint.query_param or identifier_field) if detail_enabled else None,
+            ),
+            source=ApiQueryDetailSourceRuntime(
+                identifier_field=identifier_field if detail_enabled else None,
+                value_type=(
+                    _normalize_runtime_value_type(
+                        None,
+                        fallback_value=rows[0].get(identifier_field) if rows and identifier_field else None,
+                    )
+                    if detail_enabled
+                    else None
+                ),
+                required=detail_enabled,
+            ),
         ),
     )
+
+
+async def _enrich_runtime_from_ui_spec(
+    runtime: ApiQueryUIRuntime,
+    ui_spec: dict[str, Any] | None,
+    *,
+    business_intents: list[ApiQueryBusinessIntent],
+    trace_id: str,
+) -> ApiQueryUIRuntime:
+    """根据最终 `ui_spec` 反推表单提交契约。
+
+    功能：
+        列表和详情二跳主要来自目录 hint；表单提交则不同，真正的提交按钮、payload 绑定
+        和目标 `api_id` 只有在第五阶段输出 Spec 后才真正落定。因此这里选择“以最终 Spec
+        为准”，避免路由层提前拍脑袋猜一个错误的表单提交目标。
+    """
+    form_contract = await _extract_form_runtime_from_spec(
+        ui_spec,
+        business_intents=business_intents,
+        trace_id=trace_id,
+    )
+    if not form_contract.enabled:
+        return runtime
+    return runtime.model_copy(update={"form": form_contract})
+
+
+async def _extract_form_runtime_from_spec(
+    ui_spec: dict[str, Any] | None,
+    *,
+    business_intents: list[ApiQueryBusinessIntent],
+    trace_id: str,
+) -> ApiQueryFormRuntime:
+    """从最终 Spec 中提取表单运行时契约。
+
+    功能：
+        `ui_runtime.form` 的职责是告诉前端“往哪提、提什么”。这类信息如果继续散落在
+        `PlannerButton.on.press.params` 里，前端每做一个表单都得重新解析组件树。
+
+    Edge Cases:
+        - 若页面不存在 `remoteMutation` 动作，则直接返回 disabled，避免给纯查询页挂空表单
+        - 若 Renderer 给出了提交动作但目录里没有对应 mutation 接口，仍保留基础契约，
+          避免为了补充类型信息把整页表单能力吞掉
+    """
+    write_intent = next(
+        (intent for intent in business_intents if intent.category == "write" and intent.code != NOOP_BUSINESS_INTENT),
+        None,
+    )
+    if write_intent is None or not _is_flat_ui_spec(ui_spec):
+        return ApiQueryFormRuntime()
+
+    mutation_action = _find_first_action_payload(ui_spec, target_action_code="remoteMutation")
+    if mutation_action is None:
+        return ApiQueryFormRuntime()
+
+    action_params = mutation_action.get("params")
+    if not isinstance(action_params, dict):
+        return ApiQueryFormRuntime()
+
+    api_id = action_params.get("api_id")
+    payload = action_params.get("payload")
+    if not isinstance(api_id, str) or not api_id.strip() or not isinstance(payload, dict):
+        return ApiQueryFormRuntime()
+
+    mutation_entry: ApiCatalogEntry | None = None
+    try:
+        mutation_entry = await _get_registry_source().get_entry_by_id(api_id)
+    except Exception as exc:  # pragma: no cover - 依赖治理源状态的兜底分支
+        logger.warning(
+            "api_query[trace=%s] failed to enrich form mutation entry api_id=%s error=%s",
+            trace_id,
+            api_id,
+            exc,
+        )
+
+    state = ui_spec.get("state") if isinstance(ui_spec, dict) else {}
+    interactive_bindings = _collect_form_input_bindings(ui_spec)
+    required_fields = set(mutation_entry.param_schema.required) if mutation_entry is not None else set()
+    property_schemas = mutation_entry.param_schema.properties if mutation_entry is not None else {}
+
+    form_fields: list[ApiQueryFormFieldRuntime] = []
+    bind_paths: list[str] = []
+    for submit_key, submit_value in payload.items():
+        if not isinstance(submit_value, dict):
+            continue
+        state_path = submit_value.get("$bindState")
+        if not isinstance(state_path, str) or not state_path.startswith("/"):
+            continue
+
+        bind_paths.append(state_path)
+        binding_meta = interactive_bindings.get(state_path, {})
+        component_type = binding_meta.get("component_type")
+        source_kind = "user_input"
+        writable = True
+        if component_type == "PlannerSelect":
+            source_kind = "dictionary"
+        elif component_type is None:
+            source_kind = "context"
+            writable = False
+
+        state_value = _read_state_value(state, state_path)
+        field_schema = property_schemas.get(submit_key, {})
+        form_fields.append(
+            ApiQueryFormFieldRuntime(
+                name=submit_key,
+                value_type=_normalize_runtime_value_type(field_schema.get("type"), fallback_value=state_value),
+                state_path=state_path,
+                submit_key=submit_key,
+                required=submit_key in required_fields,
+                writable=writable,
+                source_kind=source_kind,
+                option_source=(binding_meta.get("option_source") if component_type == "PlannerSelect" else None),
+            )
+        )
+
+    if not form_fields:
+        return ApiQueryFormRuntime()
+
+    return ApiQueryFormRuntime(
+        enabled=True,
+        form_code=f"{api_id}_form",
+        mode=_infer_form_mode(form_fields),
+        api_id=api_id,
+        route_url="/api/v1/api-query",
+        ui_action="remoteMutation",
+        state_path=_infer_form_state_root(bind_paths),
+        fields=form_fields,
+        submit=ApiQueryFormSubmitRuntime(
+            business_intent=write_intent.code,
+            confirm_required=True,
+        ),
+    )
+
+
+def _collect_form_input_bindings(ui_spec: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """收集表单输入组件的 `$bindState` 路径与字段来源元数据。
+
+    功能：
+        提交 payload 里只知道“从哪个 state_path 取值”，但不知道这个值是用户填写还是上下文透传。
+        这里把输入组件类型和可推导的选项来源一起收集起来，后续即可稳定区分：
+
+        1. 普通输入字段
+        2. 字典下拉字段
+        3. 仅用于透传的只读上下文字段
+    """
+    if not _is_flat_ui_spec(ui_spec):
+        return {}
+
+    bindings: dict[str, dict[str, Any]] = {}
+    elements = ui_spec.get("elements")
+    if not isinstance(elements, dict):
+        return bindings
+
+    for element in elements.values():
+        if not isinstance(element, dict):
+            continue
+        component_type = element.get("type")
+        if component_type not in {"PlannerInput", "PlannerSelect"}:
+            continue
+        props = element.get("props")
+        if not isinstance(props, dict):
+            continue
+        value_binding = props.get("value")
+        if isinstance(value_binding, dict):
+            bind_state_path = value_binding.get("$bindState")
+            if isinstance(bind_state_path, str) and bind_state_path.startswith("/"):
+                bindings[bind_state_path] = {
+                    "component_type": component_type,
+                    "option_source": _extract_form_option_source(props.get("options")),
+                }
+    return bindings
+
+
+def _extract_form_option_source(options_payload: Any) -> ApiQueryFormOptionSourceRuntime | None:
+    """从 `PlannerSelect.props.options` 推导可复用的选项来源契约。
+
+    功能：
+        `ui_runtime.form.fields[*].option_source` 的目的不是复刻整段 options，而是告诉前端
+        “这个下拉框的选项应该从哪类数据源拿”。这样二跳刷新或表单复用时，前端无需再次
+        反向解析整棵组件树。
+
+    Edge Cases:
+        - 静态 options 列表只标记为 `static`，避免把具体枚举值重复塞进运行时契约
+        - 只要识别不到稳定来源，就返回 `None`，不虚构字典编码
+    """
+    if isinstance(options_payload, list):
+        return ApiQueryFormOptionSourceRuntime(type="static")
+    if not isinstance(options_payload, dict):
+        return None
+
+    dict_code = options_payload.get("dict_code") or options_payload.get("dictCode")
+    if isinstance(dict_code, str) and dict_code.strip():
+        return ApiQueryFormOptionSourceRuntime(type="dict", dict_code=dict_code.strip())
+
+    option_type = options_payload.get("type")
+    if option_type == "dict":
+        inferred_dict_code = options_payload.get("code") or options_payload.get("name")
+        return ApiQueryFormOptionSourceRuntime(
+            type="dict",
+            dict_code=inferred_dict_code.strip()
+            if isinstance(inferred_dict_code, str) and inferred_dict_code.strip()
+            else None,
+        )
+
+    if isinstance(options_payload.get("$fromContext"), str):
+        return ApiQueryFormOptionSourceRuntime(type="context")
+
+    return None
+
+
+def _find_first_action_payload(ui_spec: dict[str, Any], *, target_action_code: str) -> dict[str, Any] | None:
+    """在 flat spec 中寻找首个指定动作对象。"""
+
+    def walk(node: Any) -> dict[str, Any] | None:
+        if isinstance(node, dict):
+            action_code = node.get("action")
+            node_type = node.get("type")
+            if action_code == target_action_code or node_type == target_action_code:
+                return node
+            for child in node.values():
+                matched = walk(child)
+                if matched is not None:
+                    return matched
+        elif isinstance(node, list):
+            for item in node:
+                matched = walk(item)
+                if matched is not None:
+                    return matched
+        return None
+
+    return walk(ui_spec)
+
+
+def _read_state_value(state: Any, state_path: str) -> Any:
+    """按 `/form/goal` 形式读取当前 state 中的值。"""
+    if not isinstance(state, dict) or not state_path.startswith("/"):
+        return None
+
+    current: Any = state
+    for segment in [item for item in state_path.split("/") if item]:
+        if not isinstance(current, dict) or segment not in current:
+            return None
+        current = current[segment]
+    return current
+
+
+def _infer_form_state_root(bind_paths: list[str]) -> str | None:
+    """根据字段绑定路径推导表单根状态路径。"""
+    if not bind_paths:
+        return None
+
+    segments_list = [[segment for segment in path.split("/") if segment] for path in bind_paths]
+    if not segments_list:
+        return None
+
+    common_segments: list[str] = []
+    for segment_group in zip(*segments_list):
+        if len(set(segment_group)) != 1:
+            break
+        common_segments.append(segment_group[0])
+
+    # 只有单字段时，完整路径会把叶子节点也算进公共前缀。
+    # 这里主动退回一层，避免把 `/form/customerId` 误报成表单根路径。
+    if len(common_segments) == len(segments_list[0]) and len(common_segments) > 1:
+        common_segments = common_segments[:-1]
+
+    if not common_segments:
+        return None
+    return "/" + "/".join(common_segments)
+
+
+def _infer_form_mode(fields: list[ApiQueryFormFieldRuntime]) -> str:
+    """根据字段可编辑性推导表单模式。"""
+    writable_fields = [field for field in fields if field.writable]
+    if not writable_fields:
+        return "confirm"
+    if any(not field.writable for field in fields):
+        return "edit"
+    return "create"
 
 
 def _finalize_ui_runtime(
@@ -1122,9 +1683,9 @@ def _finalize_render_runtime(
         update={
             "components": components,
             "ui_actions": [],
+            "list": ApiQueryListRuntime(),
             "detail": ApiQueryDetailRuntime(),
-            "pagination": ApiQueryPaginationRuntime(),
-            "template": ApiQueryTemplateRuntime(),
+            "form": ApiQueryFormRuntime(),
         }
     )
 
@@ -1432,18 +1993,21 @@ def _count_ui_data_rows(
 def _build_runtime_from_execution_report(
     execution_report: DagExecutionReport,
     anchor_record: DagStepExecutionRecord | None,
+    *,
+    business_intents: list[ApiQueryBusinessIntent],
 ) -> ApiQueryUIRuntime:
     """根据执行报告推导前端运行时契约。
 
     功能：
-        单步骤结果仍可复用原有详情/分页/模板契约；多步骤场景先收敛为保守的
-        只读工作台，避免把错误的详情/翻页动作挂到摘要表上。
+        单步骤结果仍可复用列表/详情/表单契约；多步骤场景先收敛为保守的只读工作台，
+        避免把错误的二跳动作挂到摘要表上。
     """
     if len(execution_report.records_by_step_id) == 1 and anchor_record is not None:
         return _build_ui_runtime(
             anchor_record.entry,
             anchor_record.execution_result,
             params=anchor_record.resolved_params,
+            business_intents=business_intents,
         )
 
     return ApiQueryUIRuntime(
@@ -1516,6 +2080,128 @@ def _build_execution_skip_message(execution_report: DagExecutionReport) -> str:
         if execution_result.status == ApiQueryExecutionStatus.SKIPPED:
             return _build_skip_message(execution_result)
     return "由于缺少必要条件，当前查询未被执行。"
+
+
+def _build_patch_mode_response(
+    *,
+    trace_id: str,
+    execution_report: DagExecutionReport,
+    aggregate_status: ApiQueryExecutionStatus,
+    anchor_record: DagStepExecutionRecord | None,
+    response_plan: ApiQueryExecutionPlan,
+    runtime: ApiQueryUIRuntime,
+    patch_context: ApiQueryPatchContext | None,
+) -> ApiQueryResponse:
+    """构造列表二跳的 patch 响应。
+
+    功能：
+        Patch 模式的核心目标是“只回当前页数据与最小状态增量”，而不是再让第五阶段生成
+        一整页 `PlannerCard`。这里直接使用执行结果和运行时契约构造稳定的补丁载荷，
+        从链路层面切断大 `pageSize` 时整页 Spec 被数据拖大的问题。
+
+    Edge Cases:
+        - `EMPTY` 仍返回 patch，只是把 `dataSource` 替换为空数组并同步分页总数
+        - `ERROR / SKIPPED` 不再偷偷回退 full_spec，而是返回空操作 patch，让前端按错误态处理
+    """
+    requested_target = patch_context.mutation_target if patch_context is not None else None
+    ui_runtime = runtime
+    ui_spec = _build_list_patch_spec(
+        anchor_record=anchor_record,
+        runtime=ui_runtime,
+        aggregate_status=aggregate_status,
+        requested_target=requested_target,
+    )
+    return ApiQueryResponse(
+        trace_id=trace_id,
+        execution_status=aggregate_status,
+        execution_plan=response_plan,
+        ui_runtime=ui_runtime,
+        ui_spec=ui_spec,
+        error=_build_response_error(execution_report),
+    )
+
+
+def _build_list_patch_spec(
+    *,
+    anchor_record: DagStepExecutionRecord | None,
+    runtime: ApiQueryUIRuntime,
+    aggregate_status: ApiQueryExecutionStatus,
+    requested_target: str | None,
+) -> dict[str, Any]:
+    """把单步列表结果压缩成前端可直接应用的 patch spec。
+
+    功能：
+        列表二跳请求的目标只是更新表格数据和分页状态，因此 patch spec 只保留：
+
+        1. `dataSource`
+        2. `pagination.currentPage`
+        3. `pagination.pageSize`
+        4. `pagination.total`
+
+        这样前端无需整页重建，后端也不必在 patch 场景继续产出完整组件树。
+    """
+    mutation_target = runtime.list.pagination.mutation_target or requested_target or "report-table.props.dataSource"
+    rows: list[dict[str, Any]] = []
+    if aggregate_status in {ApiQueryExecutionStatus.SUCCESS, ApiQueryExecutionStatus.EMPTY} and anchor_record is not None:
+        rows = _normalize_rows(anchor_record.execution_result.data)
+
+    operations: list[dict[str, Any]] = []
+    if aggregate_status in {ApiQueryExecutionStatus.SUCCESS, ApiQueryExecutionStatus.EMPTY}:
+        operations.append(_build_patch_replace_operation(mutation_target, rows))
+        pagination_container_path = _infer_patch_pagination_container_path(mutation_target)
+        if pagination_container_path is not None:
+            operations.extend(
+                [
+                    _build_patch_replace_operation(
+                        f"{pagination_container_path}.currentPage",
+                        runtime.list.pagination.current_page,
+                    ),
+                    _build_patch_replace_operation(
+                        f"{pagination_container_path}.pageSize",
+                        runtime.list.pagination.page_size,
+                    ),
+                    _build_patch_replace_operation(
+                        f"{pagination_container_path}.total",
+                        runtime.list.pagination.total,
+                    ),
+                ]
+            )
+
+    return {
+        "kind": "patch",
+        "patch_type": "list_query",
+        "mutation_target": mutation_target,
+        "operations": operations,
+    }
+
+
+def _build_patch_replace_operation(path: str, value: Any) -> dict[str, Any]:
+    """构造单条 replace patch。
+
+    功能：
+        Patch 协议当前只暴露 replace，是为了把前端应用逻辑稳定在最小闭包里，避免这轮
+        实现就引入 add/remove/move 等尚未验证的补丁语义。
+    """
+    return {
+        "op": "replace",
+        "path": path,
+        "value": value,
+    }
+
+
+def _infer_patch_pagination_container_path(mutation_target: str) -> str | None:
+    """从 `dataSource` 目标路径反推分页状态容器路径。
+
+    功能：
+        当前契约里 `mutation_target` 固定指向表格 `dataSource`，而 patch 还需要顺带更新
+        同一个表格上的分页状态。这里通过约定式路径推导出分页容器，避免前端再维护第二套
+        “当前表格 pagination 在哪”的静态映射。
+    """
+    if not mutation_target:
+        return None
+    if mutation_target.endswith(".dataSource"):
+        return mutation_target[: -len(".dataSource")] + ".pagination"
+    return None
 
 
 def _find_missing_required_params(

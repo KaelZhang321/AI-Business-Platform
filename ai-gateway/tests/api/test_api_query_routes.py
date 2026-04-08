@@ -129,12 +129,63 @@ class StubDynamicUI:
                                 "label": "查看详情",
                                 "params": {
                                     "api_id": runtime.detail.api_id if runtime else "unknown",
-                                    "query_param": runtime.detail.query_param if runtime else "customerId",
+                                    "request": (
+                                        runtime.detail.request.model_dump(exclude_none=True)
+                                        if runtime
+                                        else {"identifier_param": "customerId"}
+                                    ),
+                                    "source": (
+                                        runtime.detail.source.model_dump(exclude_none=True)
+                                        if runtime
+                                        else {"identifier_field": "customerId"}
+                                    ),
                                 },
                             }
                         ],
                     },
                 }
+            ],
+        )
+
+
+class FormRuntimeDynamicUI:
+    """模拟 Renderer 返回带表单提交动作的最终 Spec。"""
+
+    async def generate_ui_spec(self, intent: str, data, context=None, *, status=None, runtime=None):
+        return _build_flat_stub_spec(
+            root_props={"title": "客户编辑", "subtitle": "请确认后提交"},
+            state={
+                "form": {
+                    "customerId": "C001",
+                    "industry": "medical",
+                }
+            },
+            children=[
+                {"type": "PlannerMetric", "props": {"label": "客户ID", "value": "C001"}},
+                {
+                    "type": "PlannerSelect",
+                    "props": {
+                        "label": "所属行业",
+                        "value": {"$bindState": "/form/industry"},
+                        "options": {"type": "dict", "dict_code": "industry"},
+                    },
+                },
+                {
+                    "type": "PlannerButton",
+                    "props": {"label": "确认保存"},
+                    "on": {
+                        "press": {
+                            "action": "remoteMutation",
+                            "params": {
+                                "api_id": "customer_update",
+                                "payload": {
+                                    "customerId": {"$bindState": "/form/customerId"},
+                                    "industry": {"$bindState": "/form/industry"},
+                                },
+                            },
+                        }
+                    },
+                },
             ],
         )
 
@@ -156,12 +207,14 @@ class StubSnapshotService:
 class StubRegistrySource:
     """模拟 `direct` 模式按 api_id 精确查目录的主链路。"""
 
-    def __init__(self, entry: ApiCatalogEntry | None) -> None:
+    def __init__(self, entry: ApiCatalogEntry | dict[str, ApiCatalogEntry] | None) -> None:
         self._entry = entry
         self.last_api_id: str | None = None
 
     async def get_entry_by_id(self, api_id: str) -> ApiCatalogEntry | None:
         self.last_api_id = api_id
+        if isinstance(self._entry, dict):
+            return self._entry.get(api_id)
         return self._entry
 
 
@@ -208,7 +261,17 @@ class StubUICatalogService:
 
     def get_component_codes(self, *, intent: str | None = None, requested_codes=None) -> list[str]:
         if intent == "query":
-            return ["PlannerCard", "PlannerNotice", "PlannerTable"]
+            return [
+                "PlannerCard",
+                "PlannerMetric",
+                "PlannerTable",
+                "PlannerDetailCard",
+                "PlannerForm",
+                "PlannerInput",
+                "PlannerSelect",
+                "PlannerButton",
+                "PlannerNotice",
+            ]
         return ["Card"]
 
     def build_runtime_actions(self, action_codes=None) -> list[ApiQueryUIAction]:
@@ -243,7 +306,12 @@ def create_test_app() -> FastAPI:
     return app
 
 
-def _build_flat_stub_spec(*, root_props: dict[str, object], children: list[dict[str, object]]) -> dict[str, object]:
+def _build_flat_stub_spec(
+    *,
+    root_props: dict[str, object],
+    children: list[dict[str, object]],
+    state: dict[str, object] | None = None,
+) -> dict[str, object]:
     """为路由测试构造 flat spec。
 
     功能：
@@ -258,12 +326,14 @@ def _build_flat_stub_spec(*, root_props: dict[str, object], children: list[dict[
         }
     }
     for index, child in enumerate(children, start=1):
-        child_id = f"child_{index}"
+        child_id = str(child.get("id") or f"child_{index}")
+        child_payload = dict(child)
+        child_payload.pop("id", None)
         elements["root"]["children"].append(child_id)
-        elements[child_id] = child
+        elements[child_id] = child_payload
     return {
         "root": "root",
-        "state": {},
+        "state": state or {},
         "elements": elements,
     }
 
@@ -273,6 +343,7 @@ def _make_entry(**overrides) -> ApiCatalogEntry:
         "id": "customer_list",
         "description": "查询客户列表",
         "domain": "crm",
+        "operation_safety": "query",
         "method": "GET",
         "path": "/api/v1/customers",
         "detail_hint": ApiCatalogDetailHint(
@@ -334,13 +405,18 @@ def test_api_query_returns_runtime_contract(monkeypatch) -> None:
     assert body["execution_plan"]["steps"][0]["api_id"] == "customer_list"
     assert body["ui_runtime"]["mode"] == "read_only"
     assert set(body["ui_runtime"]["components"]) >= {"PlannerCard", "PlannerTable"}
+    assert body["ui_runtime"]["list"]["enabled"] is True
+    assert body["ui_runtime"]["list"]["api_id"] == "customer_list"
+    assert body["ui_runtime"]["list"]["param_source"] == "queryParams"
     assert body["ui_runtime"]["detail"]["enabled"] is True
     assert body["ui_runtime"]["detail"]["api_id"] == "customer_detail"
-    assert body["ui_runtime"]["detail"]["identifier_field"] == "customerId"
-    assert body["ui_runtime"]["pagination"]["enabled"] is True
-    assert body["ui_runtime"]["pagination"]["total"] == 8
-    assert body["ui_runtime"]["pagination"]["mutation_target"] == "report-table.props.dataSource"
-    assert body["ui_runtime"]["template"]["enabled"] is True
+    assert body["ui_runtime"]["detail"]["request"]["identifier_param"] == "customerId"
+    assert body["ui_runtime"]["detail"]["source"]["identifier_field"] == "customerId"
+    assert body["ui_runtime"]["list"]["pagination"]["enabled"] is True
+    assert body["ui_runtime"]["list"]["pagination"]["total"] == 8
+    assert body["ui_runtime"]["list"]["pagination"]["mutation_target"] == "report-table.props.dataSource"
+    assert body["ui_runtime"]["list"]["filters"]["enabled"] is False
+    assert body["ui_runtime"]["list"]["query_context"]["current_params"] == {"pageNum": 1, "pageSize": 1}
     action_codes = {item["code"] for item in body["ui_runtime"]["ui_actions"]}
     assert {"refresh", "export", "remoteQuery", "view_detail"} <= action_codes
     assert stub_retriever.last_filters.model_dump() == {
@@ -443,6 +519,73 @@ def test_api_query_direct_mode_bypasses_semantic_chain_and_returns_runtime_contr
     assert "conversation=conv_001" in caplog.text
 
 
+def test_api_query_direct_mode_returns_list_patch_response(monkeypatch) -> None:
+    entry = _make_entry()
+    stub_services = (
+        object(),
+        object(),
+        StubExecutor(
+            ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.SUCCESS,
+                data=[
+                    {"customerId": "C021", "customerName": "客户21"},
+                    {"customerId": "C022", "customerName": "客户22"},
+                ],
+                total=68,
+            )
+        ),
+        StubDynamicUI(),
+        StubSnapshotService(),
+    )
+    monkeypatch.setattr(api_query_routes, "_get_services", lambda: stub_services)
+    monkeypatch.setattr(api_query_routes, "_get_registry_source", lambda: StubRegistrySource(entry))
+
+    client = TestClient(create_test_app())
+    response = client.post(
+        "/api/v1/api-query",
+        json={
+            "mode": "direct",
+            "response_mode": "patch",
+            "direct_query": {
+                "api_id": "customer_list",
+                "params": {"ownerId": "E8899", "pageNum": 2, "pageSize": 20},
+            },
+            "patch_context": {
+                "patch_type": "list_query",
+                "trigger": "pagination",
+                "mutation_target": "report-table.props.dataSource",
+            },
+        },
+        headers={"X-Trace-Id": "trace-direct-patch-001"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["execution_status"] == "SUCCESS"
+    assert body["ui_spec"]["kind"] == "patch"
+    assert body["ui_spec"]["patch_type"] == "list_query"
+    assert body["ui_spec"]["mutation_target"] == "report-table.props.dataSource"
+    assert body["ui_spec"]["operations"] == [
+        {
+            "op": "replace",
+            "path": "report-table.props.dataSource",
+            "value": [
+                {"customerId": "C021", "customerName": "客户21"},
+                {"customerId": "C022", "customerName": "客户22"},
+            ],
+        },
+        {"op": "replace", "path": "report-table.props.pagination.currentPage", "value": 2},
+        {"op": "replace", "path": "report-table.props.pagination.pageSize", "value": 20},
+        {"op": "replace", "path": "report-table.props.pagination.total", "value": 68},
+    ]
+    assert body["ui_runtime"]["list"]["pagination"]["current_page"] == 2
+    assert body["ui_runtime"]["list"]["query_context"]["current_params"] == {
+        "ownerId": "E8899",
+        "pageNum": 2,
+        "pageSize": 20,
+    }
+
+
 def test_api_query_direct_mode_requires_direct_query_payload() -> None:
     client = TestClient(create_test_app())
 
@@ -488,10 +631,7 @@ def test_api_query_direct_mode_rejects_unknown_params(monkeypatch) -> None:
     )
 
     assert response.status_code == 422
-    assert (
-        response.json()["detail"]
-        == "[trace-direct-params-001] direct 模式存在未声明参数：unexpected"
-    )
+    assert response.json()["detail"] == "[trace-direct-params-001] direct 模式存在未声明参数：unexpected"
 
 
 def test_api_query_direct_mode_requires_required_params(monkeypatch) -> None:
@@ -530,16 +670,14 @@ def test_api_query_direct_mode_requires_required_params(monkeypatch) -> None:
     )
 
     assert response.status_code == 422
-    assert (
-        response.json()["detail"]
-        == "[trace-direct-required-001] direct 模式缺少必要参数：customerId"
-    )
+    assert response.json()["detail"] == "[trace-direct-required-001] direct 模式缺少必要参数：customerId"
 
 
 def test_api_query_direct_mode_blocks_non_read_method(monkeypatch) -> None:
     write_entry = _make_entry(
         id="customer_update",
         method="POST",
+        operation_safety="mutation",
         path="/api/v1/customers/update",
         detail_hint=ApiCatalogDetailHint(enabled=False),
     )
@@ -573,9 +711,136 @@ def test_api_query_direct_mode_blocks_non_read_method(monkeypatch) -> None:
     )
 
     assert response.status_code == 422
+    assert response.json()["detail"] == "[trace-direct-block-001] api_query 仅支持查询安全接口，当前接口语义为 mutation"
+
+
+def test_api_query_direct_mode_rejects_patch_for_non_paginated_entry(monkeypatch) -> None:
+    detail_entry = _make_entry(
+        id="customer_detail",
+        path="/api/v1/customers/detail",
+        pagination_hint=ApiCatalogPaginationHint(enabled=False),
+    )
+    stub_services = (
+        object(),
+        object(),
+        StubExecutor(
+            ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.SUCCESS,
+                data={"customerId": "C001"},
+                total=1,
+            )
+        ),
+        StubDynamicUI(),
+        StubSnapshotService(),
+    )
+    monkeypatch.setattr(api_query_routes, "_get_services", lambda: stub_services)
+    monkeypatch.setattr(api_query_routes, "_get_registry_source", lambda: StubRegistrySource(detail_entry))
+
+    client = TestClient(create_test_app())
+    response = client.post(
+        "/api/v1/api-query",
+        json={
+            "mode": "direct",
+            "response_mode": "patch",
+            "direct_query": {
+                "api_id": "customer_detail",
+                "params": {"customerId": "C001", "pageNum": 1, "pageSize": 20},
+            },
+            "patch_context": {
+                "patch_type": "list_query",
+                "trigger": "pagination",
+                "mutation_target": "report-table.props.dataSource",
+            },
+        },
+        headers={"X-Trace-Id": "trace-direct-patch-unsupported-001"},
+    )
+
+    assert response.status_code == 422
+    assert "PATCH_MODE_NOT_SUPPORTED" in response.json()["detail"]
+
+
+def test_api_query_direct_mode_rejects_patch_when_page_size_exceeds_limit(monkeypatch) -> None:
+    entry = _make_entry()
+    stub_services = (
+        object(),
+        object(),
+        StubExecutor(
+            ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.SUCCESS,
+                data=[],
+                total=0,
+            )
+        ),
+        StubDynamicUI(),
+        StubSnapshotService(),
+    )
+    monkeypatch.setattr(api_query_routes, "_get_services", lambda: stub_services)
+    monkeypatch.setattr(api_query_routes, "_get_registry_source", lambda: StubRegistrySource(entry))
+
+    client = TestClient(create_test_app())
+    response = client.post(
+        "/api/v1/api-query",
+        json={
+            "mode": "direct",
+            "response_mode": "patch",
+            "direct_query": {
+                "api_id": "customer_list",
+                "params": {"ownerId": "E8899", "pageNum": 1, "pageSize": 51},
+            },
+            "patch_context": {
+                "patch_type": "list_query",
+                "trigger": "pagination",
+                "mutation_target": "report-table.props.dataSource",
+            },
+        },
+        headers={"X-Trace-Id": "trace-direct-patch-limit-001"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "[trace-direct-patch-limit-001] patch 模式下 pageSize 不能超过 50"
+
+
+def test_api_query_direct_mode_rejects_filter_submit_without_page_reset(monkeypatch) -> None:
+    entry = _make_entry()
+    stub_services = (
+        object(),
+        object(),
+        StubExecutor(
+            ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.SUCCESS,
+                data=[],
+                total=0,
+            )
+        ),
+        StubDynamicUI(),
+        StubSnapshotService(),
+    )
+    monkeypatch.setattr(api_query_routes, "_get_services", lambda: stub_services)
+    monkeypatch.setattr(api_query_routes, "_get_registry_source", lambda: StubRegistrySource(entry))
+
+    client = TestClient(create_test_app())
+    response = client.post(
+        "/api/v1/api-query",
+        json={
+            "mode": "direct",
+            "response_mode": "patch",
+            "direct_query": {
+                "api_id": "customer_list",
+                "params": {"ownerId": "E8899", "keyword": "张", "pageNum": 2, "pageSize": 20},
+            },
+            "patch_context": {
+                "patch_type": "list_query",
+                "trigger": "filter_submit",
+                "mutation_target": "report-table.props.dataSource",
+            },
+        },
+        headers={"X-Trace-Id": "trace-direct-patch-filter-001"},
+    )
+
+    assert response.status_code == 422
     assert (
         response.json()["detail"]
-        == "[trace-direct-block-001] api_query 仅支持只读接口，当前命中 POST /api/v1/customers/update"
+        == "[trace-direct-patch-filter-001] patch 模式下触发 filter_submit 时必须将 pageNum 重置为 1"
     )
 
 
@@ -616,8 +881,10 @@ def test_api_query_passes_env_and_tag_filters_to_retriever(monkeypatch) -> None:
     }
 
 
-def test_api_query_blocks_non_read_method(monkeypatch) -> None:
-    entry = _make_entry(id="customer_update", method="POST", path="/api/v1/customers/update")
+def test_api_query_blocks_mutation_entry(monkeypatch) -> None:
+    entry = _make_entry(
+        id="customer_update", method="POST", operation_safety="mutation", path="/api/v1/customers/update"
+    )
     stub_services = (
         StubRetriever(entry),
         StubExtractor(entry, {"customerId": "C001"}),
@@ -641,10 +908,35 @@ def test_api_query_blocks_non_read_method(monkeypatch) -> None:
     )
 
     assert response.status_code == 422
-    assert (
-        response.json()["detail"]
-        == "[trace-block-001] api_query 仅支持只读接口，当前命中 POST /api/v1/customers/update"
+    assert response.json()["detail"] == "[trace-block-001] api_query 仅支持查询安全接口，当前接口语义为 mutation"
+
+
+def test_api_query_allows_query_safe_post_entry(monkeypatch) -> None:
+    entry = _make_entry(id="customer_search", method="POST", operation_safety="query", path="/api/v1/customers/search")
+    stub_services = (
+        StubRetriever(entry),
+        StubExtractor(entry, {"customerName": "张三"}),
+        StubExecutor(
+            ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.SUCCESS,
+                data=[{"customerId": "C001", "customerName": "张三"}],
+                total=1,
+            )
+        ),
+        StubDynamicUI(),
+        StubSnapshotService(),
     )
+    monkeypatch.setattr(api_query_routes, "_get_services", lambda: stub_services)
+
+    client = TestClient(create_test_app())
+    response = client.post(
+        "/api/v1/api-query",
+        json={"query": "按姓名查询张三客户"},
+        headers={"X-Trace-Id": "trace-query-post-001"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["execution_status"] == "SUCCESS"
 
 
 def test_api_query_attaches_snapshot_for_high_risk_write_intent(monkeypatch) -> None:
@@ -731,10 +1023,12 @@ def test_runtime_metadata_endpoint_returns_contract(monkeypatch) -> None:
     body = response.json()
     action_codes = {item["code"] for item in body["ui_runtime"]["ui_actions"]}
     assert action_codes == {"remoteQuery", "remoteMutation"}
-    assert body["ui_runtime"]["components"] == ["PlannerCard", "PlannerNotice", "PlannerTable"]
+    assert "PlannerForm" in body["ui_runtime"]["components"]
     template_codes = {item["code"] for item in body["template_scenarios"]}
     assert template_codes == {"custom_template"}
-    assert body["ui_runtime"]["template"]["fallback_mode"] == "dynamic_ui"
+    assert body["ui_runtime"]["list"]["route_url"] == "/api/v1/api-query"
+    assert body["ui_runtime"]["detail"]["request"]["param_source"] == "queryParams"
+    assert body["ui_runtime"]["form"]["ui_action"] == "remoteMutation"
     assert stub_catalog_service.warmup_called is True
 
 
@@ -762,11 +1056,71 @@ def test_api_query_returns_frozen_runtime_when_renderer_guard_rejects_spec(monke
     body = response.json()
     assert body["execution_status"] == "SUCCESS"
     assert body["ui_runtime"]["ui_actions"] == []
+    assert body["ui_runtime"]["list"]["enabled"] is False
     assert body["ui_runtime"]["detail"]["enabled"] is False
-    assert body["ui_runtime"]["pagination"]["enabled"] is False
-    assert body["ui_runtime"]["template"]["enabled"] is False
+    assert body["ui_runtime"]["form"]["enabled"] is False
     root_id = body["ui_spec"]["root"]
     notice = body["ui_spec"]["elements"]["child_1"]
     assert body["ui_spec"]["elements"][root_id]["type"] == "PlannerCard"
     assert notice["type"] == "PlannerNotice"
     assert "已冻结当前操作视图" in notice["props"]["text"]
+
+
+def test_api_query_enriches_form_runtime_from_generated_spec(monkeypatch) -> None:
+    query_entry = _make_entry()
+    mutation_entry = _make_entry(
+        id="customer_update",
+        method="POST",
+        operation_safety="mutation",
+        path="/api/v1/customers/update",
+        detail_hint=ApiCatalogDetailHint(enabled=False),
+        pagination_hint=ApiCatalogPaginationHint(enabled=False),
+        template_hint=ApiCatalogTemplateHint(enabled=False),
+        param_schema={
+            "type": "object",
+            "properties": {
+                "customerId": {"type": "string"},
+                "industry": {"type": "string"},
+            },
+            "required": ["customerId", "industry"],
+        },
+    )
+    stub_services = (
+        StubRetriever(query_entry),
+        StubExtractor(query_entry, {"customerId": "C001"}, business_intents=["saveToServer"]),
+        StubExecutor(
+            ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.SUCCESS,
+                data=[{"customerId": "C001", "customerName": "张三"}],
+                total=1,
+            )
+        ),
+        FormRuntimeDynamicUI(),
+        StubSnapshotService(),
+    )
+    monkeypatch.setattr(api_query_routes, "_get_services", lambda: stub_services)
+    monkeypatch.setattr(
+        api_query_routes,
+        "_get_registry_source",
+        lambda: StubRegistrySource({"customer_list": query_entry, "customer_update": mutation_entry}),
+    )
+
+    client = TestClient(create_test_app())
+    response = client.post(
+        "/api/v1/api-query",
+        json={"query": "把客户 C001 的行业改成医疗"},
+        headers={"X-Trace-Id": "trace-form-001"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ui_runtime"]["form"]["enabled"] is True
+    assert body["ui_runtime"]["form"]["api_id"] == "customer_update"
+    assert body["ui_runtime"]["form"]["mode"] == "edit"
+    assert body["ui_runtime"]["form"]["state_path"] == "/form"
+    assert body["ui_runtime"]["form"]["submit"]["business_intent"] == "saveToServer"
+    fields = {field["submit_key"]: field for field in body["ui_runtime"]["form"]["fields"]}
+    assert fields["customerId"]["source_kind"] == "context"
+    assert fields["customerId"]["writable"] is False
+    assert fields["industry"]["source_kind"] == "dictionary"
+    assert fields["industry"]["option_source"] == {"type": "dict", "dict_code": "industry"}

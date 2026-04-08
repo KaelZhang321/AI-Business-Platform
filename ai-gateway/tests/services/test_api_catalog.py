@@ -12,6 +12,7 @@ Tests cover:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 
 import httpx
@@ -20,8 +21,11 @@ from pymilvus import DataType
 
 import app.services.api_catalog.indexer as indexer_module
 from app.core.config import settings
+from app.models.schemas import ApiQueryExecutionStatus
 from app.services.api_catalog.executor import (
     ApiExecutor,
+    LegacyApiExecutor,
+    RuntimeInvokeExecutor,
     _apply_field_labels,
     _extract_data,
 )
@@ -76,6 +80,7 @@ class TestApiCatalogEntry:
         assert entry.env == "shared"
         assert entry.status == "active"
         assert entry.business_intents == ["query_business_data"]
+        assert entry.operation_safety == "mutation"
 
     def test_embed_text_includes_registry_fields(self):
         entry = self._make_entry(domain="crm", tag_name="customer_management", business_intents=["query_business_data"])
@@ -209,6 +214,170 @@ class TestApiExecutorGuard:
         assert result.error_code == "EXECUTOR_METHOD_NOT_ALLOWED"
         assert result.retryable is False
         assert "DELETE /api/customer/delete" in (result.error or "")
+
+        await executor.close()
+
+    def test_resolve_executor_infers_runtime_invoke_for_stale_registry_entry(self, monkeypatch):
+        """旧索引缺少 executor_type 时，普通注册表条目也应切到 runtime invoke。"""
+
+        monkeypatch.setattr(settings, "api_query_runtime_enabled", True)
+        legacy_executor = LegacyApiExecutor()
+        runtime_executor = RuntimeInvokeExecutor()
+        executor = ApiExecutor(
+            legacy_executor=legacy_executor,
+            runtime_executor=runtime_executor,
+        )
+
+        entry = ApiCatalogEntry(
+            id="customer_list",
+            description="查询客户列表",
+            operation_safety="query",
+            method="GET",
+            path="/api/customer/list",
+            executor_config={"base_url": "https://beta-crm.ssss818.com/tapi/api/"},
+        )
+
+        resolved_executor, executor_type = executor._resolve_executor(entry)
+
+        assert resolved_executor is runtime_executor
+        assert executor_type == "runtime_invoke"
+
+    def test_resolve_executor_keeps_builtin_entry_on_legacy_path(self, monkeypatch):
+        """builtin 条目即使没有显式 executor_type，也不能被误判成 runtime invoke。"""
+
+        monkeypatch.setattr(settings, "api_query_runtime_enabled", True)
+        legacy_executor = LegacyApiExecutor()
+        runtime_executor = RuntimeInvokeExecutor()
+        executor = ApiExecutor(
+            legacy_executor=legacy_executor,
+            runtime_executor=runtime_executor,
+        )
+
+        entry = ApiCatalogEntry(
+            id="system_dicts_v1",
+            description="系统字典",
+            operation_safety="query",
+            method="GET",
+            path="/api/system/dicts",
+            executor_config={"source_id": "builtin"},
+        )
+
+        resolved_executor, executor_type = executor._resolve_executor(entry)
+
+        assert resolved_executor is legacy_executor
+        assert executor_type == ""
+
+
+class TestRuntimeInvokeExecutor:
+    @pytest.mark.asyncio
+    async def test_call_puts_get_params_into_query_params_and_keeps_reserved_id(self, monkeypatch):
+        captured: dict[str, object] = {}
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            captured["url"] = str(request.url)
+            captured["json"] = json.loads(request.content.decode())
+            return httpx.Response(
+                200,
+                json={
+                    "code": 200,
+                    "message": "success",
+                    "data": {"data": {"list": [{"customerId": "C001"}], "total": 1}},
+                },
+            )
+
+        monkeypatch.setattr(
+            settings,
+            "api_query_runtime_invoke_url_template",
+            "http://runtime.example/ui-builder/runtime/endpoints/{id}/invoke",
+        )
+        monkeypatch.setattr(settings, "api_query_runtime_flow_num", "1212")
+        monkeypatch.setattr(settings, "api_query_runtime_reserved_id", "27")
+        monkeypatch.setattr(settings, "api_query_runtime_created_by", "gateway")
+
+        executor = RuntimeInvokeExecutor()
+        executor._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+        entry = ApiCatalogEntry(
+            id="customer_list",
+            description="查询客户列表",
+            operation_safety="query",
+            method="GET",
+            path="/api/customer/list",
+            response_data_path="data.list",
+        )
+        result = await executor.call(
+            entry,
+            {"id": "business-side-value", "pageNum": 1},
+            user_token="Bearer token",
+            trace_id="trace-runtime-get",
+        )
+
+        assert captured["url"] == "http://runtime.example/ui-builder/runtime/endpoints/customer_list/invoke"
+        assert captured["json"] == {
+            "flowNum": "1212",
+            "queryParams": {"id": "27", "pageNum": 1},
+            "createdBy": "gateway",
+            "useSampleWhenEmpty": False,
+            "body": {},
+        }
+        assert result.status == ApiQueryExecutionStatus.SUCCESS
+        assert result.data == [{"customerId": "C001"}]
+        assert result.total == 1
+
+        await executor.close()
+
+    @pytest.mark.asyncio
+    async def test_call_puts_post_params_into_body_and_unwraps_runtime_response(self, monkeypatch):
+        captured: dict[str, object] = {}
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            captured["json"] = json.loads(request.content.decode())
+            return httpx.Response(
+                200,
+                json={
+                    "code": 200,
+                    "message": "success",
+                    "data": {"payload": {"records": [{"customerId": "C002", "orderCount": 3}], "total": 1}},
+                },
+            )
+
+        monkeypatch.setattr(
+            settings,
+            "api_query_runtime_invoke_url_template",
+            "http://runtime.example/ui-builder/runtime/endpoints/{id}/invoke",
+        )
+        monkeypatch.setattr(settings, "api_query_runtime_reserved_id", "99")
+        monkeypatch.setattr(settings, "api_query_runtime_flow_num", "9001")
+        monkeypatch.setattr(settings, "api_query_runtime_created_by", "")
+
+        executor = RuntimeInvokeExecutor()
+        executor._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+        entry = ApiCatalogEntry(
+            id="order_stats",
+            description="查询订单统计",
+            operation_safety="query",
+            method="POST",
+            path="/api/orders/stats",
+            response_data_path="payload.records",
+            field_labels={"customerId": "客户ID", "orderCount": "订单数"},
+        )
+        result = await executor.call(
+            entry,
+            {"customerId": "C002", "filters": {"level": "A"}},
+            trace_id="trace-runtime-post",
+        )
+
+        assert captured["json"] == {
+            "flowNum": "9001",
+            "queryParams": {"id": "99"},
+            "createdBy": "",
+            "useSampleWhenEmpty": False,
+            "body": {"customerId": "C002", "filters": {"level": "A"}},
+        }
+        assert result.status == ApiQueryExecutionStatus.SUCCESS
+        assert result.data == [{"客户ID": "C002", "订单数": 3}]
+        assert result.total == 1
 
         await executor.close()
 
@@ -482,6 +651,7 @@ class TestIndexerSchema:
         assert field_map["executor_config"].dtype == DataType.JSON
         assert field_map["security_rules"].dtype == DataType.JSON
         assert field_map["example_queries"].dtype == DataType.JSON
+        assert field_map["operation_safety"].dtype == DataType.VARCHAR
 
     def test_create_collection_uses_hnsw_and_scalar_indexes(self, monkeypatch):
         class FakeCollection:
@@ -511,6 +681,7 @@ class TestIndexerSchema:
         assert index_map["env"] == {"index_type": "INVERTED"}
         assert index_map["status"] == {"index_type": "INVERTED"}
         assert index_map["tag_name"] == {"index_type": "INVERTED"}
+        assert index_map["operation_safety"] == {"index_type": "INVERTED"}
         assert collection.loaded is True
 
     def test_get_collection_passes_timeout_to_milvus_connect(self, monkeypatch):
@@ -680,6 +851,7 @@ class TestRetrieverCompatibility:
                 "env": "prod",
                 "status": "active",
                 "tag_name": "客户管理",
+                "operation_safety": "query",
                 "method": "GET",
                 "path": "/api/customer/list",
                 "auth_required": True,
@@ -711,6 +883,7 @@ class TestRetrieverCompatibility:
         assert entry.response_schema["type"] == "object"
         assert entry.sample_request == {"pageNum": 1}
         assert entry.field_labels["customerId"] == "客户ID"
+        assert entry.operation_safety == "query"
 
     def test_retriever_uses_legacy_output_fields_before_reindex(self):
         retriever = ApiCatalogRetriever()

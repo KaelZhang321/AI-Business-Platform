@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any, Literal
+from typing import Any, List, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -103,6 +103,44 @@ class ApiQueryMode(str, Enum):
     DIRECT = "direct"
 
 
+class ApiQueryResponseMode(str, Enum):
+    """`/api-query` 响应载荷模式。
+
+    功能：
+        把“整页替换”和“局部补丁”显式收敛为正式契约，避免前端继续通过猜测 `ui_spec`
+        结构去判断当前该整页重绘还是执行 patch。
+    """
+
+    FULL_SPEC = "full_spec"
+    PATCH = "patch"
+
+
+class ApiQueryPatchTrigger(str, Enum):
+    """列表补丁请求的触发来源。"""
+
+    PAGINATION = "pagination"
+    FILTER_SUBMIT = "filter_submit"
+    FILTER_RESET = "filter_reset"
+
+
+class ApiQueryPatchContext(BaseModel):
+    """列表二跳补丁请求的上下文契约。
+
+    功能：
+        Patch 模式下，网关除了要拿到 `api_id + params`，还要知道前端当前是在翻页、
+        改筛选还是重置筛选，以及这次局部更新准备写回哪一段页面结构。否则后端虽然
+        能查到数据，但无法给前端返回稳定的补丁意图。
+
+    返回值约束：
+        - `patch_type` 当前固定为 `list_query`
+        - `mutation_target` 必须来自首跳运行时契约，而不是前端自行捏造页面路径
+    """
+
+    patch_type: Literal["list_query"] = Field("list_query", description="补丁类型，当前固定为列表查询")
+    trigger: ApiQueryPatchTrigger = Field(..., description="触发本次补丁请求的前端交互来源")
+    mutation_target: str = Field(..., min_length=1, description="前端准备局部更新的目标路径")
+
+
 class ApiQueryDirectQuery(BaseModel):
     """`/api-query` 直达快路载荷。
 
@@ -135,6 +173,7 @@ class ApiQueryRequest(BaseModel):
         - `mode` 缺省时必须按 `nl` 处理，以兼容历史前端
         - `envs` / `tag_names` 仅在 `nl` 模式下参与 Milvus 标量过滤
         - `direct` 模式下不要求 `query`，但必须提供 `direct_query`
+        - `response_mode` 缺省时必须按 `full_spec` 处理，以兼容历史前端
 
     Edge Cases:
         - `direct` 模式不会因为 `query` 为空而失败；真正的硬校验落在 `direct_query`
@@ -154,10 +193,16 @@ class ApiQueryRequest(BaseModel):
                 },
                 {
                     "mode": "direct",
+                    "response_mode": "patch",
                     "conversation_id": "conv_001",
                     "direct_query": {
-                        "api_id": "customer_detail",
-                        "params": {"customerId": "C001"},
+                        "api_id": "customer_list",
+                        "params": {"ownerId": "E8899", "pageNum": 2, "pageSize": 20},
+                    },
+                    "patch_context": {
+                        "patch_type": "list_query",
+                        "trigger": "pagination",
+                        "mutation_target": "report-table.props.dataSource",
                     },
                 },
             ]
@@ -165,12 +210,17 @@ class ApiQueryRequest(BaseModel):
     )
 
     mode: ApiQueryMode = Field(ApiQueryMode.NL, description="请求模式：`nl` 或 `direct`")
+    response_mode: ApiQueryResponseMode = Field(
+        ApiQueryResponseMode.FULL_SPEC,
+        description="响应模式：整页 spec 或列表 patch",
+    )
     query: str | None = Field(None, min_length=1, max_length=500, description="用户自然语言输入")
     conversation_id: str | None = Field(None, description="对话 ID（保留，用于未来多轮记忆）")
     top_k: int = Field(3, ge=1, le=5, description="候选接口数量")
     envs: list[str] = Field(default_factory=list, description="可选的环境过滤，如 prod / dev")
     tag_names: list[str] = Field(default_factory=list, description="可选的业务标签过滤，如 合同管理")
     direct_query: ApiQueryDirectQuery | None = Field(None, description="直达快路模式的显式接口调用信息")
+    patch_context: ApiQueryPatchContext | None = Field(None, description="patch 模式下的前端补丁上下文")
 
     @model_validator(mode="after")
     def validate_mode_contract(self) -> ApiQueryRequest:
@@ -186,7 +236,12 @@ class ApiQueryRequest(BaseModel):
         if self.mode == ApiQueryMode.DIRECT:
             if self.direct_query is None:
                 raise ValueError("mode=direct 时必须提供 direct_query")
+            if self.response_mode == ApiQueryResponseMode.PATCH and self.patch_context is None:
+                raise ValueError("response_mode=patch 时必须提供 patch_context")
             return self
+
+        if self.response_mode == ApiQueryResponseMode.PATCH:
+            raise ValueError("response_mode=patch 时必须配合 mode=direct")
 
         if not self.query:
             raise ValueError("mode=nl 时必须提供 query")
@@ -256,7 +311,7 @@ class ApiQueryPlanStep(BaseModel):
 
     返回值约束：
         - `api_id` 对应 `ui_api_endpoints.id`，供前端和审计链路稳定识别接口实体
-        - `api_path` 必须命中第二阶段召回出的 GET 接口
+        - `api_path` 必须命中第二阶段召回出的查询安全接口
         - `depends_on` 只描述前置步骤 ID，不描述执行器细节
         - `params` 允许包含字面量和 JSONPath 绑定表达式
     """
@@ -359,41 +414,168 @@ class ApiQueryUIAction(BaseModel):
     params_schema: dict[str, Any] = Field(default_factory=dict, description="动作参数约束")
 
 
+class ApiQueryDetailRequestRuntime(BaseModel):
+    """详情二跳请求契约。
+
+    功能：
+        把“第二次详情请求怎么发”从散落字段收口为稳定子对象，避免前端继续把
+        `identifier_param / mode / response_mode` 混在一层里自行约定。
+    """
+
+    mode: Literal["direct"] = Field("direct", description="详情二跳固定走直达快路")
+    response_mode: Literal["full_spec"] = Field("full_spec", description="详情二跳当前固定返回整页 Spec")
+    param_source: Literal["queryParams", "body"] | None = Field(None, description="详情参数的归属位置")
+    identifier_param: str | None = Field(None, description="详情查询使用的主键参数名")
+
+
+class ApiQueryDetailSourceRuntime(BaseModel):
+    """详情主键取值契约。
+
+    功能：
+        前端点击列表行查看详情时，需要知道“从当前行哪个字段取值”。这层信息如果不显式
+        暴露，就会逼着前端反向解析表格列或执行计划，导致契约再次漂移。
+    """
+
+    identifier_field: str | None = Field(None, description="从当前行提取详情主键值的字段名")
+    value_type: str | None = Field(None, description="主键值类型提示")
+    required: bool = Field(False, description="是否要求该主键值必须存在")
+
+
 class ApiQueryDetailRuntime(BaseModel):
     """详情页运行时契约。"""
 
     enabled: bool = Field(False, description="是否具备详情运行时信息")
     api_id: str | None = Field(None, description="详情查询使用的接口 ID")
     route_url: str | None = Field(None, description="建议调用的网关路由")
-    identifier_field: str | None = Field(None, description="可用于跳转详情的主键字段")
-    query_param: str | None = Field(None, description="详情查询时建议使用的参数名")
     ui_action: str | None = Field(None, description="推荐的前端动作编码")
-    template_code: str | None = Field(None, description="命中预设模板时的模板编码")
-    fallback_mode: str | None = Field(None, description="未命中模板时的回退模式")
+    request: ApiQueryDetailRequestRuntime = Field(
+        default_factory=ApiQueryDetailRequestRuntime,
+        description="详情二跳请求约束",
+    )
+    source: ApiQueryDetailSourceRuntime = Field(
+        default_factory=ApiQueryDetailSourceRuntime,
+        description="详情主键取值约束",
+    )
 
 
-class ApiQueryPaginationRuntime(BaseModel):
-    """分页运行时契约。"""
+class ApiQueryListPaginationRuntime(BaseModel):
+    """列表分页运行时契约。"""
 
-    enabled: bool = Field(False, description="是否具备分页运行时信息")
-    api_id: str | None = Field(None, description="分页刷新使用的接口 ID")
+    enabled: bool = Field(False, description="当前列表是否支持分页二跳")
     total: int = Field(0, ge=0, description="总记录数")
     page_size: int | None = Field(None, ge=1, description="当前页大小")
     current_page: int | None = Field(None, ge=1, description="当前页码")
     page_param: str | None = Field(None, description="页码参数名")
     page_size_param: str | None = Field(None, description="分页大小参数名")
+    mutation_target: str | None = Field(None, description="前端局部刷新的目标路径")
+
+
+class ApiQueryListFilterFieldRuntime(BaseModel):
+    """列表筛选字段定义。"""
+
+    name: str = Field(..., description="筛选字段名")
+    label: str = Field(..., description="筛选字段展示名")
+    value_type: str = Field(..., description="筛选字段值类型")
+    required: bool = Field(False, description="当前筛选字段是否必填")
+
+
+class ApiQueryListFiltersRuntime(BaseModel):
+    """列表筛选运行时契约。"""
+
+    enabled: bool = Field(False, description="当前列表是否支持筛选二跳")
+    fields: list[ApiQueryListFilterFieldRuntime] = Field(default_factory=list, description="允许前端展示的筛选字段")
+
+
+class ApiQueryListQueryContextRuntime(BaseModel):
+    """列表查询上下文契约。
+
+    功能：
+        它是分页、改筛选条件等二跳请求的唯一正式参数来源，目的是让前端不再解析
+        `execution_plan.steps[*].params` 这种内部执行细节。
+    """
+
+    enabled: bool = Field(False, description="当前列表是否允许沿用查询上下文继续二跳")
+    current_params: dict[str, Any] = Field(default_factory=dict, description="当前已经生效的完整查询参数")
+    page_param: str | None = Field(None, description="页码参数名")
+    page_size_param: str | None = Field(None, description="分页大小参数名")
+    preserve_on_pagination: list[str] = Field(default_factory=list, description="翻页时必须保留的筛选字段")
+    reset_page_on_filter_change: bool = Field(True, description="筛选条件变更后是否强制回到第一页")
+
+
+class ApiQueryListRuntime(BaseModel):
+    """列表交互运行时契约。"""
+
+    enabled: bool = Field(False, description="当前结果是否具备列表二跳能力")
+    api_id: str | None = Field(None, description="列表二跳继续使用的接口 ID")
+    route_url: str | None = Field(None, description="建议调用的网关路由")
     ui_action: str | None = Field(None, description="推荐的前端动作编码")
-    mutation_target: str | None = Field(None, description="前端局部刷新目标路径")
+    param_source: Literal["queryParams", "body"] | None = Field(None, description="列表参数的归属位置")
+    pagination: ApiQueryListPaginationRuntime = Field(
+        default_factory=ApiQueryListPaginationRuntime,
+        description="列表分页运行时契约",
+    )
+    filters: ApiQueryListFiltersRuntime = Field(
+        default_factory=ApiQueryListFiltersRuntime,
+        description="列表筛选运行时契约",
+    )
+    query_context: ApiQueryListQueryContextRuntime = Field(
+        default_factory=ApiQueryListQueryContextRuntime,
+        description="列表查询上下文契约",
+    )
 
 
-class ApiQueryTemplateRuntime(BaseModel):
-    """模板快路运行时契约。"""
+class ApiQueryFormOptionSourceRuntime(BaseModel):
+    """表单选项来源契约。"""
 
-    enabled: bool = Field(False, description="是否命中模板快路")
-    template_code: str | None = Field(None, description="模板编码")
+    type: str = Field(..., description="选项来源类型")
+    dict_code: str | None = Field(None, description="当类型为 dict 时的字典编码")
+
+
+class ApiQueryFormFieldRuntime(BaseModel):
+    """表单字段运行时契约。
+
+    功能：
+        `ui_runtime.form.fields` 描述的是提交契约，而不是页面组件树。它只回答：
+        1. 这个字段最终以什么 key 提交
+        2. 当前值从哪个 `state_path` 读取
+        3. 该字段是用户填写、上下文透传还是字典选择
+    """
+
+    name: str = Field(..., description="字段业务名")
+    value_type: str = Field(..., description="字段值类型")
+    state_path: str = Field(..., description="字段绑定到 `ui_spec.state` 的路径")
+    submit_key: str = Field(..., description="提交给后端时使用的 payload 键名")
+    required: bool = Field(False, description="该字段提交时是否必填")
+    writable: bool = Field(False, description="当前字段是否允许用户编辑")
+    source_kind: Literal["context", "user_input", "dictionary", "derived"] = Field(
+        "context",
+        description="字段值来源类型",
+    )
+    option_source: ApiQueryFormOptionSourceRuntime | None = Field(None, description="选择型字段的选项来源")
+
+
+class ApiQueryFormSubmitRuntime(BaseModel):
+    """表单提交流程契约。"""
+
+    business_intent: str | None = Field(None, description="当前表单对应的业务意图编码")
+    confirm_required: bool = Field(False, description="是否要求用户显式确认后再提交")
+
+
+class ApiQueryFormRuntime(BaseModel):
+    """表单运行时契约。"""
+
+    enabled: bool = Field(False, description="当前页面是否具备正式表单提交能力")
+    form_code: str | None = Field(None, description="稳定的表单场景编码")
+    mode: Literal["create", "edit", "confirm"] | None = Field(None, description="表单模式")
+    api_id: str | None = Field(None, description="表单提交使用的接口 ID")
+    route_url: str | None = Field(None, description="建议调用的网关路由")
     ui_action: str | None = Field(None, description="推荐的前端动作编码")
-    render_mode: str | None = Field(None, description="模板渲染模式")
-    fallback_mode: str | None = Field(None, description="模板未命中时的回退模式")
+    state_path: str | None = Field(None, description="表单根状态路径")
+    fields: list[ApiQueryFormFieldRuntime] = Field(default_factory=list, description="表单字段运行时契约")
+    submit: ApiQueryFormSubmitRuntime = Field(
+        default_factory=ApiQueryFormSubmitRuntime,
+        description="表单提交约束",
+    )
 
 
 class ApiQueryAuditRuntime(BaseModel):
@@ -409,14 +591,13 @@ class ApiQueryUIRuntime(BaseModel):
     """`api_query` 返回给前端的运行时元数据总线。"""
 
     mode: Literal["read_only"] = Field("read_only", description="当前 `api_query` 的运行模式")
-    components: list[str] = Field(default_factory=list, description="当前 spec 使用到的组件类型")
-    ui_actions: list[ApiQueryUIAction] = Field(default_factory=list, description="当前运行时动作定义")
+    # 使用 `typing.List` 而不是 `list[...]`，是为了规避 Python 3.14 下类内字段名 `list`
+    # 与内建泛型同名时的注解求值冲突，保证对外契约仍然保持 `ui_runtime.list` 不变。
+    components: List[str] = Field(default_factory=list, description="当前 spec 使用到的组件类型")
+    ui_actions: List[ApiQueryUIAction] = Field(default_factory=list, description="当前运行时动作定义")
+    list: ApiQueryListRuntime = Field(default_factory=ApiQueryListRuntime, description="列表运行时提示")
     detail: ApiQueryDetailRuntime = Field(default_factory=ApiQueryDetailRuntime, description="详情运行时提示")
-    pagination: ApiQueryPaginationRuntime = Field(
-        default_factory=ApiQueryPaginationRuntime,
-        description="分页运行时提示",
-    )
-    template: ApiQueryTemplateRuntime = Field(default_factory=ApiQueryTemplateRuntime, description="模板运行时提示")
+    form: ApiQueryFormRuntime = Field(default_factory=ApiQueryFormRuntime, description="表单运行时提示")
     audit: ApiQueryAuditRuntime = Field(default_factory=ApiQueryAuditRuntime, description="审计运行时提示")
 
 

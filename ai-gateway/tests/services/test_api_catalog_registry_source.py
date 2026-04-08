@@ -94,6 +94,7 @@ def _mysql_row() -> dict[str, object]:
         "responseSchema": '{"type":"object","properties":{"data":{"type":"object","properties":{"list":{"type":"array","items":{"type":"object","properties":{"customerId":{"type":"string","description":"客户ID"}}}}}}}}',
         "sampleRequest": '{"page":1}',
         "sampleResponse": '{"data":{"list":[{"customerId":"C001"}]}}',
+        "operationSafety": "query",
         "endpointStatus": "active",
         "sourceId": "src_1",
         "sourceCode": "crm",
@@ -152,8 +153,11 @@ async def test_registry_source_loads_entries_from_mysql_and_appends_builtin_dict
     assert customer_entry.domain == "crm"
     assert customer_entry.env == "prod"
     assert customer_entry.tag_name == "客户管理"
+    assert customer_entry.operation_safety == "query"
     assert customer_entry.executor_config["base_url"] == "http://business-server"
+    assert customer_entry.executor_config["executor_type"] == "runtime_invoke"
     assert customer_entry.security_rules["read_only"] is True
+    assert customer_entry.security_rules["query_safe"] is True
     assert customer_entry.response_data_path == "data.list"
     assert customer_entry.response_schema["type"] == "object"
     assert customer_entry.sample_request == {"page": 1}
@@ -162,6 +166,7 @@ async def test_registry_source_loads_entries_from_mysql_and_appends_builtin_dict
 
     dict_entry = entry_by_path["/api/system/dicts"]
     assert dict_entry.id == "system_dicts_v1"
+    assert dict_entry.operation_safety == "query"
     assert dict_entry.api_schema["request"]["properties"]["types"]["allowed_values"] == [
         "customer_region",
         "customer_level",
@@ -203,7 +208,7 @@ async def test_registry_source_get_entry_by_id_hits_mysql_exactly_once(monkeypat
 
     assert entry is not None
     assert entry.id == "ep_1"
-    assert "WHERE e.id = %s" in str(capture["sql"])
+    assert "AND e.id = %s" in str(capture["sql"])
     assert capture["params"] == ("ep_1",)
 
 

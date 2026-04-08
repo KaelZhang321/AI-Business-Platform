@@ -18,6 +18,7 @@ def _make_entry(
         id=entry_id,
         description=f"查询 {entry_id}",
         domain="crm",
+        operation_safety="query",
         method="GET",
         path=path,
         param_schema={
@@ -57,6 +58,35 @@ def test_validate_plan_rejects_cycle() -> None:
         planner.validate_plan(plan, candidates)
 
     assert exc_info.value.code == "planner_cycle_detected"
+
+
+def test_validate_plan_rejects_mutation_entry() -> None:
+    planner = ApiDagPlanner()
+    unsafe_entry = ApiCatalogEntry(
+        id="customer_update",
+        description="更新客户",
+        domain="crm",
+        operation_safety="mutation",
+        method="POST",
+        path="/api/crm/customers/update",
+    )
+    plan = ApiQueryExecutionPlan(
+        plan_id="dag_mutation_block",
+        steps=[
+            ApiQueryPlanStep(
+                step_id="step_update",
+                api_id="customer_update",
+                api_path="/api/crm/customers/update",
+                params={"customerId": "C001"},
+                depends_on=[],
+            )
+        ],
+    )
+
+    with pytest.raises(DagPlanValidationError) as exc_info:
+        planner.validate_plan(plan, [ApiCatalogSearchResult(entry=unsafe_entry, score=0.9)])
+
+    assert exc_info.value.code == "planner_unsafe_api"
 
 
 @pytest.mark.asyncio
