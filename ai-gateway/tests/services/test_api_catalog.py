@@ -290,8 +290,8 @@ class TestRuntimeInvokeExecutor:
             "api_query_runtime_invoke_url_template",
             "http://runtime.example/ui-builder/runtime/endpoints/{id}/invoke",
         )
-        monkeypatch.setattr(settings, "api_query_runtime_flow_num", "1212")
-        monkeypatch.setattr(settings, "api_query_runtime_reserved_id", "27")
+        monkeypatch.setattr(settings, "api_query_runtime_flow_num", 1212)
+        monkeypatch.setattr(settings, "api_query_runtime_reserved_id", "71592")
         monkeypatch.setattr(settings, "api_query_runtime_created_by", "gateway")
 
         executor = RuntimeInvokeExecutor()

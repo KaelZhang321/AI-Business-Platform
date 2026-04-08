@@ -94,13 +94,12 @@ class Settings(BaseSettings):
     api_query_route_retry_count: int = 1
     api_query_retrieval_timeout_seconds: float = 0.8
     api_query_retrieval_per_domain_top_k: int = 2
-    # 第二阶段默认改为 0.5，是为了更贴近设计文档中的“宁可少给候选，也不喂垃圾接口”的保守策略。
-    api_query_score_threshold: float = 0.5
+    # 第二阶段默认改为 0.45，是为了更贴近设计文档中的“宁可少给候选，也不喂垃圾接口”的保守策略。
+    api_query_score_threshold: float = 0.45
     api_query_runtime_invoke_url_template: str = (
         "https://beta-ai-platform.kaibol.net/ai-platform/api/v1/ui-builder/runtime/endpoints/{id}/invoke"
     )
-    api_query_runtime_flow_num: str = "1212"
-    api_query_runtime_reserved_id: str = "27"
+    api_query_runtime_flow_num: int = 1212
     api_query_runtime_created_by: str = ""
     api_query_runtime_timeout_seconds: float = 8.0
     api_query_runtime_enabled: bool = True
