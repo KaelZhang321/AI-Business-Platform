@@ -13,6 +13,7 @@ import org.springframework.web.bind.annotation.RestController;
 import com.lecz.service.tools.core.utils.AuthUtil;
 import com.lzke.ai.application.dto.PageQuery;
 import com.lzke.ai.application.dto.UiApiEndpointRequest;
+import com.lzke.ai.application.dto.UiApiEndpointRoleBindRequest;
 import com.lzke.ai.application.dto.UiApiInvokeRequest;
 import com.lzke.ai.application.dto.UiApiSourceRequest;
 import com.lzke.ai.application.dto.UiApiTestRequest;
@@ -29,6 +30,7 @@ import com.lzke.ai.application.dto.UiPageRequest;
 import com.lzke.ai.application.dto.UiProjectRequest;
 import com.lzke.ai.application.ui.UiBuilderApplicationService;
 import com.lzke.ai.domain.entity.UiApiEndpoint;
+import com.lzke.ai.domain.entity.UiApiEndpointRole;
 import com.lzke.ai.domain.entity.UiApiSource;
 import com.lzke.ai.domain.entity.UiApiTag;
 import com.lzke.ai.domain.entity.UiApiTestLog;
@@ -168,6 +170,40 @@ public class UiBuilderController {
     @GetMapping("/endpoints/{endpointId}/test-logs")
     public ApiResponse<PageResult<UiApiTestLog>> listTestLogs(@PathVariable String endpointId, @Valid PageQuery query) {
         return ApiResponse.ok(uiBuilderApplicationService.listTestLogs(endpointId, query));
+    }
+
+    /**
+     * 分页查询接口与角色关系。
+     */
+    @GetMapping("/endpoint-role-relations")
+    public ApiResponse<PageResult<UiApiEndpointRole>> listEndpointRoleRelations(
+            @Valid PageQuery query,
+            @RequestParam(required = false) String roleId
+    ) {
+        return ApiResponse.ok(uiBuilderApplicationService.listEndpointRoleRelations(roleId, query));
+    }
+
+    /**
+     * 批量把接口定义关联到某个角色。
+     */
+    @PostMapping("/endpoint-role-relations")
+    public ApiResponse<java.util.List<UiApiEndpointRole>> bindEndpointRoleRelations(
+            @RequestBody UiApiEndpointRoleBindRequest request
+    ) {
+        Long userId = AuthUtil.getUserId();
+        if (userId != null && !org.springframework.util.StringUtils.hasText(request.getCreatedBy())) {
+            request.setCreatedBy(String.valueOf(userId));
+        }
+        return ApiResponse.ok(uiBuilderApplicationService.bindEndpointRoleRelations(request));
+    }
+
+    /**
+     * 删除单条接口与角色关系。
+     */
+    @DeleteMapping("/endpoint-role-relations/{relationId}")
+    public ApiResponse<Void> deleteEndpointRoleRelation(@PathVariable String relationId) {
+        uiBuilderApplicationService.deleteEndpointRoleRelation(relationId);
+        return ApiResponse.ok();
     }
 
     /**

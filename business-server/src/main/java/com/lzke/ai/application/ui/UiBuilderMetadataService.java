@@ -99,6 +99,7 @@ public class UiBuilderMetadataService {
                 new UiBuilderFeatureResponse("接口源管理", "导入 OpenAPI/Swagger、手工录入接口并配置认证方式。"),
                 new UiBuilderFeatureResponse("接口联调", "对三方接口做参数配置、测试调用和样例响应固化。"),
                 new UiBuilderFeatureResponse("运行时调用", "按 endpointId 发起真实接口调用，并记录 flowNum 级别的调用日志。"),
+                new UiBuilderFeatureResponse("角色关联", "把已导入的接口定义绑定到 IAM 角色，支持按角色筛选接口。"),
                 new UiBuilderFeatureResponse("页面编排", "用 Card、Table、Metric、Chart 等节点描述页面结构。"),
                 new UiBuilderFeatureResponse("字段绑定", "把接口返回字段通过 JSONPath 绑定到组件 props。"),
                 new UiBuilderFeatureResponse("版本发布", "将页面配置转换为 json-render spec，并进行版本化发布。")
@@ -144,6 +145,11 @@ public class UiBuilderMetadataService {
                         new UiBuilderFieldResponse("method", "varchar(16)", "HTTP 方法"),
                         new UiBuilderFieldResponse("request_schema", "json", "请求结构"),
                         new UiBuilderFieldResponse("response_schema", "json", "响应结构")
+                )),
+                new UiBuilderTableSchemaResponse("ui_api_endpoint_roles", "接口定义与 IAM 角色关系", List.of(
+                        new UiBuilderFieldResponse("endpoint_id", "varchar(64)", "所属接口定义"),
+                        new UiBuilderFieldResponse("role_id", "varchar(64)", "角色 ID"),
+                        new UiBuilderFieldResponse("role_name", "varchar(128)", "角色名称")
                 )),
                 new UiBuilderTableSchemaResponse("ui_api_test_logs", "接口联调与样例响应记录", List.of(
                         new UiBuilderFieldResponse("endpoint_id", "varchar(64)", "所属接口定义"),

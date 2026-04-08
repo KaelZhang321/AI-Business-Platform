@@ -3,9 +3,14 @@ import type {
   ApiResponse,
   PageQuery,
   PageResult,
+  RemotePageResult,
+  RemoteResponse,
   UiApiEndpoint,
   UiApiEndpointRequest,
+  UiApiEndpointRole,
+  UiApiEndpointRoleBindRequest,
   UiApiInvokeRequest,
+  UiRole,
   UiApiSource,
   UiApiSourceRequest,
   UiApiTag,
@@ -39,9 +44,24 @@ function buildPageParams(query?: PageQuery) {
   }
 }
 
+async function unwrapRemote<T>(promise: Promise<{ data: RemoteResponse<T> }>) {
+  const response = await promise
+  return response.data.data
+}
+
 export const uiBuilderApi = {
   getOverview() {
     return unwrap<UiBuilderOverview>(businessClient.get('/api/v1/ui-builder/overview'))
+  },
+  async listRoles(appCode = 'AI-RND-WORKFLOW') {
+    const result = await unwrapRemote<RemotePageResult<UiRole>>(businessClient.get('/api/v1/auth/roles', {
+      params: {
+        appCode,
+        pageNo: 1,
+        pageSize: 200,
+      },
+    }))
+    return result.records
   },
   listSources(query?: PageQuery) {
     return unwrap<PageResult<UiApiSource>>(businessClient.get('/api/v1/ui-builder/sources', { params: buildPageParams(query) }))
@@ -95,6 +115,20 @@ export const uiBuilderApi = {
     return unwrap<PageResult<UiApiTestLog>>(businessClient.get(`/api/v1/ui-builder/endpoints/${endpointId}/test-logs`, {
       params: buildPageParams(query),
     }))
+  },
+  listEndpointRoleRelations(roleId?: string, query?: PageQuery) {
+    return unwrap<PageResult<UiApiEndpointRole>>(businessClient.get('/api/v1/ui-builder/endpoint-role-relations', {
+      params: {
+        ...buildPageParams(query),
+        ...(roleId ? { roleId } : {}),
+      },
+    }))
+  },
+  bindEndpointRoleRelations(payload: UiApiEndpointRoleBindRequest) {
+    return unwrap<UiApiEndpointRole[]>(businessClient.post('/api/v1/ui-builder/endpoint-role-relations', payload))
+  },
+  deleteEndpointRoleRelation(relationId: string) {
+    return unwrap<void>(businessClient.delete(`/api/v1/ui-builder/endpoint-role-relations/${relationId}`))
   },
   listProjects(query?: PageQuery) {
     return unwrap<PageResult<UiProject>>(businessClient.get('/api/v1/ui-builder/projects', { params: buildPageParams(query) }))

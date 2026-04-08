@@ -20,11 +20,15 @@ import org.springframework.web.bind.annotation.RestController;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.lecz.iam.system.employee.dto.SysOauthCodeTokenDTO;
+import com.lecz.iam.system.employee.dto.SysRoleQueryDTO;
 import com.lecz.iam.system.employee.dto.SysTokenRefreshDTO;
 import com.lecz.iam.system.employee.service.ISysEmployeeHttpService;
 import com.lecz.iam.system.employee.service.ISysLoginHttpService;
+import com.lecz.iam.system.employee.service.ISysRoleHttpService;
 import com.lecz.iam.system.employee.vo.SysEmployeeVO;
 import com.lecz.iam.system.employee.vo.SysLoginResultVO;
+import com.lecz.iam.system.employee.vo.SysRoleVO;
+import com.lecz.service.tools.core.dto.PageResponse;
 import com.lecz.service.tools.core.dto.ResponseDto;
 import com.lecz.service.tools.core.utils.AuthUtil;
 import com.lzke.ai.application.dto.LoginRequest;
@@ -64,6 +68,8 @@ public class AuthController {
     private final ISysLoginHttpService sysLoginHttpService;
 
     private final ISysEmployeeHttpService sysEmployeeHttpService;
+
+    private final ISysRoleHttpService sysRoleHttpService;
     
     @Value("${forest.variables.oa.appCode}")
     private String appCode;
@@ -145,6 +151,20 @@ public class AuthController {
     public ResponseDto<SysEmployeeVO> info() {
     	Long userId = AuthUtil.getUserId();
     	return ResponseDto.success(getSysEmployeeVO(userId+""));
+    }
+
+    @Operation(summary = "按应用编码查询角色", description = "调用 IAM 角色中心的 list 接口，默认查询 AI-RND-WORKFLOW 下的角色")
+    @GetMapping("/roles")
+    public ResponseDto<PageResponse<SysRoleVO>> listRoles(
+            @RequestParam(name = "appCode", defaultValue = "AI-RND-WORKFLOW") String roleAppCode,
+            @RequestParam(name = "pageNo", defaultValue = "1") Integer pageNo,
+            @RequestParam(name = "pageSize", defaultValue = "200") Integer pageSize
+    ) {
+        SysRoleQueryDTO queryDTO = new SysRoleQueryDTO();
+        queryDTO.setAppCode(StringUtils.defaultIfBlank(roleAppCode, "AI-RND-WORKFLOW"));
+        queryDTO.setPageNo(pageNo);
+        queryDTO.setPageSize(pageSize);
+        return sysRoleHttpService.list(queryDTO);
     }
     
     SysEmployeeVO getSysEmployeeVO(String userId) {

@@ -16,6 +16,20 @@ export interface PageResult<T> {
   size: number
 }
 
+export interface RemoteResponse<T> {
+  success: boolean
+  message: string
+  data: T
+}
+
+export interface RemotePageResult<T> {
+  records: T[]
+  total: number
+  size: number
+  current: number
+  pages: number
+}
+
 export interface UiBuilderFeature {
   title: string
   description: string
@@ -90,6 +104,35 @@ export interface UiApiEndpoint {
   status?: string | null
   createdAt?: string | null
   updatedAt?: string | null
+}
+
+export interface UiRole {
+  id: string
+  appCode?: string | null
+  roleName: string
+  roleCode?: string | null
+  roleDesc?: string | null
+  status?: number | null
+  createTime?: string | null
+  updateTime?: string | null
+}
+
+export interface UiApiEndpointRole {
+  id: string
+  endpointId: string
+  roleId: string
+  roleCode?: string | null
+  roleName: string
+  createdBy?: string | null
+  createdAt?: string | null
+  updatedAt?: string | null
+  endpointName?: string | null
+  endpointPath?: string | null
+  endpointMethod?: string | null
+  endpointStatus?: string | null
+  sourceId?: string | null
+  sourceName?: string | null
+  tagName?: string | null
 }
 
 export interface UiApiTestLog {
@@ -252,6 +295,14 @@ export interface UiApiTestRequest {
   headers?: Record<string, unknown>
   queryParams?: Record<string, unknown>
   body?: unknown
+  createdBy?: string
+}
+
+export interface UiApiEndpointRoleBindRequest {
+  roleId: string
+  roleCode?: string
+  roleName: string
+  endpointIds: string[]
   createdBy?: string
 }
 

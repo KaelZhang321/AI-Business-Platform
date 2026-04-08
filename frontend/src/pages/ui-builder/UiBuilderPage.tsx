@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Alert, Spin, Tabs, Typography, message } from 'antd'
 
 import { uiBuilderApi } from './api'
+import { EndpointRoleTab } from './components/EndpointRoleTab'
 import { OverviewTab } from './components/OverviewTab'
 import { ReleaseTab } from './components/ReleaseTab'
 import { SourceCenterTab } from './components/SourceCenterTab'
@@ -11,6 +12,8 @@ import type {
   PageResult,
   UiApiEndpoint,
   UiApiEndpointRequest,
+  UiApiEndpointRole,
+  UiApiEndpointRoleBindRequest,
   UiApiSource,
   UiApiSourceRequest,
   UiApiTag,
@@ -27,6 +30,7 @@ import type {
   UiPageRequest,
   UiProject,
   UiProjectRequest,
+  UiRole,
   UiSpecVersion,
 } from './types'
 
@@ -77,6 +81,8 @@ export function UiBuilderPage() {
   const [sources, setSources] = useState<UiApiSource[]>([])
   const [endpoints, setEndpoints] = useState<UiApiEndpoint[]>([])
   const [tags, setTags] = useState<UiApiTag[]>([])
+  const [roles, setRoles] = useState<UiRole[]>([])
+  const [endpointRoleRelations, setEndpointRoleRelations] = useState<UiApiEndpointRole[]>([])
   const [testLogs, setTestLogs] = useState<UiApiTestLog[]>([])
   const [testResult, setTestResult] = useState<UiApiTestResponse | null>(null)
   const [projects, setProjects] = useState<UiProject[]>([])
@@ -87,12 +93,14 @@ export function UiBuilderPage() {
 
   const [selectedSourceId, setSelectedSourceId] = useState<string>()
   const [selectedEndpointId, setSelectedEndpointId] = useState<string>()
+  const [selectedRoleId, setSelectedRoleId] = useState<string>()
   const [selectedProjectId, setSelectedProjectId] = useState<string>()
   const [selectedPageId, setSelectedPageId] = useState<string>()
   const [selectedEndpointTagFilter, setSelectedEndpointTagFilter] = useState<string>('all')
 
   const [sourcePagination, setSourcePagination] = useState<PaginationState>(createPaginationState())
   const [endpointPagination, setEndpointPagination] = useState<PaginationState>(createPaginationState())
+  const [roleRelationPagination, setRoleRelationPagination] = useState<PaginationState>(createPaginationState())
   const [testLogPagination, setTestLogPagination] = useState<PaginationState>(createPaginationState())
   const [projectPagination, setProjectPagination] = useState<PaginationState>(createPaginationState())
   const [pagePagination, setPagePagination] = useState<PaginationState>(createPaginationState())
@@ -100,6 +108,7 @@ export function UiBuilderPage() {
 
   const [booting, setBooting] = useState(true)
   const [sourceLoading, setSourceLoading] = useState(false)
+  const [roleLoading, setRoleLoading] = useState(false)
   const [studioLoading, setStudioLoading] = useState(false)
   const [releaseLoading, setReleaseLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -136,6 +145,34 @@ export function UiBuilderPage() {
       cancelled = true
     }
   }, [])
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function loadRoles() {
+      setRoleLoading(true)
+      try {
+        const result = await uiBuilderApi.listRoles()
+        if (!cancelled) {
+          setRoles(result)
+        }
+      } catch (err) {
+        if (!cancelled) {
+          messageApi.error(getErrorMessage(err, '加载角色列表失败'))
+        }
+      } finally {
+        if (!cancelled) {
+          setRoleLoading(false)
+        }
+      }
+    }
+
+    void loadRoles()
+
+    return () => {
+      cancelled = true
+    }
+  }, [messageApi])
 
   useEffect(() => {
     let cancelled = false
@@ -224,6 +261,17 @@ export function UiBuilderPage() {
       setSelectedProjectId(projects[0].id)
     }
   }, [projects, selectedProjectId])
+
+  useEffect(() => {
+    if (!roles.length) {
+      setSelectedRoleId(undefined)
+      return
+    }
+
+    if (!selectedRoleId || !roles.some((item) => item.id === selectedRoleId)) {
+      setSelectedRoleId(roles[0].id)
+    }
+  }, [roles, selectedRoleId])
 
   useEffect(() => {
     let cancelled = false
@@ -323,6 +371,43 @@ export function UiBuilderPage() {
       cancelled = true
     }
   }, [messageApi, selectedEndpointId, testLogPagination.page, testLogPagination.size])
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function loadEndpointRoleRelations() {
+      if (!selectedRoleId) {
+        setEndpointRoleRelations([])
+        return
+      }
+
+      setRoleLoading(true)
+      try {
+        const result = await uiBuilderApi.listEndpointRoleRelations(selectedRoleId, {
+          page: roleRelationPagination.page,
+          size: roleRelationPagination.size,
+        })
+        if (!cancelled) {
+          setEndpointRoleRelations(result.data)
+          setRoleRelationPagination(toPaginationState(result))
+        }
+      } catch (err) {
+        if (!cancelled) {
+          messageApi.error(getErrorMessage(err, '加载接口角色关系失败'))
+        }
+      } finally {
+        if (!cancelled) {
+          setRoleLoading(false)
+        }
+      }
+    }
+
+    void loadEndpointRoleRelations()
+
+    return () => {
+      cancelled = true
+    }
+  }, [messageApi, roleRelationPagination.page, roleRelationPagination.size, selectedRoleId])
 
   useEffect(() => {
     let cancelled = false
@@ -493,6 +578,28 @@ export function UiBuilderPage() {
     }
   }
 
+  async function reloadRoles(preferredId?: string) {
+    const result = await uiBuilderApi.listRoles()
+    setRoles(result)
+    if (preferredId && result.some((item) => item.id === preferredId)) {
+      setSelectedRoleId(preferredId)
+      return
+    }
+    if (result.length) {
+      setSelectedRoleId(result[0].id)
+    }
+  }
+
+  async function reloadEndpointRoleRelations(roleId = selectedRoleId, query: PageQuery = roleRelationPagination) {
+    if (!roleId) {
+      setEndpointRoleRelations([])
+      return
+    }
+    const result = await uiBuilderApi.listEndpointRoleRelations(roleId, query)
+    setEndpointRoleRelations(result.data)
+    setRoleRelationPagination(toPaginationState(result))
+  }
+
   async function reloadProjects(preferredId?: string, query: PageQuery = projectPagination) {
     const result = await uiBuilderApi.listProjects(query)
     setProjects(result.data)
@@ -624,6 +731,34 @@ export function UiBuilderPage() {
     } catch (err) {
       messageApi.error(getErrorMessage(err, '删除接口定义失败'))
     }
+  }
+
+  async function handleBindEndpointRoleRelations(payload: UiApiEndpointRoleBindRequest) {
+    try {
+      await uiBuilderApi.bindEndpointRoleRelations(payload)
+      await reloadEndpointRoleRelations(payload.roleId, { page: 1, size: roleRelationPagination.size })
+      setRoleRelationPagination((prev) => ({ ...prev, page: 1 }))
+      messageApi.success('接口角色关系已保存')
+    } catch (err) {
+      messageApi.error(getErrorMessage(err, '保存接口角色关系失败'))
+      throw err
+    }
+  }
+
+  async function handleDeleteEndpointRoleRelation(relationId: string) {
+    try {
+      await uiBuilderApi.deleteEndpointRoleRelation(relationId)
+      await reloadEndpointRoleRelations(selectedRoleId, { page: 1, size: roleRelationPagination.size })
+      setRoleRelationPagination((prev) => ({ ...prev, page: 1 }))
+      messageApi.success('接口角色关系已删除')
+    } catch (err) {
+      messageApi.error(getErrorMessage(err, '删除接口角色关系失败'))
+    }
+  }
+
+  async function handleLoadEndpointsBySource(sourceId: string) {
+    const result = await uiBuilderApi.listEndpoints(sourceId, { page: 1, size: 100 })
+    return result.data
   }
 
   async function handleTestEndpoint(endpointId: string, payload: UiApiTestRequest) {
@@ -911,6 +1046,37 @@ export function UiBuilderPage() {
                 onRefreshEndpoints={async () => {
                   await reloadEndpoints(selectedEndpointId)
                 }}
+              />
+            ),
+          },
+          {
+            key: 'endpoint-roles',
+            label: '接口角色',
+            children: (
+              <EndpointRoleTab
+                roles={roles}
+                sources={sources}
+                relations={endpointRoleRelations}
+                selectedRoleId={selectedRoleId}
+                loading={roleLoading}
+                relationPagination={{
+                  current: roleRelationPagination.page,
+                  pageSize: roleRelationPagination.size,
+                  total: roleRelationPagination.total,
+                }}
+                onSelectRole={(roleId) => {
+                  setSelectedRoleId(roleId)
+                  setRoleRelationPagination((prev) => ({ ...prev, page: 1, total: 0 }))
+                }}
+                onRelationPageChange={(page, size) => {
+                  setRoleRelationPagination((prev) => ({ ...prev, page, size }))
+                }}
+                onRefreshRoles={async () => {
+                  await reloadRoles(selectedRoleId)
+                }}
+                onLoadEndpointsBySource={handleLoadEndpointsBySource}
+                onBindRelations={handleBindEndpointRoleRelations}
+                onDeleteRelation={handleDeleteEndpointRoleRelation}
               />
             ),
           },
