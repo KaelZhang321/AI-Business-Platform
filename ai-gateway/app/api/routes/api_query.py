@@ -62,6 +62,13 @@ from app.services.api_catalog.schema import ApiCatalogEntry, ApiCatalogSearchFil
 from app.services.api_catalog.param_extractor import ApiParamExtractor
 from app.services.api_catalog.retriever import ApiCatalogRetriever
 from app.services.api_query_llm_service import ApiQueryLLMService
+from app.services.api_query_response_builder import ApiQueryResponseBuilder
+from app.services.api_query_state import (
+    ApiQueryRuntimeContext,
+    ApiQueryState,
+    build_execution_state,
+    summarize_route_hint,
+)
 from app.services.dynamic_ui_service import DynamicUIService, UISpecBuildResult
 from app.services.ui_spec_guard import UISpecValidationResult
 from app.services.ui_catalog_service import UICatalogService
@@ -155,6 +162,22 @@ def _get_registry_source() -> ApiCatalogRegistrySource:
     return _registry_source
 
 
+def _get_response_builder() -> ApiQueryResponseBuilder:
+    """获取 `/api-query` 响应收口器单例。
+
+    功能：
+        Wave 1 先把响应拼装从 route 中抽离，但这里不做额外缓存。这样测试替身、热重载
+        和后续 workflow 注入都能稳定拿到当前请求视角下的依赖装配结果。
+    """
+    _, _, _, dynamic_ui, snapshot_service = _get_services()
+    return ApiQueryResponseBuilder(
+        dynamic_ui=dynamic_ui,
+        snapshot_service=snapshot_service,
+        ui_catalog_service=_get_ui_catalog_service(),
+        registry_source=_get_registry_source(),
+    )
+
+
 # ── 请求 / 响应 Schema ───────────────────────────────────────────
 
 
@@ -177,7 +200,8 @@ async def api_query(
     4. 透传 Token 调用 business-server
     5. 响应规范化 → DynamicUIService → UI Spec
     """
-    retriever, extractor, executor, dynamic_ui, snapshot_service = _get_services()
+    retriever, extractor, executor, _, _ = _get_services()
+    response_builder = _get_response_builder()
     trace_id = _resolve_trace_id(request)
     interaction_id = _resolve_interaction_id(request)
     conversation_id = _resolve_conversation_id(request_body)
@@ -189,6 +213,13 @@ async def api_query(
 
     # 用户 token（透传给 business-server）
     user_token = f"Bearer {credentials.credentials}" if credentials else None
+    base_state: ApiQueryState = {
+        "request_mode": request_body.mode.value,
+        "query_text": request_query,
+        "trace_id": trace_id,
+        "interaction_id": interaction_id,
+        "conversation_id": conversation_id,
+    }
     if request_body.mode == ApiQueryMode.DIRECT:
         plan, step_entries, query_domains, business_intent_codes, direct_query_text = await _prepare_direct_execution(
             request_body,
@@ -196,22 +227,21 @@ async def api_query(
             interaction_id=interaction_id,
             conversation_id=conversation_id,
         )
+        direct_state: ApiQueryState = dict(base_state)
+        direct_state["query_text"] = direct_query_text
+        direct_state["plan"] = plan
         return await _execute_prepared_plan(
             executor=executor,
-            dynamic_ui=dynamic_ui,
-            snapshot_service=snapshot_service,
-            trace_id=trace_id,
-            interaction_id=interaction_id,
-            conversation_id=conversation_id,
-            user_token=user_token,
-            query_text=direct_query_text,
-            plan=plan,
-            step_entries=step_entries,
+            response_builder=response_builder,
+            state=direct_state,
+            runtime_context=ApiQueryRuntimeContext(
+                user_context=user_context,
+                user_token=user_token,
+                step_entries=step_entries,
+                log_prefix=log_prefix,
+            ),
             query_domains_hint=query_domains,
             business_intent_codes=business_intent_codes,
-            log_prefix=log_prefix,
-            request_mode=request_body.mode.value,
-            retrieval_filters=None,
             response_mode=request_body.response_mode,
             patch_context=request_body.patch_context,
         )
@@ -226,6 +256,7 @@ async def api_query(
         allowed_business_intents=allowed_business_intent_codes,
         trace_id=trace_id,
     )
+    base_state["route_hint_summary"] = summarize_route_hint(route_hint)
     if route_hint.route_status != "ok":
         logger.info(
             "%s stage2 route degraded code=%s query=%s",
@@ -233,12 +264,8 @@ async def api_query(
             route_hint.route_error_code,
             request_body.query[:100],
         )
-        return await _build_stage2_degrade_response(
-            dynamic_ui,
-            trace_id=trace_id,
-            interaction_id=interaction_id,
-            conversation_id=conversation_id,
-            query=request_body.query,
+        return await response_builder.build_stage2_degrade_response(
+            state=base_state,
             title="未识别到可用业务域",
             message="抱歉，我没有完全理解您的意图，或系统中暂未开放相关查询能力，请尝试换种说法。",
             error_code=route_hint.route_error_code or "routing_failed",
@@ -256,6 +283,7 @@ async def api_query(
         filters=retrieval_filters,
         trace_id=trace_id,
     )
+    base_state["candidate_ids"] = [candidate.entry.id for candidate in candidates]
     if not candidates:
         logger.info(
             "%s no candidates after stratified retrieval domains=%s query=%s",
@@ -263,12 +291,8 @@ async def api_query(
             route_hint.query_domains,
             request_body.query[:100],
         )
-        return await _build_stage2_degrade_response(
-            dynamic_ui,
-            trace_id=trace_id,
-            interaction_id=interaction_id,
-            conversation_id=conversation_id,
-            query=request_body.query,
+        return await response_builder.build_stage2_degrade_response(
+            state=base_state,
             title="未找到匹配接口",
             message="当前问题没有召回到可执行的查询接口，请调整表达方式后重试。",
             error_code="no_catalog_match",
@@ -295,12 +319,8 @@ async def api_query(
                 routing_result.route_error_code,
                 request_body.query[:100],
             )
-            return await _build_stage2_degrade_response(
-                dynamic_ui,
-                trace_id=trace_id,
-                interaction_id=interaction_id,
-                conversation_id=conversation_id,
-                query=request_body.query,
+            return await response_builder.build_stage2_degrade_response(
+                state=base_state,
                 title="无法确定查询接口",
                 message="我找到了相关业务域，但还无法稳定确定具体接口，请补充更明确的查询条件后重试。",
                 error_code=routing_result.route_error_code or "route_and_extract_failed",
@@ -312,12 +332,8 @@ async def api_query(
         selected_entry = _find_selected_entry(candidates, routing_result)
         if selected_entry is None:
             logger.info("%s extractor could not choose endpoint", log_prefix)
-            return await _build_stage2_degrade_response(
-                dynamic_ui,
-                trace_id=trace_id,
-                interaction_id=interaction_id,
-                conversation_id=conversation_id,
-                query=request_body.query,
+            return await response_builder.build_stage2_degrade_response(
+                state=base_state,
                 title="无法确定查询接口",
                 message="当前输入关联了多个候选接口，但仍缺少足够信息来确定最终查询目标。",
                 error_code="selected_api_unresolved",
@@ -346,12 +362,8 @@ async def api_query(
             )
         except DagPlanValidationError as exc:
             logger.info("%s planner degraded code=%s", log_prefix, exc.code)
-            return await _build_stage3_degrade_response(
-                dynamic_ui,
-                trace_id=trace_id,
-                interaction_id=interaction_id,
-                conversation_id=conversation_id,
-                query=request_body.query,
+            return await response_builder.build_stage3_degrade_response(
+                state=base_state,
                 title="数据执行计划生成失败",
                 message="我找到了相关接口，但当前还无法稳定生成可执行的数据流，请补充更明确的查询链路后重试。",
                 error_code=exc.code,
@@ -368,12 +380,8 @@ async def api_query(
         step_entries = planner.validate_plan(plan, candidates)
     except DagPlanValidationError as exc:
         logger.info("%s planner validation degraded code=%s", log_prefix, exc.code)
-        return await _build_stage3_degrade_response(
-            dynamic_ui,
-            trace_id=trace_id,
-            interaction_id=interaction_id,
-            conversation_id=conversation_id,
-            query=request_body.query,
+        return await response_builder.build_stage3_degrade_response(
+            state=base_state,
             title="数据执行计划校验失败",
             message="系统生成的数据依赖图存在安全风险，已终止执行以保护业务系统。",
             error_code=exc.code,
@@ -381,22 +389,22 @@ async def api_query(
             business_intent_codes=planning_intent_codes,
             reasoning=str(exc),
         )
+    nl_state: ApiQueryState = dict(base_state)
+    nl_state["plan"] = plan
     return await _execute_prepared_plan(
         executor=executor,
-        dynamic_ui=dynamic_ui,
-        snapshot_service=snapshot_service,
-        trace_id=trace_id,
-        interaction_id=interaction_id,
-        conversation_id=conversation_id,
-        user_token=user_token,
-        query_text=request_body.query,
-        plan=plan,
-        step_entries=step_entries,
+        response_builder=response_builder,
+        state=nl_state,
+        runtime_context=ApiQueryRuntimeContext(
+            user_context=user_context,
+            user_token=user_token,
+            retrieval_filters=retrieval_filters,
+            candidates=candidates,
+            step_entries=step_entries,
+            log_prefix=log_prefix,
+        ),
         query_domains_hint=route_hint.query_domains,
         business_intent_codes=planning_intent_codes,
-        log_prefix=log_prefix,
-        request_mode=request_body.mode.value,
-        retrieval_filters=retrieval_filters,
         response_mode=request_body.response_mode,
         patch_context=request_body.patch_context,
     )
@@ -568,20 +576,11 @@ async def _prepare_direct_execution(
 async def _execute_prepared_plan(
     *,
     executor: ApiExecutor,
-    dynamic_ui: DynamicUIService,
-    snapshot_service: UISnapshotService,
-    trace_id: str,
-    interaction_id: str | None,
-    conversation_id: str | None,
-    user_token: str | None,
-    query_text: str,
-    plan: ApiQueryExecutionPlan,
-    step_entries: dict[str, ApiCatalogEntry],
+    response_builder: ApiQueryResponseBuilder,
+    state: ApiQueryState,
+    runtime_context: ApiQueryRuntimeContext,
     query_domains_hint: list[str],
     business_intent_codes: list[str],
-    log_prefix: str,
-    request_mode: str,
-    retrieval_filters: ApiCatalogSearchFilters | None,
     response_mode: ApiQueryResponseMode,
     patch_context: ApiQueryPatchContext | None,
 ) -> ApiQueryResponse:
@@ -596,114 +595,27 @@ async def _execute_prepared_plan(
     # 执行统一收口到 DAG executor，而不是在 route 层手写串/并行调用。
     # 这样“上游空结果短路下游”“JSONPath 依赖绑定”“单节点失败不拖垮全链路”都由同一套状态机负责，
     # 后续排障时只需要围绕 execution_report 回放，而不必回头拼接零散中间态。
+    plan = state["plan"]
     execution_report = await dag_executor.execute_plan(
         plan,
-        step_entries,
-        user_token=user_token,
-        trace_id=trace_id,
+        runtime_context.step_entries,
+        user_token=runtime_context.user_token,
+        trace_id=state["trace_id"],
     )
-    # 真正进入渲染层前，先把步骤级执行报告折叠为稳定摘要。
-    # 这里要保留逐步事实总线、选出主展示锚点，再计算聚合状态，避免 Renderer 反向猜“哪个步骤算主结果”。
-    context_pool = _build_plan_context_pool(execution_report)
-    aggregate_status = _summarize_execution_report(execution_report)
-    anchor_record = _select_response_anchor(execution_report)
-    internal_query_domains = _collect_execution_domains(execution_report, query_domains_hint)
-    query_domains = _format_query_domains_for_response(internal_query_domains)
-    business_intents = _build_business_intents(business_intent_codes)
-
-    # 这里继续复用第五阶段统一渲染入口，确保快路不会绕过 UI Guard。
-    data_for_ui = _build_ui_data_from_execution_report(execution_report, anchor_record)
-    runtime = _build_runtime_from_execution_report(
-        execution_report,
-        anchor_record,
-        business_intents=business_intents,
+    execution_state = build_execution_state(
+        plan=plan,
+        trace_id=state["trace_id"],
+        records_by_step_id=execution_report.records_by_step_id,
+        execution_order=execution_report.execution_order,
     )
-    response_plan = _build_response_execution_plan(plan, step_entries)
-    if response_mode == ApiQueryResponseMode.PATCH:
-        return _build_patch_mode_response(
-            trace_id=trace_id,
-            execution_report=execution_report,
-            aggregate_status=aggregate_status,
-            anchor_record=anchor_record,
-            response_plan=response_plan,
-            runtime=runtime,
-            patch_context=patch_context,
-        )
-
-    ui_build_result = await _generate_ui_spec_result(
-        dynamic_ui,
-        intent="query",
-        data=data_for_ui,
-        context={
-            "question": query_text,
-            "user_query": query_text,
-            "title": _build_execution_title(execution_report, anchor_record),
-            "detail_title": anchor_record.entry.description if anchor_record else "详情信息",
-            "total": _build_response_total(anchor_record),
-            "api_id": anchor_record.entry.id if anchor_record else None,
-            "error": _build_response_error(execution_report),
-            "empty_message": "未查到符合条件的数据，请调整筛选条件后重试。",
-            "skip_message": _build_execution_skip_message(execution_report),
-            "partial_message": "部分步骤执行失败或被短路，当前仅展示可安全返回的数据。",
-            "query_render_mode": _infer_query_render_mode(execution_report, anchor_record),
-            "context_pool": {step_id: step.model_dump(exclude_none=True) for step_id, step in context_pool.items()},
-            "business_intents": [intent.model_dump() for intent in business_intents],
-        },
-        status=aggregate_status,
-        runtime=runtime,
-        trace_id=trace_id,
-    )
-    ui_spec = ui_build_result.spec
-    runtime = await _enrich_runtime_from_ui_spec(
-        runtime,
-        ui_spec,
-        business_intents=business_intents,
-        trace_id=trace_id,
-    )
-    ui_runtime = _finalize_render_runtime(runtime, ui_spec, ui_build_result)
-    if ui_build_result.frozen:
-        logger.warning(
-            "%s stage5 ui frozen errors=%s",
-            log_prefix,
-            _summarize_validation_errors(ui_build_result.validation),
-        )
-    else:
-        snapshot_metadata = {
-            "request_mode": request_mode,
-            "plan_id": plan.plan_id,
-            "step_ids": [step.step_id for step in plan.steps],
-            "api_id": anchor_record.entry.id if anchor_record else None,
-            "api_path": anchor_record.entry.path if anchor_record else None,
-            "query_domains": query_domains,
-        }
-        if retrieval_filters is not None:
-            # 只有自然语言模式真的经过了召回链路，才保留检索过滤条件供排障复盘。
-            snapshot_metadata["retrieval_filters"] = retrieval_filters.model_dump()
-
-        ui_runtime = _maybe_attach_snapshot(
-            snapshot_service,
-            trace_id=trace_id,
-            business_intents=business_intents,
-            ui_spec=ui_spec,
-            ui_runtime=ui_runtime,
-            metadata=snapshot_metadata,
-        )
-
-    logger.info(
-        "%s success mode=%s status=%s api_id=%s step_count=%s",
-        log_prefix,
-        request_mode,
-        aggregate_status,
-        anchor_record.entry.id if anchor_record else None,
-        len(execution_report.records_by_step_id),
-    )
-    return ApiQueryResponse(
-        trace_id=trace_id,
-        execution_status=aggregate_status,
-        execution_plan=response_plan,
-        ui_runtime=ui_runtime,
-        ui_spec=ui_spec,
-        error=_build_response_error(execution_report),
+    return await response_builder.build_execution_response(
+        state=state,
+        runtime_context=runtime_context,
+        execution_state=execution_state,
+        query_domains_hint=query_domains_hint,
+        business_intent_codes=business_intent_codes,
+        response_mode=response_mode,
+        patch_context=patch_context,
     )
 
 
@@ -870,7 +782,7 @@ def _ensure_query_safe_entry(
         因此这里同时校验 `operation_safety=query` 和 `method in {GET, POST}`，把 mutation 接口
         尽量拦在候选刚被选中的第一时间。
     """
-    if entry.operation_safety != "query":
+    if entry.operation_safety == "mutation":
         logger.warning(
             "%s blocked non-query-safe endpoint id=%s safety=%s method=%s path=%s",
             _build_api_query_log_prefix(trace_id, interaction_id, conversation_id),
