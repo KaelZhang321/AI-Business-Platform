@@ -54,6 +54,20 @@ CREATE TABLE IF NOT EXISTS ui_api_endpoints (
     KEY idx_ui_api_endpoints_method_path (method, path)
 ) COMMENT='UI Builder 接口定义';
 
+CREATE TABLE IF NOT EXISTS ui_api_endpoint_roles (
+    id               VARCHAR(64) PRIMARY KEY COMMENT '主键',
+    endpoint_id      VARCHAR(64) NOT NULL COMMENT '接口定义ID',
+    role_id          VARCHAR(64) NOT NULL COMMENT '角色ID',
+    role_code        VARCHAR(128) NULL COMMENT '角色编码',
+    role_name        VARCHAR(128) NOT NULL COMMENT '角色名称',
+    created_by       VARCHAR(64) NULL COMMENT '创建人',
+    created_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    updated_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    UNIQUE KEY uk_ui_api_endpoint_roles_endpoint_role (endpoint_id, role_id),
+    KEY idx_ui_api_endpoint_roles_role (role_id),
+    KEY idx_ui_api_endpoint_roles_endpoint (endpoint_id)
+) COMMENT='UI Builder 接口与角色关系';
+
 CREATE TABLE IF NOT EXISTS ui_api_test_logs (
     id               VARCHAR(64) PRIMARY KEY COMMENT '主键',
     endpoint_id      VARCHAR(64) NOT NULL COMMENT '接口ID',

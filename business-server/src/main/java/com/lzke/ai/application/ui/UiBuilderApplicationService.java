@@ -12,6 +12,7 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.lzke.ai.application.dto.PageQuery;
 import com.lzke.ai.application.dto.UiApiEndpointRequest;
+import com.lzke.ai.application.dto.UiApiEndpointRoleBindRequest;
 import com.lzke.ai.application.dto.UiApiInvokeRequest;
 import com.lzke.ai.application.dto.UiApiSourceRequest;
 import com.lzke.ai.application.dto.UiApiTestRequest;
@@ -27,6 +28,7 @@ import com.lzke.ai.application.dto.UiPagePreviewResponse;
 import com.lzke.ai.application.dto.UiPageRequest;
 import com.lzke.ai.application.dto.UiProjectRequest;
 import com.lzke.ai.domain.entity.UiApiEndpoint;
+import com.lzke.ai.domain.entity.UiApiEndpointRole;
 import com.lzke.ai.domain.entity.UiApiFlowLog;
 import com.lzke.ai.domain.entity.UiApiSource;
 import com.lzke.ai.domain.entity.UiApiTag;
@@ -39,6 +41,7 @@ import com.lzke.ai.domain.entity.UiSpecVersion;
 import com.lzke.ai.exception.BusinessException;
 import com.lzke.ai.exception.ErrorCode;
 import com.lzke.ai.infrastructure.persistence.mapper.UiApiEndpointMapper;
+import com.lzke.ai.infrastructure.persistence.mapper.UiApiEndpointRoleMapper;
 import com.lzke.ai.infrastructure.persistence.mapper.UiApiFlowLogMapper;
 import com.lzke.ai.infrastructure.persistence.mapper.UiApiSourceMapper;
 import com.lzke.ai.infrastructure.persistence.mapper.UiApiTagMapper;
@@ -99,6 +102,7 @@ public class UiBuilderApplicationService {
     private final UiApiSourceMapper uiApiSourceMapper;
     private final UiApiTagMapper uiApiTagMapper;
     private final UiApiEndpointMapper uiApiEndpointMapper;
+    private final UiApiEndpointRoleMapper uiApiEndpointRoleMapper;
     private final UiApiFlowLogMapper uiApiFlowLogMapper;
     private final UiApiTestLogMapper uiApiTestLogMapper;
     private final UiProjectMapper uiProjectMapper;
@@ -262,6 +266,7 @@ public class UiBuilderApplicationService {
         List<UiApiEndpoint> endpoints = listEndpointsBySource(sourceId);
         List<String> endpointIds = endpoints.stream().map(UiApiEndpoint::getId).toList();
         if (!endpointIds.isEmpty()) {
+            uiApiEndpointRoleMapper.delete(new LambdaQueryWrapper<UiApiEndpointRole>().in(UiApiEndpointRole::getEndpointId, endpointIds));
             uiApiFlowLogMapper.delete(new LambdaQueryWrapper<UiApiFlowLog>().in(UiApiFlowLog::getEndpointId, endpointIds));
             uiApiTestLogMapper.delete(new LambdaQueryWrapper<UiApiTestLog>().in(UiApiTestLog::getEndpointId, endpointIds));
             uiApiEndpointMapper.delete(new LambdaQueryWrapper<UiApiEndpoint>().in(UiApiEndpoint::getId, endpointIds));
@@ -364,6 +369,81 @@ public class UiBuilderApplicationService {
     }
 
     /**
+     * 分页查询接口与角色的关联关系。
+     *
+     * <p>该接口主要服务前端“接口角色”页签。当前支持按 `roleId` 过滤，
+     * 返回结果里会额外补充接口名称、路径、方法、标签和接口源名称，方便页面直接渲染。
+     *
+     * @param roleId 角色 ID，可为空；为空时返回全部关系
+     * @param query 分页参数
+     * @return 分页后的接口角色关系列表
+     */
+    public PageResult<UiApiEndpointRole> listEndpointRoleRelations(String roleId, PageQuery query) {
+        LambdaQueryWrapper<UiApiEndpointRole> wrapper = new LambdaQueryWrapper<UiApiEndpointRole>()
+                .orderByAsc(UiApiEndpointRole::getRoleName)
+                .orderByDesc(UiApiEndpointRole::getUpdatedAt)
+                .orderByDesc(UiApiEndpointRole::getCreatedAt);
+        if (StringUtils.hasText(roleId)) {
+            wrapper.eq(UiApiEndpointRole::getRoleId, roleId);
+        }
+        Page<UiApiEndpointRole> pageParam = buildPage(query);
+        Page<UiApiEndpointRole> result = uiApiEndpointRoleMapper.selectPage(pageParam, wrapper);
+        attachEndpointRoleDetails(result.getRecords());
+        return PageResult.of(result.getRecords(), result.getTotal(), query.getPage(), query.getSize());
+    }
+
+    /**
+     * 批量把接口定义绑定到指定角色。
+     *
+     * <p>关系表使用 `(endpoint_id, role_id)` 唯一键保证幂等性。
+     * 如果前端重复提交相同接口和角色的绑定，后端只会更新角色快照信息，不会重复插入。
+     *
+     * @param request 绑定请求
+     * @return 最新的关系记录
+     */
+    @Transactional
+    public List<UiApiEndpointRole> bindEndpointRoleRelations(UiApiEndpointRoleBindRequest request) {
+        validateEndpointRoleBindRequest(request);
+
+        List<UiApiEndpointRole> relations = new ArrayList<>();
+        for (String endpointId : request.getEndpointIds()) {
+            UiApiEndpoint endpoint = requireEndpoint(endpointId);
+            UiApiEndpointRole relation = uiApiEndpointRoleMapper.selectOne(new LambdaQueryWrapper<UiApiEndpointRole>()
+                    .eq(UiApiEndpointRole::getEndpointId, endpoint.getId())
+                    .eq(UiApiEndpointRole::getRoleId, request.getRoleId())
+                    .last("limit 1"));
+            if (relation == null) {
+                relation = new UiApiEndpointRole();
+                relation.setEndpointId(endpoint.getId());
+            }
+            relation.setRoleId(request.getRoleId());
+            relation.setRoleCode(trimToNull(request.getRoleCode()));
+            relation.setRoleName(request.getRoleName().trim());
+
+            if (relation.getId() == null) {
+                relation.setCreatedBy(trimToNull(request.getCreatedBy()));
+                uiApiEndpointRoleMapper.insert(relation);
+            } else {
+                uiApiEndpointRoleMapper.updateById(relation);
+            }
+            relations.add(relation);
+        }
+        attachEndpointRoleDetails(relations);
+        return relations;
+    }
+
+    /**
+     * 删除单条接口角色关系。
+     *
+     * @param relationId 关系 ID
+     */
+    @Transactional
+    public void deleteEndpointRoleRelation(String relationId) {
+        requireEndpointRoleRelation(relationId);
+        uiApiEndpointRoleMapper.deleteById(relationId);
+    }
+
+    /**
      * 创建接口定义。
      *
      * @param request 接口定义请求
@@ -414,6 +494,7 @@ public class UiBuilderApplicationService {
     @Transactional
     public void deleteEndpoint(String endpointId) {
         requireEndpoint(endpointId);
+        uiApiEndpointRoleMapper.delete(new LambdaQueryWrapper<UiApiEndpointRole>().eq(UiApiEndpointRole::getEndpointId, endpointId));
         uiApiFlowLogMapper.delete(new LambdaQueryWrapper<UiApiFlowLog>().eq(UiApiFlowLog::getEndpointId, endpointId));
         uiApiTestLogMapper.delete(new LambdaQueryWrapper<UiApiTestLog>().eq(UiApiTestLog::getEndpointId, endpointId));
         uiApiEndpointMapper.deleteById(endpointId);
@@ -1669,6 +1750,85 @@ public class UiBuilderApplicationService {
         }
     }
 
+    /**
+     * 为接口角色关系补充接口侧信息。
+     *
+     * <p>该方法会把关系记录中的 `endpointId` 关联到接口定义、接口源和标签表，
+     * 使前端列表在一次请求里就能同时拿到：
+     *
+     * <ul>
+     *     <li>接口名称、路径、方法、状态</li>
+     *     <li>所属接口源名称</li>
+     *     <li>所属标签名称</li>
+     * </ul>
+     *
+     * @param relations 关系记录列表
+     */
+    private void attachEndpointRoleDetails(List<UiApiEndpointRole> relations) {
+        if (relations == null || relations.isEmpty()) {
+            return;
+        }
+        List<String> endpointIds = relations.stream()
+                .map(UiApiEndpointRole::getEndpointId)
+                .filter(StringUtils::hasText)
+                .distinct()
+                .toList();
+        if (endpointIds.isEmpty()) {
+            return;
+        }
+
+        List<UiApiEndpoint> endpoints = uiApiEndpointMapper.selectList(new LambdaQueryWrapper<UiApiEndpoint>()
+                .in(UiApiEndpoint::getId, endpointIds));
+        Map<String, UiApiEndpoint> endpointById = new LinkedHashMap<>();
+        Set<String> sourceIds = new HashSet<>();
+        Set<String> tagIds = new HashSet<>();
+        for (UiApiEndpoint endpoint : endpoints) {
+            endpointById.put(endpoint.getId(), endpoint);
+            if (StringUtils.hasText(endpoint.getSourceId())) {
+                sourceIds.add(endpoint.getSourceId());
+            }
+            if (StringUtils.hasText(endpoint.getTagId())) {
+                tagIds.add(endpoint.getTagId());
+            }
+        }
+
+        Map<String, UiApiSource> sourceById = new LinkedHashMap<>();
+        if (!sourceIds.isEmpty()) {
+            List<UiApiSource> sources = uiApiSourceMapper.selectList(new LambdaQueryWrapper<UiApiSource>()
+                    .in(UiApiSource::getId, sourceIds));
+            for (UiApiSource source : sources) {
+                sourceById.put(source.getId(), source);
+            }
+        }
+
+        Map<String, UiApiTag> tagById = new LinkedHashMap<>();
+        if (!tagIds.isEmpty()) {
+            List<UiApiTag> tags = uiApiTagMapper.selectList(new LambdaQueryWrapper<UiApiTag>()
+                    .in(UiApiTag::getId, tagIds));
+            for (UiApiTag tag : tags) {
+                tagById.put(tag.getId(), tag);
+            }
+        }
+
+        for (UiApiEndpointRole relation : relations) {
+            UiApiEndpoint endpoint = endpointById.get(relation.getEndpointId());
+            if (endpoint == null) {
+                continue;
+            }
+            relation.setEndpointName(endpoint.getName());
+            relation.setEndpointPath(endpoint.getPath());
+            relation.setEndpointMethod(endpoint.getMethod());
+            relation.setEndpointStatus(endpoint.getStatus());
+            relation.setSourceId(endpoint.getSourceId());
+
+            UiApiSource source = sourceById.get(endpoint.getSourceId());
+            relation.setSourceName(source != null ? source.getName() : null);
+
+            UiApiTag tag = tagById.get(endpoint.getTagId());
+            relation.setTagName(tag != null ? tag.getName() : null);
+        }
+    }
+
     private Map<String, UiApiTag> loadTagMapBySourceId(String sourceId) {
         List<UiApiTag> tags = uiApiTagMapper.selectList(new LambdaQueryWrapper<UiApiTag>()
                 .eq(UiApiTag::getSourceId, sourceId));
@@ -1698,6 +1858,14 @@ public class UiBuilderApplicationService {
             throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "接口定义不存在: " + endpointId);
         }
         return endpoint;
+    }
+
+    private UiApiEndpointRole requireEndpointRoleRelation(String relationId) {
+        UiApiEndpointRole relation = uiApiEndpointRoleMapper.selectById(relationId);
+        if (relation == null) {
+            throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "接口角色关系不存在: " + relationId);
+        }
+        return relation;
     }
 
     private UiApiTag requireTag(String tagId) {
@@ -2291,9 +2459,27 @@ public class UiBuilderApplicationService {
         return StringUtils.hasText(value) ? value : defaultValue;
     }
 
+    private String trimToNull(String value) {
+        if (!StringUtils.hasText(value)) {
+            return null;
+        }
+        return value.trim();
+    }
+
     private void requireText(String value, String message) {
         if (!StringUtils.hasText(value)) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, message);
+        }
+    }
+
+    private void validateEndpointRoleBindRequest(UiApiEndpointRoleBindRequest request) {
+        if (request == null) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "接口角色绑定请求不能为空");
+        }
+        requireText(request.getRoleId(), "角色 ID 不能为空");
+        requireText(request.getRoleName(), "角色名称不能为空");
+        if (request.getEndpointIds() == null || request.getEndpointIds().isEmpty()) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "至少需要选择一个接口定义");
         }
     }
 
