@@ -95,6 +95,7 @@ export interface UiApiEndpoint {
   name: string
   path: string
   method: string
+  operationSafety?: 'query' | 'list' | 'mutation' | null
   summary?: string | null
   requestContentType?: string | null
   requestSchema?: string | null
@@ -282,6 +283,7 @@ export interface UiApiEndpointRequest {
   name: string
   path: string
   method: string
+  operationSafety?: 'query' | 'list' | 'mutation'
   summary?: string
   requestContentType?: string
   requestSchema?: string

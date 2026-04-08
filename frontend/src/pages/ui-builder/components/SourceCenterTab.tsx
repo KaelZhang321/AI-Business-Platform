@@ -53,6 +53,12 @@ const methodOptions = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'].map((value) => (
   value,
 }))
 
+const operationSafetyOptions = [
+  { label: 'Query', value: 'query' },
+  { label: 'List', value: 'list' },
+  { label: 'Mutation', value: 'mutation' },
+]
+
 interface SourceCenterTabProps {
   sources: UiApiSource[]
   endpoints: UiApiEndpoint[]
@@ -315,6 +321,7 @@ export function SourceCenterTab({
       name: endpoint?.name ?? '',
       path: endpoint?.path ?? '',
       method: endpoint?.method ?? 'GET',
+      operationSafety: endpoint?.operationSafety ?? 'query',
       summary: endpoint?.summary ?? '',
       requestContentType: endpoint?.requestContentType ?? 'application/json',
       requestSchema: prettyJson(endpoint?.requestSchema ?? '{}'),
@@ -676,12 +683,17 @@ export function SourceCenterTab({
             </Col>
           </Row>
           <Row gutter={16}>
-            <Col span={8}>
+            <Col span={6}>
               <Form.Item name="method" label="HTTP 方法" rules={[{ required: true }]}>
                 <Select options={methodOptions} />
               </Form.Item>
             </Col>
-            <Col span={16}>
+            <Col span={6}>
+              <Form.Item name="operationSafety" label="操作安全等级" initialValue="query">
+                <Select options={operationSafetyOptions} />
+              </Form.Item>
+            </Col>
+            <Col span={12}>
               <Form.Item name="path" label="接口路径" rules={[{ required: true }]}>
                 <Input placeholder="/api/orders/list" />
               </Form.Item>

@@ -194,12 +194,12 @@ public class UiHttpInvokeService {
             }
             case "oauth2_client" -> {
             	
-            	if(source.getCode().equals(IAM_OPENAPI)||source.getCode().equals(CRM_OPENAPI)) {
+//            	if(source.getCode().equals(IAM_OPENAPI)||source.getCode().equals(CRM_OPENAPI)) {
             		 String accessToken = resolveOauth2ClientAccessToken(authConfig);
                      if (StringUtils.hasText(accessToken)) {
                          headers.setBearerAuth(accessToken);
                      }
-				}
+//				}
             }
             default -> {
             }

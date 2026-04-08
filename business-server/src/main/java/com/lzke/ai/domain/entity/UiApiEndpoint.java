@@ -26,6 +26,7 @@ public class UiApiEndpoint {
     private String name;
     private String path;
     private String method;
+    private String operationSafety;
     private String summary;
     private String requestContentType;
     private String requestSchema;

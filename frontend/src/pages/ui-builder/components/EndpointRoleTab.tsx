@@ -2,10 +2,9 @@ import { useEffect, useMemo, useState } from 'react'
 import {
   Button,
   Card,
-  Descriptions,
   Empty,
   Form,
-  List,
+  Input,
   Modal,
   Popconfirm,
   Select,
@@ -205,10 +204,9 @@ export function EndpointRoleTab({
           className="rounded-[24px]"
         >
           {roles.length ? (
-            <List
-              dataSource={roles}
-              renderItem={(role) => (
-                <List.Item style={{ border: 'none', padding: 0, marginBottom: 12 }}>
+            <div className="space-y-3">
+              {roles.map((role) => (
+                <div key={role.id}>
                   <button
                     className={`w-full rounded-2xl border px-4 py-3 text-left transition ${
                       role.id === selectedRoleId
@@ -229,9 +227,9 @@ export function EndpointRoleTab({
                     </div>
                     <div className="mt-2 text-xs text-slate-500">{role.appCode || DEFAULT_APP_CODE}</div>
                   </button>
-                </List.Item>
-              )}
-            />
+                </div>
+              ))}
+            </div>
           ) : (
             <Empty description="没有加载到角色" image={Empty.PRESENTED_IMAGE_SIMPLE} />
           )}
@@ -250,11 +248,20 @@ export function EndpointRoleTab({
             className="rounded-[24px]"
           >
             {selectedRole ? (
-              <Descriptions size="small" column={3}>
-                <Descriptions.Item label="角色名称">{selectedRole.roleName}</Descriptions.Item>
-                <Descriptions.Item label="角色编码">{selectedRole.roleCode || '-'}</Descriptions.Item>
-                <Descriptions.Item label="应用编码">{selectedRole.appCode || DEFAULT_APP_CODE}</Descriptions.Item>
-              </Descriptions>
+              <div className="grid gap-3 md:grid-cols-3">
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                  <div className="text-xs text-slate-500">角色名称</div>
+                  <div className="mt-1 font-medium text-slate-900">{selectedRole.roleName}</div>
+                </div>
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                  <div className="text-xs text-slate-500">角色编码</div>
+                  <div className="mt-1 font-medium text-slate-900">{selectedRole.roleCode || '-'}</div>
+                </div>
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                  <div className="text-xs text-slate-500">应用编码</div>
+                  <div className="mt-1 font-medium text-slate-900">{selectedRole.appCode || DEFAULT_APP_CODE}</div>
+                </div>
+              </div>
             ) : (
               <Empty description="请选择一个角色后查看已关联接口" image={Empty.PRESENTED_IMAGE_SIMPLE} />
             )}
