@@ -16,7 +16,7 @@ from app.services.api_catalog.dag_executor import DagStepExecutionRecord
 from app.services.api_catalog.schema import ApiCatalogEntry, ApiCatalogPaginationHint, ParamSchema
 from app.services.api_query_response_builder import ApiQueryResponseBuilder
 from app.services.api_query_state import ApiQueryRuntimeContext, ApiQueryState
-from app.services.dynamic_ui_service import UISpecBuildResult
+from app.services.dynamic_ui_service import DynamicUIService, UISpecBuildResult
 from app.services.ui_catalog_service import UICatalogService
 from app.services.ui_snapshot_service import UISnapshotService
 from app.services.ui_spec_guard import UISpecValidationError, UISpecValidationResult
@@ -216,6 +216,63 @@ async def test_stage2_degrade_response_returns_skipped_notice() -> None:
     assert any(action.code == "refresh" for action in response.ui_runtime.ui_actions)
     assert state["error_code"] == "routing_failed"
     assert state["degrade_reason"] == "抱歉，我没有完全理解您的意图。"
+
+
+@pytest.mark.asyncio
+async def test_build_mutation_form_response_exposes_full_schema_except_audit_time_fields() -> None:
+    """mutation form 应按 request_schema 全量展示，但隐藏系统时间字段。"""
+
+    builder = ApiQueryResponseBuilder(
+        dynamic_ui=DynamicUIService(catalog_service=UICatalogService()),
+        snapshot_service=UISnapshotService(),
+        ui_catalog_service=UICatalogService(),
+        registry_source=FakeRegistrySource(),
+    )
+    entry = ApiCatalogEntry(
+        id="employee_update",
+        description="修改员工信息",
+        domain="iam",
+        operation_safety="mutation",
+        method="POST",
+        path="/api/v1/employees/update",
+        param_schema=ParamSchema(
+            properties={
+                "id": {"type": "string", "title": "员工ID"},
+                "email": {"type": "string", "title": "邮箱"},
+                "realName": {"type": "string", "title": "姓名"},
+                "mobile": {"type": "string", "title": "手机号"},
+                "createTime": {"type": "string", "title": "创建时间"},
+                "updateTime": {"type": "string", "title": "更新时间"},
+                "deleteTime": {"type": "string", "title": "删除时间"},
+            },
+            required=["id", "email", "realName"],
+        ),
+    )
+    state: ApiQueryState = {
+        "request_mode": "nl",
+        "query_text": "修改员工8058的邮箱为437462373467289@qq.com",
+        "trace_id": "trace-mutation-full-fields",
+    }
+
+    response = await builder.build_mutation_form_response(
+        state=state,
+        entry=entry,
+        pre_fill_params={"id": "8058", "email": "437462373467289@qq.com"},
+        business_intent_code="saveToServer",
+        query_domains_hint=["iam"],
+    )
+
+    field_names = [field.submit_key for field in response.ui_runtime.form.fields]
+    assert field_names == ["id", "email", "realName", "mobile"]
+    assert "createTime" not in field_names
+    assert "updateTime" not in field_names
+    assert "deleteTime" not in field_names
+
+    elements = response.ui_spec["elements"]
+    assert elements["form_field_1"]["props"]["required"] is True
+    assert elements["form_field_2"]["props"]["required"] is True
+    assert elements["form_field_3"]["props"]["required"] is True
+    assert elements["form_field_4"]["props"]["required"] is False
 
 
 @pytest.mark.asyncio

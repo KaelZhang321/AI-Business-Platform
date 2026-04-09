@@ -392,30 +392,13 @@ class DynamicUIService:
         """筛选 mutation confirm 页面真正需要展示的字段。
 
         功能：
-            当前 mutation form 不是通用 CRUD 搭建器，而是“围绕本次用户意图的确认卡片”。
-            因此优先展示：
-
-            1. 已从自然语言里提取出值的字段
-            2. 接口声明为必填的字段
-
-            这样可以避免把整份 schema 直接摊成冗长表单，让确认视图更聚焦。
+            mutation confirm 现阶段已经明确改成“按 request_schema 全量展示”，因此真正
+            的裁剪责任前移到 response builder：只过滤系统维护字段（创建/更新/删除时间）。
+            这里不再根据“是否有值/是否必填”做二次收缩，避免后端运行时契约与最终 UI
+            产生字段不一致。
         """
-
-        visible_fields: list[ApiQueryFormFieldRuntime] = []
-        for field in fields:
-            state_value = self._read_state_value(state, field.state_path)
-            has_value = state_value not in (None, "", [], {})
-            if has_value or field.required:
-                visible_fields.append(field)
-
-        if not any(field.writable for field in visible_fields):
-            selected_keys = {field.submit_key for field in visible_fields}
-            visible_fields.extend(
-                field
-                for field in fields
-                if field.writable and field.submit_key not in selected_keys
-            )
-        return visible_fields
+        del state
+        return list(fields)
 
     def _build_mutation_field_element(
         self,
@@ -431,6 +414,7 @@ class DynamicUIService:
                 "props": {
                     "label": field.name,
                     "value": self._format_form_value(self._read_state_value(state, field.state_path)),
+                    "required": field.required,
                 },
             }
 
@@ -445,6 +429,7 @@ class DynamicUIService:
                 "props": {
                     "label": field.name,
                     "value": {"$bindState": field.state_path},
+                    "required": field.required,
                     "options": {
                         "type": "dict",
                         "dict_code": field.option_source.dict_code,
@@ -459,6 +444,7 @@ class DynamicUIService:
                 "label": field.name,
                 "value": {"$bindState": field.state_path},
                 "placeholder": placeholder,
+                "required": field.required,
             },
         }
 

@@ -121,8 +121,12 @@ def _make_mutation_entry() -> ApiCatalogEntry:
             "properties": {
                 "id": {"type": "string", "title": "员工ID"},
                 "email": {"type": "string", "title": "邮箱"},
+                "realName": {"type": "string", "title": "姓名"},
+                "mobile": {"type": "string", "title": "手机号"},
+                "createTime": {"type": "string", "title": "创建时间"},
+                "updateTime": {"type": "string", "title": "更新时间"},
             },
-            "required": ["id"],
+            "required": ["id", "email", "realName"],
         },
     )
 
@@ -292,12 +296,20 @@ def test_api_query_renders_mutation_form_instead_of_skipped_notice(monkeypatch) 
     body = response.json()
     assert body["execution_status"] == "SKIPPED"
     assert body["ui_runtime"]["form"]["enabled"] is True
+    field_names = [field["submit_key"] for field in body["ui_runtime"]["form"]["fields"]]
+    assert field_names == ["id", "email", "realName", "mobile"]
     form = _get_child_by_type(body["ui_spec"], "PlannerForm")
     assert form["props"]["formCode"] == "employee_update_form"
     assert body["ui_spec"]["state"]["form"]["id"] == "8058"
     assert body["ui_spec"]["state"]["form"]["email"] == "437462373467289@qq.com"
+    assert body["ui_spec"]["state"]["form"]["realName"] is None
+    assert body["ui_spec"]["state"]["form"]["mobile"] is None
     metric = body["ui_spec"]["elements"]["form_field_1"]
     assert metric["props"]["value"] == "8058"
+    assert metric["props"]["required"] is True
+    assert body["ui_spec"]["elements"]["form_field_2"]["props"]["required"] is True
+    assert body["ui_spec"]["elements"]["form_field_3"]["props"]["required"] is True
+    assert body["ui_spec"]["elements"]["form_field_4"]["props"]["required"] is False
     root_children = _get_root_children(body["ui_spec"])
     assert all(child["type"] != "PlannerNotice" for child in root_children)
 

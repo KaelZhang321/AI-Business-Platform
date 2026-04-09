@@ -474,9 +474,18 @@ async def test_mutation_form_skipped_status_still_renders_planner_form() -> None
                     value_type="string",
                     state_path="/form/email",
                     submit_key="email",
-                    required=False,
+                    required=True,
                     writable=True,
                     source_kind="context",
+                ),
+                ApiQueryFormFieldRuntime(
+                    name="手机号",
+                    value_type="string",
+                    state_path="/form/mobile",
+                    submit_key="mobile",
+                    required=False,
+                    writable=True,
+                    source_kind="user_input",
                 ),
             ],
             submit=ApiQueryFormSubmitRuntime(
@@ -495,6 +504,7 @@ async def test_mutation_form_skipped_status_still_renders_planner_form() -> None
                 "form": {
                     "id": "8058",
                     "email": "437462373467289@qq.com",
+                    "mobile": None,
                 }
             },
         },
@@ -509,11 +519,17 @@ async def test_mutation_form_skipped_status_still_renders_planner_form() -> None
     assert form["props"]["formCode"] == "employee_update_form"
     elements = result.spec["elements"]
     assert isinstance(elements, dict)
+    assert elements["form_field_1"]["props"]["required"] is True
+    assert elements["form_field_2"]["props"]["required"] is True
+    assert elements["form_field_3"]["type"] == "PlannerInput"
+    assert elements["form_field_3"]["props"]["label"] == "手机号"
+    assert elements["form_field_3"]["props"]["required"] is False
     submit = elements["form_submit"]
     assert submit["type"] == "PlannerButton"
     assert submit["on"]["press"]["action"] == "remoteMutation"
     assert submit["on"]["press"]["params"]["api_id"] == "employee_update"
     assert submit["on"]["press"]["params"]["payload"]["email"] == {"$bindState": "/form/email"}
+    assert submit["on"]["press"]["params"]["payload"]["mobile"] == {"$bindState": "/form/mobile"}
     root = _root_element(result.spec)
     child_ids = root.get("children", [])
     assert isinstance(child_ids, list)

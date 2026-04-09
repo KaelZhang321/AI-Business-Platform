@@ -48,6 +48,22 @@ logger = logging.getLogger(__name__)
 
 _QUERY_PARAM_SOURCE_BY_METHOD = {"GET": "queryParams", "POST": "body"}
 _LIST_FILTER_EXCLUDED_FIELDS = {"id", "page", "pageNum", "pageSize", "size", "limit"}
+# mutation confirm 表单会直接暴露给最终用户，因此需要隐藏纯系统维护字段，
+# 避免把“创建/更新/删除时间”这类只读审计信息误当成可确认输入。
+_MUTATION_FORM_HIDDEN_FIELD_NAMES = {
+    "createtime",
+    "createdtime",
+    "createdat",
+    "gmtcreate",
+    "updatetime",
+    "updatedtime",
+    "updatedat",
+    "gmtmodified",
+    "deletetime",
+    "deletedtime",
+    "deletedat",
+}
+_MUTATION_FORM_HIDDEN_FIELD_TITLES = {"创建时间", "更新时间", "删除时间"}
 # 这里固定保留 5 条是为了给 Renderer 足够上下文，又避免把大结果集整包塞进生成链路导致注意力失焦。
 _CONTEXT_ROW_LIMIT = 5
 
@@ -563,9 +579,12 @@ def _build_mutation_form_fields(
     """从 mutation 接口的 param_schema 与预填值构造表单字段运行时契约。
 
     设计意图：
-        mutation form 快路不走第五阶段渲染器，因此参数 Schema 是构造表单字段
-        定义的唯一来源。LLM 提取的预填值决定了该字段的初始 `state_path` 绑定
-        和 `source_kind`（已填写 → context，未填写 → user_input）。
+        mutation form 快路不走真实业务回查，因此 request_schema 是表单字段定义的唯一来源。
+        现阶段策略是“按 request_schema 全量展示”，只隐藏创建/更新/删除时间这类系统维护
+        字段，避免确认页和实际提交契约脱节。
+
+        LLM 提取的预填值决定了该字段的初始 `state_path` 绑定和 `source_kind`
+        （已填写 → context，未填写 → user_input）。
 
         主键/ID 字段（名称以 id/Id 结尾或以 Id 开头）会标记为 `writable=False`，
         让 `_infer_form_mode` 推导出 `edit`，符合"修改已知记录"的语义。
@@ -574,10 +593,12 @@ def _build_mutation_form_fields(
     schema_properties = entry.param_schema.properties if entry.param_schema else {}
     required_fields = set(entry.param_schema.required) if entry.param_schema else set()
 
-    focused_fields: list[ApiQueryFormFieldRuntime] = []
-    fallback_fields: list[ApiQueryFormFieldRuntime] = []
+    all_visible_fields: list[ApiQueryFormFieldRuntime] = []
 
     for field_name, prop in schema_properties.items():
+        if _should_hide_mutation_form_field(field_name=field_name, schema=prop):
+            continue
+
         has_value = field_name in pre_fill_params and pre_fill_params[field_name] not in ("", None)
 
         # 判断是否为标识符/主键字段：名称以 Id/id 结尾，或以 id/Id 开头（不区分大小写）
@@ -612,30 +633,32 @@ def _build_mutation_form_fields(
             source_kind=source_kind,
             option_source=option_source,
         )
-        fallback_fields.append(field_runtime)
+        all_visible_fields.append(field_runtime)
 
-        # mutation form 的目标是“确认本次意图提取出来的变更参数”，不是把整份 OpenAPI
-        # schema 原封不动摊成超长 CRUD 表单。这里优先保留三类字段：
-        # 1. 本次查询已提取出值的字段（例如 id/email）
-        # 2. 接口声明必填的字段
-        # 3. 只读标识符字段（用于让用户明确当前修改的是哪条记录）
-        if has_value or field_name in required_fields or is_identifier:
-            focused_fields.append(field_runtime)
+    return all_visible_fields
 
-    if focused_fields:
-        if not any(field.writable for field in focused_fields):
-            # 只抽到标识符而没有任何可编辑字段时，确认页会退化成“只能看不能改”的空壳。
-            # 这里补回 schema 里的可编辑字段，让前端至少能展示一份可填写表单。
-            focused_fields.extend(
-                field
-                for field in fallback_fields
-                if field.writable and field.submit_key not in {item.submit_key for item in focused_fields}
-            )
-        return focused_fields
 
-    # 某些创建类 mutation 可能暂时没有从自然语言里提取出任何值。
-    # 这时退回完整字段集合，避免把真正可提交的表单裁成空壳。
-    return fallback_fields
+def _should_hide_mutation_form_field(*, field_name: str, schema: dict[str, Any]) -> bool:
+    """判断 mutation confirm 表单里是否应隐藏当前字段。
+
+    功能：
+        request_schema 需要作为表单的主事实来源，但系统审计字段通常不属于用户确认范围。
+        这里统一屏蔽创建/更新时间与删除时间，既避免噪声，又不需要在每个接口上重复配置。
+
+    Args:
+        field_name: request_schema 中的原始属性名。
+        schema: 当前属性的 OpenAPI 风格定义，用于读取标题等展示信息。
+
+    Returns:
+        `True` 表示该字段不应进入 `ui_runtime.form.fields`。
+    """
+
+    normalized_name = "".join(ch for ch in field_name.lower() if ch.isalnum())
+    if normalized_name in _MUTATION_FORM_HIDDEN_FIELD_NAMES:
+        return True
+
+    title = str(schema.get("title") or schema.get("label") or "").strip()
+    return title in _MUTATION_FORM_HIDDEN_FIELD_TITLES
 
 
 def _build_runtime_actions(
