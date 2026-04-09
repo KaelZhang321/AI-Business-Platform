@@ -8,7 +8,7 @@ from statistics import mean
 from typing import Any
 
 from app.core.config import settings
-from app.models.schemas import ApiQueryExecutionStatus, ApiQueryUIRuntime, KnowledgeResult
+from app.models.schemas import ApiQueryExecutionStatus, ApiQueryFormFieldRuntime, ApiQueryUIRuntime, KnowledgeResult
 from app.services.ui_catalog_service import UICatalogService
 from app.services.ui_spec_guard import UISpecGuard, UISpecValidationResult
 
@@ -217,6 +217,11 @@ class DynamicUIService:
         """生成待 Guard 校验的候选 Spec。"""
         execution_status = ApiQueryExecutionStatus(status) if status else None
 
+        if intent == "mutation_form":
+            mutation_spec = self._mutation_form_spec(context=context, runtime=runtime)
+            if mutation_spec is not None:
+                return mutation_spec
+
         if execution_status == ApiQueryExecutionStatus.ERROR:
             return self._notice_spec(
                 title=(context or {}).get("title", "查询失败"),
@@ -270,6 +275,238 @@ class DynamicUIService:
             return self._normalize_spec_shape(self._task_spec(data))
 
         return None
+
+    def _mutation_form_spec(
+        self,
+        *,
+        context: dict[str, Any] | None,
+        runtime: ApiQueryUIRuntime | None,
+    ) -> dict[str, Any] | None:
+        """构造 mutation confirm 场景的规则表单 Spec。
+
+        功能：
+            mutation form 虽然对外状态是 `SKIPPED`，但语义并不是“查询失败/跳过”，
+            而是“AI 已识别出一条写操作，请用户确认后再提交”。因此这里必须绕过
+            通用 `SKIPPED -> PlannerNotice` 规则，显式产出 `PlannerForm`。
+
+        Args:
+            context: 来自 `ApiQueryResponseBuilder.build_mutation_form_response()` 的渲染上下文。
+            runtime: 当前 mutation form 的运行时契约。
+
+        Returns:
+            合法的 flat form spec；当运行时缺少表单契约时返回 `None`，交回上层兜底。
+        """
+
+        if runtime is None or not runtime.form.enabled or not runtime.form.api_id:
+            return None
+
+        form_fields = list(runtime.form.fields)
+        if not form_fields:
+            return None
+
+        initial_state = self._build_mutation_form_state(
+            fields=form_fields,
+            form_state=(context or {}).get("form_state"),
+        )
+        visible_fields = self._select_visible_mutation_form_fields(form_fields, initial_state)
+        if not visible_fields:
+            visible_fields = form_fields
+
+        elements: dict[str, Any] = {
+            "root": {
+                "type": "PlannerCard",
+                "props": {
+                    "title": (context or {}).get("title", "确认提交"),
+                    "subtitle": "请确认本次变更后再提交",
+                },
+                "children": ["form"],
+            },
+            "form": {
+                "type": "PlannerForm",
+                "props": {
+                    "formCode": runtime.form.form_code or "mutation_form",
+                },
+                "children": [],
+            },
+        }
+
+        submit_payload: dict[str, Any] = {}
+        for index, field in enumerate(visible_fields, start=1):
+            element_id = f"form_field_{index}"
+            elements["form"]["children"].append(element_id)
+            elements[element_id] = self._build_mutation_field_element(field=field, state=initial_state)
+            submit_payload[field.submit_key] = {"$bindState": field.state_path}
+
+        submit_element_id = "form_submit"
+        elements["form"]["children"].append(submit_element_id)
+        elements[submit_element_id] = {
+            "type": "PlannerButton",
+            "props": {
+                "label": "确认提交" if runtime.form.submit.confirm_required else "提交",
+            },
+            "on": {
+                "press": {
+                    "action": runtime.form.ui_action or "remoteMutation",
+                    "params": {
+                        "api_id": runtime.form.api_id,
+                        "payload": submit_payload,
+                        # 为前端动作适配器补齐直接可用的提交地址，避免只能额外回外层 runtime 取值。
+                        "route_url": runtime.form.route_url,
+                    },
+                }
+            },
+        }
+
+        return {
+            "root": "root",
+            "state": initial_state,
+            "elements": elements,
+        }
+
+    def _build_mutation_form_state(
+        self,
+        *,
+        fields: list[ApiQueryFormFieldRuntime],
+        form_state: Any,
+    ) -> dict[str, Any]:
+        """根据字段绑定路径构造完整表单 state。
+
+        功能：
+            Guard 会校验每一条 `$bindState` 路径是否真实存在，因此 mutation form 不能
+            只把有值字段塞进 state。这里会按 `runtime.form.fields` 补全整棵 `/form` 状态树，
+            保证按钮 payload 和输入组件都能稳定绑定。
+        """
+
+        state: dict[str, Any] = {}
+        incoming_state = form_state if isinstance(form_state, dict) else {}
+        for field in fields:
+            incoming_value = self._read_state_value(incoming_state, field.state_path)
+            self._write_state_value(state, field.state_path, incoming_value)
+        return state
+
+    def _select_visible_mutation_form_fields(
+        self,
+        fields: list[ApiQueryFormFieldRuntime],
+        state: dict[str, Any],
+    ) -> list[ApiQueryFormFieldRuntime]:
+        """筛选 mutation confirm 页面真正需要展示的字段。
+
+        功能：
+            当前 mutation form 不是通用 CRUD 搭建器，而是“围绕本次用户意图的确认卡片”。
+            因此优先展示：
+
+            1. 已从自然语言里提取出值的字段
+            2. 接口声明为必填的字段
+
+            这样可以避免把整份 schema 直接摊成冗长表单，让确认视图更聚焦。
+        """
+
+        visible_fields: list[ApiQueryFormFieldRuntime] = []
+        for field in fields:
+            state_value = self._read_state_value(state, field.state_path)
+            has_value = state_value not in (None, "", [], {})
+            if has_value or field.required:
+                visible_fields.append(field)
+
+        if not any(field.writable for field in visible_fields):
+            selected_keys = {field.submit_key for field in visible_fields}
+            visible_fields.extend(
+                field
+                for field in fields
+                if field.writable and field.submit_key not in selected_keys
+            )
+        return visible_fields
+
+    def _build_mutation_field_element(
+        self,
+        *,
+        field: ApiQueryFormFieldRuntime,
+        state: dict[str, Any],
+    ) -> dict[str, Any]:
+        """将单个 mutation 字段折叠为对应的 json-render 元素。"""
+
+        if not field.writable:
+            return {
+                "type": "PlannerMetric",
+                "props": {
+                    "label": field.name,
+                    "value": self._format_form_value(self._read_state_value(state, field.state_path)),
+                },
+            }
+
+        if (
+            field.source_kind == "dictionary"
+            and field.option_source is not None
+            and field.option_source.type == "dict"
+            and field.option_source.dict_code
+        ):
+            return {
+                "type": "PlannerSelect",
+                "props": {
+                    "label": field.name,
+                    "value": {"$bindState": field.state_path},
+                    "options": {
+                        "type": "dict",
+                        "dict_code": field.option_source.dict_code,
+                    },
+                },
+            }
+
+        placeholder = f"请输入{field.name}" if field.value_type in {"string", "number", "boolean"} else f"请输入{field.name}"
+        return {
+            "type": "PlannerInput",
+            "props": {
+                "label": field.name,
+                "value": {"$bindState": field.state_path},
+                "placeholder": placeholder,
+            },
+        }
+
+    @staticmethod
+    def _read_state_value(state: Any, state_path: str) -> Any:
+        """按 `/form/email` 形式读取 state 值。"""
+
+        if not isinstance(state, dict) or not state_path.startswith("/"):
+            return None
+        current: Any = state
+        for segment in [item for item in state_path.split("/") if item]:
+            if not isinstance(current, dict) or segment not in current:
+                return None
+            current = current[segment]
+        return current
+
+    @staticmethod
+    def _write_state_value(state: dict[str, Any], state_path: str, value: Any) -> None:
+        """按 JSON Pointer 风格路径写入 state。"""
+
+        if not state_path.startswith("/"):
+            return
+        current: dict[str, Any] = state
+        segments = [item for item in state_path.split("/") if item]
+        if not segments:
+            return
+        for segment in segments[:-1]:
+            next_value = current.get(segment)
+            if not isinstance(next_value, dict):
+                next_value = {}
+                current[segment] = next_value
+            current = next_value
+        current[segments[-1]] = value
+
+    @staticmethod
+    def _format_form_value(value: Any) -> str:
+        """把只读字段值压成适合 PlannerMetric 展示的字符串。"""
+
+        if value in (None, ""):
+            return "-"
+        if isinstance(value, list):
+            return ", ".join(str(item) for item in value)
+        if isinstance(value, dict):
+            try:
+                return json.dumps(value, ensure_ascii=False)
+            except TypeError:
+                return str(value)
+        return str(value)
 
     async def _llm_generate_spec(
         self,

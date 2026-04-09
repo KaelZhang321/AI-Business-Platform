@@ -49,6 +49,27 @@ class StubExtractor:
         )
 
 
+class MutationExtractor(StubExtractor):
+    """为 mutation confirm 场景返回写意图和预填参数。"""
+
+    async def route_query(self, query: str, user_context: dict[str, object], **kwargs):
+        return ApiQueryRoutingResult(
+            query_domains=[self._entry.domain],
+            business_intents=["saveToServer"],
+            is_multi_domain=False,
+            reasoning="runtime mutation route",
+            route_status="ok",
+        )
+
+    async def extract_routing_result(self, query: str, candidates, user_context: dict[str, object], **kwargs):
+        return ApiQueryRoutingResult(
+            selected_api_id=self._entry.id,
+            query_domains=[self._entry.domain],
+            business_intents=["saveToServer"],
+            params={"id": "8058", "email": "437462373467289@qq.com"},
+        )
+
+
 class StubExecutor:
     def __init__(self, result: ApiQueryExecutionResult) -> None:
         self._result = result
@@ -84,6 +105,25 @@ def _make_entry() -> ApiCatalogEntry:
         operation_safety="query",
         method="GET",
         path="/api/v1/customers",
+    )
+
+
+def _make_mutation_entry() -> ApiCatalogEntry:
+    return ApiCatalogEntry(
+        id="employee_update",
+        description="修改员工",
+        domain="iam",
+        operation_safety="mutation",
+        method="POST",
+        path="/system/employee/sys-employee/update",
+        param_schema={
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "title": "员工ID"},
+                "email": {"type": "string", "title": "邮箱"},
+            },
+            "required": ["id"],
+        },
     )
 
 
@@ -221,6 +261,41 @@ def test_api_query_returns_skipped_notice_for_missing_required_params(monkeypatc
     notice = _get_root_children(body["ui_spec"])[0]
     assert notice["type"] == "PlannerNotice"
     assert notice["props"]["text"] == "由于缺少必要参数 customerId，当前查询未被执行。"
+
+
+def test_api_query_renders_mutation_form_instead_of_skipped_notice(monkeypatch) -> None:
+    """真实 DynamicUIService 下，mutation confirm 必须渲染 PlannerForm。"""
+
+    entry = _make_mutation_entry()
+    stub_services = (
+        StubRetriever(entry),
+        MutationExtractor(entry),
+        StubExecutor(
+            ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.SUCCESS,
+                data=[],
+                total=0,
+            )
+        ),
+        api_query_routes.DynamicUIService(),
+        PassThroughSnapshotService(),
+    )
+    monkeypatch.setattr(api_query_routes, "_get_services", lambda: stub_services)
+
+    client = TestClient(create_test_app())
+    response = client.post(
+        "/api/v1/api-query",
+        json={"query": "修改员工8058的邮箱为437462373467289@qq.com"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["execution_status"] == "SKIPPED"
+    assert body["ui_runtime"]["form"]["enabled"] is True
+    form = _get_child_by_type(body["ui_spec"], "PlannerForm")
+    assert form["props"]["formCode"] == "employee_update_form"
+    root_children = _get_root_children(body["ui_spec"])
+    assert all(child["type"] != "PlannerNotice" for child in root_children)
 
 
 def test_api_query_truncates_context_pool_and_ui_rows(monkeypatch) -> None:

@@ -415,7 +415,15 @@ class ApiQueryResponseBuilder:
 
         # 构造带 form 的运行时契约
         form_code = f"{entry.id}_form"
-        requested_component_codes = ["PlannerCard", "PlannerForm", "PlannerInput", "PlannerSelect", "PlannerButton", "PlannerNotice"]
+        requested_component_codes = [
+            "PlannerCard",
+            "PlannerMetric",
+            "PlannerForm",
+            "PlannerInput",
+            "PlannerSelect",
+            "PlannerButton",
+            "PlannerNotice",
+        ]
         components = self._ui_catalog_service.get_component_codes(intent="query", requested_codes=requested_component_codes)
         action_codes = {"remoteMutation", "refresh"}
         base_runtime = ApiQueryUIRuntime(
@@ -560,9 +568,11 @@ def _build_mutation_form_fields(
         让 `_infer_form_mode` 推导出 `edit`，符合"修改已知记录"的语义。
     """
 
-    fields: list[ApiQueryFormFieldRuntime] = []
     schema_properties = entry.param_schema.properties if entry.param_schema else {}
     required_fields = set(entry.param_schema.required) if entry.param_schema else set()
+
+    focused_fields: list[ApiQueryFormFieldRuntime] = []
+    fallback_fields: list[ApiQueryFormFieldRuntime] = []
 
     for field_name, prop in schema_properties.items():
         has_value = field_name in pre_fill_params and pre_fill_params[field_name] not in ("", None)
@@ -589,19 +599,40 @@ def _build_mutation_form_fields(
             option_source = ApiQueryFormOptionSourceRuntime(type="dict", dict_code=str(prop["dict_code"]))
             source_kind = "dictionary"
 
-        fields.append(
-            ApiQueryFormFieldRuntime(
-                name=prop.get("title") or field_name,
-                value_type=value_type,
-                state_path=f"/form/{field_name}",
-                submit_key=field_name,
-                required=field_name in required_fields,
-                writable=writable,
-                source_kind=source_kind,
-                option_source=option_source,
-            )
+        field_runtime = ApiQueryFormFieldRuntime(
+            name=prop.get("title") or field_name,
+            value_type=value_type,
+            state_path=f"/form/{field_name}",
+            submit_key=field_name,
+            required=field_name in required_fields,
+            writable=writable,
+            source_kind=source_kind,
+            option_source=option_source,
         )
-    return fields
+        fallback_fields.append(field_runtime)
+
+        # mutation form 的目标是“确认本次意图提取出来的变更参数”，不是把整份 OpenAPI
+        # schema 原封不动摊成超长 CRUD 表单。这里优先保留三类字段：
+        # 1. 本次查询已提取出值的字段（例如 id/email）
+        # 2. 接口声明必填的字段
+        # 3. 只读标识符字段（用于让用户明确当前修改的是哪条记录）
+        if has_value or field_name in required_fields or is_identifier:
+            focused_fields.append(field_runtime)
+
+    if focused_fields:
+        if not any(field.writable for field in focused_fields):
+            # 只抽到标识符而没有任何可编辑字段时，确认页会退化成“只能看不能改”的空壳。
+            # 这里补回 schema 里的可编辑字段，让前端至少能展示一份可填写表单。
+            focused_fields.extend(
+                field
+                for field in fallback_fields
+                if field.writable and field.submit_key not in {item.submit_key for item in focused_fields}
+            )
+        return focused_fields
+
+    # 某些创建类 mutation 可能暂时没有从自然语言里提取出任何值。
+    # 这时退回完整字段集合，避免把真正可提交的表单裁成空壳。
+    return fallback_fields
 
 
 def _build_runtime_actions(

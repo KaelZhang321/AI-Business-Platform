@@ -6,6 +6,10 @@ from app.core.config import settings
 from app.models.schemas import (
     ApiQueryDetailRequestRuntime,
     ApiQueryDetailRuntime,
+    ApiQueryExecutionStatus,
+    ApiQueryFormFieldRuntime,
+    ApiQueryFormRuntime,
+    ApiQueryFormSubmitRuntime,
     ApiQueryDetailSourceRuntime,
     ApiQueryListPaginationRuntime,
     ApiQueryListQueryContextRuntime,
@@ -14,7 +18,7 @@ from app.models.schemas import (
     ApiQueryUIRuntime,
 )
 from app.services.dynamic_ui_service import DynamicUIService
-from app.services.ui_catalog_service import UIActionDefinition
+from app.services.ui_catalog_service import UICatalogService, UIActionDefinition
 
 
 class RecordingLLM:
@@ -423,3 +427,94 @@ async def test_rule_query_spec_exposes_patch_metadata_for_pagination() -> None:
         "trigger": "pagination",
         "mutation_target": "report-table.props.dataSource",
     }
+
+
+@pytest.mark.asyncio
+async def test_mutation_form_skipped_status_still_renders_planner_form() -> None:
+    """mutation confirm 场景虽然状态是 SKIPPED，但必须渲染可提交表单。"""
+
+    service = DynamicUIService(catalog_service=UICatalogService())
+    runtime = ApiQueryUIRuntime(
+        components=[
+            "PlannerCard",
+            "PlannerMetric",
+            "PlannerForm",
+            "PlannerInput",
+            "PlannerButton",
+            "PlannerNotice",
+        ],
+        ui_actions=[
+            ApiQueryUIAction(
+                code="remoteMutation",
+                description="远程写入",
+                enabled=True,
+                params_schema={"type": "object", "required": ["api_id", "payload"]},
+            )
+        ],
+        form=ApiQueryFormRuntime(
+            enabled=True,
+            form_code="employee_update_form",
+            mode="edit",
+            api_id="employee_update",
+            route_url="https://runtime.example/ui-builder/runtime/endpoints/employee_update/invoke",
+            ui_action="remoteMutation",
+            state_path="/form",
+            fields=[
+                ApiQueryFormFieldRuntime(
+                    name="id",
+                    value_type="string",
+                    state_path="/form/id",
+                    submit_key="id",
+                    required=True,
+                    writable=False,
+                    source_kind="context",
+                ),
+                ApiQueryFormFieldRuntime(
+                    name="email",
+                    value_type="string",
+                    state_path="/form/email",
+                    submit_key="email",
+                    required=False,
+                    writable=True,
+                    source_kind="context",
+                ),
+            ],
+            submit=ApiQueryFormSubmitRuntime(
+                business_intent="saveToServer",
+                confirm_required=True,
+            ),
+        ),
+    )
+
+    result = await service.generate_ui_spec_result(
+        intent="mutation_form",
+        data={"id": "8058", "email": "437462373467289@qq.com"},
+        context={
+            "title": "确认修改：修改员工",
+            "form_state": {
+                "form": {
+                    "id": "8058",
+                    "email": "437462373467289@qq.com",
+                }
+            },
+        },
+        status=ApiQueryExecutionStatus.SKIPPED,
+        runtime=runtime,
+        trace_id="trace-mutation-form-001",
+    )
+
+    assert result.frozen is False
+    assert result.spec is not None
+    form = _root_child_by_type(result.spec, "PlannerForm")
+    assert form["props"]["formCode"] == "employee_update_form"
+    elements = result.spec["elements"]
+    assert isinstance(elements, dict)
+    submit = elements["form_submit"]
+    assert submit["type"] == "PlannerButton"
+    assert submit["on"]["press"]["action"] == "remoteMutation"
+    assert submit["on"]["press"]["params"]["api_id"] == "employee_update"
+    assert submit["on"]["press"]["params"]["payload"]["email"] == {"$bindState": "/form/email"}
+    root = _root_element(result.spec)
+    child_ids = root.get("children", [])
+    assert isinstance(child_ids, list)
+    assert "PlannerNotice" not in [elements[child_id].get("type") for child_id in child_ids if isinstance(child_id, str)]
