@@ -64,6 +64,12 @@ function safeParseJson(value: unknown) {
   return undefined
 }
 
+export interface FieldOrchestrationPaginationConfig {
+  requestTarget?: 'query' | 'body'
+  currentKey?: string
+  sizeKey?: string
+}
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
@@ -209,6 +215,7 @@ export function buildFieldOrchestration(responseSchemaInput?: unknown, sampleRes
   const fieldConfig = isPlainObject((currentConfig as any)?.fieldConfig) ? (currentConfig as any).fieldConfig : {}
   const ignore = Array.isArray(fieldConfig.ignore) ? fieldConfig.ignore : []
   const passthrough = Array.isArray(fieldConfig.passthrough) ? fieldConfig.passthrough : []
+  const pagination = isPlainObject(fieldConfig.pagination) ? fieldConfig.pagination : undefined
 
   const schemaProperties = getSchemaProperties(schemaRoot)
   const sampleProperties = isPlainObject(sampleRoot) ? sampleRoot : {}
@@ -247,7 +254,82 @@ export function buildFieldOrchestration(responseSchemaInput?: unknown, sampleRes
       passthrough,
       groups,
       render,
+      ...(pagination ? { pagination } : {}),
     },
+  }
+}
+
+export function parseFieldOrchestrationConfig(input?: unknown) {
+  const parsed = safeParseJson(input)
+  if (isPlainObject(parsed?.fieldConfig)) {
+    return parsed as {
+      fieldConfig: {
+        ignore?: unknown[]
+        passthrough?: unknown[]
+        groups?: unknown[]
+        render?: unknown[]
+        pagination?: FieldOrchestrationPaginationConfig
+      }
+    }
+  }
+  return {
+    fieldConfig: {
+      ignore: [],
+      passthrough: [],
+      groups: [],
+      render: [],
+    },
+  }
+}
+
+export function inferDefaultPaginationConfig(
+  method?: string,
+  operationSafety?: string,
+): FieldOrchestrationPaginationConfig | undefined {
+  if (operationSafety !== 'list') {
+    return undefined
+  }
+  if (String(method ?? '').toUpperCase() === 'POST') {
+    return {
+      requestTarget: 'body',
+      currentKey: 'pageNo',
+      sizeKey: 'pageSize',
+    }
+  }
+  return {
+    requestTarget: 'query',
+    currentKey: 'current',
+    sizeKey: 'size',
+  }
+}
+
+export function mergePaginationConfigIntoFieldOrchestration(
+  fieldOrchestrationInput: unknown,
+  paginationConfig?: FieldOrchestrationPaginationConfig,
+) {
+  const config = parseFieldOrchestrationConfig(fieldOrchestrationInput)
+  const nextFieldConfig = {
+    ...config.fieldConfig,
+  } as Record<string, unknown>
+
+  if (
+    paginationConfig
+    && paginationConfig.requestTarget
+    && paginationConfig.currentKey
+    && paginationConfig.sizeKey
+  ) {
+    nextFieldConfig.pagination = {
+      requestTarget: paginationConfig.requestTarget,
+      currentKey: paginationConfig.currentKey,
+      sizeKey: paginationConfig.sizeKey,
+    }
+  } else {
+    delete nextFieldConfig.pagination
+  }
+
+  return {
+    ...config,
+    fieldConfig: nextFieldConfig,
   }
 }
 

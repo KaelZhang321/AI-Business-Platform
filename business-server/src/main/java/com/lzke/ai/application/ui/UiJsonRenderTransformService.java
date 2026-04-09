@@ -634,7 +634,7 @@ public class UiJsonRenderTransformService {
         }
 
         if (VIEW_TYPE_DETAIL.equals(resolvedView.type())) {
-            addFormSection(elements, pageChildren, orchestration.form(), detailNode, aliasToStandardKey, semanticValueMapByKey, sequence);
+            addFormSection(elements, pageChildren, orchestration.form(), detailNode, aliasToStandardKey, semanticDictByKey, semanticValueMapByKey, sequence);
         }
 
         if (pageChildren.isEmpty()) {
@@ -886,6 +886,7 @@ public class UiJsonRenderTransformService {
             FormBinding formBinding,
             JsonNode detailNode,
             Map<String, String> aliasToStandardKey,
+            Map<String, SemanticFieldDict> semanticDictByKey,
             Map<String, Map<String, String>> semanticValueMapByKey,
             AtomicInteger sequence
     ) {
@@ -896,7 +897,7 @@ public class UiJsonRenderTransformService {
         List<Map<String, Object>> fields = new ArrayList<>();
         Map<String, Object> initialValues = new LinkedHashMap<>();
         for (FormFieldBinding field : formBinding.fields()) {
-            fields.add(field.toMap());
+            fields.add(field.toMap(resolveFormFieldOptions(field, semanticDictByKey, semanticValueMapByKey)));
             Object initialValue = resolveFormInitialValue(field, detailNode, aliasToStandardKey, semanticValueMapByKey);
             String fieldName = defaultIfBlank(trimToNull(field.name()), defaultIfBlank(trimToNull(field.standardKey()), trimToNull(field.rawKey())));
             if (StringUtils.hasText(fieldName) && initialValue != null) {
@@ -922,6 +923,38 @@ public class UiJsonRenderTransformService {
         }
         elements.put(formId, element(COMPONENT_FORM, props, List.of()));
         pageChildren.add(formId);
+    }
+
+    private List<Map<String, Object>> resolveFormFieldOptions(
+            FormFieldBinding field,
+            Map<String, SemanticFieldDict> semanticDictByKey,
+            Map<String, Map<String, String>> semanticValueMapByKey
+    ) {
+        if (field == null || !isSelectField(field.type())) {
+            return field != null ? field.options() : new ArrayList<>();
+        }
+        if (field.options() != null && !field.options().isEmpty()) {
+            return field.options();
+        }
+
+        LinkedHashSet<String> semanticValues = new LinkedHashSet<>();
+        if (StringUtils.hasText(field.standardKey())) {
+            Map<String, String> mappedValues = semanticValueMapByKey.get(field.standardKey());
+            if (mappedValues != null) {
+                semanticValues.addAll(mappedValues.values());
+            }
+            SemanticFieldDict dict = semanticDictByKey.get(field.standardKey());
+            semanticValues.addAll(parseStandardValuesFromDict(dict));
+        }
+
+        List<Map<String, Object>> options = new ArrayList<>();
+        for (String semanticValue : semanticValues) {
+            if (!StringUtils.hasText(semanticValue)) {
+                continue;
+            }
+            options.add(mapOf("label", semanticValue, "value", semanticValue));
+        }
+        return options;
     }
 
     private void addDetailObjectSection(
@@ -1588,6 +1621,29 @@ public class UiJsonRenderTransformService {
         }
     }
 
+    private boolean isSelectField(String type) {
+        return "select".equalsIgnoreCase(defaultIfBlank(type, ""));
+    }
+
+    private List<String> parseStandardValuesFromDict(SemanticFieldDict dict) {
+        if (dict == null || !StringUtils.hasText(dict.getValueMap())) {
+            return List.of();
+        }
+        try {
+            Map<String, Object> valueMap = objectMapper.readValue(dict.getValueMap(), new TypeReference<LinkedHashMap<String, Object>>() {
+            });
+            LinkedHashSet<String> values = new LinkedHashSet<>();
+            for (Object value : valueMap.values()) {
+                if (value != null && StringUtils.hasText(String.valueOf(value))) {
+                    values.add(String.valueOf(value));
+                }
+            }
+            return new ArrayList<>(values);
+        } catch (Exception ex) {
+            return List.of();
+        }
+    }
+
     private Map<String, Object> safeCopyMap(Map<String, Object> source) {
         return source == null ? new LinkedHashMap<>() : new LinkedHashMap<>(source);
     }
@@ -1985,7 +2041,7 @@ public class UiJsonRenderTransformService {
             return defaultIdentity(name, standardKey, rawKey);
         }
 
-        private Map<String, Object> toMap() {
+        private Map<String, Object> toMap(List<Map<String, Object>> resolvedOptions) {
             Map<String, Object> result = new LinkedHashMap<>();
             String resolvedName = defaultIdentity(name, standardKey, rawKey);
             if (StringUtils.hasText(resolvedName)) {
@@ -2003,8 +2059,8 @@ public class UiJsonRenderTransformService {
             if (readonly) {
                 result.put("readonly", true);
             }
-            if (options != null && !options.isEmpty()) {
-                result.put("options", options);
+            if (resolvedOptions != null && !resolvedOptions.isEmpty()) {
+                result.put("options", resolvedOptions);
             }
             if (StringUtils.hasText(standardKey)) {
                 result.put("standardKey", standardKey);

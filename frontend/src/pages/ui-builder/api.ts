@@ -16,6 +16,10 @@ import type {
   UiApiEndpointRole,
   UiApiEndpointRoleBindRequest,
   UiApiInvokeRequest,
+  UiJsonRenderInvokeRequest,
+  UiJsonRenderInvokeResponse,
+  UiJsonRenderSubmitRequest,
+  UiJsonRenderSubmitResponse,
   UiRole,
   UiApiSource,
   UiApiSourceRequest,
@@ -158,6 +162,12 @@ export const uiBuilderApi = {
   },
   invokeEndpoint(endpointId: string, payload: UiApiInvokeRequest) {
     return unwrap<unknown>(businessClient.post(`/api/v1/ui-builder/runtime/endpoints/${endpointId}/invoke`, payload))
+  },
+  invokeEndpointAsJsonRender(endpointId: string, payload: UiJsonRenderInvokeRequest) {
+    return unwrap<UiJsonRenderInvokeResponse>(businessClient.post(`/api/v1/ui-builder/runtime/endpoints/${endpointId}/render`, payload))
+  },
+  submitJsonRenderForm(payload: UiJsonRenderSubmitRequest) {
+    return unwrap<UiJsonRenderSubmitResponse>(businessClient.post('/api/v1/ui-builder/runtime/forms/submit', payload))
   },
   listTestLogs(endpointId: string, query?: PageQuery) {
     return unwrap<PageResult<UiApiTestLog>>(businessClient.get(`/api/v1/ui-builder/endpoints/${endpointId}/test-logs`, {

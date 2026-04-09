@@ -3,6 +3,7 @@ import { Alert, Spin, Tabs, Typography, message } from 'antd'
 
 import { uiBuilderApi } from './api'
 import { EndpointRoleTab } from './components/EndpointRoleTab'
+import { JsonRenderPlaygroundTab } from './components/JsonRenderPlaygroundTab'
 import { OverviewTab } from './components/OverviewTab'
 import { ReleaseTab } from './components/ReleaseTab'
 import { SemanticFieldTab } from './components/SemanticFieldTab'
@@ -1423,6 +1424,11 @@ export function UiBuilderPage() {
                 onPublishPage={handlePublishPage}
               />
             ),
+          },
+          {
+            key: 'json-render-playground',
+            label: 'JSON 预览器',
+            children: <JsonRenderPlaygroundTab />,
           },
         ]}
       />

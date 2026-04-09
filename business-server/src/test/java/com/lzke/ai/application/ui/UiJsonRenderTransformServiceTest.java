@@ -7,6 +7,7 @@ import com.lzke.ai.application.dto.UiJsonRenderSubmitActionRequest;
 import com.lzke.ai.application.dto.UiJsonRenderSubmitResponse;
 import com.lzke.ai.application.dto.UiJsonRenderSubmitRequest;
 import com.lzke.ai.domain.entity.SemanticFieldAlias;
+import com.lzke.ai.domain.entity.SemanticFieldDict;
 import com.lzke.ai.domain.entity.SemanticFieldValueMap;
 import com.lzke.ai.domain.entity.UiApiEndpoint;
 import com.lzke.ai.domain.entity.UiApiFlowLog;
@@ -215,17 +216,25 @@ class UiJsonRenderTransformServiceTest {
                     },
                     "fields": [
                       { "standardKey": "realName", "label": "姓名", "type": "text", "required": true },
-                      { "standardKey": "mobile", "label": "手机号", "type": "text" }
+                      { "standardKey": "mobile", "label": "手机号", "type": "text" },
+                      { "standardKey": "gender", "label": "性别", "type": "select" },
+                      { "standardKey": "status", "label": "状态", "type": "select" }
                     ]
                   }
                 }
                 """);
         endpoint.setOperationSafety("query");
         when(uiApiEndpointMapper.selectById("endpoint-detail")).thenReturn(endpoint);
+        when(semanticFieldDictMapper.selectList(any())).thenReturn(List.of(
+                buildSemanticDict("gender", "性别", "select", "{\"1\":\"男\",\"2\":\"女\"}"),
+                buildSemanticDict("status", "状态", "select", "{\"0\":\"禁用\",\"1\":\"启用\"}")
+        ));
         when(semanticFieldAliasMapper.selectList(any())).thenReturn(List.of(
                 buildAlias("endpoint-detail", "realName", "realName"),
                 buildAlias("endpoint-detail", "username", "username"),
-                buildAlias("endpoint-detail", "mobile", "mobile")
+                buildAlias("endpoint-detail", "mobile", "mobile"),
+                buildAlias("endpoint-detail", "gender", "gender"),
+                buildAlias("endpoint-detail", "status", "status")
         ));
         when(semanticFieldValueMapMapper.selectList(any())).thenReturn(List.of());
 
@@ -236,7 +245,9 @@ class UiJsonRenderTransformServiceTest {
                         "id", "27826",
                         "username", "202503052",
                         "realName", "杨旭阳",
-                        "mobile", "133****8963"
+                        "mobile", "133****8963",
+                        "gender", 2,
+                        "status", 1
                 )
         );
 
@@ -269,6 +280,14 @@ class UiJsonRenderTransformServiceTest {
         assertEquals("保存", formProps.get("submitLabel"));
         Map<?, ?> initialValues = assertInstanceOf(Map.class, formProps.get("initialValues"));
         assertEquals("杨旭阳", initialValues.get("realName"));
+        List<?> formFields = assertInstanceOf(List.class, formProps.get("fields"));
+        Map<?, ?> genderField = formFields.stream()
+                .map(Map.class::cast)
+                .filter(field -> "gender".equals(field.get("standardKey")))
+                .findFirst()
+                .orElseThrow();
+        List<?> genderOptions = assertInstanceOf(List.class, genderField.get("options"));
+        assertFalse(genderOptions.isEmpty());
     }
 
     @Test
@@ -496,5 +515,15 @@ class UiJsonRenderTransformServiceTest {
         valueMap.setStandardValue(standardValue);
         valueMap.setRawValue(rawValue);
         return valueMap;
+    }
+
+    private SemanticFieldDict buildSemanticDict(String standardKey, String label, String fieldType, String valueMap) {
+        SemanticFieldDict dict = new SemanticFieldDict();
+        dict.setStandardKey(standardKey);
+        dict.setLabel(label);
+        dict.setFieldType(fieldType);
+        dict.setValueMap(valueMap);
+        dict.setIsActive(1);
+        return dict;
     }
 }

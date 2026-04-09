@@ -214,6 +214,56 @@ export interface UiApiInvokeRequest {
   useSampleWhenEmpty?: boolean
 }
 
+export interface UiJsonRenderInvokeRequest extends UiApiInvokeRequest {
+  roleId?: string
+}
+
+export interface UiJsonRenderInvokeResponse {
+  endpointId: string
+  roleId?: string | null
+  flowNum?: string | null
+  flowLogId?: string | null
+  responseBody: unknown
+  jsonRender: Record<string, unknown>
+}
+
+export interface UiJsonRenderSubmitActionRequest {
+  endpointId: string
+  roleId?: string
+  queryKeys?: string[]
+  bodyKeys?: string[]
+  headerKeys?: string[]
+  staticQueryParams?: Record<string, unknown>
+  staticBody?: Record<string, unknown>
+  staticHeaders?: Record<string, unknown>
+  useSampleWhenEmpty?: boolean
+}
+
+export interface UiJsonRenderSubmitRequest {
+  flowNum?: string
+  createdBy?: string
+  createdByName?: string
+  semanticValues: Record<string, unknown>
+  actions: UiJsonRenderSubmitActionRequest[]
+}
+
+export interface UiJsonRenderSubmitActionResponse {
+  endpointId: string
+  endpointName?: string | null
+  flowLogId?: string | null
+  requestUrl?: string | null
+  success: boolean
+  errorMessage?: string | null
+  responseStatus?: number | null
+  responseBody?: unknown
+}
+
+export interface UiJsonRenderSubmitResponse {
+  flowNum?: string | null
+  success: boolean
+  results: UiJsonRenderSubmitActionResponse[]
+}
+
 export interface UiProject {
   id: string
   name: string
