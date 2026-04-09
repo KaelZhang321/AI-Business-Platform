@@ -536,18 +536,8 @@ def _build_runtime_invoke_payload(
         GET 查询接口把业务参数落到 `queryParams`，POST 查询接口落到 `body`，从而保持
         ai-gateway 不理解业务 URL 细节，只负责把规划结果装配成 runtime invoke 的稳定契约。
     """
-    reserved_id = settings.api_query_runtime_reserved_id
-    runtime_query_params: dict[str, Any] = {"id": reserved_id}
+    runtime_query_params: dict[str, Any] = {}
     business_params = dict(params)
-
-    if "id" in business_params:
-        # `id` 已被 runtime invoke 预留给流程壳字段，业务参数不得覆盖，避免误打错接口或污染日志。
-        logger.info(
-            "stage4 runtime invoke dropped conflicting business param trace_id=%s api_id=%s reserved_key=id",
-            trace_id or "-",
-            entry.id,
-        )
-        business_params.pop("id", None)
 
     if entry.method == "GET":
         runtime_query_params.update(business_params)
@@ -559,7 +549,7 @@ def _build_runtime_invoke_payload(
         "flowNum": settings.api_query_runtime_flow_num,
         "queryParams": runtime_query_params,
         "createdBy": settings.api_query_runtime_created_by,
-        "useSampleWhenEmpty": False,
+        # "useSampleWhenEmpty": False,
         "body": runtime_body,
     }
 

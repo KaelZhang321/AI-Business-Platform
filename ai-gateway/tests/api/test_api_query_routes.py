@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 
 from app.api.routes import api_query as api_query_routes
 from app.models.schemas import (
+    ApiQueryResponse,
     ApiQueryExecutionResult,
     ApiQueryExecutionStatus,
     ApiQueryRoutingResult,
@@ -306,6 +307,65 @@ def create_test_app() -> FastAPI:
     return app
 
 
+def test_api_query_route_delegates_to_workflow(monkeypatch) -> None:
+    """路由层应只做 HTTP 适配，并把上下文交给 workflow。"""
+
+    captured: dict[str, object] = {}
+
+    class FakeWorkflow:
+        async def run(
+            self,
+            request_body,
+            *,
+            trace_id: str,
+            interaction_id: str | None,
+            conversation_id: str | None,
+            user_context: dict[str, object],
+            user_token: str | None,
+        ):
+            captured.update(
+                {
+                    "request_body": request_body.model_dump(mode="json", exclude_none=True),
+                    "trace_id": trace_id,
+                    "interaction_id": interaction_id,
+                    "conversation_id": conversation_id,
+                    "user_context": user_context,
+                    "user_token": user_token,
+                }
+            )
+            return ApiQueryResponse(
+                trace_id=trace_id,
+                execution_status=ApiQueryExecutionStatus.SUCCESS,
+                execution_plan=None,
+                ui_runtime=None,
+                ui_spec={"root": "page", "state": {}, "elements": {"page": {"id": "page", "type": "PlannerCard"}}},
+                error=None,
+            )
+
+    monkeypatch.setattr(api_query_routes, "_get_workflow", lambda: FakeWorkflow())
+
+    client = TestClient(create_test_app())
+    response = client.post(
+        "/api/v1/api-query",
+        json={"query": "查询张三客户", "conversation_id": "conv-route-001"},
+        headers={
+            "X-Trace-Id": "trace-route-001",
+            "X-Interaction-Id": "ia-route-001",
+            "Authorization": "Bearer route-token",
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured == {
+        "request_body": {"mode": "nl", "response_mode": "full_spec", "query": "查询张三客户", "conversation_id": "conv-route-001", "top_k": 3, "envs": [], "tag_names": []},
+        "trace_id": "trace-route-001",
+        "interaction_id": "ia-route-001",
+        "conversation_id": "conv-route-001",
+        "user_context": {},
+        "user_token": "Bearer route-token",
+    }
+
+
 def _build_flat_stub_spec(
     *,
     root_props: dict[str, object],
@@ -516,7 +576,9 @@ def test_api_query_direct_mode_bypasses_semantic_chain_and_returns_runtime_contr
     assert body["ui_spec"]["elements"][body["ui_spec"]["root"]]["type"] == "PlannerCard"
     assert registry_source.last_api_id == "customer_detail"
     assert executor.last_params == {"customerId": "C001"}
-    assert "conversation=conv_001" in caplog.text
+    assert "conversation_id=conv_001" in caplog.text
+    assert "phase=http_adapter" in caplog.text
+    assert "node=dispatch" in caplog.text
 
 
 def test_api_query_direct_mode_returns_list_patch_response(monkeypatch) -> None:
@@ -1048,8 +1110,9 @@ def test_api_query_soft_degrades_when_route_query_fails(monkeypatch, caplog) -> 
     assert body["error"] == "抱歉，我没有完全理解您的意图，或系统中暂未开放相关查询能力，请尝试换种说法。"
     root_id = body["ui_spec"]["root"]
     assert body["ui_spec"]["elements"][root_id]["props"]["title"] == "未识别到可用业务域"
-    assert "interaction=ia-degrade-001" in caplog.text
-    assert "conversation=conv_degrade_001" in caplog.text
+    assert "interaction_id=ia-degrade-001" in caplog.text
+    assert "conversation_id=conv_degrade_001" in caplog.text
+    assert "phase=http_adapter" in caplog.text
 
 
 def test_runtime_metadata_endpoint_returns_contract(monkeypatch) -> None:

@@ -33,7 +33,7 @@ SELECT
     e.operation_safety AS operationSafety,
     e.status AS endpointStatus,
     s.id AS sourceId,
-    s.code AS sourceCode,
+    SUBSTRING_INDEX(s.code,'_', 1) AS sourceCode,
     s.name AS sourceName,
     s.source_type AS sourceType,
     s.base_url AS baseUrl,
@@ -46,24 +46,8 @@ SELECT
 FROM ui_api_endpoints e
 LEFT JOIN ui_api_sources s ON e.source_id = s.id
 LEFT JOIN ui_api_tags t ON e.tag_id = t.id
+WHERE e.status = 'active'
 """
-
-_API_CATALOG_REGISTRY_SQL = (
-    _API_CATALOG_REGISTRY_SELECT_SQL
-    + """
-WHERE e.status = "active"
-ORDER BY s.code, t.name, e.method, e.path
-"""
-)
-
-_API_CATALOG_REGISTRY_BY_ID_SQL = (
-    _API_CATALOG_REGISTRY_SELECT_SQL
-    + """
-WHERE e.status = "active"
-  AND e.id = %s
-LIMIT 1
-"""
-)
 
 
 class ApiCatalogSourceError(RuntimeError):
@@ -119,7 +103,7 @@ class ApiCatalogRegistrySource:
             return builtin_entry
 
         try:
-            rows = await self._fetch_mysql_rows(_API_CATALOG_REGISTRY_BY_ID_SQL, (api_id,))
+            rows = await self._fetch_mysql_rows(_API_CATALOG_REGISTRY_SELECT_SQL, (api_id,))
         except Exception as exc:
             raise ApiCatalogSourceError(f"无法从 MySQL 加载接口 {api_id}: {exc}") from exc
 
@@ -134,7 +118,7 @@ class ApiCatalogRegistrySource:
             直接对齐设计稿里的 `ui_api_endpoints + ui_api_sources + ui_api_tags` 三表拍平逻辑，
             避免在网关和 business-server 之间再绕一层 REST 元数据代理。
         """
-        rows = await self._fetch_mysql_rows(_API_CATALOG_REGISTRY_SQL)
+        rows = await self._fetch_mysql_rows(_API_CATALOG_REGISTRY_SELECT_SQL)
         entries = [_build_entry_from_mysql_row(row) for row in rows]
         if not entries:
             raise ApiCatalogSourceError("MySQL metadata returned no endpoints")
