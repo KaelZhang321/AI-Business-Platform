@@ -17,5 +17,6 @@ public class UiApiEndpointRequest {
     private String responseSchema;
     private String sampleRequest;
     private String sampleResponse;
+    private String fieldOrchestration;
     private String status;
 }

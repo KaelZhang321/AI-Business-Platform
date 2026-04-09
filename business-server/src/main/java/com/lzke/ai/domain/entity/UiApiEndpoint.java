@@ -33,6 +33,7 @@ public class UiApiEndpoint {
     private String responseSchema;
     private String sampleRequest;
     private String sampleResponse;
+    private String fieldOrchestration;
     private String status;
 
     @TableField(exist = false)

@@ -100,6 +100,7 @@ public class UiBuilderMetadataService {
                 new UiBuilderFeatureResponse("接口联调", "对三方接口做参数配置、测试调用和样例响应固化。"),
                 new UiBuilderFeatureResponse("运行时调用", "按 endpointId 发起真实接口调用，并记录 flowNum 级别的调用日志。"),
                 new UiBuilderFeatureResponse("角色关联", "把已导入的接口定义绑定到 IAM 角色，支持按角色筛选接口。"),
+                new UiBuilderFeatureResponse("语义转换", "维护标准字段、字段别名和值映射，为字段编排和 AI 理解提供上下文。"),
                 new UiBuilderFeatureResponse("页面编排", "用 Card、Table、Metric、Chart 等节点描述页面结构。"),
                 new UiBuilderFeatureResponse("字段绑定", "把接口返回字段通过 JSONPath 绑定到组件 props。"),
                 new UiBuilderFeatureResponse("版本发布", "将页面配置转换为 json-render spec，并进行版本化发布。")
@@ -145,12 +146,31 @@ public class UiBuilderMetadataService {
                         new UiBuilderFieldResponse("method", "varchar(16)", "HTTP 方法"),
                         new UiBuilderFieldResponse("operation_safety", "varchar(16)", "操作安全等级 query/list/mutation"),
                         new UiBuilderFieldResponse("request_schema", "json", "请求结构"),
-                        new UiBuilderFieldResponse("response_schema", "json", "响应结构")
+                        new UiBuilderFieldResponse("response_schema", "json", "响应结构"),
+                        new UiBuilderFieldResponse("field_orchestration", "json", "字段编排配置")
                 )),
                 new UiBuilderTableSchemaResponse("ui_api_endpoint_roles", "接口定义与 IAM 角色关系", List.of(
                         new UiBuilderFieldResponse("endpoint_id", "varchar(64)", "所属接口定义"),
                         new UiBuilderFieldResponse("role_id", "varchar(64)", "角色 ID"),
-                        new UiBuilderFieldResponse("role_name", "varchar(128)", "角色名称")
+                        new UiBuilderFieldResponse("role_name", "varchar(128)", "角色名称"),
+                        new UiBuilderFieldResponse("field_orchestration", "json", "角色侧字段编排配置")
+                )),
+                new UiBuilderTableSchemaResponse("semantic_field_dict", "语义字段字典主表", List.of(
+                        new UiBuilderFieldResponse("standard_key", "varchar(64)", "标准字段 key"),
+                        new UiBuilderFieldResponse("label", "varchar(64)", "展示名"),
+                        new UiBuilderFieldResponse("field_type", "varchar(32)", "组件类型"),
+                        new UiBuilderFieldResponse("value_map", "json", "全局值映射")
+                )),
+                new UiBuilderTableSchemaResponse("semantic_field_alias", "字段别名映射表", List.of(
+                        new UiBuilderFieldResponse("standard_key", "varchar(64)", "标准字段 key"),
+                        new UiBuilderFieldResponse("alias", "varchar(64)", "接口原始字段名"),
+                        new UiBuilderFieldResponse("api_id", "varchar(64)", "所属接口定义")
+                )),
+                new UiBuilderTableSchemaResponse("semantic_field_value_map", "字段值映射扩展表", List.of(
+                        new UiBuilderFieldResponse("standard_key", "varchar(64)", "标准字段 key"),
+                        new UiBuilderFieldResponse("api_id", "varchar(64)", "接口级覆盖的接口 ID"),
+                        new UiBuilderFieldResponse("standard_value", "varchar(64)", "标准值"),
+                        new UiBuilderFieldResponse("raw_value", "varchar(64)", "接口原始值")
                 )),
                 new UiBuilderTableSchemaResponse("ui_api_test_logs", "接口联调与样例响应记录", List.of(
                         new UiBuilderFieldResponse("endpoint_id", "varchar(64)", "所属接口定义"),

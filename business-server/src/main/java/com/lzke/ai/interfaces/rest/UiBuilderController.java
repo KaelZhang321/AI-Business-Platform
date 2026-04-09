@@ -12,6 +12,9 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.lecz.service.tools.core.utils.AuthUtil;
 import com.lzke.ai.application.dto.PageQuery;
+import com.lzke.ai.application.dto.SemanticFieldAliasRequest;
+import com.lzke.ai.application.dto.SemanticFieldDictRequest;
+import com.lzke.ai.application.dto.SemanticFieldValueMapRequest;
 import com.lzke.ai.application.dto.UiApiEndpointRequest;
 import com.lzke.ai.application.dto.UiApiEndpointRoleBindRequest;
 import com.lzke.ai.application.dto.UiApiInvokeRequest;
@@ -31,6 +34,9 @@ import com.lzke.ai.application.dto.UiProjectRequest;
 import com.lzke.ai.application.ui.UiBuilderApplicationService;
 import com.lzke.ai.domain.entity.UiApiEndpoint;
 import com.lzke.ai.domain.entity.UiApiEndpointRole;
+import com.lzke.ai.domain.entity.SemanticFieldAlias;
+import com.lzke.ai.domain.entity.SemanticFieldDict;
+import com.lzke.ai.domain.entity.SemanticFieldValueMap;
 import com.lzke.ai.domain.entity.UiApiSource;
 import com.lzke.ai.domain.entity.UiApiTag;
 import com.lzke.ai.domain.entity.UiApiTestLog;
@@ -86,6 +92,120 @@ public class UiBuilderController {
     @GetMapping("/auth-types")
     public ApiResponse<PageResult<UiBuilderAuthTypeResponse>> getAuthTypes(@Valid PageQuery query) {
         return ApiResponse.ok(uiBuilderApplicationService.getAuthTypes(query));
+    }
+
+    /**
+     * 查询语义字段字典。
+     */
+    @GetMapping("/semantic-fields")
+    public ApiResponse<PageResult<SemanticFieldDict>> listSemanticFields(@Valid PageQuery query) {
+        return ApiResponse.ok(uiBuilderApplicationService.listSemanticFields(query));
+    }
+
+    /**
+     * 创建语义字段字典。
+     */
+    @PostMapping("/semantic-fields")
+    public ApiResponse<SemanticFieldDict> createSemanticField(@RequestBody SemanticFieldDictRequest request) {
+        return ApiResponse.ok(uiBuilderApplicationService.createSemanticField(request));
+    }
+
+    /**
+     * 更新语义字段字典。
+     */
+    @PutMapping("/semantic-fields/{dictId}")
+    public ApiResponse<SemanticFieldDict> updateSemanticField(
+            @PathVariable Long dictId,
+            @RequestBody SemanticFieldDictRequest request
+    ) {
+        return ApiResponse.ok(uiBuilderApplicationService.updateSemanticField(dictId, request));
+    }
+
+    /**
+     * 删除语义字段字典。
+     */
+    @DeleteMapping("/semantic-fields/{dictId}")
+    public ApiResponse<Void> deleteSemanticField(@PathVariable Long dictId) {
+        uiBuilderApplicationService.deleteSemanticField(dictId);
+        return ApiResponse.ok();
+    }
+
+    /**
+     * 查询标准字段下的别名映射。
+     */
+    @GetMapping("/semantic-fields/{standardKey}/aliases")
+    public ApiResponse<PageResult<SemanticFieldAlias>> listSemanticFieldAliases(
+            @PathVariable String standardKey,
+            @Valid PageQuery query
+    ) {
+        return ApiResponse.ok(uiBuilderApplicationService.listSemanticFieldAliases(standardKey, query));
+    }
+
+    /**
+     * 创建别名映射。
+     */
+    @PostMapping("/semantic-field-aliases")
+    public ApiResponse<SemanticFieldAlias> createSemanticFieldAlias(@RequestBody SemanticFieldAliasRequest request) {
+        return ApiResponse.ok(uiBuilderApplicationService.createSemanticFieldAlias(request));
+    }
+
+    /**
+     * 更新别名映射。
+     */
+    @PutMapping("/semantic-field-aliases/{aliasId}")
+    public ApiResponse<SemanticFieldAlias> updateSemanticFieldAlias(
+            @PathVariable Long aliasId,
+            @RequestBody SemanticFieldAliasRequest request
+    ) {
+        return ApiResponse.ok(uiBuilderApplicationService.updateSemanticFieldAlias(aliasId, request));
+    }
+
+    /**
+     * 删除别名映射。
+     */
+    @DeleteMapping("/semantic-field-aliases/{aliasId}")
+    public ApiResponse<Void> deleteSemanticFieldAlias(@PathVariable Long aliasId) {
+        uiBuilderApplicationService.deleteSemanticFieldAlias(aliasId);
+        return ApiResponse.ok();
+    }
+
+    /**
+     * 查询标准字段下的值映射。
+     */
+    @GetMapping("/semantic-fields/{standardKey}/value-maps")
+    public ApiResponse<PageResult<SemanticFieldValueMap>> listSemanticFieldValueMaps(
+            @PathVariable String standardKey,
+            @Valid PageQuery query
+    ) {
+        return ApiResponse.ok(uiBuilderApplicationService.listSemanticFieldValueMaps(standardKey, query));
+    }
+
+    /**
+     * 创建值映射。
+     */
+    @PostMapping("/semantic-field-value-maps")
+    public ApiResponse<SemanticFieldValueMap> createSemanticFieldValueMap(@RequestBody SemanticFieldValueMapRequest request) {
+        return ApiResponse.ok(uiBuilderApplicationService.createSemanticFieldValueMap(request));
+    }
+
+    /**
+     * 更新值映射。
+     */
+    @PutMapping("/semantic-field-value-maps/{valueMapId}")
+    public ApiResponse<SemanticFieldValueMap> updateSemanticFieldValueMap(
+            @PathVariable Long valueMapId,
+            @RequestBody SemanticFieldValueMapRequest request
+    ) {
+        return ApiResponse.ok(uiBuilderApplicationService.updateSemanticFieldValueMap(valueMapId, request));
+    }
+
+    /**
+     * 删除值映射。
+     */
+    @DeleteMapping("/semantic-field-value-maps/{valueMapId}")
+    public ApiResponse<Void> deleteSemanticFieldValueMap(@PathVariable Long valueMapId) {
+        uiBuilderApplicationService.deleteSemanticFieldValueMap(valueMapId);
+        return ApiResponse.ok();
     }
 
     /**
