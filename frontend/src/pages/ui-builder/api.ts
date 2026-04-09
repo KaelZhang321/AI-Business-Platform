@@ -5,6 +5,12 @@ import type {
   PageResult,
   RemotePageResult,
   RemoteResponse,
+  SemanticFieldAlias,
+  SemanticFieldAliasRequest,
+  SemanticFieldDict,
+  SemanticFieldDictRequest,
+  SemanticFieldValueMap,
+  SemanticFieldValueMapRequest,
   UiApiEndpoint,
   UiApiEndpointRequest,
   UiApiEndpointRole,
@@ -52,6 +58,48 @@ async function unwrapRemote<T>(promise: Promise<{ data: RemoteResponse<T> }>) {
 export const uiBuilderApi = {
   getOverview() {
     return unwrap<UiBuilderOverview>(businessClient.get('/api/v1/ui-builder/overview'))
+  },
+  listSemanticFields(query?: PageQuery) {
+    return unwrap<PageResult<SemanticFieldDict>>(businessClient.get('/api/v1/ui-builder/semantic-fields', {
+      params: buildPageParams(query),
+    }))
+  },
+  createSemanticField(payload: SemanticFieldDictRequest) {
+    return unwrap<SemanticFieldDict>(businessClient.post('/api/v1/ui-builder/semantic-fields', payload))
+  },
+  updateSemanticField(dictId: number, payload: SemanticFieldDictRequest) {
+    return unwrap<SemanticFieldDict>(businessClient.put(`/api/v1/ui-builder/semantic-fields/${dictId}`, payload))
+  },
+  deleteSemanticField(dictId: number) {
+    return unwrap<void>(businessClient.delete(`/api/v1/ui-builder/semantic-fields/${dictId}`))
+  },
+  listSemanticFieldAliases(standardKey: string, query?: PageQuery) {
+    return unwrap<PageResult<SemanticFieldAlias>>(businessClient.get(`/api/v1/ui-builder/semantic-fields/${standardKey}/aliases`, {
+      params: buildPageParams(query),
+    }))
+  },
+  createSemanticFieldAlias(payload: SemanticFieldAliasRequest) {
+    return unwrap<SemanticFieldAlias>(businessClient.post('/api/v1/ui-builder/semantic-field-aliases', payload))
+  },
+  updateSemanticFieldAlias(aliasId: number, payload: SemanticFieldAliasRequest) {
+    return unwrap<SemanticFieldAlias>(businessClient.put(`/api/v1/ui-builder/semantic-field-aliases/${aliasId}`, payload))
+  },
+  deleteSemanticFieldAlias(aliasId: number) {
+    return unwrap<void>(businessClient.delete(`/api/v1/ui-builder/semantic-field-aliases/${aliasId}`))
+  },
+  listSemanticFieldValueMaps(standardKey: string, query?: PageQuery) {
+    return unwrap<PageResult<SemanticFieldValueMap>>(businessClient.get(`/api/v1/ui-builder/semantic-fields/${standardKey}/value-maps`, {
+      params: buildPageParams(query),
+    }))
+  },
+  createSemanticFieldValueMap(payload: SemanticFieldValueMapRequest) {
+    return unwrap<SemanticFieldValueMap>(businessClient.post('/api/v1/ui-builder/semantic-field-value-maps', payload))
+  },
+  updateSemanticFieldValueMap(valueMapId: number, payload: SemanticFieldValueMapRequest) {
+    return unwrap<SemanticFieldValueMap>(businessClient.put(`/api/v1/ui-builder/semantic-field-value-maps/${valueMapId}`, payload))
+  },
+  deleteSemanticFieldValueMap(valueMapId: number) {
+    return unwrap<void>(businessClient.delete(`/api/v1/ui-builder/semantic-field-value-maps/${valueMapId}`))
   },
   async listRoles(appCode = 'AI-RND-WORKFLOW') {
     const result = await unwrapRemote<RemotePageResult<UiRole>>(businessClient.get('/api/v1/auth/roles', {

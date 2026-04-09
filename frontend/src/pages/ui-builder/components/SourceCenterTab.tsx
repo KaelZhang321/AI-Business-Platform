@@ -23,7 +23,7 @@ import {
 } from 'antd'
 import type { TableColumnsType } from 'antd'
 
-import { formatDateTime, parseJsonInput, prettyJson } from '../helpers'
+import { buildFieldOrchestration, formatDateTime, parseJsonInput, prettyJson } from '../helpers'
 import type {
   UiApiEndpoint,
   UiApiEndpointRequest,
@@ -238,11 +238,14 @@ export function SourceCenterTab({
     {
       title: '操作',
       key: 'actions',
-      width: 180,
+      width: 260,
       render: (_, record) => (
         <Space size="small">
           <Button size="small" onClick={() => openEndpointModal(record)}>
             编辑
+          </Button>
+          <Button size="small" onClick={() => openEndpointModal(record, true)}>
+            补全编排
           </Button>
           <Button size="small" onClick={() => openTestModal(record)}>
             联调
@@ -309,7 +312,7 @@ export function SourceCenterTab({
     })
   }
 
-  function openEndpointModal(endpoint?: UiApiEndpoint) {
+  function openEndpointModal(endpoint?: UiApiEndpoint, autofillFieldOrchestration = false) {
     if (!selectedSourceId && !endpoint?.sourceId) {
       return
     }
@@ -328,8 +331,27 @@ export function SourceCenterTab({
       responseSchema: prettyJson(endpoint?.responseSchema ?? '{}'),
       sampleRequest: prettyJson(endpoint?.sampleRequest ?? '{}'),
       sampleResponse: prettyJson(endpoint?.sampleResponse ?? '{}'),
+      fieldOrchestration: prettyJson(
+        endpoint?.fieldOrchestration ?? {
+          fieldConfig: {
+            ignore: [],
+            passthrough: [],
+            groups: [],
+            render: [],
+          },
+        },
+      ),
       status: endpoint?.status ?? 'active',
     })
+
+    if (autofillFieldOrchestration) {
+      const generated = buildFieldOrchestration(
+        endpoint?.responseSchema,
+        endpoint?.sampleResponse,
+        endpoint?.fieldOrchestration,
+      )
+      endpointForm.setFieldValue('fieldOrchestration', prettyJson(generated))
+    }
   }
 
   function openTestModal(endpoint?: UiApiEndpoint) {
@@ -361,6 +383,17 @@ export function SourceCenterTab({
     setEndpointModalOpen(false)
     setEditingEndpoint(null)
     endpointForm.resetFields()
+  }
+
+  function handleGenerateFieldOrchestration() {
+    const values = endpointForm.getFieldsValue(['responseSchema', 'sampleResponse', 'fieldOrchestration'])
+    const generated = buildFieldOrchestration(
+      values.responseSchema,
+      values.sampleResponse,
+      values.fieldOrchestration,
+    )
+    endpointForm.setFieldValue('fieldOrchestration', prettyJson(generated))
+    messageApi.success('已根据响应参数补全字段编排 JSON')
   }
 
   async function submitImportOpenApi() {
@@ -726,6 +759,20 @@ export function SourceCenterTab({
               </Form.Item>
             </Col>
           </Row>
+          <Form.Item
+            name="fieldOrchestration"
+            label={(
+              <Space>
+                <span>字段编排(JSON)</span>
+                <Button size="small" type="link" onClick={handleGenerateFieldOrchestration}>
+                  根据响应参数补全
+                </Button>
+              </Space>
+            )}
+            extra="系统会根据当前响应 Schema 和样例响应，自动生成 ignore/passthrough/groups/render 结构。"
+          >
+            <Input.TextArea rows={10} />
+          </Form.Item>
           <Form.Item name="status" label="状态">
             <Select options={statusOptions} />
           </Form.Item>
