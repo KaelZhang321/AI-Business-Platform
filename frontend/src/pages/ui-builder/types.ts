@@ -69,6 +69,37 @@ export interface UiBuilderOverview {
   tables: UiBuilderTableSchema[]
 }
 
+export interface SemanticFieldDict {
+  id: number
+  standardKey: string
+  label: string
+  fieldType: string
+  category?: string | null
+  valueMap?: string | null
+  description?: string | null
+  isActive?: number | null
+  createdAt?: string | null
+  updatedAt?: string | null
+}
+
+export interface SemanticFieldAlias {
+  id: number
+  standardKey: string
+  alias: string
+  apiId: string
+  source?: string | null
+  createdAt?: string | null
+}
+
+export interface SemanticFieldValueMap {
+  id: number
+  standardKey: string
+  apiId?: string | null
+  standardValue: string
+  rawValue: string
+  sortOrder?: number | null
+}
+
 export interface UiApiSource {
   id: string
   name: string
@@ -102,6 +133,7 @@ export interface UiApiEndpoint {
   responseSchema?: string | null
   sampleRequest?: string | null
   sampleResponse?: string | null
+  fieldOrchestration?: string | null
   status?: string | null
   createdAt?: string | null
   updatedAt?: string | null
@@ -124,6 +156,7 @@ export interface UiApiEndpointRole {
   roleId: string
   roleCode?: string | null
   roleName: string
+  fieldOrchestration?: string | null
   createdBy?: string | null
   createdAt?: string | null
   updatedAt?: string | null
@@ -179,6 +212,56 @@ export interface UiApiInvokeRequest {
   createdBy?: string
   createdByName?: string
   useSampleWhenEmpty?: boolean
+}
+
+export interface UiJsonRenderInvokeRequest extends UiApiInvokeRequest {
+  roleId?: string
+}
+
+export interface UiJsonRenderInvokeResponse {
+  endpointId: string
+  roleId?: string | null
+  flowNum?: string | null
+  flowLogId?: string | null
+  responseBody: unknown
+  jsonRender: Record<string, unknown>
+}
+
+export interface UiJsonRenderSubmitActionRequest {
+  endpointId: string
+  roleId?: string
+  queryKeys?: string[]
+  bodyKeys?: string[]
+  headerKeys?: string[]
+  staticQueryParams?: Record<string, unknown>
+  staticBody?: Record<string, unknown>
+  staticHeaders?: Record<string, unknown>
+  useSampleWhenEmpty?: boolean
+}
+
+export interface UiJsonRenderSubmitRequest {
+  flowNum?: string
+  createdBy?: string
+  createdByName?: string
+  semanticValues: Record<string, unknown>
+  actions: UiJsonRenderSubmitActionRequest[]
+}
+
+export interface UiJsonRenderSubmitActionResponse {
+  endpointId: string
+  endpointName?: string | null
+  flowLogId?: string | null
+  requestUrl?: string | null
+  success: boolean
+  errorMessage?: string | null
+  responseStatus?: number | null
+  responseBody?: unknown
+}
+
+export interface UiJsonRenderSubmitResponse {
+  flowNum?: string | null
+  success: boolean
+  results: UiJsonRenderSubmitActionResponse[]
 }
 
 export interface UiProject {
@@ -290,6 +373,7 @@ export interface UiApiEndpointRequest {
   responseSchema?: string
   sampleRequest?: string
   sampleResponse?: string
+  fieldOrchestration?: string
   status?: string
 }
 
@@ -298,6 +382,31 @@ export interface UiApiTestRequest {
   queryParams?: Record<string, unknown>
   body?: unknown
   createdBy?: string
+}
+
+export interface SemanticFieldDictRequest {
+  standardKey: string
+  label: string
+  fieldType: string
+  category?: string
+  valueMap?: string
+  description?: string
+  isActive?: number
+}
+
+export interface SemanticFieldAliasRequest {
+  standardKey: string
+  alias: string
+  apiId: string
+  source?: string
+}
+
+export interface SemanticFieldValueMapRequest {
+  standardKey: string
+  apiId?: string
+  standardValue: string
+  rawValue: string
+  sortOrder?: number
 }
 
 export interface UiApiEndpointRoleBindRequest {

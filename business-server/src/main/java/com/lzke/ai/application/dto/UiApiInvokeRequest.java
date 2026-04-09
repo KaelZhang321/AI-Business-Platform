@@ -13,7 +13,7 @@ import java.util.Map;
 @Data
 public class UiApiInvokeRequest {
 
-    private String flowNum;
+    private String flowNum = System.currentTimeMillis() + "";
     private Map<String, Object> headers;
     private Map<String, Object> queryParams;
     private Object body;

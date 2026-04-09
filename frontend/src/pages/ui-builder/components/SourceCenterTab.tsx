@@ -23,7 +23,15 @@ import {
 } from 'antd'
 import type { TableColumnsType } from 'antd'
 
-import { formatDateTime, parseJsonInput, prettyJson } from '../helpers'
+import {
+  buildFieldOrchestration,
+  formatDateTime,
+  inferDefaultPaginationConfig,
+  mergePaginationConfigIntoFieldOrchestration,
+  parseFieldOrchestrationConfig,
+  parseJsonInput,
+  prettyJson,
+} from '../helpers'
 import type {
   UiApiEndpoint,
   UiApiEndpointRequest,
@@ -57,6 +65,11 @@ const operationSafetyOptions = [
   { label: 'Query', value: 'query' },
   { label: 'List', value: 'list' },
   { label: 'Mutation', value: 'mutation' },
+]
+
+const paginationRequestTargetOptions = [
+  { label: 'Query 参数', value: 'query' },
+  { label: 'Body 请求体', value: 'body' },
 ]
 
 interface SourceCenterTabProps {
@@ -101,6 +114,12 @@ interface SourceCenterTabProps {
   onRefreshEndpoints: () => Promise<void>
 }
 
+interface EndpointFormValues extends UiApiEndpointRequest {
+  paginationRequestTarget?: 'query' | 'body'
+  paginationCurrentKey?: string
+  paginationSizeKey?: string
+}
+
 export function SourceCenterTab({
   sources,
   endpoints,
@@ -138,7 +157,7 @@ export function SourceCenterTab({
   const [editingEndpoint, setEditingEndpoint] = useState<UiApiEndpoint | null>(null)
 
   const [sourceForm] = Form.useForm<UiApiSourceRequest>()
-  const [endpointForm] = Form.useForm<UiApiEndpointRequest>()
+  const [endpointForm] = Form.useForm<EndpointFormValues>()
   const [openApiForm] = Form.useForm<{ document?: string; documentUrl?: string }>()
   const [testForm] = Form.useForm<{ headers?: string; queryParams?: string; body?: string; createdBy?: string }>()
   const [messageApi, contextHolder] = message.useMessage()
@@ -238,11 +257,14 @@ export function SourceCenterTab({
     {
       title: '操作',
       key: 'actions',
-      width: 180,
+      width: 260,
       render: (_, record) => (
         <Space size="small">
           <Button size="small" onClick={() => openEndpointModal(record)}>
             编辑
+          </Button>
+          <Button size="small" onClick={() => openEndpointModal(record, true)}>
+            补全编排
           </Button>
           <Button size="small" onClick={() => openTestModal(record)}>
             联调
@@ -309,10 +331,23 @@ export function SourceCenterTab({
     })
   }
 
-  function openEndpointModal(endpoint?: UiApiEndpoint) {
+  function openEndpointModal(endpoint?: UiApiEndpoint, autofillFieldOrchestration = false) {
     if (!selectedSourceId && !endpoint?.sourceId) {
       return
     }
+    const defaultPaginationConfig = inferDefaultPaginationConfig(endpoint?.method ?? 'GET', endpoint?.operationSafety ?? 'query')
+    const initialFieldOrchestration = endpoint?.fieldOrchestration ?? {
+      fieldConfig: {
+        ignore: [],
+        passthrough: [],
+        groups: [],
+        render: [],
+        ...(defaultPaginationConfig ? { pagination: defaultPaginationConfig } : {}),
+      },
+    }
+    const orchestrationConfig = parseFieldOrchestrationConfig(initialFieldOrchestration)
+    const paginationConfig = orchestrationConfig.fieldConfig.pagination ?? defaultPaginationConfig
+
     setEditingEndpoint(endpoint ?? null)
     setEndpointModalOpen(true)
     endpointForm.setFieldsValue({
@@ -328,8 +363,21 @@ export function SourceCenterTab({
       responseSchema: prettyJson(endpoint?.responseSchema ?? '{}'),
       sampleRequest: prettyJson(endpoint?.sampleRequest ?? '{}'),
       sampleResponse: prettyJson(endpoint?.sampleResponse ?? '{}'),
+      fieldOrchestration: prettyJson(initialFieldOrchestration),
+      paginationRequestTarget: paginationConfig?.requestTarget,
+      paginationCurrentKey: paginationConfig?.currentKey,
+      paginationSizeKey: paginationConfig?.sizeKey,
       status: endpoint?.status ?? 'active',
     })
+
+    if (autofillFieldOrchestration) {
+      const generated = buildFieldOrchestration(
+        endpoint?.responseSchema,
+        endpoint?.sampleResponse,
+        initialFieldOrchestration,
+      )
+      endpointForm.setFieldValue('fieldOrchestration', prettyJson(generated))
+    }
   }
 
   function openTestModal(endpoint?: UiApiEndpoint) {
@@ -357,10 +405,43 @@ export function SourceCenterTab({
 
   async function submitEndpoint() {
     const values = await endpointForm.validateFields()
-    await onSaveEndpoint(editingEndpoint?.id, values)
+    const mergedFieldOrchestration = mergePaginationConfigIntoFieldOrchestration(values.fieldOrchestration, {
+      requestTarget: values.paginationRequestTarget,
+      currentKey: values.paginationCurrentKey,
+      sizeKey: values.paginationSizeKey,
+    })
+    await onSaveEndpoint(editingEndpoint?.id, {
+      ...values,
+      fieldOrchestration: prettyJson(mergedFieldOrchestration),
+    })
     setEndpointModalOpen(false)
     setEditingEndpoint(null)
     endpointForm.resetFields()
+  }
+
+  function handleGenerateFieldOrchestration() {
+    const values = endpointForm.getFieldsValue([
+      'responseSchema',
+      'sampleResponse',
+      'fieldOrchestration',
+      'method',
+      'operationSafety',
+      'paginationRequestTarget',
+      'paginationCurrentKey',
+      'paginationSizeKey',
+    ])
+    const defaultPaginationConfig = inferDefaultPaginationConfig(values.method, values.operationSafety)
+    const generated = buildFieldOrchestration(
+      values.responseSchema,
+      values.sampleResponse,
+      mergePaginationConfigIntoFieldOrchestration(values.fieldOrchestration, {
+        requestTarget: values.paginationRequestTarget ?? defaultPaginationConfig?.requestTarget,
+        currentKey: values.paginationCurrentKey ?? defaultPaginationConfig?.currentKey,
+        sizeKey: values.paginationSizeKey ?? defaultPaginationConfig?.sizeKey,
+      }),
+    )
+    endpointForm.setFieldValue('fieldOrchestration', prettyJson(generated))
+    messageApi.success('已根据响应参数补全字段编排 JSON')
   }
 
   async function submitImportOpenApi() {
@@ -651,7 +732,27 @@ export function SourceCenterTab({
         width={900}
         destroyOnHidden
       >
-        <Form layout="vertical" form={endpointForm}>
+        <Form
+          layout="vertical"
+          form={endpointForm}
+          onValuesChange={(changedValues, allValues) => {
+            if (!('method' in changedValues) && !('operationSafety' in changedValues)) {
+              return
+            }
+            if (allValues.paginationRequestTarget || allValues.paginationCurrentKey || allValues.paginationSizeKey) {
+              return
+            }
+            const inferred = inferDefaultPaginationConfig(allValues.method, allValues.operationSafety)
+            if (!inferred) {
+              return
+            }
+            endpointForm.setFieldsValue({
+              paginationRequestTarget: inferred.requestTarget,
+              paginationCurrentKey: inferred.currentKey,
+              paginationSizeKey: inferred.sizeKey,
+            })
+          }}
+        >
           <Alert
             type="info"
             showIcon
@@ -699,6 +800,24 @@ export function SourceCenterTab({
               </Form.Item>
             </Col>
           </Row>
+          <Divider orientation="left">分页映射</Divider>
+          <Row gutter={16}>
+            <Col span={8}>
+              <Form.Item name="paginationRequestTarget" label="分页参数位置">
+                <Select allowClear options={paginationRequestTargetOptions} placeholder="query / body" />
+              </Form.Item>
+            </Col>
+            <Col span={8}>
+              <Form.Item name="paginationCurrentKey" label="当前页字段">
+                <Input placeholder="current / pageNo" />
+              </Form.Item>
+            </Col>
+            <Col span={8}>
+              <Form.Item name="paginationSizeKey" label="每页条数字段">
+                <Input placeholder="size / pageSize" />
+              </Form.Item>
+            </Col>
+          </Row>
           <Form.Item name="requestContentType" label="请求类型">
             <Input placeholder="application/json" />
           </Form.Item>
@@ -726,6 +845,20 @@ export function SourceCenterTab({
               </Form.Item>
             </Col>
           </Row>
+          <Form.Item
+            name="fieldOrchestration"
+            label={(
+              <Space>
+                <span>字段编排(JSON)</span>
+                <Button size="small" type="link" onClick={handleGenerateFieldOrchestration}>
+                  根据响应参数补全
+                </Button>
+              </Space>
+            )}
+            extra="系统会根据当前响应 Schema 和样例响应，自动生成 ignore/passthrough/groups/render 结构。"
+          >
+            <Input.TextArea rows={10} />
+          </Form.Item>
           <Form.Item name="status" label="状态">
             <Select options={statusOptions} />
           </Form.Item>

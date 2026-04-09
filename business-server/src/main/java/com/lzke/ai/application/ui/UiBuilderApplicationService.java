@@ -11,9 +11,16 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.lzke.ai.application.dto.PageQuery;
+import com.lzke.ai.application.dto.SemanticFieldAliasRequest;
+import com.lzke.ai.application.dto.SemanticFieldDictRequest;
+import com.lzke.ai.application.dto.SemanticFieldValueMapRequest;
 import com.lzke.ai.application.dto.UiApiEndpointRequest;
 import com.lzke.ai.application.dto.UiApiEndpointRoleBindRequest;
 import com.lzke.ai.application.dto.UiApiInvokeRequest;
+import com.lzke.ai.application.dto.UiJsonRenderInvokeRequest;
+import com.lzke.ai.application.dto.UiJsonRenderInvokeResponse;
+import com.lzke.ai.application.dto.UiJsonRenderSubmitRequest;
+import com.lzke.ai.application.dto.UiJsonRenderSubmitResponse;
 import com.lzke.ai.application.dto.UiApiSourceRequest;
 import com.lzke.ai.application.dto.UiApiTestRequest;
 import com.lzke.ai.application.dto.UiApiTestResponse;
@@ -29,6 +36,9 @@ import com.lzke.ai.application.dto.UiPageRequest;
 import com.lzke.ai.application.dto.UiProjectRequest;
 import com.lzke.ai.domain.entity.UiApiEndpoint;
 import com.lzke.ai.domain.entity.UiApiEndpointRole;
+import com.lzke.ai.domain.entity.SemanticFieldAlias;
+import com.lzke.ai.domain.entity.SemanticFieldDict;
+import com.lzke.ai.domain.entity.SemanticFieldValueMap;
 import com.lzke.ai.domain.entity.UiApiFlowLog;
 import com.lzke.ai.domain.entity.UiApiSource;
 import com.lzke.ai.domain.entity.UiApiTag;
@@ -51,6 +61,9 @@ import com.lzke.ai.infrastructure.persistence.mapper.UiPageMapper;
 import com.lzke.ai.infrastructure.persistence.mapper.UiPageNodeMapper;
 import com.lzke.ai.infrastructure.persistence.mapper.UiProjectMapper;
 import com.lzke.ai.infrastructure.persistence.mapper.UiSpecVersionMapper;
+import com.lzke.ai.infrastructure.persistence.mapper.SemanticFieldAliasMapper;
+import com.lzke.ai.infrastructure.persistence.mapper.SemanticFieldDictMapper;
+import com.lzke.ai.infrastructure.persistence.mapper.SemanticFieldValueMapMapper;
 import com.lzke.ai.interfaces.dto.PageResult;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -94,17 +107,24 @@ public class UiBuilderApplicationService {
 
     private static final Set<String> OPEN_API_METHODS = Set.of("get", "post", "put", "delete", "patch");
     private static final Pattern ARRAY_SEGMENT_PATTERN = Pattern.compile("([A-Za-z0-9_\\-]+)\\[(\\d+)]");
+    private static final String EMPTY_FIELD_ORCHESTRATION = """
+            {"fieldConfig":{"ignore":[],"passthrough":[],"groups":[],"render":[]}}
+            """;
 
     private final ObjectMapper objectMapper;
     private final RestTemplate restTemplate;
     private final UiBuilderMetadataService uiBuilderMetadataService;
     private final UiHttpInvokeService uiHttpInvokeService;
+    private final UiJsonRenderTransformService uiJsonRenderTransformService;
     private final UiApiSourceMapper uiApiSourceMapper;
     private final UiApiTagMapper uiApiTagMapper;
     private final UiApiEndpointMapper uiApiEndpointMapper;
     private final UiApiEndpointRoleMapper uiApiEndpointRoleMapper;
     private final UiApiFlowLogMapper uiApiFlowLogMapper;
     private final UiApiTestLogMapper uiApiTestLogMapper;
+    private final SemanticFieldDictMapper semanticFieldDictMapper;
+    private final SemanticFieldAliasMapper semanticFieldAliasMapper;
+    private final SemanticFieldValueMapMapper semanticFieldValueMapMapper;
     private final UiProjectMapper uiProjectMapper;
     private final UiPageMapper uiPageMapper;
     private final UiPageNodeMapper uiPageNodeMapper;
@@ -163,6 +183,214 @@ public class UiBuilderApplicationService {
      */
     public PageResult<UiBuilderAuthTypeResponse> getAuthTypes(PageQuery query) {
         return paginateList(getAuthTypes(), query);
+    }
+
+    /**
+     * 分页查询语义字段字典。
+     *
+     * @param query 分页参数
+     * @return 分页后的语义字段列表
+     */
+    public PageResult<SemanticFieldDict> listSemanticFields(PageQuery query) {
+        Page<SemanticFieldDict> pageParam = buildPage(query);
+        Page<SemanticFieldDict> result = semanticFieldDictMapper.selectPage(pageParam, new LambdaQueryWrapper<SemanticFieldDict>()
+                .orderByDesc(SemanticFieldDict::getUpdatedAt)
+                .orderByDesc(SemanticFieldDict::getCreatedAt));
+        return PageResult.of(result.getRecords(), result.getTotal(), query.getPage(), query.getSize());
+    }
+
+    /**
+     * 创建语义字段字典。
+     *
+     * @param request 语义字段请求
+     * @return 持久化后的字典记录
+     */
+    @Transactional
+    public SemanticFieldDict createSemanticField(SemanticFieldDictRequest request) {
+        validateSemanticFieldDictRequest(request, false);
+        ensureSemanticFieldStandardKeyUnique(request.getStandardKey(), null);
+
+        SemanticFieldDict dict = new SemanticFieldDict();
+        applySemanticFieldDictRequest(dict, request);
+        semanticFieldDictMapper.insert(dict);
+        return dict;
+    }
+
+    /**
+     * 更新语义字段字典。
+     *
+     * @param dictId 主键
+     * @param request 更新请求
+     * @return 更新后的字典记录
+     */
+    @Transactional
+    public SemanticFieldDict updateSemanticField(Long dictId, SemanticFieldDictRequest request) {
+        validateSemanticFieldDictRequest(request, true);
+        SemanticFieldDict dict = requireSemanticFieldDict(dictId);
+        ensureSemanticFieldStandardKeyUnique(request.getStandardKey(), dictId);
+
+        String originalStandardKey = dict.getStandardKey();
+        applySemanticFieldDictRequest(dict, request);
+        semanticFieldDictMapper.updateById(dict);
+
+        if (!Objects.equals(originalStandardKey, dict.getStandardKey())) {
+            semanticFieldAliasMapper.update(null, new LambdaUpdateWrapper<SemanticFieldAlias>()
+                    .eq(SemanticFieldAlias::getStandardKey, originalStandardKey)
+                    .set(SemanticFieldAlias::getStandardKey, dict.getStandardKey()));
+            semanticFieldValueMapMapper.update(null, new LambdaUpdateWrapper<SemanticFieldValueMap>()
+                    .eq(SemanticFieldValueMap::getStandardKey, originalStandardKey)
+                    .set(SemanticFieldValueMap::getStandardKey, dict.getStandardKey()));
+        }
+        return dict;
+    }
+
+    /**
+     * 删除语义字段字典及其下游别名和值映射。
+     *
+     * @param dictId 主键
+     */
+    @Transactional
+    public void deleteSemanticField(Long dictId) {
+        SemanticFieldDict dict = requireSemanticFieldDict(dictId);
+        semanticFieldAliasMapper.delete(new LambdaQueryWrapper<SemanticFieldAlias>()
+                .eq(SemanticFieldAlias::getStandardKey, dict.getStandardKey()));
+        semanticFieldValueMapMapper.delete(new LambdaQueryWrapper<SemanticFieldValueMap>()
+                .eq(SemanticFieldValueMap::getStandardKey, dict.getStandardKey()));
+        semanticFieldDictMapper.deleteById(dictId);
+    }
+
+    /**
+     * 分页查询某个标准字段下的别名映射。
+     *
+     * @param standardKey 标准字段 key
+     * @param query 分页参数
+     * @return 分页后的别名列表
+     */
+    public PageResult<SemanticFieldAlias> listSemanticFieldAliases(String standardKey, PageQuery query) {
+        requireSemanticFieldDict(standardKey);
+        Page<SemanticFieldAlias> pageParam = buildPage(query);
+        Page<SemanticFieldAlias> result = semanticFieldAliasMapper.selectPage(pageParam, new LambdaQueryWrapper<SemanticFieldAlias>()
+                .eq(SemanticFieldAlias::getStandardKey, standardKey)
+                .orderByAsc(SemanticFieldAlias::getApiId)
+                .orderByAsc(SemanticFieldAlias::getAlias)
+                .orderByDesc(SemanticFieldAlias::getId));
+        return PageResult.of(result.getRecords(), result.getTotal(), query.getPage(), query.getSize());
+    }
+
+    /**
+     * 创建字段别名映射。
+     *
+     * @param request 别名请求
+     * @return 持久化后的别名记录
+     */
+    @Transactional
+    public SemanticFieldAlias createSemanticFieldAlias(SemanticFieldAliasRequest request) {
+        validateSemanticFieldAliasRequest(request, false);
+        requireSemanticFieldDict(request.getStandardKey());
+        requireEndpoint(request.getApiId());
+
+        SemanticFieldAlias alias = new SemanticFieldAlias();
+        applySemanticFieldAliasRequest(alias, request);
+        semanticFieldAliasMapper.insert(alias);
+        return alias;
+    }
+
+    /**
+     * 更新字段别名映射。
+     *
+     * @param aliasId 主键
+     * @param request 更新请求
+     * @return 更新后的别名记录
+     */
+    @Transactional
+    public SemanticFieldAlias updateSemanticFieldAlias(Long aliasId, SemanticFieldAliasRequest request) {
+        validateSemanticFieldAliasRequest(request, true);
+        SemanticFieldAlias alias = requireSemanticFieldAlias(aliasId);
+        requireSemanticFieldDict(request.getStandardKey());
+        requireEndpoint(request.getApiId());
+        applySemanticFieldAliasRequest(alias, request);
+        semanticFieldAliasMapper.updateById(alias);
+        return alias;
+    }
+
+    /**
+     * 删除字段别名映射。
+     *
+     * @param aliasId 主键
+     */
+    @Transactional
+    public void deleteSemanticFieldAlias(Long aliasId) {
+        requireSemanticFieldAlias(aliasId);
+        semanticFieldAliasMapper.deleteById(aliasId);
+    }
+
+    /**
+     * 分页查询某个标准字段下的值映射。
+     *
+     * @param standardKey 标准字段 key
+     * @param query 分页参数
+     * @return 分页后的值映射列表
+     */
+    public PageResult<SemanticFieldValueMap> listSemanticFieldValueMaps(String standardKey, PageQuery query) {
+        requireSemanticFieldDict(standardKey);
+        Page<SemanticFieldValueMap> pageParam = buildPage(query);
+        Page<SemanticFieldValueMap> result = semanticFieldValueMapMapper.selectPage(pageParam, new LambdaQueryWrapper<SemanticFieldValueMap>()
+                .eq(SemanticFieldValueMap::getStandardKey, standardKey)
+                .orderByAsc(SemanticFieldValueMap::getApiId)
+                .orderByAsc(SemanticFieldValueMap::getSortOrder)
+                .orderByDesc(SemanticFieldValueMap::getId));
+        return PageResult.of(result.getRecords(), result.getTotal(), query.getPage(), query.getSize());
+    }
+
+    /**
+     * 创建字段值映射。
+     *
+     * @param request 值映射请求
+     * @return 持久化后的值映射记录
+     */
+    @Transactional
+    public SemanticFieldValueMap createSemanticFieldValueMap(SemanticFieldValueMapRequest request) {
+        validateSemanticFieldValueMapRequest(request, false);
+        requireSemanticFieldDict(request.getStandardKey());
+        if (StringUtils.hasText(request.getApiId())) {
+            requireEndpoint(request.getApiId());
+        }
+
+        SemanticFieldValueMap valueMap = new SemanticFieldValueMap();
+        applySemanticFieldValueMapRequest(valueMap, request);
+        semanticFieldValueMapMapper.insert(valueMap);
+        return valueMap;
+    }
+
+    /**
+     * 更新字段值映射。
+     *
+     * @param valueMapId 主键
+     * @param request 更新请求
+     * @return 更新后的值映射记录
+     */
+    @Transactional
+    public SemanticFieldValueMap updateSemanticFieldValueMap(Long valueMapId, SemanticFieldValueMapRequest request) {
+        validateSemanticFieldValueMapRequest(request, true);
+        SemanticFieldValueMap valueMap = requireSemanticFieldValueMap(valueMapId);
+        requireSemanticFieldDict(request.getStandardKey());
+        if (StringUtils.hasText(request.getApiId())) {
+            requireEndpoint(request.getApiId());
+        }
+        applySemanticFieldValueMapRequest(valueMap, request);
+        semanticFieldValueMapMapper.updateById(valueMap);
+        return valueMap;
+    }
+
+    /**
+     * 删除字段值映射。
+     *
+     * @param valueMapId 主键
+     */
+    @Transactional
+    public void deleteSemanticFieldValueMap(Long valueMapId) {
+        requireSemanticFieldValueMap(valueMapId);
+        semanticFieldValueMapMapper.deleteById(valueMapId);
     }
 
     /**
@@ -559,6 +787,7 @@ public class UiBuilderApplicationService {
                 endpoint.setResponseSchema(toJsonString(extractResponseSchema(rootNode, operationNode)));
                 endpoint.setSampleRequest(toJsonString(extractRequestExample(rootNode, operationNode)));
                 endpoint.setSampleResponse(toJsonString(extractResponseExample(rootNode, operationNode)));
+                endpoint.setFieldOrchestration(defaultIfBlank(endpoint.getFieldOrchestration(), EMPTY_FIELD_ORCHESTRATION));
                 endpoint.setStatus("active");
 
                 if (StringUtils.hasText(endpoint.getId())) {
@@ -655,6 +884,39 @@ public class UiBuilderApplicationService {
             throw new BusinessException(ErrorCode.BAD_REQUEST, defaultIfBlank(result.errorMessage(), "接口调用失败"));
         }
         return parsePossiblyJson((String) result.responseBody());
+    }
+
+    /**
+     * 按接口定义先发起真实调用，再把结果转换成 json-render 返回。
+     *
+     * <p>这个接口面向“运行时直接渲染”的场景：前端不需要自己拆成
+     * “先调接口，再调转换服务”两步，而是一次请求拿到：
+     *
+     * <ul>
+     *     <li>接口真实响应值</li>
+     *     <li>基于该响应值生成的 json-render</li>
+     * </ul>
+     *
+     * @param endpointId 接口定义 ID
+     * @param request 运行时渲染请求
+     * @return 聚合后的渲染结果
+     */
+    public UiJsonRenderInvokeResponse invokeEndpointAsJsonRender(String endpointId, UiJsonRenderInvokeRequest request) {
+        return uiJsonRenderTransformService.invokeAndTransformResponse(
+                endpointId,
+                request != null ? request.getRoleId() : null,
+                request
+        );
+    }
+
+    /**
+     * 按标准语义字段值驱动多个接口完成表单提交。
+     *
+     * @param request 表单提交请求
+     * @return 多接口执行结果
+     */
+    public UiJsonRenderSubmitResponse submitJsonRenderForm(UiJsonRenderSubmitRequest request) {
+        return uiJsonRenderTransformService.submitSemanticForm(request);
     }
 
     /**
@@ -1216,6 +1478,51 @@ public class UiBuilderApplicationService {
         }
     }
 
+    private void validateSemanticFieldDictRequest(SemanticFieldDictRequest request, boolean allowPartial) {
+        if (request == null) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "语义字段字典请求不能为空");
+        }
+        if (!allowPartial || StringUtils.hasText(request.getStandardKey())) {
+            requireText(request.getStandardKey(), "standardKey 不能为空");
+        }
+        if (!allowPartial || StringUtils.hasText(request.getLabel())) {
+            requireText(request.getLabel(), "label 不能为空");
+        }
+        if (!allowPartial || StringUtils.hasText(request.getFieldType())) {
+            requireText(request.getFieldType(), "fieldType 不能为空");
+        }
+    }
+
+    private void validateSemanticFieldAliasRequest(SemanticFieldAliasRequest request, boolean allowPartial) {
+        if (request == null) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "语义字段别名请求不能为空");
+        }
+        if (!allowPartial || StringUtils.hasText(request.getStandardKey())) {
+            requireText(request.getStandardKey(), "standardKey 不能为空");
+        }
+        if (!allowPartial || StringUtils.hasText(request.getAlias())) {
+            requireText(request.getAlias(), "alias 不能为空");
+        }
+        if (!allowPartial || StringUtils.hasText(request.getApiId())) {
+            requireText(request.getApiId(), "apiId 不能为空");
+        }
+    }
+
+    private void validateSemanticFieldValueMapRequest(SemanticFieldValueMapRequest request, boolean allowPartial) {
+        if (request == null) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "语义字段值映射请求不能为空");
+        }
+        if (!allowPartial || StringUtils.hasText(request.getStandardKey())) {
+            requireText(request.getStandardKey(), "standardKey 不能为空");
+        }
+        if (!allowPartial || StringUtils.hasText(request.getStandardValue())) {
+            requireText(request.getStandardValue(), "standardValue 不能为空");
+        }
+        if (!allowPartial || StringUtils.hasText(request.getRawValue())) {
+            requireText(request.getRawValue(), "rawValue 不能为空");
+        }
+    }
+
     /**
      * 校验项目请求。
      *
@@ -1331,6 +1638,7 @@ public class UiBuilderApplicationService {
         endpoint.setResponseSchema(defaultIfBlank(request.getResponseSchema(), "{}"));
         endpoint.setSampleRequest(defaultIfBlank(request.getSampleRequest(), "{}"));
         endpoint.setSampleResponse(defaultIfBlank(request.getSampleResponse(), "{}"));
+        endpoint.setFieldOrchestration(defaultIfBlank(request.getFieldOrchestration(), EMPTY_FIELD_ORCHESTRATION));
         endpoint.setStatus(defaultIfBlank(request.getStatus(), "active"));
     }
 
@@ -1347,6 +1655,31 @@ public class UiBuilderApplicationService {
         project.setCategory(request.getCategory());
         project.setStatus(defaultIfBlank(request.getStatus(), "draft"));
         project.setCreatedBy(request.getCreatedBy());
+    }
+
+    private void applySemanticFieldDictRequest(SemanticFieldDict dict, SemanticFieldDictRequest request) {
+        dict.setStandardKey(trimToNull(request.getStandardKey()));
+        dict.setLabel(trimToNull(request.getLabel()));
+        dict.setFieldType(trimToNull(request.getFieldType()));
+        dict.setCategory(trimToNull(request.getCategory()));
+        dict.setValueMap(defaultIfBlank(trimToNull(request.getValueMap()), "{}"));
+        dict.setDescription(trimToNull(request.getDescription()));
+        dict.setIsActive(request.getIsActive() != null ? request.getIsActive() : 1);
+    }
+
+    private void applySemanticFieldAliasRequest(SemanticFieldAlias alias, SemanticFieldAliasRequest request) {
+        alias.setStandardKey(trimToNull(request.getStandardKey()));
+        alias.setAlias(trimToNull(request.getAlias()));
+        alias.setApiId(trimToNull(request.getApiId()));
+        alias.setSource(defaultIfBlank(trimToNull(request.getSource()), "manual"));
+    }
+
+    private void applySemanticFieldValueMapRequest(SemanticFieldValueMap valueMap, SemanticFieldValueMapRequest request) {
+        valueMap.setStandardKey(trimToNull(request.getStandardKey()));
+        valueMap.setApiId(trimToNull(request.getApiId()));
+        valueMap.setStandardValue(trimToNull(request.getStandardValue()));
+        valueMap.setRawValue(trimToNull(request.getRawValue()));
+        valueMap.setSortOrder(request.getSortOrder() != null ? request.getSortOrder() : 0);
     }
 
     /**
@@ -1874,6 +2207,40 @@ public class UiBuilderApplicationService {
         return relation;
     }
 
+    private SemanticFieldDict requireSemanticFieldDict(Long dictId) {
+        SemanticFieldDict dict = semanticFieldDictMapper.selectById(dictId);
+        if (dict == null) {
+            throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "语义字段字典不存在: " + dictId);
+        }
+        return dict;
+    }
+
+    private SemanticFieldDict requireSemanticFieldDict(String standardKey) {
+        SemanticFieldDict dict = semanticFieldDictMapper.selectOne(new LambdaQueryWrapper<SemanticFieldDict>()
+                .eq(SemanticFieldDict::getStandardKey, standardKey)
+                .last("limit 1"));
+        if (dict == null) {
+            throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "语义字段字典不存在: " + standardKey);
+        }
+        return dict;
+    }
+
+    private SemanticFieldAlias requireSemanticFieldAlias(Long aliasId) {
+        SemanticFieldAlias alias = semanticFieldAliasMapper.selectById(aliasId);
+        if (alias == null) {
+            throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "语义字段别名不存在: " + aliasId);
+        }
+        return alias;
+    }
+
+    private SemanticFieldValueMap requireSemanticFieldValueMap(Long valueMapId) {
+        SemanticFieldValueMap valueMap = semanticFieldValueMapMapper.selectById(valueMapId);
+        if (valueMap == null) {
+            throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "语义字段值映射不存在: " + valueMapId);
+        }
+        return valueMap;
+    }
+
     private UiApiTag requireTag(String tagId) {
         UiApiTag tag = uiApiTagMapper.selectById(tagId);
         if (tag == null) {
@@ -1930,6 +2297,17 @@ public class UiBuilderApplicationService {
         }
         if (uiApiSourceMapper.selectCount(wrapper) > 0) {
             throw new BusinessException(ErrorCode.DUPLICATE_ENTRY, "接口源编码已存在: " + code);
+        }
+    }
+
+    private void ensureSemanticFieldStandardKeyUnique(String standardKey, Long excludeId) {
+        QueryWrapper<SemanticFieldDict> wrapper = new QueryWrapper<>();
+        wrapper.eq("standard_key", standardKey);
+        if (excludeId != null) {
+            wrapper.ne("id", excludeId);
+        }
+        if (semanticFieldDictMapper.selectCount(wrapper) > 0) {
+            throw new BusinessException(ErrorCode.DUPLICATE_ENTRY, "standardKey 已存在: " + standardKey);
         }
     }
 

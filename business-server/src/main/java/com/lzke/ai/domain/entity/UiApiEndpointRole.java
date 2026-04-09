@@ -29,6 +29,7 @@ public class UiApiEndpointRole {
     private String roleId;
     private String roleCode;
     private String roleName;
+    private String fieldOrchestration;
     private String createdBy;
 
     @TableField(exist = false)
