@@ -485,7 +485,7 @@ async def test_workflow_mutation_single_candidate_returns_form_response() -> Non
     assert response.ui_runtime is not None
     assert response.ui_runtime.form.enabled is True
     assert response.ui_runtime.form.api_id == "employee_update"
-    assert response.ui_runtime.form.route_url == "/api/v1/employees/update"
+    assert response.ui_runtime.form.route_url.endswith("/ui-builder/runtime/endpoints/employee_update/invoke")
     assert response.ui_runtime.form.mode == "edit"
     assert response.ui_runtime.form.submit.confirm_required is True
     assert response.ui_runtime.form.submit.business_intent == "saveToServer"
@@ -584,7 +584,7 @@ async def test_workflow_multi_candidate_mutation_validate_plan_intercept() -> No
     assert response.ui_runtime is not None
     assert response.ui_runtime.form.enabled is True
     assert response.ui_runtime.form.api_id == "employee_update"
-    assert response.ui_runtime.form.route_url == "/api/v1/employees/update"
+    assert response.ui_runtime.form.route_url.endswith("/ui-builder/runtime/endpoints/employee_update/invoke")
     assert response.ui_runtime.form.submit.confirm_required is True
 
     # execution_plan 包含 mutation 步骤
@@ -665,6 +665,6 @@ async def test_workflow_multi_candidate_write_intent_bypasses_planner_and_return
     assert response.ui_runtime is not None
     assert response.ui_runtime.form.enabled is True
     assert response.ui_runtime.form.api_id == "employee_update"
-    assert response.ui_runtime.form.route_url == "/api/v1/employees/update"
+    assert response.ui_runtime.form.route_url.endswith("/ui-builder/runtime/endpoints/employee_update/invoke")
     assert response.execution_plan is not None
     assert response.execution_plan.steps[0].api_id == "employee_update"

@@ -568,7 +568,7 @@ class ApiQueryFormRuntime(BaseModel):
     form_code: str | None = Field(None, description="稳定的表单场景编码")
     mode: Literal["create", "edit", "confirm"] | None = Field(None, description="表单模式")
     api_id: str | None = Field(None, description="表单提交使用的接口 ID")
-    route_url: str | None = Field(None, description="建议调用的业务接口路径；无具体接口上下文时为空")
+    route_url: str | None = Field(None, description="建议调用的 runtime invoke URL；无具体接口上下文时为空")
     ui_action: str | None = Field(None, description="推荐的前端动作编码")
     state_path: str | None = Field(None, description="表单根状态路径")
     fields: list[ApiQueryFormFieldRuntime] = Field(default_factory=list, description="表单字段运行时契约")

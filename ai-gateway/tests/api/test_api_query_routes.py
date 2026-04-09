@@ -1034,7 +1034,7 @@ def test_api_query_blocks_mutation_entry(monkeypatch) -> None:
     assert body["error"] is None
     assert body["ui_runtime"]["form"]["enabled"] is True
     assert body["ui_runtime"]["form"]["api_id"] == "customer_update"
-    assert body["ui_runtime"]["form"]["route_url"] == "/api/v1/customers/update"
+    assert body["ui_runtime"]["form"]["route_url"].endswith("/ui-builder/runtime/endpoints/customer_update/invoke")
     assert body["ui_runtime"]["form"]["mode"] == "edit"
     assert body["ui_runtime"]["form"]["submit"]["confirm_required"] is True
     # execution_plan 包含 mutation 接口步骤，供前端确认后直接调用
@@ -1248,7 +1248,7 @@ def test_api_query_enriches_form_runtime_from_generated_spec(monkeypatch) -> Non
     body = response.json()
     assert body["ui_runtime"]["form"]["enabled"] is True
     assert body["ui_runtime"]["form"]["api_id"] == "customer_update"
-    assert body["ui_runtime"]["form"]["route_url"] == "/api/v1/customers/update"
+    assert body["ui_runtime"]["form"]["route_url"].endswith("/ui-builder/runtime/endpoints/customer_update/invoke")
     assert body["ui_runtime"]["form"]["mode"] == "edit"
     assert body["ui_runtime"]["form"]["state_path"] == "/form"
     assert body["ui_runtime"]["form"]["submit"]["business_intent"] == "saveToServer"

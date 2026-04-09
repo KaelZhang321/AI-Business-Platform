@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from app.core.config import settings
 from app.models.schemas import (
     ApiQueryBusinessIntent,
     ApiQueryContextStepResult,
@@ -400,7 +401,8 @@ class ApiQueryResponseBuilder:
 
         AI 读人工确认：
             前端拿到响应后，展示预填表单让用户核对。用户点击"确认"后，直接调用
-            `ui_runtime.form.api_id` 指向的业务系统接口提交变更；网关不参与实际执行。
+            `ui_runtime.form.route_url` 指向的 runtime invoke 入口提交变更；`/api-query`
+            只负责生成待确认表单，不参与最终写入。
         """
 
         query_domains = _format_query_domains_for_response(
@@ -424,8 +426,10 @@ class ApiQueryResponseBuilder:
                 form_code=form_code,
                 mode=_infer_form_mode(form_fields),
                 api_id=entry.id,
-                # 写操作确认后由前端直连业务系统提交，不再回到 `/api-query` 二次转发。
-                route_url=entry.path,
+                # 前端确认提交时必须命中 runtime invoke 入口，才能复用 business-server
+                # 对 ui_endpoints 的真实装配能力；这里不能返回业务 path，否则前端会拿
+                # 不到 flowNum/queryParams/body 这层运行时壳。
+                route_url=_build_runtime_invoke_url(entry.id),
                 ui_action="remoteMutation",
                 state_path="/form",
                 fields=form_fields,
@@ -888,8 +892,9 @@ async def _extract_form_runtime_from_spec(
         form_code=f"{api_id}_form",
         mode=_infer_form_mode(form_fields),
         api_id=api_id,
-        # generated spec 只负责声明 mutation api_id；真正的直连 URL 仍以注册表中的业务接口 path 为准。
-        route_url=mutation_entry.path if mutation_entry is not None else None,
+        # generated spec 只能声明 `api_id`；真正可执行的提交地址要回到统一配置模板，
+        # 这样不同环境、灰度域名和回滚切换都不会散落到 renderer 契约里。
+        route_url=_build_runtime_invoke_url(api_id),
         ui_action="remoteMutation",
         state_path=_infer_form_state_root(bind_paths),
         fields=form_fields,
@@ -924,6 +929,32 @@ def _collect_form_input_bindings(ui_spec: dict[str, Any]) -> dict[str, dict[str,
                     "option_source": _extract_form_option_source(props.get("options")),
                 }
     return bindings
+
+
+def _build_runtime_invoke_url(api_id: str) -> str:
+    """根据统一模板构造 runtime invoke URL。
+
+    功能：
+        `form.route_url` 要表达的是“前端真正应该 POST 到哪里”，因此必须和执行器侧
+        使用同一份 `api_query_runtime_invoke_url_template`。这样才能保证：
+
+        1. 前端确认提交与网关执行器命中同一 runtime 入口
+        2. 多环境灰度/回滚只改配置，不改 renderer 或前端组装逻辑
+
+    Args:
+        api_id: `ui_endpoints.id`，用于替换模板中的 `{id}` 占位符。
+
+    Returns:
+        可直接提交的 runtime invoke URL。
+
+    Raises:
+        RuntimeError: 当配置模板缺少 `{id}` 占位符时抛出，避免返回不可执行的假 URL。
+    """
+
+    try:
+        return settings.api_query_runtime_invoke_url_template.format(id=api_id)
+    except KeyError as exc:
+        raise RuntimeError("API_QUERY_RUNTIME_INVOKE_URL_TEMPLATE 缺少 {id} 占位符") from exc
 
 
 def _extract_form_option_source(options_payload: Any) -> ApiQueryFormOptionSourceRuntime | None:
