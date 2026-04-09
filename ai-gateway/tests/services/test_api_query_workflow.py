@@ -489,6 +489,9 @@ async def test_workflow_mutation_single_candidate_returns_form_response() -> Non
     assert response.ui_runtime.form.mode == "edit"
     assert response.ui_runtime.form.submit.confirm_required is True
     assert response.ui_runtime.form.submit.business_intent == "saveToServer"
+    assert response.ui_spec is not None
+    assert response.ui_spec["state"]["form"]["employeeId"] == "8058"
+    assert response.ui_spec["state"]["form"]["email"] == "437462373467289@qq.com"
 
     # execution_plan 携带 mutation 步骤，供前端确认后直接调用业务系统
     assert response.execution_plan is not None

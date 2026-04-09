@@ -294,6 +294,10 @@ def test_api_query_renders_mutation_form_instead_of_skipped_notice(monkeypatch) 
     assert body["ui_runtime"]["form"]["enabled"] is True
     form = _get_child_by_type(body["ui_spec"], "PlannerForm")
     assert form["props"]["formCode"] == "employee_update_form"
+    assert body["ui_spec"]["state"]["form"]["id"] == "8058"
+    assert body["ui_spec"]["state"]["form"]["email"] == "437462373467289@qq.com"
+    metric = body["ui_spec"]["elements"]["form_field_1"]
+    assert metric["props"]["value"] == "8058"
     root_children = _get_root_children(body["ui_spec"])
     assert all(child["type"] != "PlannerNotice" for child in root_children)
 

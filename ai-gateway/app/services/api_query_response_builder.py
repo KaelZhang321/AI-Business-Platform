@@ -449,7 +449,10 @@ class ApiQueryResponseBuilder:
         )
 
         # 生成预填表单 UI Spec
-        form_state = {field.state_path.lstrip("/"): pre_fill_params.get(field.submit_key) for field in form_fields}
+        form_state = _build_prefilled_form_state(
+            fields=form_fields,
+            pre_fill_params=pre_fill_params,
+        )
         ui_build_result = await _generate_ui_spec_result(
             self._dynamic_ui,
             intent="mutation_form",
@@ -1049,6 +1052,49 @@ def _read_state_value(state: Any, state_path: str) -> Any:
             return None
         current = current[segment]
     return current
+
+
+def _write_state_value(state: dict[str, Any], state_path: str, value: Any) -> None:
+    """按 `/form/email` 形式把值写入嵌套 state。"""
+
+    if not isinstance(state, dict) or not state_path.startswith("/"):
+        return
+
+    current: dict[str, Any] = state
+    segments = [item for item in state_path.split("/") if item]
+    if not segments:
+        return
+
+    for segment in segments[:-1]:
+        child = current.get(segment)
+        if not isinstance(child, dict):
+            child = {}
+            current[segment] = child
+        current = child
+    current[segments[-1]] = value
+
+
+def _build_prefilled_form_state(
+    *,
+    fields: list[ApiQueryFormFieldRuntime],
+    pre_fill_params: dict[str, Any],
+) -> dict[str, Any]:
+    """根据字段绑定路径和提取结果构造表单初始 state。
+
+    功能：
+        json-render 读取初始值依赖的是嵌套 `state`，而不是 `execution_plan.params`。
+        这里统一把 `submit_key -> state_path` 映射折叠成真实的 JSON 结构，避免再把
+        `/form/email` 误写成 `{\"form/email\": ...}` 这种扁平键。
+    """
+
+    state: dict[str, Any] = {}
+    for field in fields:
+        _write_state_value(
+            state,
+            field.state_path,
+            pre_fill_params.get(field.submit_key),
+        )
+    return state
 
 
 def _infer_form_state_root(bind_paths: list[str]) -> str | None:
