@@ -18,6 +18,10 @@ import com.lzke.ai.application.dto.SemanticFieldValueMapRequest;
 import com.lzke.ai.application.dto.UiApiEndpointRequest;
 import com.lzke.ai.application.dto.UiApiEndpointRoleBindRequest;
 import com.lzke.ai.application.dto.UiApiInvokeRequest;
+import com.lzke.ai.application.dto.UiJsonRenderInvokeRequest;
+import com.lzke.ai.application.dto.UiJsonRenderInvokeResponse;
+import com.lzke.ai.application.dto.UiJsonRenderSubmitRequest;
+import com.lzke.ai.application.dto.UiJsonRenderSubmitResponse;
 import com.lzke.ai.application.dto.UiApiSourceRequest;
 import com.lzke.ai.application.dto.UiApiTestRequest;
 import com.lzke.ai.application.dto.UiApiTestResponse;
@@ -372,6 +376,38 @@ public class UiBuilderController {
     		request.setCreatedBy(userId+"");
     	}
         return ApiResponse.ok(uiBuilderApplicationService.invokeEndpoint(endpointId, request));
+    }
+
+    /**
+     * 按接口定义发起真实调用，并把接口响应和 json-render 一起返回。
+     */
+    @PostMapping("/runtime/endpoints/{endpointId}/render")
+    public ApiResponse<UiJsonRenderInvokeResponse> invokeEndpointAsJsonRender(
+            @PathVariable String endpointId,
+            @RequestBody(required = false) UiJsonRenderInvokeRequest request
+    ) {
+        Long userId = AuthUtil.getUserId();
+        if (request == null) {
+            request = new UiJsonRenderInvokeRequest();
+        }
+        if (userId != null) {
+            request.setCreatedBy(String.valueOf(userId));
+        }
+        return ApiResponse.ok(uiBuilderApplicationService.invokeEndpointAsJsonRender(endpointId, request));
+    }
+
+    /**
+     * 按标准语义字段值驱动多个接口完成表单提交。
+     */
+    @PostMapping("/runtime/forms/submit")
+    public ApiResponse<UiJsonRenderSubmitResponse> submitJsonRenderForm(
+            @RequestBody UiJsonRenderSubmitRequest request
+    ) {
+        Long userId = AuthUtil.getUserId();
+        if (userId != null && !org.springframework.util.StringUtils.hasText(request.getCreatedBy())) {
+            request.setCreatedBy(String.valueOf(userId));
+        }
+        return ApiResponse.ok(uiBuilderApplicationService.submitJsonRenderForm(request));
     }
 
     /**

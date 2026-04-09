@@ -17,6 +17,10 @@ import com.lzke.ai.application.dto.SemanticFieldValueMapRequest;
 import com.lzke.ai.application.dto.UiApiEndpointRequest;
 import com.lzke.ai.application.dto.UiApiEndpointRoleBindRequest;
 import com.lzke.ai.application.dto.UiApiInvokeRequest;
+import com.lzke.ai.application.dto.UiJsonRenderInvokeRequest;
+import com.lzke.ai.application.dto.UiJsonRenderInvokeResponse;
+import com.lzke.ai.application.dto.UiJsonRenderSubmitRequest;
+import com.lzke.ai.application.dto.UiJsonRenderSubmitResponse;
 import com.lzke.ai.application.dto.UiApiSourceRequest;
 import com.lzke.ai.application.dto.UiApiTestRequest;
 import com.lzke.ai.application.dto.UiApiTestResponse;
@@ -111,6 +115,7 @@ public class UiBuilderApplicationService {
     private final RestTemplate restTemplate;
     private final UiBuilderMetadataService uiBuilderMetadataService;
     private final UiHttpInvokeService uiHttpInvokeService;
+    private final UiJsonRenderTransformService uiJsonRenderTransformService;
     private final UiApiSourceMapper uiApiSourceMapper;
     private final UiApiTagMapper uiApiTagMapper;
     private final UiApiEndpointMapper uiApiEndpointMapper;
@@ -879,6 +884,39 @@ public class UiBuilderApplicationService {
             throw new BusinessException(ErrorCode.BAD_REQUEST, defaultIfBlank(result.errorMessage(), "接口调用失败"));
         }
         return parsePossiblyJson((String) result.responseBody());
+    }
+
+    /**
+     * 按接口定义先发起真实调用，再把结果转换成 json-render 返回。
+     *
+     * <p>这个接口面向“运行时直接渲染”的场景：前端不需要自己拆成
+     * “先调接口，再调转换服务”两步，而是一次请求拿到：
+     *
+     * <ul>
+     *     <li>接口真实响应值</li>
+     *     <li>基于该响应值生成的 json-render</li>
+     * </ul>
+     *
+     * @param endpointId 接口定义 ID
+     * @param request 运行时渲染请求
+     * @return 聚合后的渲染结果
+     */
+    public UiJsonRenderInvokeResponse invokeEndpointAsJsonRender(String endpointId, UiJsonRenderInvokeRequest request) {
+        return uiJsonRenderTransformService.invokeAndTransformResponse(
+                endpointId,
+                request != null ? request.getRoleId() : null,
+                request
+        );
+    }
+
+    /**
+     * 按标准语义字段值驱动多个接口完成表单提交。
+     *
+     * @param request 表单提交请求
+     * @return 多接口执行结果
+     */
+    public UiJsonRenderSubmitResponse submitJsonRenderForm(UiJsonRenderSubmitRequest request) {
+        return uiJsonRenderTransformService.submitSemanticForm(request);
     }
 
     /**
