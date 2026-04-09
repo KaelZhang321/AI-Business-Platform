@@ -74,6 +74,7 @@ async def test_base_workflow_streams_normalized_event_envelopes() -> None:
     assert events
     assert any(event["node"] == "increment" for event in events)
     assert all(event["workflow"] == "dummy_workflow" for event in events)
+    assert all(event["trace_id"] == "trace-001" for event in events)
     assert all(event["trace_context"]["trace_id"] == "trace-001" for event in events)
     assert all(event["phase"] == "wave1" for event in events)
 
@@ -98,6 +99,10 @@ def test_graph_event_envelope_normalizes_non_mapping_payload() -> None:
     assert envelope == {
         "workflow": "dummy_workflow",
         "phase": "phase-test",
+        "trace_id": "trace-001",
+        "interaction_id": None,
+        "conversation_id": None,
+        "execution_status": None,
         "event": "on_graph_end",
         "node": "dummy_workflow",
         "trace_context": {

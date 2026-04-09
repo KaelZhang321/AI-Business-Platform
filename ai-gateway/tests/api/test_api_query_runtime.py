@@ -583,3 +583,86 @@ def test_api_query_renders_partial_success_with_notice_and_table(monkeypatch) ->
     assert notice["props"]["tone"] == "info"
     assert "部分步骤执行失败" in notice["props"]["text"]
     assert table["props"]["dataSource"][0]["stepId"] == "step_customers"
+
+
+def test_api_query_returns_error_response_when_execution_graph_fails(monkeypatch) -> None:
+    entry = ApiCatalogEntry(
+        id="customer_list",
+        description="查询客户列表",
+        domain="crm",
+        operation_safety="query",
+        method="GET",
+        path="/api/v1/customers",
+        param_schema={
+            "type": "object",
+            "properties": {"owner_id": {"type": "string"}},
+            "required": ["owner_id"],
+        },
+    )
+
+    class SingleRetriever:
+        async def search(self, query: str, top_k: int = 3, score_threshold: float = 0.3, filters=None):
+            return [ApiCatalogSearchResult(entry=entry, score=0.95)]
+
+        async def search_stratified(self, query: str, *, domains, top_k: int = 3, filters=None, **kwargs):
+            return await self.search(query, top_k=top_k, score_threshold=0.3, filters=filters)
+
+    class SingleExtractor:
+        async def route_query(self, query: str, user_context: dict[str, object], **kwargs):
+            return ApiQueryRoutingResult(
+                query_domains=["crm"],
+                business_intents=["none"],
+                is_multi_domain=False,
+                reasoning="graph failure runtime test",
+                route_status="ok",
+            )
+
+        async def extract_routing_result(self, query: str, candidates, user_context: dict[str, object], **kwargs):
+            return ApiQueryRoutingResult(
+                selected_api_id=entry.id,
+                query_domains=["crm"],
+                business_intents=["none"],
+                params={"owner_id": "E8899"},
+            )
+
+    class PlannerStub:
+        async def build_plan(self, query, candidates, user_context, route_hint, **kwargs):
+            return ApiQueryExecutionPlan(
+                plan_id="dag_graph_failed_runtime",
+                steps=[
+                    ApiQueryPlanStep(
+                        step_id="step_customers",
+                        api_path="/api/v1/customers",
+                        params={"owner_id": "E8899"},
+                        depends_on=[],
+                    )
+                ],
+                )
+
+        def validate_plan(self, plan, candidates):
+            return {"step_customer_list": entry}
+
+    class BrokenExecutor:
+        async def call(self, entry, params, user_token=None, trace_id: str | None = None):
+            raise RuntimeError("executor exploded in runtime test")
+
+    stub_services = (
+        SingleRetriever(),
+        SingleExtractor(),
+        BrokenExecutor(),
+        api_query_routes.DynamicUIService(),
+        PassThroughSnapshotService(),
+    )
+    monkeypatch.setattr(api_query_routes, "_get_services", lambda: stub_services)
+    monkeypatch.setattr(api_query_routes, "_get_planner", lambda: PlannerStub())
+
+    client = TestClient(create_test_app())
+    response = client.post("/api/v1/api-query", json={"query": "查我的客户"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["execution_plan"]["plan_id"].startswith("dag_")
+    assert body["execution_status"] == "ERROR"
+    assert "执行图运行失败" in body["error"]
+    notice = _get_child_by_type(body["ui_spec"], "PlannerNotice")
+    assert "执行图运行失败" in notice["props"]["text"]

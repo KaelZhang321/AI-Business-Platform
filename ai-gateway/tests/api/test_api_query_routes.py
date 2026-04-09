@@ -576,7 +576,9 @@ def test_api_query_direct_mode_bypasses_semantic_chain_and_returns_runtime_contr
     assert body["ui_spec"]["elements"][body["ui_spec"]["root"]]["type"] == "PlannerCard"
     assert registry_source.last_api_id == "customer_detail"
     assert executor.last_params == {"customerId": "C001"}
-    assert "conversation=conv_001" in caplog.text
+    assert "conversation_id=conv_001" in caplog.text
+    assert "phase=http_adapter" in caplog.text
+    assert "node=dispatch" in caplog.text
 
 
 def test_api_query_direct_mode_returns_list_patch_response(monkeypatch) -> None:
@@ -1108,8 +1110,9 @@ def test_api_query_soft_degrades_when_route_query_fails(monkeypatch, caplog) -> 
     assert body["error"] == "抱歉，我没有完全理解您的意图，或系统中暂未开放相关查询能力，请尝试换种说法。"
     root_id = body["ui_spec"]["root"]
     assert body["ui_spec"]["elements"][root_id]["props"]["title"] == "未识别到可用业务域"
-    assert "interaction=ia-degrade-001" in caplog.text
-    assert "conversation=conv_degrade_001" in caplog.text
+    assert "interaction_id=ia-degrade-001" in caplog.text
+    assert "conversation_id=conv_degrade_001" in caplog.text
+    assert "phase=http_adapter" in caplog.text
 
 
 def test_runtime_metadata_endpoint_returns_contract(monkeypatch) -> None:

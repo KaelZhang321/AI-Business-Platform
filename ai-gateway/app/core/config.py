@@ -103,6 +103,10 @@ class Settings(BaseSettings):
     api_query_runtime_created_by: str = ""
     api_query_runtime_timeout_seconds: float = 8.0
     api_query_runtime_enabled: bool = True
+    api_query_execution_max_step_count: int = Field(8, ge=1, le=50)
+    api_query_execution_step_timeout_seconds: float = Field(8.0, ge=0.1, le=60.0)
+    api_query_execution_graph_timeout_seconds: float = Field(20.0, ge=0.1, le=120.0)
+    api_query_execution_min_step_budget_seconds: float = Field(0.5, ge=0.1, le=10.0)
 
     # Intent classification
     intent_confidence_threshold: float = Field(0.55, ge=0.0, le=1.0)

@@ -32,16 +32,72 @@ def build_graph_event_envelope(
         - `data` 不是字典时，会自动包成 `{"value": ...}`，避免上层再做类型分支
     """
 
+    trace_context = asdict(run_context.trace_context)
+    observability_fields = build_workflow_observability_fields(
+        run_context=run_context,
+        node=_resolve_event_node(event),
+        execution_status=_extract_execution_status(event.get("data")),
+    )
     return {
-        "workflow": run_context.workflow_name,
-        "phase": run_context.phase,
+        **observability_fields,
         "event": str(event.get("event") or ""),
-        "node": _resolve_event_node(event),
-        "trace_context": asdict(run_context.trace_context),
+        "trace_context": trace_context,
         "run_id": event.get("run_id"),
         "tags": list(event.get("tags") or []),
         "payload": _normalize_event_payload(event.get("data")),
     }
+
+
+def build_workflow_observability_fields(
+    *,
+    run_context: WorkflowRunContext,
+    node: str | None,
+    execution_status: str | None = None,
+) -> dict[str, Any]:
+    """构造 workflow / graph 共享的最小观测字段。
+
+    功能：
+        LangGraph 迁移完成后，route、外层 workflow、内层执行图都需要共享同一份最小观测
+        字段，避免日志、SSE 事件和未来指标各自再拼一次 `trace / interaction / conversation`。
+    """
+
+    trace_context = asdict(run_context.trace_context)
+    return {
+        "workflow": run_context.workflow_name,
+        "phase": run_context.phase,
+        "node": node,
+        "trace_id": trace_context["trace_id"],
+        "interaction_id": trace_context["interaction_id"],
+        "conversation_id": trace_context["conversation_id"],
+        "execution_status": execution_status,
+    }
+
+
+def format_workflow_observability_log(
+    message: str,
+    *,
+    observability_fields: Mapping[str, Any],
+    payload: Mapping[str, Any] | None = None,
+) -> str:
+    """把最小观测字段格式化成统一日志文本。
+
+    功能：
+        当前阶段先统一日志文本口径，而不是立刻引入新的 metrics SDK。这样 route、workflow
+        和执行图可以在不改现有 logging 基础设施的前提下共享同一套排障字段。
+    """
+
+    formatted = (
+        f"{message} workflow={observability_fields.get('workflow') or '-'}"
+        f" phase={observability_fields.get('phase') or '-'}"
+        f" node={observability_fields.get('node') or '-'}"
+        f" trace_id={observability_fields.get('trace_id') or '-'}"
+        f" interaction_id={observability_fields.get('interaction_id') or '-'}"
+        f" conversation_id={observability_fields.get('conversation_id') or '-'}"
+        f" execution_status={observability_fields.get('execution_status') or '-'}"
+    )
+    if payload:
+        formatted = f"{formatted} payload={dict(payload)}"
+    return formatted
 
 
 def _resolve_event_node(event: Mapping[str, Any]) -> str | None:
@@ -64,3 +120,14 @@ def _normalize_event_payload(payload: Any) -> dict[str, Any]:
     if isinstance(payload, dict):
         return dict(payload)
     return {"value": payload}
+
+
+def _extract_execution_status(payload: Any) -> str | None:
+    """从事件 payload 中提取最常用的执行状态字段。"""
+
+    if isinstance(payload, Mapping):
+        value = payload.get("execution_status")
+        if value is None:
+            return None
+        return str(value)
+    return None

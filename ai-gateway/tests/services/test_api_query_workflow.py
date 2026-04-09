@@ -208,7 +208,7 @@ def _build_workflow(
 
 
 @pytest.mark.asyncio
-async def test_workflow_runs_direct_path_without_routing() -> None:
+async def test_workflow_runs_direct_path_without_routing(caplog) -> None:
     entry = _build_entry()
     retriever = StubRetriever([entry])
     extractor = StubExtractor(entry, {"customerId": "C001"})
@@ -229,22 +229,23 @@ async def test_workflow_runs_direct_path_without_routing() -> None:
         ui_result=UISpecBuildResult(spec=_build_flat_spec(), frozen=False),
     )
 
-    response = await workflow.run(
-        ApiQueryRequest.model_validate(
-            {
-                "mode": "direct",
-                "direct_query": {
-                    "api_id": entry.id,
-                    "params": {"customerId": "C001", "pageNum": 1, "pageSize": 20},
-                },
-            }
-        ),
-        trace_id="trace-direct-001",
-        interaction_id="interaction-001",
-        conversation_id="conversation-001",
-        user_context={},
-        user_token="Bearer test-token",
-    )
+    with caplog.at_level("INFO", logger="app.services.api_query_workflow"):
+        response = await workflow.run(
+            ApiQueryRequest.model_validate(
+                {
+                    "mode": "direct",
+                    "direct_query": {
+                        "api_id": entry.id,
+                        "params": {"customerId": "C001", "pageNum": 1, "pageSize": 20},
+                    },
+                }
+            ),
+            trace_id="trace-direct-001",
+            interaction_id="interaction-001",
+            conversation_id="conversation-001",
+            user_context={},
+            user_token="Bearer test-token",
+        )
 
     assert response.execution_status == ApiQueryExecutionStatus.SUCCESS
     assert response.execution_plan is not None
@@ -254,6 +255,10 @@ async def test_workflow_runs_direct_path_without_routing() -> None:
     assert retriever.calls == 0
     assert extractor.route_calls == 0
     assert executor.calls == 1
+    assert "phase=stage4" in caplog.text
+    assert "node=execute_plan" in caplog.text
+    assert "conversation_id=conversation-001" in caplog.text
+    assert "execution_status=SUCCESS" in caplog.text
 
 
 @pytest.mark.asyncio

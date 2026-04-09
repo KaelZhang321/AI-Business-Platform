@@ -9,6 +9,7 @@ from langgraph.graph import END, StateGraph
 
 from app.models.schemas import (
     ApiQueryExecutionPlan,
+    ApiQueryExecutionStatus,
     ApiQueryMode,
     ApiQueryPatchTrigger,
     ApiQueryRequest,
@@ -34,6 +35,8 @@ from app.services.api_query_state import (
 from app.services.dynamic_ui_service import DynamicUIService
 from app.services.ui_snapshot_service import UISnapshotService
 from app.services.workflows.base_workflow import BaseStateGraphWorkflow
+from app.services.workflows.graph_events import build_workflow_observability_fields, format_workflow_observability_log
+from app.services.workflows.types import WorkflowRunContext, WorkflowTraceContext
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +53,7 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
 
         1. `direct` 与 `nl` 进入同一个 workflow 外壳
         2. 第二、三阶段失败统一回到 `build_response`
-        3. 第四阶段仍继续复用现有 `ApiDagExecutor`
+        3. 第四阶段通过 `ApiDagExecutor` 兼容门面进入 LangGraph 内层执行子图
 
     Edge Cases:
         - `user_token`、原始 candidates 和原始路由结果只保留在 runtime context
@@ -170,7 +173,20 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
 
         log_prefix = _build_api_query_log_prefix(trace_id, interaction_id, conversation_id)
         request_query = _summarize_request_query(request_body)
-        logger.info("%s request mode=%s query=%s", log_prefix, request_body.mode.value, request_query)
+        logger.info(
+            "%s",
+            format_workflow_observability_log(
+                f"{log_prefix} request received",
+                observability_fields=self._build_observability_fields(
+                    trace_id=trace_id,
+                    interaction_id=interaction_id,
+                    conversation_id=conversation_id,
+                    phase="request",
+                    node="run",
+                ),
+                payload={"mode": request_body.mode.value, "query": request_query},
+            ),
+        )
 
         self._runtime_contexts[trace_id] = ApiQueryRuntimeContext(
             user_context=user_context,
@@ -215,11 +231,13 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
             不需要再改图结构。
         """
 
+        self._log_node_event(state, node="prepare_request", phase="request")
         return {}
 
     async def _prepare_direct_plan(self, state: ApiQueryState) -> dict[str, Any]:
         """`direct` 快路：构造单步执行计划。"""
 
+        self._log_node_event(state, node="prepare_direct_plan", phase="direct")
         runtime_context = self._get_runtime_context(state)
         request_body = _require_request_body(runtime_context)
         plan, step_entries, query_domains, business_intent_codes, direct_query_text = await self._prepare_direct_execution(
@@ -239,6 +257,7 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
     async def _route_query(self, state: ApiQueryState) -> dict[str, Any]:
         """第二阶段：轻量路由。"""
 
+        self._log_node_event(state, node="route_query", phase="stage2")
         runtime_context = self._get_runtime_context(state)
         request_body = _require_request_body(runtime_context)
         assert request_body.query is not None
@@ -278,6 +297,7 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
     async def _retrieve_candidates(self, state: ApiQueryState) -> dict[str, Any]:
         """第二阶段：按业务域分层召回候选接口。"""
 
+        self._log_node_event(state, node="retrieve_candidates", phase="stage2")
         runtime_context = self._get_runtime_context(state)
         request_body = _require_request_body(runtime_context)
         assert request_body.query is not None
@@ -315,6 +335,7 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
     async def _build_plan(self, state: ApiQueryState) -> dict[str, Any]:
         """第三阶段：生成内部执行计划。"""
 
+        self._log_node_event(state, node="build_plan", phase="stage3")
         runtime_context = self._get_runtime_context(state)
         request_body = _require_request_body(runtime_context)
         assert request_body.query is not None
@@ -416,6 +437,7 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
     async def _validate_plan(self, state: ApiQueryState) -> dict[str, Any]:
         """第三阶段：对白名单与依赖关系做确定性校验。"""
 
+        self._log_node_event(state, node="validate_plan", phase="stage3")
         runtime_context = self._get_runtime_context(state)
         try:
             runtime_context.step_entries = self._planner_getter().validate_plan(state["plan"], runtime_context.candidates)
@@ -438,15 +460,19 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
         return {}
 
     async def _execute_plan(self, state: ApiQueryState) -> dict[str, Any]:
-        """第四阶段：继续复用现有 DAG 执行总线。"""
+        """第四阶段：通过兼容门面进入 LangGraph 内层执行图。"""
 
+        self._log_node_event(state, node="execute_plan", phase="stage4")
         runtime_context = self._get_runtime_context(state)
         _, _, executor, _, _ = self._services_getter()
-        execution_report = await ApiDagExecutor(executor).execute_plan(
+        dag_executor = ApiDagExecutor(executor)
+        execution_report = await dag_executor.execute_plan(
             state["plan"],
             runtime_context.step_entries,
             user_token=runtime_context.user_token,
             trace_id=state["trace_id"],
+            interaction_id=state.get("interaction_id"),
+            conversation_id=state.get("conversation_id"),
         )
         runtime_context.execution_state = build_execution_state(
             plan=state["plan"],
@@ -464,6 +490,7 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
             降级路径都统一汇总到这里，再交给 response builder 折叠成对外契约。
         """
 
+        self._log_node_event(state, node="build_response", phase="response", execution_status=state.get("execution_status"))
         runtime_context = self._get_runtime_context(state)
         builder = self._response_builder_getter()
         if runtime_context.degrade_context is not None:
@@ -500,6 +527,13 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
                 response_mode=state["response_mode"],
                 patch_context=state.get("patch_context"),
             )
+
+        self._log_node_event(
+            state,
+            node="build_response",
+            phase="response",
+            execution_status=response.execution_status,
+        )
 
         return {
             "response": response,
@@ -554,6 +588,64 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
 
         _, extractor, _, _, _ = self._services_getter()
         return extractor
+
+    def _log_node_event(
+        self,
+        state: ApiQueryState,
+        *,
+        node: str,
+        phase: str,
+        execution_status: ApiQueryExecutionStatus | str | None = None,
+    ) -> None:
+        """输出统一节点观测日志。
+
+        功能：
+            wave 4 的目标不是新增功能，而是把工作流迁移后的最小观测字段固定下来。这里
+            每个核心节点都走同一套日志格式，后续接指标或 SSE 时可以直接复用。
+        """
+
+        logger.info(
+            "%s",
+            format_workflow_observability_log(
+                "api_query workflow node",
+                observability_fields=self._build_observability_fields(
+                    trace_id=state["trace_id"],
+                    interaction_id=state.get("interaction_id"),
+                    conversation_id=state.get("conversation_id"),
+                    phase=phase,
+                    node=node,
+                    execution_status=execution_status,
+                ),
+            ),
+        )
+
+    def _build_observability_fields(
+        self,
+        *,
+        trace_id: str,
+        interaction_id: str | None,
+        conversation_id: str | None,
+        phase: str,
+        node: str,
+        execution_status: ApiQueryExecutionStatus | str | None = None,
+    ) -> dict[str, Any]:
+        """构造当前工作流节点的最小观测字段。"""
+
+        return build_workflow_observability_fields(
+            run_context=WorkflowRunContext(
+                workflow_name=self.workflow_name,
+                trace_context=WorkflowTraceContext(
+                    trace_id=trace_id,
+                    interaction_id=interaction_id,
+                    conversation_id=conversation_id,
+                ),
+                phase=phase,
+            ),
+            node=node,
+            execution_status=str(execution_status.value if isinstance(execution_status, ApiQueryExecutionStatus) else execution_status)
+            if execution_status is not None
+            else None,
+        )
 
     async def _prepare_direct_execution(
         self,
