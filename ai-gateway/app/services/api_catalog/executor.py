@@ -144,7 +144,7 @@ class RuntimeInvokeExecutor:
         allow_methods: Collection[str] | None = None,
     ) -> ApiQueryExecutionResult:
         """通过 runtime invoke 调用查询接口。"""
-        if entry.operation_safety != "query":
+        if entry.operation_safety == "mutation":
             logger.warning(
                 "stage4 runtime invoke blocked unsafe entry trace_id=%s api_id=%s safety=%s",
                 trace_id or "-",

@@ -27,6 +27,7 @@ from app.services.api_catalog.schema import ApiCatalogEntry, ApiCatalogSearchFil
 from app.services.api_query_response_builder import ApiQueryResponseBuilder
 from app.services.api_query_state import (
     ApiQueryDegradeContext,
+    ApiQueryMutationFormContext,
     ApiQueryRuntimeContext,
     ApiQueryState,
     build_execution_state,
@@ -96,6 +97,7 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
         graph.add_node("build_plan", self._build_plan)
         graph.add_node("validate_plan", self._validate_plan)
         graph.add_node("execute_plan", self._execute_plan)
+        graph.add_node("build_mutation_form", self._build_mutation_form)
         graph.add_node("build_response", self._build_response)
 
         graph.set_entry_point("prepare_request")
@@ -129,6 +131,7 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
             self._after_build_plan,
             {
                 "validate_plan": "validate_plan",
+                "build_mutation_form": "build_mutation_form",
                 "build_response": "build_response",
             },
         )
@@ -141,6 +144,7 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
             },
         )
         graph.add_edge("execute_plan", "build_response")
+        graph.add_edge("build_mutation_form", "build_response")
         graph.add_edge("build_response", END)
         return graph
 
@@ -392,13 +396,32 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
                     "business_intent_codes": runtime_context.degrade_context.business_intent_codes,
                 }
 
+            planning_intent_codes = list(routing_result.business_intents or state.get("business_intent_codes", []))
+
+            # mutation 接口：不进入执行图，走表单快路。
+            if selected_entry.operation_safety == "mutation":
+                logger.info(
+                    "%s mutation candidate detected api_id=%s — routing to mutation_form path",
+                    _build_api_query_log_prefix(
+                        state["trace_id"],
+                        state.get("interaction_id"),
+                        state.get("conversation_id"),
+                    ),
+                    selected_entry.id,
+                )
+                runtime_context.mutation_form_context = ApiQueryMutationFormContext(
+                    entry=selected_entry,
+                    pre_fill_params=dict(routing_result.params),
+                    business_intent_code=_resolve_write_intent_code(planning_intent_codes),
+                )
+                return {"business_intent_codes": planning_intent_codes}
+
             self._ensure_query_safe_entry(
                 selected_entry,
                 trace_id=state["trace_id"],
                 interaction_id=state.get("interaction_id"),
                 conversation_id=state.get("conversation_id"),
             )
-            planning_intent_codes = list(routing_result.business_intents or state.get("business_intent_codes", []))
             plan = build_single_step_plan(
                 selected_entry,
                 routing_result.params,
@@ -482,6 +505,23 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
         )
         return {}
 
+    async def _build_mutation_form(self, state: ApiQueryState) -> dict[str, Any]:
+        """mutation 表单快路节点：不执行变更，只生成预填表单响应。
+
+        功能：
+            当 `_build_plan` 识别到单候选 mutation 接口时，workflow 直接跳过
+            validate_plan / execute_plan，进入此节点生成预填表单 UI Spec，
+            交给 `build_response` 返回给前端。
+
+            前端拿到响应后，在用户确认前不会发起任何写请求；确认后直接调用
+            `ui_runtime.form.api_id` 指向的业务系统接口提交修改。
+        """
+
+        self._log_node_event(state, node="build_mutation_form", phase="stage3")
+        # 此节点不做实际计算；mutation_form_context 已在 _build_plan 中写入 runtime_context。
+        # build_response 会根据 mutation_form_context != None 分支到 build_mutation_form_response。
+        return {}
+
     async def _build_response(self, state: ApiQueryState) -> dict[str, Any]:
         """统一响应出口。
 
@@ -515,6 +555,15 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
                     business_intent_codes=degrade_context.business_intent_codes,
                     reasoning=degrade_context.reasoning,
                 )
+        elif runtime_context.mutation_form_context is not None:
+            mutation_ctx = runtime_context.mutation_form_context
+            response = await builder.build_mutation_form_response(
+                state=state,
+                entry=mutation_ctx.entry,
+                pre_fill_params=mutation_ctx.pre_fill_params,
+                business_intent_code=mutation_ctx.business_intent_code,
+                query_domains_hint=state.get("query_domains_hint", []),
+            )
         else:
             if runtime_context.execution_state is None:
                 raise RuntimeError("ApiQueryWorkflow build_response called without execution_state")
@@ -561,7 +610,12 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
     def _after_build_plan(self, state: ApiQueryState) -> str:
         """计划生成后的去向。"""
 
-        return "build_response" if state.get("degrade_stage") else "validate_plan"
+        if state.get("degrade_stage"):
+            return "build_response"
+        runtime_context = self._get_runtime_context(state)
+        if runtime_context.mutation_form_context is not None:
+            return "build_mutation_form"
+        return "validate_plan"
 
     def _after_validate_plan(self, state: ApiQueryState) -> str:
         """计划校验后的去向。"""
@@ -969,3 +1023,15 @@ def _build_step_id(entry: ApiCatalogEntry) -> str:
     """生成稳定步骤 ID。"""
 
     return f"step_{entry.id}"
+
+
+def _resolve_write_intent_code(business_intent_codes: list[str]) -> str:
+    """从路由意图编码列表中解析写意图编码。
+
+    功能：
+        mutation form 快路需要明确知道当前是哪个业务意图，以便在提交契约中
+        传递 `business_intent`。这里优先取明确写意图，兜底到 `saveToServer`。
+    """
+
+    write_intents = [code for code in business_intent_codes if code and code != "none"]
+    return write_intents[0] if write_intents else "saveToServer"

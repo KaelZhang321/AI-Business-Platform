@@ -185,19 +185,19 @@ async def lifespan(app: FastAPI):
         _service_status["elasticsearch"] = f"error: {exc}"
         logger.warning("Elasticsearch 连接失败: %s", exc)
 
-    # 3) Ollama (LLM) — 轻量 ping
-    ollama_client = httpx.AsyncClient(base_url=settings.ollama_base_url, timeout=5)
-    try:
-        resp = await ollama_client.get("/api/tags")
-        if resp.status_code == 200:
-            _service_status["ollama"] = "ok"
-            logger.info("Ollama 连接成功 (%s)", settings.ollama_base_url)
-        else:
-            _service_status["ollama"] = f"http_{resp.status_code}"
-            logger.warning("Ollama 响应异常: HTTP %s", resp.status_code)
-    except Exception as exc:
-        _service_status["ollama"] = f"error: {exc}"
-        logger.warning("Ollama 连接失败: %s", exc)
+    # # 3) Ollama (LLM) — 轻量 ping
+    # ollama_client = httpx.AsyncClient(base_url=settings.ollama_base_url, timeout=5)
+    # try:
+    #     resp = await ollama_client.get("/api/tags")
+    #     if resp.status_code == 200:
+    #         _service_status["ollama"] = "ok"
+    #         logger.info("Ollama 连接成功 (%s)", settings.ollama_base_url)
+    #     else:
+    #         _service_status["ollama"] = f"http_{resp.status_code}"
+    #         logger.warning("Ollama 响应异常: HTTP %s", resp.status_code)
+    # except Exception as exc:
+    #     _service_status["ollama"] = f"error: {exc}"
+    #     logger.warning("Ollama 连接失败: %s", exc)
 
     logger.info("AI网关启动完成 — 服务状态: %s", _service_status)
 

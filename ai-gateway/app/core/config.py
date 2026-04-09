@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     # Milvus
     milvus_host: str = "localhost"
     milvus_port: int = 19530
-    milvus_collection: str = "knowledge_chunks"
+    milvus_collection: str = "api_catalog"
     milvus_vector_field: str = "embedding"
     milvus_output_fields: list[str] = ["doc_id", "title", "content", "doc_type", "metadata"]
     milvus_search_limit: int = Field(20, ge=1, le=100)

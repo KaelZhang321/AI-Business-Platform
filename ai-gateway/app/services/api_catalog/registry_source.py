@@ -434,6 +434,8 @@ def _normalize_operation_safety(value: Any) -> str:
     normalized = str(value or "mutation").strip().lower()
     if normalized == "query":
         return "query"
+    elif normalized == "list":
+        return "list"
     return "mutation"
 
 

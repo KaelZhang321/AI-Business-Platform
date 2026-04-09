@@ -100,6 +100,26 @@ class ApiQueryDegradeContext:
 
 
 @dataclass(slots=True)
+class ApiQueryMutationFormContext:
+    """mutation 表单快路运行时事实。
+
+    功能：
+        当第三阶段识别出单候选 mutation 接口时，workflow 不执行变更，而是把
+        目录实体与 LLM 提取的预填参数打包在这里，供 response builder 构造
+        预填表单 UI。
+
+    入参业务含义：
+        - `entry`：mutation 接口目录实体
+        - `pre_fill_params`：LLM 从用户 NL 中提取的预填参数
+        - `business_intent_code`：写意图编码（如 saveToServer）
+    """
+
+    entry: ApiCatalogEntry
+    pre_fill_params: dict[str, Any] = field(default_factory=dict)
+    business_intent_code: str = "saveToServer"
+
+
+@dataclass(slots=True)
 class ApiQueryRuntimeContext:
     """`/api-query` 运行时上下文。
 
@@ -117,6 +137,7 @@ class ApiQueryRuntimeContext:
         - `request_body`：原始请求对象，只在节点内部拆字段，不进入 graph state
         - `degrade_context`：待统一收口的降级事实
         - `execution_state`：执行节点生成的内层状态快照
+        - `mutation_form_context`：mutation 表单快路的预填数据，不经过执行图
         - `log_prefix`：当前请求统一日志前缀
     """
 
@@ -129,6 +150,7 @@ class ApiQueryRuntimeContext:
     request_body: ApiQueryRequest | None = None
     degrade_context: ApiQueryDegradeContext | None = None
     execution_state: ApiQueryExecutionState | None = None
+    mutation_form_context: ApiQueryMutationFormContext | None = None
     log_prefix: str = ""
 
 

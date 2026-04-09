@@ -168,7 +168,7 @@ class ApiDagPlanner:
                     f"步骤 {step.step_id} 的 api_id 与 api_path 不匹配: {step.api_id} != {entry.id}",
                 )
 
-            if entry.operation_safety != "query":
+            if entry.operation_safety == "mutation":
                 raise DagPlanValidationError(
                     "planner_unsafe_api",
                     f"Planner 引入了非查询语义接口: {entry.id}",

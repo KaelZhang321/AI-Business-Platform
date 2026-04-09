@@ -379,6 +379,129 @@ class ApiQueryResponseBuilder:
         state["response"] = response
         return response
 
+    async def build_mutation_form_response(
+        self,
+        *,
+        state: ApiQueryState,
+        entry: Any,
+        pre_fill_params: dict[str, Any],
+        business_intent_code: str,
+        query_domains_hint: list[str],
+    ) -> ApiQueryResponse:
+        """把 mutation 表单快路折叠为预填表单 UI。
+
+        功能：
+            当 `_build_plan` 识别到单候选 mutation 接口时，由此方法构造：
+
+            1. `execution_status=SKIPPED`（"AI 读，人工确认写"安全契约）
+            2. `ui_runtime.form.enabled=true`，包含表单字段的提交契约
+            3. `ui_spec`：由 DynamicUIService 生成带 PlannerForm + PlannerInput 的表单 Spec
+            4. `execution_plan`：包含 mutation 接口的步骤，供前端确认后直接调用业务系统
+
+        AI 读人工确认：
+            前端拿到响应后，展示预填表单让用户核对。用户点击"确认"后，直接调用
+            `ui_runtime.form.api_id` 指向的业务系统接口提交变更；网关不参与实际执行。
+        """
+
+        query_domains = _format_query_domains_for_response(
+            list(entry.domain and [entry.domain] or query_domains_hint)
+        )
+        business_intents = _build_business_intents([business_intent_code])
+
+        # 从接口参数 Schema 与预填值构建表单字段列表
+        form_fields = _build_mutation_form_fields(entry, pre_fill_params)
+
+        # 构造带 form 的运行时契约
+        form_code = f"{entry.id}_form"
+        requested_component_codes = ["PlannerCard", "PlannerForm", "PlannerInput", "PlannerSelect", "PlannerButton", "PlannerNotice"]
+        components = self._ui_catalog_service.get_component_codes(intent="query", requested_codes=requested_component_codes)
+        action_codes = {"remoteMutation", "refresh"}
+        base_runtime = ApiQueryUIRuntime(
+            components=components,
+            ui_actions=_build_runtime_actions(action_codes, ui_catalog_service=self._ui_catalog_service),
+            form=ApiQueryFormRuntime(
+                enabled=True,
+                form_code=form_code,
+                mode=_infer_form_mode(form_fields),
+                api_id=entry.id,
+                route_url="/api/v1/api-query",
+                ui_action="remoteMutation",
+                state_path="/form",
+                fields=form_fields,
+                submit=ApiQueryFormSubmitRuntime(
+                    business_intent=business_intent_code,
+                    confirm_required=True,
+                ),
+            ),
+        )
+
+        # 生成预填表单 UI Spec
+        form_state = {field.state_path.lstrip("/"): pre_fill_params.get(field.submit_key) for field in form_fields}
+        ui_build_result = await _generate_ui_spec_result(
+            self._dynamic_ui,
+            intent="mutation_form",
+            data=pre_fill_params,
+            context={
+                "title": f"确认修改：{entry.description}",
+                "user_query": state.get("query_text", ""),
+                "api_id": entry.id,
+                "form_code": form_code,
+                "business_intent": business_intent_code,
+                "pre_fill_params": pre_fill_params,
+                "form_fields": [f.model_dump(exclude_none=True) for f in form_fields],
+                "form_state": form_state,
+                "business_intents": [intent.model_dump() for intent in business_intents],
+            },
+            status=ApiQueryExecutionStatus.SKIPPED,
+            runtime=base_runtime,
+            trace_id=state["trace_id"],
+        )
+        ui_runtime = _finalize_render_runtime(
+            base_runtime,
+            ui_build_result.spec,
+            ui_build_result,
+            ui_catalog_service=self._ui_catalog_service,
+        )
+
+        # execution_plan 使用 mutation 接口的步骤，供前端确认后调用
+        from app.models.schemas import ApiQueryExecutionPlan, ApiQueryPlanStep
+
+        mutation_plan = ApiQueryExecutionPlan(
+            plan_id=f"mutation_{state['trace_id'][:8]}",
+            steps=[
+                ApiQueryPlanStep(
+                    step_id=f"step_{entry.id}",
+                    api_id=entry.id,
+                    api_path=entry.path,
+                    params=pre_fill_params,
+                    depends_on=[],
+                )
+            ],
+        )
+
+        logger.info(
+            "api_query[trace=%s] mutation_form response built api_id=%s fields=%s",
+            state["trace_id"],
+            entry.id,
+            [f.name for f in form_fields],
+        )
+        response = ApiQueryResponse(
+            trace_id=state["trace_id"],
+            execution_status=ApiQueryExecutionStatus.SKIPPED,
+            execution_plan=mutation_plan,
+            ui_runtime=ui_runtime,
+            ui_spec=ui_build_result.spec,
+            error=None,
+        )
+        state["execution_status"] = ApiQueryExecutionStatus.SKIPPED
+        state["ui_runtime"] = ui_runtime
+        state["ui_spec"] = ui_build_result.spec
+        state["plan"] = mutation_plan
+        state["response"] = response
+        return response
+
+
+
 
 def _build_business_intents(intent_codes: list[str]) -> list[ApiQueryBusinessIntent]:
     """将业务意图编码转换为对外响应对象。"""
@@ -415,6 +538,55 @@ def _build_business_intents(intent_codes: list[str]) -> list[ApiQueryBusinessInt
             risk_level=resolve_business_intent_risk_level(fallback_definition.code, intent_codes),
         )
     ]
+
+
+def _build_mutation_form_fields(
+    entry: Any,
+    pre_fill_params: dict[str, Any],
+) -> list[ApiQueryFormFieldRuntime]:
+    """从 mutation 接口的 param_schema 与预填值构造表单字段运行时契约。
+
+    设计意图：
+        mutation form 快路不走第五阶段渲染器，因此参数 Schema 是构造表单字段
+        定义的唯一来源。LLM 提取的预填值决定了该字段的初始 `state_path` 绑定
+        和 `source_kind`（已填写 → context，未填写 → user_input）。
+    """
+
+    fields: list[ApiQueryFormFieldRuntime] = []
+    schema_properties = entry.param_schema.properties if entry.param_schema else {}
+    required_fields = set(entry.param_schema.required) if entry.param_schema else set()
+
+    for field_name, prop in schema_properties.items():
+        has_value = field_name in pre_fill_params and pre_fill_params[field_name] not in ("", None)
+        source_kind: Literal["context", "user_input", "dictionary", "derived"] = (
+            "context" if has_value else "user_input"
+        )
+
+        # 推断值类型
+        prop_type = prop.get("type", "string")
+        value_type = _normalize_runtime_value_type(prop_type)
+
+        # 推断选项来源
+        option_source: ApiQueryFormOptionSourceRuntime | None = None
+        if prop_type == "string" and prop.get("enum"):
+            option_source = ApiQueryFormOptionSourceRuntime(type="enum")
+        elif prop.get("dict_code"):
+            option_source = ApiQueryFormOptionSourceRuntime(type="dict", dict_code=str(prop["dict_code"]))
+            source_kind = "dictionary"
+
+        fields.append(
+            ApiQueryFormFieldRuntime(
+                name=prop.get("title") or field_name,
+                value_type=value_type,
+                state_path=f"/form/{field_name}",
+                submit_key=field_name,
+                required=field_name in required_fields,
+                writable=True,
+                source_kind=source_kind,
+                option_source=option_source,
+            )
+        )
+    return fields
 
 
 def _build_runtime_actions(
