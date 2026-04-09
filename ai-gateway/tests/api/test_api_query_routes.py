@@ -103,6 +103,14 @@ class StubDynamicUI:
             )
 
         if status == ApiQueryExecutionStatus.SKIPPED:
+            # mutation_form 快路：context 有 api_id 字段
+            if intent == "mutation_form":
+                return _build_flat_stub_spec(
+                    root_props={"title": context.get("title", "确认修改"), "subtitle": None},
+                    children=[
+                        {"type": "PlannerForm", "props": {"formCode": context.get("form_code", "form")}},
+                    ],
+                )
             return _build_flat_stub_spec(
                 root_props={"title": context["title"], "subtitle": None},
                 children=[
@@ -984,12 +992,22 @@ def test_api_query_passes_env_and_tag_filters_to_retriever(monkeypatch) -> None:
 
 
 def test_api_query_blocks_mutation_entry(monkeypatch) -> None:
+    """mutation 接口在 NL 模式下不再直接阻断，而是返回预填表单 UI。"""
     entry = _make_entry(
-        id="customer_update", method="POST", operation_safety="mutation", path="/api/v1/customers/update"
+        id="customer_update", method="POST", operation_safety="mutation", path="/api/v1/customers/update",
+        param_schema={
+            "type": "object",
+            "properties": {
+                "customerId": {"type": "string", "title": "客户ID"},
+                "industry": {"type": "string", "title": "所属行业"},
+            },
+            "required": ["customerId"],
+        },
+        detail_hint=ApiCatalogDetailHint(enabled=False),
     )
     stub_services = (
         StubRetriever(entry),
-        StubExtractor(entry, {"customerId": "C001"}),
+        StubExtractor(entry, {"customerId": "C001"}, business_intents=["saveToServer"]),
         StubExecutor(
             ApiQueryExecutionResult(
                 status=ApiQueryExecutionStatus.SUCCESS,
@@ -1009,8 +1027,18 @@ def test_api_query_blocks_mutation_entry(monkeypatch) -> None:
         headers={"X-Trace-Id": "trace-block-001"},
     )
 
-    assert response.status_code == 422
-    assert response.json()["detail"] == "[trace-block-001] api_query 仅支持查询安全接口，当前接口语义为 mutation"
+    # NL 模式下 mutation 接口走表单快路，返回 200 + SKIPPED + form.enabled
+    assert response.status_code == 200
+    body = response.json()
+    assert body["execution_status"] == "SKIPPED"
+    assert body["error"] is None
+    assert body["ui_runtime"]["form"]["enabled"] is True
+    assert body["ui_runtime"]["form"]["api_id"] == "customer_update"
+    assert body["ui_runtime"]["form"]["route_url"] == "/api/v1/customers/update"
+    assert body["ui_runtime"]["form"]["mode"] == "edit"
+    assert body["ui_runtime"]["form"]["submit"]["confirm_required"] is True
+    # execution_plan 包含 mutation 接口步骤，供前端确认后直接调用
+    assert body["execution_plan"]["steps"][0]["api_id"] == "customer_update"
 
 
 def test_api_query_allows_query_safe_post_entry(monkeypatch) -> None:
@@ -1131,6 +1159,7 @@ def test_runtime_metadata_endpoint_returns_contract(monkeypatch) -> None:
     assert template_codes == {"custom_template"}
     assert body["ui_runtime"]["list"]["route_url"] == "/api/v1/api-query"
     assert body["ui_runtime"]["detail"]["request"]["param_source"] == "queryParams"
+    assert body["ui_runtime"]["form"]["route_url"] is None
     assert body["ui_runtime"]["form"]["ui_action"] == "remoteMutation"
     assert stub_catalog_service.warmup_called is True
 
@@ -1219,6 +1248,7 @@ def test_api_query_enriches_form_runtime_from_generated_spec(monkeypatch) -> Non
     body = response.json()
     assert body["ui_runtime"]["form"]["enabled"] is True
     assert body["ui_runtime"]["form"]["api_id"] == "customer_update"
+    assert body["ui_runtime"]["form"]["route_url"] == "/api/v1/customers/update"
     assert body["ui_runtime"]["form"]["mode"] == "edit"
     assert body["ui_runtime"]["form"]["state_path"] == "/form"
     assert body["ui_runtime"]["form"]["submit"]["business_intent"] == "saveToServer"

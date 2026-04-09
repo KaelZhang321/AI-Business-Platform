@@ -234,7 +234,8 @@ async def get_runtime_metadata() -> ApiQueryRuntimeMetadataResponse:
             ),
             form=ApiQueryFormRuntime(
                 enabled=False,
-                route_url="/api/v1/api-query",
+                # runtime-metadata 不携带具体 mutation 接口上下文，因此不暴露占位 URL。
+                route_url=None,
                 ui_action="remoteMutation",
             ),
         ),

@@ -140,6 +140,7 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
             self._after_validate_plan,
             {
                 "execute_plan": "execute_plan",
+                "build_mutation_form": "build_mutation_form",
                 "build_response": "build_response",
             },
         )
@@ -430,6 +431,23 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
             )
             return {"plan": plan, "business_intent_codes": planning_intent_codes}
 
+        # 多候选 + 写意图时，若候选里只有一个 mutation 接口，优先走表单快路。
+        # 这样可以避免被 Planner 噪声（例如 unknown_api / api_id_mismatch）拖入 stage3 降级。
+        if _has_write_intent(planning_intent_codes):
+            mutation_context = await self._try_build_mutation_form_context(state, runtime_context)
+            if mutation_context is not None:
+                runtime_context.mutation_form_context = mutation_context
+                logger.info(
+                    "%s write intent routed to mutation_form path before planner api_id=%s",
+                    _build_api_query_log_prefix(
+                        state["trace_id"],
+                        state.get("interaction_id"),
+                        state.get("conversation_id"),
+                    ),
+                    mutation_context.entry.id,
+                )
+                return {"business_intent_codes": planning_intent_codes}
+
         try:
             plan = await self._planner_getter().build_plan(
                 request_body.query,
@@ -465,6 +483,23 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
         try:
             runtime_context.step_entries = self._planner_getter().validate_plan(state["plan"], runtime_context.candidates)
         except DagPlanValidationError as exc:
+            # 写意图场景在 stage3 校验失败时，优先尝试转 mutation 表单快路。
+            # 真实线上常见失败码不止 planner_unsafe_api（如 planner_unknown_api / api_id_mismatch）。
+            if exc.code == "planner_unsafe_api" or _has_write_intent(list(state.get("business_intent_codes", []))):
+                mutation_context = await self._try_build_mutation_form_context(state, runtime_context)
+                if mutation_context is not None:
+                    runtime_context.mutation_form_context = mutation_context
+                    logger.info(
+                        "%s planner_unsafe_api intercepted — redirected to mutation_form path api_id=%s",
+                        _build_api_query_log_prefix(
+                            state["trace_id"],
+                            state.get("interaction_id"),
+                            state.get("conversation_id"),
+                        ),
+                        mutation_context.entry.id,
+                    )
+                    return {}
+
             message = "系统生成的数据依赖图存在安全风险，已终止执行以保护业务系统。"
             runtime_context.degrade_context = ApiQueryDegradeContext(
                 stage="stage3",
@@ -481,6 +516,63 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
                 "degrade_stage": "stage3",
             }
         return {}
+
+    async def _try_build_mutation_form_context(
+        self,
+        state: ApiQueryState,
+        runtime_context: ApiQueryRuntimeContext,
+    ) -> ApiQueryMutationFormContext | None:
+        """从候选集中找出 mutation 接口，提取预填参数，构造表单快路上下文。
+
+        功能：
+            当多候选路径的 validate_plan 因 planner_unsafe_api 失败时，
+            此方法将候选集中的 mutation 接口提取出来，用 LLM 提取用户意图中的参数，
+            复用单候选 mutation 路径的表单快路逻辑。
+
+        Returns:
+            若候选集中存在 mutation 接口则返回 ApiQueryMutationFormContext，否则返回 None。
+        """
+
+        candidates = runtime_context.candidates
+        mutation_entries = [candidate.entry for candidate in candidates if candidate.entry.operation_safety == "mutation"]
+        if len(mutation_entries) != 1:
+            return None
+        mutation_entry = mutation_entries[0]
+
+        request_body = _require_request_body(runtime_context)
+        query = request_body.query or ""
+
+        # 用 LLM 为 mutation 接口提取预填参数（与单候选路径相同的提取逻辑）
+        extractor = self._get_extractor()
+        try:
+            from app.services.api_catalog.schema import ApiCatalogSearchResult
+
+            routing_result = await extractor.extract_routing_result(
+                query,
+                [ApiCatalogSearchResult(entry=mutation_entry, score=1.0)],
+                runtime_context.user_context,
+                trace_id=state["trace_id"],
+            )
+            pre_fill_params = dict(routing_result.params)
+        except Exception:
+            logger.warning(
+                "%s mutation param extraction failed — using empty pre_fill",
+                _build_api_query_log_prefix(
+                    state["trace_id"],
+                    state.get("interaction_id"),
+                    state.get("conversation_id"),
+                ),
+            )
+            pre_fill_params = {}
+
+        planning_intent_codes = list(state.get("business_intent_codes", []))
+        return ApiQueryMutationFormContext(
+            entry=mutation_entry,
+            pre_fill_params=pre_fill_params,
+            business_intent_code=_resolve_write_intent_code(planning_intent_codes),
+        )
+
+
 
     async def _execute_plan(self, state: ApiQueryState) -> dict[str, Any]:
         """第四阶段：通过兼容门面进入 LangGraph 内层执行图。"""
@@ -620,7 +712,13 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
     def _after_validate_plan(self, state: ApiQueryState) -> str:
         """计划校验后的去向。"""
 
-        return "build_response" if state.get("degrade_stage") else "execute_plan"
+        if state.get("degrade_stage"):
+            return "build_response"
+        runtime_context = self._get_runtime_context(state)
+        if runtime_context.mutation_form_context is not None:
+            return "build_mutation_form"
+        return "execute_plan"
+
 
     def _get_runtime_context(self, state: ApiQueryState) -> ApiQueryRuntimeContext:
         """按 trace_id 读取当前请求的 runtime context。"""
@@ -1035,3 +1133,9 @@ def _resolve_write_intent_code(business_intent_codes: list[str]) -> str:
 
     write_intents = [code for code in business_intent_codes if code and code != "none"]
     return write_intents[0] if write_intents else "saveToServer"
+
+
+def _has_write_intent(business_intent_codes: list[str]) -> bool:
+    """判断当前路由结果是否包含写意图编码。"""
+
+    return any(code and code != "none" for code in business_intent_codes)

@@ -424,7 +424,8 @@ class ApiQueryResponseBuilder:
                 form_code=form_code,
                 mode=_infer_form_mode(form_fields),
                 api_id=entry.id,
-                route_url="/api/v1/api-query",
+                # 写操作确认后由前端直连业务系统提交，不再回到 `/api-query` 二次转发。
+                route_url=entry.path,
                 ui_action="remoteMutation",
                 state_path="/form",
                 fields=form_fields,
@@ -550,6 +551,9 @@ def _build_mutation_form_fields(
         mutation form 快路不走第五阶段渲染器，因此参数 Schema 是构造表单字段
         定义的唯一来源。LLM 提取的预填值决定了该字段的初始 `state_path` 绑定
         和 `source_kind`（已填写 → context，未填写 → user_input）。
+
+        主键/ID 字段（名称以 id/Id 结尾或以 Id 开头）会标记为 `writable=False`，
+        让 `_infer_form_mode` 推导出 `edit`，符合"修改已知记录"的语义。
     """
 
     fields: list[ApiQueryFormFieldRuntime] = []
@@ -558,8 +562,15 @@ def _build_mutation_form_fields(
 
     for field_name, prop in schema_properties.items():
         has_value = field_name in pre_fill_params and pre_fill_params[field_name] not in ("", None)
+
+        # 判断是否为标识符/主键字段：名称以 Id/id 结尾，或以 id/Id 开头（不区分大小写）
+        lower_name = field_name.lower()
+        is_identifier = lower_name.endswith("id") or lower_name.startswith("id")
+
+        # 标识符字段不允许编辑（用于精确定位记录）
+        writable = not is_identifier
         source_kind: Literal["context", "user_input", "dictionary", "derived"] = (
-            "context" if has_value else "user_input"
+            "context" if (has_value or is_identifier) else "user_input"
         )
 
         # 推断值类型
@@ -581,7 +592,7 @@ def _build_mutation_form_fields(
                 state_path=f"/form/{field_name}",
                 submit_key=field_name,
                 required=field_name in required_fields,
-                writable=True,
+                writable=writable,
                 source_kind=source_kind,
                 option_source=option_source,
             )
@@ -877,7 +888,8 @@ async def _extract_form_runtime_from_spec(
         form_code=f"{api_id}_form",
         mode=_infer_form_mode(form_fields),
         api_id=api_id,
-        route_url="/api/v1/api-query",
+        # generated spec 只负责声明 mutation api_id；真正的直连 URL 仍以注册表中的业务接口 path 为准。
+        route_url=mutation_entry.path if mutation_entry is not None else None,
         ui_action="remoteMutation",
         state_path=_infer_form_state_root(bind_paths),
         fields=form_fields,

@@ -412,3 +412,259 @@ async def test_workflow_frozen_ui_still_returns_response_from_unified_exit() -> 
     assert response.ui_runtime.ui_actions == []
     assert response.ui_runtime.list.enabled is False
     assert response.ui_runtime.detail.enabled is False
+
+
+@pytest.mark.asyncio
+async def test_workflow_mutation_single_candidate_returns_form_response() -> None:
+    """NL 模式下单候选 mutation 接口应走表单快路，不触发执行器。"""
+
+    mutation_entry = ApiCatalogEntry(
+        id="employee_update",
+        description="修改员工信息",
+        domain="iam",
+        method="POST",
+        path="/api/v1/employees/update",
+        status="active",
+        operation_safety="mutation",
+        param_schema={
+            "type": "object",
+            "properties": {
+                "employeeId": {"type": "string", "title": "员工ID"},
+                "email": {"type": "string", "title": "邮箱"},
+            },
+            "required": ["employeeId", "email"],
+        },
+        detail_hint=ApiCatalogDetailHint(enabled=False),
+        pagination_hint=ApiCatalogPaginationHint(enabled=False),
+        template_hint=ApiCatalogTemplateHint(enabled=False),
+    )
+    retriever = StubRetriever([mutation_entry])
+    extractor = StubExtractor(
+        mutation_entry,
+        {"employeeId": "8058", "email": "437462373467289@qq.com"},
+        business_intents=["saveToServer"],
+    )
+    executor = StubExecutor(ApiQueryExecutionResult(status=ApiQueryExecutionStatus.SUCCESS, data=[], total=0))
+    planner = StubPlanner()
+
+    flat_form_spec = {
+        "root": "root",
+        "state": {"form": {"employeeId": "8058", "email": "437462373467289@qq.com"}},
+        "elements": {
+            "root": {"type": "PlannerCard", "props": {"title": "确认修改：修改员工信息"}, "children": ["form_1"]},
+            "form_1": {"type": "PlannerForm", "props": {}},
+        },
+    }
+    workflow = _build_workflow(
+        retriever=retriever,
+        extractor=extractor,
+        executor=executor,
+        planner=planner,
+        registry_source=StubRegistrySource(mutation_entry),
+        ui_result=UISpecBuildResult(spec=flat_form_spec, frozen=False),
+    )
+
+    response = await workflow.run(
+        ApiQueryRequest.model_validate({"query": "修改员工8058的邮箱为437462373467289@qq.com"}),
+        trace_id="trace-mutation-001",
+        interaction_id=None,
+        conversation_id=None,
+        user_context={"userId": "U001"},
+        user_token=None,
+    )
+
+    # 走表单快路：不执行变更
+    assert executor.calls == 0
+    assert planner.build_calls == 0
+
+    # 返回 SKIPPED 而非 ERROR 或 SUCCESS
+    assert response.execution_status == ApiQueryExecutionStatus.SKIPPED
+    assert response.error is None
+
+    # 表单运行时契约
+    assert response.ui_runtime is not None
+    assert response.ui_runtime.form.enabled is True
+    assert response.ui_runtime.form.api_id == "employee_update"
+    assert response.ui_runtime.form.route_url == "/api/v1/employees/update"
+    assert response.ui_runtime.form.mode == "edit"
+    assert response.ui_runtime.form.submit.confirm_required is True
+    assert response.ui_runtime.form.submit.business_intent == "saveToServer"
+
+    # execution_plan 携带 mutation 步骤，供前端确认后直接调用业务系统
+    assert response.execution_plan is not None
+    assert response.execution_plan.steps[0].api_id == "employee_update"
+    assert response.execution_plan.steps[0].params["employeeId"] == "8058"
+    assert response.execution_plan.steps[0].params["email"] == "437462373467289@qq.com"
+
+    # 表单字段包含两个必填字段
+    field_names = {f.name for f in response.ui_runtime.form.fields}
+    assert "员工ID" in field_names or "employeeId" in field_names
+
+
+@pytest.mark.asyncio
+async def test_workflow_multi_candidate_mutation_validate_plan_intercept() -> None:
+    """多候选场景：validate_plan 拦截 planner_unsafe_api 后转为表单快路。
+
+    模拟 Milvus 返回两个候选（一个 query 接口 + 一个 mutation 接口），
+    LLM planner 选出 mutation 接口放入执行计划，validate_plan 抛出
+    DagPlanValidationError(planner_unsafe_api)，workflow 应转为表单响应
+    而非降级到错误 Notice。
+    """
+
+    query_entry = _build_entry(entry_id="employee_list")
+    mutation_entry = ApiCatalogEntry(
+        id="employee_update",
+        description="修改员工信息",
+        domain="iam",
+        method="POST",
+        path="/api/v1/employees/update",
+        status="active",
+        operation_safety="mutation",
+        param_schema={
+            "type": "object",
+            "properties": {
+                "employeeId": {"type": "string", "title": "员工ID"},
+                "email": {"type": "string", "title": "邮箱"},
+            },
+            "required": ["employeeId", "email"],
+        },
+        detail_hint=ApiCatalogDetailHint(enabled=False),
+        pagination_hint=ApiCatalogPaginationHint(enabled=False),
+        template_hint=ApiCatalogTemplateHint(enabled=False),
+    )
+
+    retriever = StubRetriever([query_entry, mutation_entry])
+    # extractor 的 extract_routing_result 会被 _try_build_mutation_form_context 调用
+    extractor = StubExtractor(
+        mutation_entry,
+        {"employeeId": "8058", "email": "437462373467289@qq.com"},
+        business_intents=["saveToServer"],
+    )
+    executor = StubExecutor(ApiQueryExecutionResult(status=ApiQueryExecutionStatus.SUCCESS, data=[], total=0))
+    # StubPlanner 在 validate_plan 时抛出 planner_unsafe_api
+    planner = StubPlanner(
+        step_entries={},
+        validate_error=DagPlanValidationError("planner_unsafe_api", f"Planner 引入了非查询语义接口: {mutation_entry.id}"),
+    )
+
+    flat_form_spec = {
+        "root": "root",
+        "state": {},
+        "elements": {
+            "root": {"type": "PlannerCard", "props": {"title": "确认修改：修改员工信息"}, "children": ["f"]},
+            "f": {"type": "PlannerForm", "props": {}},
+        },
+    }
+    workflow = _build_workflow(
+        retriever=retriever,
+        extractor=extractor,
+        executor=executor,
+        planner=planner,
+        registry_source=StubRegistrySource(mutation_entry),
+        ui_result=UISpecBuildResult(spec=flat_form_spec, frozen=False),
+    )
+
+    response = await workflow.run(
+        ApiQueryRequest.model_validate({"query": "修改员工8058的邮箱为437462373467289@qq.com"}),
+        trace_id="trace-multi-mutation-001",
+        interaction_id=None,
+        conversation_id=None,
+        user_context={"userId": "U001"},
+        user_token=None,
+    )
+
+    # 不应降级为错误 Notice
+    assert response.execution_status == ApiQueryExecutionStatus.SKIPPED
+    assert response.error is None
+
+    # 走表单快路，执行器未调用
+    assert executor.calls == 0
+
+    # 表单契约正确
+    assert response.ui_runtime is not None
+    assert response.ui_runtime.form.enabled is True
+    assert response.ui_runtime.form.api_id == "employee_update"
+    assert response.ui_runtime.form.route_url == "/api/v1/employees/update"
+    assert response.ui_runtime.form.submit.confirm_required is True
+
+    # execution_plan 包含 mutation 步骤
+    assert response.execution_plan is not None
+    assert response.execution_plan.steps[0].api_id == "employee_update"
+
+
+@pytest.mark.asyncio
+async def test_workflow_multi_candidate_write_intent_bypasses_planner_and_returns_mutation_form() -> None:
+    """多候选写意图：唯一 mutation 候选时应在 build_plan 前直达表单快路。"""
+
+    query_entry = _build_entry(entry_id="employee_list")
+    mutation_entry = ApiCatalogEntry(
+        id="employee_update",
+        description="修改员工信息",
+        domain="iam",
+        method="POST",
+        path="/api/v1/employees/update",
+        status="active",
+        operation_safety="mutation",
+        param_schema={
+            "type": "object",
+            "properties": {
+                "employeeId": {"type": "string", "title": "员工ID"},
+                "email": {"type": "string", "title": "邮箱"},
+            },
+            "required": ["employeeId", "email"],
+        },
+        detail_hint=ApiCatalogDetailHint(enabled=False),
+        pagination_hint=ApiCatalogPaginationHint(enabled=False),
+        template_hint=ApiCatalogTemplateHint(enabled=False),
+    )
+    retriever = StubRetriever([query_entry, mutation_entry])
+    extractor = StubExtractor(
+        mutation_entry,
+        {"employeeId": "8058", "email": "437462373467289@qq.com"},
+        business_intents=["saveToServer"],
+    )
+    executor = StubExecutor(ApiQueryExecutionResult(status=ApiQueryExecutionStatus.SUCCESS, data=[], total=0))
+    planner = StubPlanner(
+        step_entries={},
+        validate_error=DagPlanValidationError("planner_unsafe_api", f"Planner 引入了非查询语义接口: {mutation_entry.id}"),
+    )
+
+    flat_form_spec = {
+        "root": "root",
+        "state": {},
+        "elements": {
+            "root": {"type": "PlannerCard", "props": {"title": "确认修改：修改员工信息"}, "children": ["f"]},
+            "f": {"type": "PlannerForm", "props": {}},
+        },
+    }
+    workflow = _build_workflow(
+        retriever=retriever,
+        extractor=extractor,
+        executor=executor,
+        planner=planner,
+        registry_source=StubRegistrySource(mutation_entry),
+        ui_result=UISpecBuildResult(spec=flat_form_spec, frozen=False),
+    )
+
+    response = await workflow.run(
+        ApiQueryRequest.model_validate({"query": "修改员工8058的邮箱为437462373467289@qq.com"}),
+        trace_id="trace-multi-write-001",
+        interaction_id=None,
+        conversation_id=None,
+        user_context={"userId": "U001"},
+        user_token=None,
+    )
+
+    # build_plan 前已完成 mutation 收敛，不应再调用 planner.build_plan / validate_plan。
+    assert planner.build_calls == 0
+    assert planner.validate_calls == 0
+    assert executor.calls == 0
+
+    assert response.execution_status == ApiQueryExecutionStatus.SKIPPED
+    assert response.error is None
+    assert response.ui_runtime is not None
+    assert response.ui_runtime.form.enabled is True
+    assert response.ui_runtime.form.api_id == "employee_update"
+    assert response.ui_runtime.form.route_url == "/api/v1/employees/update"
+    assert response.execution_plan is not None
+    assert response.execution_plan.steps[0].api_id == "employee_update"
