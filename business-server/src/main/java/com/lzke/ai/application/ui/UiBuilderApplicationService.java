@@ -71,6 +71,9 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestTemplate;
+
+import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -2391,16 +2394,18 @@ public class UiBuilderApplicationService {
      * @return 展开后的请求 schema
      */
     private JsonNode extractRequestSchema(JsonNode rootDocument, JsonNode operationNode) {
+        JsonNode parameterSchema = extractParameterSchema(rootDocument, operationNode);
         JsonNode requestBody = operationNode.path("requestBody").path("content");
         if (!requestBody.isObject()) {
-            return null;
+            return parameterSchema;
         }
         Iterator<String> fieldNames = requestBody.fieldNames();
         if (!fieldNames.hasNext()) {
-            return null;
+            return parameterSchema;
         }
         String contentType = fieldNames.next();
-        return resolveSchemaNode(rootDocument, requestBody.path(contentType).path("schema"), new HashSet<>());
+        JsonNode bodySchema = resolveSchemaNode(rootDocument, requestBody.path(contentType).path("schema"), new HashSet<>());
+        return mergeRequestSchema(parameterSchema, bodySchema, operationNode, contentType);
     }
 
     private String extractRequestContentType(JsonNode operationNode) {
@@ -2447,26 +2452,27 @@ public class UiBuilderApplicationService {
      * @return 请求样例
      */
     private JsonNode extractRequestExample(JsonNode rootDocument, JsonNode operationNode) {
+        JsonNode parameterExample = extractParameterExample(rootDocument, operationNode);
         JsonNode requestBody = operationNode.path("requestBody").path("content");
         if (!requestBody.isObject()) {
-            return null;
+            return parameterExample;
         }
         Iterator<String> fieldNames = requestBody.fieldNames();
         if (!fieldNames.hasNext()) {
-            return null;
+            return parameterExample;
         }
         String contentType = fieldNames.next();
         JsonNode mediaNode = requestBody.path(contentType);
         JsonNode example = mediaNode.path("example");
         if (!example.isMissingNode() && !example.isNull()) {
-            return example;
+            return mergeRequestExample(parameterExample, example);
         }
         JsonNode examplesNode = mediaNode.path("examples");
         if (examplesNode.isObject() && examplesNode.fields().hasNext()) {
-            return examplesNode.fields().next().getValue().path("value");
+            return mergeRequestExample(parameterExample, examplesNode.fields().next().getValue().path("value"));
         }
         JsonNode resolvedSchema = resolveSchemaNode(rootDocument, mediaNode.path("schema"), new HashSet<>());
-        return buildExampleFromSchema(resolvedSchema);
+        return mergeRequestExample(parameterExample, buildExampleFromSchema(resolvedSchema));
     }
 
     /**
@@ -2672,12 +2678,208 @@ public class UiBuilderApplicationService {
         JsonNode current = rootDocument;
         String[] segments = ref.substring(2).split("/");
         for (String segment : segments) {
-            current = current.path(segment);
+            current = current.path(decodeRefSegment(segment));
             if (current.isMissingNode()) {
                 return null;
             }
         }
         return current;
+    }
+
+    /**
+     * 解码 `$ref` 路径中的单个段。
+     *
+     * <p>一些 OpenAPI 生成器会把 schema 名中的特殊字符做 URL 编码，例如
+     * `Result%C2%ABCustBasicInfoVO%C2%BB`，而 JSON Pointer 本身又允许使用
+     * `~1`、`~0` 表示 `/` 和 `~`。这里统一做两层解码，确保能够稳定命中
+     * `components.schemas` 下的真实 key。
+     *
+     * @param segment `$ref` 中的单段路径
+     * @return 解码后的真实段名
+     */
+    private String decodeRefSegment(String segment) {
+        if (!StringUtils.hasText(segment)) {
+            return segment;
+        }
+        String decoded = URLDecoder.decode(segment, StandardCharsets.UTF_8);
+        return decoded.replace("~1", "/").replace("~0", "~");
+    }
+
+    /**
+     * 从 operation.parameters 中提取请求参数 schema。
+     *
+     * <p>对于没有 requestBody 的 GET/DELETE 类接口，这部分就是请求参数的完整来源。
+     * 每个参数会按参数名挂到根对象 properties 下，并通过 `x-in` 标注它来自
+     * `query/path/header/cookie` 中的哪一种位置。
+     *
+     * @param rootDocument OpenAPI 根文档
+     * @param operationNode 当前接口 operation
+     * @return 参数对象 schema；如果没有参数则返回 {@code null}
+     */
+    private JsonNode extractParameterSchema(JsonNode rootDocument, JsonNode operationNode) {
+        JsonNode parametersNode = operationNode.path("parameters");
+        if (!parametersNode.isArray() || parametersNode.isEmpty()) {
+            return null;
+        }
+
+        ObjectNode schema = objectMapper.createObjectNode();
+        schema.put("type", "object");
+        ObjectNode properties = schema.putObject("properties");
+        ArrayNode required = objectMapper.createArrayNode();
+
+        for (JsonNode rawParameterNode : parametersNode) {
+            JsonNode parameterNode = resolveParameterNode(rootDocument, rawParameterNode);
+            if (parameterNode == null || parameterNode.isMissingNode() || parameterNode.isNull()) {
+                continue;
+            }
+
+            String name = parameterNode.path("name").asText(null);
+            if (!StringUtils.hasText(name)) {
+                continue;
+            }
+
+            JsonNode parameterSchema = resolveSchemaNode(rootDocument, parameterNode.path("schema"), new HashSet<>());
+            ObjectNode normalizedSchema = parameterSchema != null && parameterSchema.isObject()
+                    ? parameterSchema.deepCopy()
+                    : objectMapper.createObjectNode();
+            if (!normalizedSchema.has("type")) {
+                normalizedSchema.put("type", "string");
+            }
+            if (StringUtils.hasText(parameterNode.path("description").asText(null)) && !normalizedSchema.has("description")) {
+                normalizedSchema.put("description", parameterNode.path("description").asText());
+            }
+            if (StringUtils.hasText(parameterNode.path("in").asText(null))) {
+                normalizedSchema.put("x-in", parameterNode.path("in").asText());
+            }
+            properties.set(name, normalizedSchema);
+
+            if (parameterNode.path("required").asBoolean(false)) {
+                required.add(name);
+            }
+        }
+
+        if (properties.isEmpty()) {
+            return null;
+        }
+        if (!required.isEmpty()) {
+            schema.set("required", required);
+        }
+        return schema;
+    }
+
+    /**
+     * 提取请求参数样例。
+     *
+     * <p>优先采用参数级 example/examples；如果文档没有显式样例，则根据参数 schema
+     * 自动生成一个最小可读示例，方便 UI Builder 在接口联调前直接看到参数骨架。
+     *
+     * @param rootDocument OpenAPI 根文档
+     * @param operationNode 当前接口 operation
+     * @return 参数样例对象
+     */
+    private JsonNode extractParameterExample(JsonNode rootDocument, JsonNode operationNode) {
+        JsonNode parametersNode = operationNode.path("parameters");
+        if (!parametersNode.isArray() || parametersNode.isEmpty()) {
+            return null;
+        }
+
+        ObjectNode example = objectMapper.createObjectNode();
+        for (JsonNode rawParameterNode : parametersNode) {
+            JsonNode parameterNode = resolveParameterNode(rootDocument, rawParameterNode);
+            if (parameterNode == null || parameterNode.isMissingNode() || parameterNode.isNull()) {
+                continue;
+            }
+
+            String name = parameterNode.path("name").asText(null);
+            if (!StringUtils.hasText(name)) {
+                continue;
+            }
+
+            JsonNode parameterExample = parameterNode.path("example");
+            if (parameterExample.isMissingNode() || parameterExample.isNull()) {
+                JsonNode examplesNode = parameterNode.path("examples");
+                if (examplesNode.isObject() && examplesNode.fields().hasNext()) {
+                    parameterExample = examplesNode.fields().next().getValue().path("value");
+                }
+            }
+            if (parameterExample.isMissingNode() || parameterExample.isNull()) {
+                parameterExample = buildExampleFromSchema(resolveSchemaNode(rootDocument, parameterNode.path("schema"), new HashSet<>()));
+            }
+            example.set(name, parameterExample != null ? parameterExample : objectMapper.nullNode());
+        }
+
+        return example.isEmpty() ? null : example;
+    }
+
+    /**
+     * 解析 parameter 节点上的本地 `$ref`。
+     *
+     * @param rootDocument OpenAPI 根文档
+     * @param parameterNode parameter 原始节点
+     * @return 展开的 parameter 节点
+     */
+    private JsonNode resolveParameterNode(JsonNode rootDocument, JsonNode parameterNode) {
+        if (parameterNode == null || parameterNode.isMissingNode() || parameterNode.isNull()) {
+            return null;
+        }
+        if (parameterNode.isObject() && parameterNode.has("$ref")) {
+            JsonNode referencedNode = resolveLocalRef(rootDocument, parameterNode.path("$ref").asText());
+            if (referencedNode == null || !referencedNode.isObject()) {
+                return referencedNode != null ? referencedNode : parameterNode;
+            }
+
+            ObjectNode mergedNode = referencedNode.deepCopy();
+            Iterator<Map.Entry<String, JsonNode>> fields = parameterNode.fields();
+            while (fields.hasNext()) {
+                Map.Entry<String, JsonNode> field = fields.next();
+                if (!"$ref".equals(field.getKey())) {
+                    mergedNode.set(field.getKey(), field.getValue());
+                }
+            }
+            return mergedNode;
+        }
+        return parameterNode;
+    }
+
+    private JsonNode mergeRequestSchema(JsonNode parameterSchema, JsonNode bodySchema, JsonNode operationNode, String contentType) {
+        if (parameterSchema == null) {
+            return bodySchema;
+        }
+        if (bodySchema == null) {
+            return parameterSchema;
+        }
+
+        ObjectNode mergedSchema = objectMapper.createObjectNode();
+        mergedSchema.put("type", "object");
+        ObjectNode properties = mergedSchema.putObject("properties");
+        properties.set("params", parameterSchema);
+        properties.set("body", bodySchema);
+
+        ArrayNode required = objectMapper.createArrayNode();
+        if (operationNode.path("requestBody").path("required").asBoolean(false)) {
+            required.add("body");
+        }
+        if (!required.isEmpty()) {
+            mergedSchema.set("required", required);
+        }
+        if (StringUtils.hasText(contentType)) {
+            mergedSchema.put("x-requestBodyContentType", contentType);
+        }
+        return mergedSchema;
+    }
+
+    private JsonNode mergeRequestExample(JsonNode parameterExample, JsonNode bodyExample) {
+        if (parameterExample == null) {
+            return bodyExample;
+        }
+        if (bodyExample == null) {
+            return parameterExample;
+        }
+
+        ObjectNode mergedExample = objectMapper.createObjectNode();
+        mergedExample.set("params", parameterExample);
+        mergedExample.set("body", bodyExample);
+        return mergedExample;
     }
 
     private void resolveObjectField(JsonNode rootDocument, ObjectNode objectNode, String fieldName, Set<String> visitedRefs) {
