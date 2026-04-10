@@ -614,8 +614,8 @@ class ApiQueryResponse(BaseModel):
     """`api_query` 主接口响应模型。
 
     功能：
-        把前端真正需要的最小读写编排 envelope 固定为 6 个字段，避免把
-        `context_pool`、业务语义和调试锚点继续暴露到外部契约里。
+        把前端真正需要的最小读写编排 envelope 固定为 5 个对外字段，避免把
+        `context_pool`、运行时推导细节和调试锚点继续暴露到外部契约里。
     """
 
     trace_id: str = Field(..., description="网关生成或透传的链路追踪 ID")
@@ -624,7 +624,11 @@ class ApiQueryResponse(BaseModel):
         description="本次接口执行状态",
     )
     execution_plan: ApiQueryExecutionPlan | None = Field(None, description="执行计划；写场景前端可据此识别后续接口")
-    ui_runtime: ApiQueryUIRuntime | None = Field(None, description="前端运行时元数据")
+    ui_runtime: ApiQueryUIRuntime | None = Field(
+        None,
+        description="后端内部运行时元数据；默认不进入 `/api-query` 对外响应。",
+        exclude=True,
+    )
     ui_spec: dict[str, Any] | None = Field(None, description="json-render UI Spec")
     error: str | None = Field(None, description="错误信息（接口调用失败时）")
 

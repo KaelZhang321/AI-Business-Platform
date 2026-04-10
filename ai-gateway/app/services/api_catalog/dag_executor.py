@@ -38,16 +38,36 @@ class ApiDagExecutor:
         step_entries: dict[str, ApiCatalogEntry],
         *,
         user_token: str | None,
+        user_id: str | None = None,
         trace_id: str,
         interaction_id: str | None = None,
         conversation_id: str | None = None,
     ) -> DagExecutionReport:
-        """执行只读 DAG 并返回兼容报告。"""
+        """执行只读 DAG 并返回兼容报告。
+
+        功能：
+            这一层继续维持旧的 `execute_plan` 契约，但把请求级 `user_id` 一并下传到
+            `ApiQueryExecutionGraph`，确保 runtime invoke 场景也能拿到和 route 层一致的
+            最终用户身份，而不是只剩 token。
+
+        Args:
+            plan: 已通过白名单校验的执行计划。
+            step_entries: `step_id -> ApiCatalogEntry` 映射。
+            user_token: 透传给下游的认证头。
+            user_id: 当前请求最终认定的用户主键。
+            trace_id: 当前请求链路 Trace ID。
+            interaction_id: 多次追问共享的交互标识。
+            conversation_id: 跨轮对话共享的会话标识。
+
+        Returns:
+            兼容历史 DAG 门面的执行报告。
+        """
 
         graph_result = await self._execution_graph.run(
             plan,
             step_entries,
             user_token=user_token,
+            user_id=user_id,
             trace_id=trace_id,
             interaction_id=interaction_id,
             conversation_id=conversation_id,

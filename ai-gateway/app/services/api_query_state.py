@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, TypedDict
+from typing import Any, Literal, TypedDict
 
 from pydantic import BaseModel, Field
 
@@ -120,6 +120,31 @@ class ApiQueryMutationFormContext:
 
 
 @dataclass(slots=True)
+class ApiQueryDeletePreviewContext:
+    """删除类 mutation 的预检运行时事实。
+
+    功能：
+        删除操作不能直接把空表单丢给前端；它必须先用只读查询确认候选，再决定输出：
+
+        1. 不存在：提示用户未命中目标
+        2. 单条：给出确认删除表单
+        3. 多条：展示候选列表，并为每条候选挂删除动作
+        4. 无法预检：显式提示当前无法安全确认删除对象
+    """
+
+    delete_entry: ApiCatalogEntry
+    status: Literal["missing", "confirm", "candidates", "unresolved"]
+    business_intent_code: str = "deleteCustomer"
+    target_name: str | None = None
+    identifier_field: str = "id"
+    matched_rows: list[dict[str, Any]] = field(default_factory=list)
+    submit_payload: dict[str, Any] = field(default_factory=dict)
+    lookup_entry: ApiCatalogEntry | None = None
+    lookup_params: dict[str, Any] = field(default_factory=dict)
+    message: str | None = None
+
+
+@dataclass(slots=True)
 class ApiQueryRuntimeContext:
     """`/api-query` 运行时上下文。
 
@@ -138,6 +163,7 @@ class ApiQueryRuntimeContext:
         - `degrade_context`：待统一收口的降级事实
         - `execution_state`：执行节点生成的内层状态快照
         - `mutation_form_context`：mutation 表单快路的预填数据，不经过执行图
+        - `delete_preview_context`：删除类 mutation 的候选预检结果
         - `log_prefix`：当前请求统一日志前缀
     """
 
@@ -151,6 +177,7 @@ class ApiQueryRuntimeContext:
     degrade_context: ApiQueryDegradeContext | None = None
     execution_state: ApiQueryExecutionState | None = None
     mutation_form_context: ApiQueryMutationFormContext | None = None
+    delete_preview_context: ApiQueryDeletePreviewContext | None = None
     log_prefix: str = ""
 
 

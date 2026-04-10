@@ -82,11 +82,12 @@ class ApiQueryExecutionRuntime:
 
     入参业务含义：
         plan: 当前请求的 DAG 规划结果。
-    step_entries: `step_id -> ApiCatalogEntry` 白名单，确保节点只执行校验后的接口。
+        step_entries: `step_id -> ApiCatalogEntry` 白名单，确保节点只执行校验后的接口。
         trace_id: 当前请求链路 Trace ID。
         interaction_id: 一次连续交互内的多请求聚合标识。
         conversation_id: 跨多轮查询共享的会话标识。
         user_token: 透传给业务系统或 runtime invoke 的认证头。
+        user_id: 当前请求最终认定的用户主键，供 runtime invoke 落审计字段。
         step_timeout_seconds: 单节点外层保护超时。
 
     返回值约束：
@@ -99,6 +100,7 @@ class ApiQueryExecutionRuntime:
     interaction_id: str | None
     conversation_id: str | None
     user_token: str | None
+    user_id: str | None
     step_timeout_seconds: float
 
 
@@ -141,16 +143,23 @@ class ApiQueryExecutionGraph:
         step_entries: dict[str, ApiCatalogEntry],
         *,
         user_token: str | None,
+        user_id: str | None = None,
         trace_id: str,
         interaction_id: str | None = None,
         conversation_id: str | None = None,
     ) -> ApiQueryExecutionGraphResult:
         """执行一张动态 DAG。
 
+        功能：
+            该方法除了执行依赖图，还负责把 route 层已经确定好的 `user_token` / `user_id`
+            绑定进一次 graph run 的闭包，确保每个节点看到的身份口径一致，避免某些节点
+            继续从局部上下文二次猜测“当前是谁在发起查询”。
+
         Args:
             plan: 已通过第三阶段白名单与依赖校验的执行计划。
             step_entries: `step_id -> ApiCatalogEntry` 映射。
             user_token: 请求期认证头。
+            user_id: 当前请求最终认定的用户主键。
             trace_id: 当前链路 Trace ID。
 
         Returns:
@@ -167,6 +176,7 @@ class ApiQueryExecutionGraph:
             interaction_id=interaction_id,
             conversation_id=conversation_id,
             user_token=user_token,
+            user_id=user_id,
             step_timeout_seconds=_resolve_step_timeout(self._budget),
         )
         build_started = perf_counter()
@@ -424,6 +434,7 @@ class ApiQueryExecutionGraph:
                 entry=entry,
                 resolved_params=resolved_params,
                 user_token=runtime.user_token,
+                user_id=runtime.user_id,
                 trace_id=runtime.trace_id,
                 step=step,
                 step_timeout_seconds=runtime.step_timeout_seconds,
@@ -563,13 +574,20 @@ async def _call_entry_with_timeout(
     entry: ApiCatalogEntry,
     resolved_params: dict[str, Any],
     user_token: str | None,
+    user_id: str | None,
     trace_id: str,
     step: ApiQueryPlanStep,
     step_timeout_seconds: float,
     interaction_id: str | None = None,
     conversation_id: str | None = None,
 ) -> ApiQueryExecutionResult:
-    """执行单个业务接口并加上节点级超时保护。"""
+    """执行单个业务接口并加上节点级超时保护。
+
+    功能：
+        runtime invoke 现在需要把请求级 `user_id` 一并写入请求壳；这里把用户主键和 token
+        一起透传给执行器，是为了让“谁发起了这次查询”和“凭什么能调下游”继续在同一个
+        节点执行上下文里闭环，而不是在 DAG 节点里再额外拼装一次身份信息。
+    """
 
     try:
         return await asyncio.wait_for(
@@ -577,6 +595,7 @@ async def _call_entry_with_timeout(
                 entry,
                 resolved_params,
                 user_token=user_token,
+                user_id=user_id,
                 trace_id=trace_id,
             ),
             timeout=step_timeout_seconds,

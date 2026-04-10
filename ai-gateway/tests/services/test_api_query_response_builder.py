@@ -276,6 +276,57 @@ async def test_build_mutation_form_response_exposes_full_schema_except_audit_tim
 
 
 @pytest.mark.asyncio
+async def test_build_mutation_form_response_hides_id_for_create_style_queries() -> None:
+    """新增类 mutation 表单应隐藏服务端生成的主键字段。"""
+
+    builder = ApiQueryResponseBuilder(
+        dynamic_ui=DynamicUIService(catalog_service=UICatalogService()),
+        snapshot_service=UISnapshotService(),
+        ui_catalog_service=UICatalogService(),
+        registry_source=FakeRegistrySource(),
+    )
+    entry = ApiCatalogEntry(
+        id="role_create",
+        description="新增角色",
+        domain="iam",
+        operation_safety="mutation",
+        method="POST",
+        path="/api/v1/roles/create",
+        param_schema=ParamSchema(
+            properties={
+                "id": {"type": "string", "title": "ID"},
+                "roleName": {"type": "string", "title": "角色名称"},
+                "roleCode": {"type": "string", "title": "角色编码"},
+                "createTime": {"type": "string", "title": "创建时间"},
+                "updateTime": {"type": "string", "title": "更新时间"},
+            },
+            required=["roleName", "roleCode"],
+        ),
+    )
+    state: ApiQueryState = {
+        "request_mode": "nl",
+        "query_text": "新增一个健管师角色",
+        "trace_id": "trace-create-role-form",
+    }
+
+    response = await builder.build_mutation_form_response(
+        state=state,
+        entry=entry,
+        pre_fill_params={},
+        business_intent_code="saveToServer",
+        query_domains_hint=["iam"],
+    )
+
+    field_names = [field.submit_key for field in response.ui_runtime.form.fields]
+    assert field_names == ["roleName", "roleCode"]
+    assert "id" not in field_names
+    assert "createTime" not in field_names
+    assert "updateTime" not in field_names
+    assert response.ui_spec["state"]["form"]["roleName"] == "健管师"
+    assert response.execution_plan.steps[0].params["roleName"] == "健管师"
+
+
+@pytest.mark.asyncio
 async def test_build_execution_response_clears_runtime_when_ui_is_frozen() -> None:
     """执行成功但 UI Guard 冻结时，必须主动清空交互能力。"""
 

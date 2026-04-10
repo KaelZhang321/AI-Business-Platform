@@ -14,10 +14,21 @@ from fastapi import Request
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
+_TRUSTED_USER_ID_HEADER = "X-User-Id"
 
 
 @dataclass(slots=True)
 class IdentityContext:
+    """请求级身份事实快照。
+
+    功能：
+        统一承载网关从 JWT 与可信头里收敛出的用户事实，避免 route、workflow、executor
+        各自拼装身份字段，导致“谁是最终用户”在不同阶段出现口径漂移。
+
+    返回值约束：
+        该对象只描述当前请求期可用的身份事实，不承担持久化职责。
+    """
+
     subject_id: str | None = None
     user_id: str | None = None
     employee_id: str | None = None
@@ -33,6 +44,16 @@ class IdentityContext:
     raw_claims: dict[str, Any] = field(default_factory=dict)
 
     def to_request_context(self) -> dict[str, Any]:
+        """转换成 workflow 约定的轻量用户上下文。
+
+        功能：
+            route 与 workflow 更关心稳定的业务字段，而不是完整 JWT claims。这里收敛成
+            轻量字典，是为了降低下游对 token 结构的耦合，后续即使认证供应方调整 claims，
+            只要这一层保持兼容，查询链路就不需要联动改动。
+
+        Returns:
+            仅包含 workflow / executor 真正依赖字段的请求级用户上下文。
+        """
         return {
             "userId": self.user_id,
             "employeeId": self.employee_id,
@@ -58,10 +79,54 @@ class IdentityVault:
         self._jwt_secret = jwt_secret if jwt_secret is not None else settings.gateway_jwt_secret
 
     def extract_from_request(self, request: Request) -> IdentityContext | None:
+        """基于请求头组装当前请求的最终身份上下文。
+
+        功能：
+            `ai-gateway` 位于 Java/IAM 之后时，`X-User-Id` 已经代表上游确认过的最终用户主键。
+            这里仍然先解析 `Authorization`，保留 token 中的角色、部门等扩展画像，但最终
+            `user_id` 允许被可信头覆盖，避免网关继续沿用过时或不一致的 token subject。
+
+        Args:
+            request: 当前 FastAPI 请求对象，承载 Bearer token 与可信身份头。
+
+        Returns:
+            归一化后的 `IdentityContext`；若 token 与可信头都缺失，则返回 `None`。
+
+        Edge Cases:
+            - token 无法解析但 `X-User-Id` 存在时，仍返回最小身份上下文，保证查询链路可继续
+            - `X-User-Id` 只覆盖最终 `user_id`，不覆盖 token 中的角色/部门等画像字段
+        """
         auth_header = request.headers.get("Authorization")
-        return self.extract_from_auth_header(auth_header)
+        identity = self.extract_from_auth_header(auth_header)
+        trusted_user_id = _extract_trusted_user_id(request)
+        if trusted_user_id is None:
+            return identity
+
+        if identity is None:
+            return _build_trusted_header_identity(trusted_user_id)
+
+        # Java/IAM 已经完成统一认证；网关层保留 token 画像，但最终 user_id 以可信头为准。
+        identity.user_id = trusted_user_id
+        return identity
 
     def extract_from_auth_header(self, auth_header: str | None) -> IdentityContext | None:
+        """从 Bearer Token 提取可复用的身份画像。
+
+        功能：
+            即使 `X-User-Id` 会覆盖最终 `user_id`，查询链路仍然需要 token 中的角色、部门、
+            数据域等扩展画像来补全上下文。因此这里单独保留 token 解析逻辑，让“用户主键”
+            与“扩展画像”可以按职责拆分并最终合并。
+
+        Args:
+            auth_header: 原始 `Authorization` 请求头。
+
+        Returns:
+            成功时返回解析后的身份上下文；格式非法或无法解码时返回 `None`。
+
+        Edge Cases:
+            - 未配置共享密钥时仍会返回未验签 claims，供只读链路做最小画像补全
+            - 非 `Bearer` 头会直接忽略，避免把其它认证方案误判成 JWT
+        """
         if not auth_header or not auth_header.startswith("Bearer "):
             return None
 
@@ -105,6 +170,53 @@ class IdentityVault:
             raw_claims=claims,
         )
         return identity
+
+
+def _extract_trusted_user_id(request: Request) -> str | None:
+    """读取并规范化可信用户头。
+
+    功能：
+        Starlette 的 `request.headers` 已经是大小写不敏感映射，因此这里集中做一次空白规整，
+        避免后续在 route、middleware、workflow 多处重复写同样的脏值防御逻辑。
+
+    Args:
+        request: 当前请求对象。
+
+    Returns:
+        去除首尾空白后的可信用户 ID；若头不存在或为空字符串，则返回 `None`。
+
+    Edge Cases:
+        - 仅包含空白字符的 header 会被视为缺失，避免把脏值写进 `request.state.user_id`
+    """
+    header_value = request.headers.get(_TRUSTED_USER_ID_HEADER)
+    if header_value is None:
+        return None
+    normalized_user_id = header_value.strip()
+    return normalized_user_id or None
+
+
+def _build_trusted_header_identity(trusted_user_id: str) -> IdentityContext:
+    """为“只有可信头、没有可用 token”的场景构造最小身份上下文。
+
+    功能：
+        查询链路真正依赖的是最终 `user_id`，而不是完整 token 画像。这里显式构造最小对象，
+        是为了让 `request.state.identity`、`request.state.user_id` 和 `to_request_context()`
+        继续走统一通道，而不是在 route 层散落“缺 token 时手写 userId 回填”的特例。
+
+    Args:
+        trusted_user_id: 上游可信认证链路已经确认过的用户主键。
+
+    Returns:
+        仅携带最小身份事实的 `IdentityContext`。
+
+    Edge Cases:
+        - 不伪造角色、部门等扩展画像，避免把“只有 user_id”误装成“完整认证用户”
+    """
+    return IdentityContext(
+        subject_id=trusted_user_id,
+        user_id=trusted_user_id,
+        raw_claims={_TRUSTED_USER_ID_HEADER: trusted_user_id},
+    )
 
 
 def _decode_jwt(token: str, secret: str | None) -> tuple[dict[str, Any], dict[str, Any], bool]:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Callable
 from typing import Any
 
@@ -27,6 +28,7 @@ from app.services.api_catalog.schema import ApiCatalogEntry, ApiCatalogSearchFil
 from app.services.api_query_response_builder import ApiQueryResponseBuilder
 from app.services.api_query_state import (
     ApiQueryDegradeContext,
+    ApiQueryDeletePreviewContext,
     ApiQueryMutationFormContext,
     ApiQueryRuntimeContext,
     ApiQueryState,
@@ -43,6 +45,37 @@ logger = logging.getLogger(__name__)
 
 _QUERY_SAFE_METHODS = {"GET", "POST"}
 _PATCH_PAGE_SIZE_MAX = 50
+_DELETE_LOOKUP_PAGE_SIZE = 20
+_DELETE_ENTRY_KEYWORDS = ("delete", "remove", "del", "删除", "移除", "清除", "注销", "作废")
+_DELETE_LOOKUP_SEGMENT_KEYWORDS = ("list", "page", "query", "search", "get", "detail", "info", "select")
+_DELETE_LOOKUP_NAME_FIELD_KEYWORDS = ("name", "keyword", "keywords", "title", "query", "search")
+_DELETE_LOOKUP_EXCLUDED_FIELDS = {
+    "id",
+    "ids",
+    "status",
+    "page",
+    "pageno",
+    "pagenum",
+    "pagesize",
+    "size",
+    "limit",
+    "sortfield",
+    "sortorder",
+    "starttime",
+    "endtime",
+    "createby",
+    "updateby",
+    "createtime",
+    "updatetime",
+}
+_DELETE_NAME_PATTERNS = (
+    re.compile(
+        r"(?:删除|移除|清除|注销|作废)(?:一个|一名|一条|一个名为|名为)?(?P<name>.+?)(?:角色|账号|部门|岗位|员工|用户)\s*$"
+    ),
+    re.compile(
+        r"(?:删除|移除|清除|注销|作废).*(?:角色|账号|部门|岗位|员工|用户)[：: ]+(?P<name>[^，。；;]+)\s*$"
+    ),
+)
 
 
 class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
@@ -401,6 +434,28 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
 
             # mutation 接口：不进入执行图，走表单快路。
             if selected_entry.operation_safety == "mutation":
+                write_intent_code = _resolve_write_intent_code(planning_intent_codes)
+                if write_intent_code == "deleteCustomer":
+                    delete_preview_context = await self._try_build_delete_preview_context(
+                        state,
+                        runtime_context,
+                        selected_entry=selected_entry,
+                        business_intent_code=write_intent_code,
+                        pre_fill_params=dict(routing_result.params),
+                    )
+                    if delete_preview_context is not None:
+                        runtime_context.delete_preview_context = delete_preview_context
+                        logger.info(
+                            "%s delete mutation candidate detected api_id=%s — routing to delete preview path",
+                            _build_api_query_log_prefix(
+                                state["trace_id"],
+                                state.get("interaction_id"),
+                                state.get("conversation_id"),
+                            ),
+                            selected_entry.id,
+                        )
+                        return {"business_intent_codes": planning_intent_codes}
+
                 logger.info(
                     "%s mutation candidate detected api_id=%s — routing to mutation_form path",
                     _build_api_query_log_prefix(
@@ -434,6 +489,26 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
         # 多候选 + 写意图时，若候选里只有一个 mutation 接口，优先走表单快路。
         # 这样可以避免被 Planner 噪声（例如 unknown_api / api_id_mismatch）拖入 stage3 降级。
         if _has_write_intent(planning_intent_codes):
+            write_intent_code = _resolve_write_intent_code(planning_intent_codes)
+            if write_intent_code == "deleteCustomer":
+                delete_preview_context = await self._try_build_delete_preview_context(
+                    state,
+                    runtime_context,
+                    business_intent_code=write_intent_code,
+                )
+                if delete_preview_context is not None:
+                    runtime_context.delete_preview_context = delete_preview_context
+                    logger.info(
+                        "%s delete intent routed to delete preview path before planner api_id=%s",
+                        _build_api_query_log_prefix(
+                            state["trace_id"],
+                            state.get("interaction_id"),
+                            state.get("conversation_id"),
+                        ),
+                        delete_preview_context.delete_entry.id,
+                    )
+                    return {"business_intent_codes": planning_intent_codes}
+
             mutation_context = await self._try_build_mutation_form_context(state, runtime_context)
             if mutation_context is not None:
                 runtime_context.mutation_form_context = mutation_context
@@ -483,6 +558,26 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
         try:
             runtime_context.step_entries = self._planner_getter().validate_plan(state["plan"], runtime_context.candidates)
         except DagPlanValidationError as exc:
+            write_intent_code = _resolve_write_intent_code(list(state.get("business_intent_codes", [])))
+            if write_intent_code == "deleteCustomer":
+                delete_preview_context = await self._try_build_delete_preview_context(
+                    state,
+                    runtime_context,
+                    business_intent_code=write_intent_code,
+                )
+                if delete_preview_context is not None:
+                    runtime_context.delete_preview_context = delete_preview_context
+                    logger.info(
+                        "%s delete preview intercepted validate_plan failure — api_id=%s",
+                        _build_api_query_log_prefix(
+                            state["trace_id"],
+                            state.get("interaction_id"),
+                            state.get("conversation_id"),
+                        ),
+                        delete_preview_context.delete_entry.id,
+                    )
+                    return {}
+
             # 写意图场景在 stage3 校验失败时，优先尝试转 mutation 表单快路。
             # 真实线上常见失败码不止 planner_unsafe_api（如 planner_unknown_api / api_id_mismatch）。
             if exc.code == "planner_unsafe_api" or _has_write_intent(list(state.get("business_intent_codes", []))):
@@ -533,17 +628,50 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
             若候选集中存在 mutation 接口则返回 ApiQueryMutationFormContext，否则返回 None。
         """
 
+        request_body = _require_request_body(runtime_context)
+        query = request_body.query or ""
+        extractor = self._get_extractor()
+
         candidates = runtime_context.candidates
+        route_hint = runtime_context.route_hint
+
+        # 1. 优先复用“在完整候选集上的最终选中结果”。
+        # 多 mutation 候选是创建类写意图的常见场景；如果路由阶段已经稳定选中了某个
+        # mutation 接口，就不应该再因为 `len(mutation_entries) != 1` 被打回 Notice。
+        try:
+            routing_result = await extractor.extract_routing_result(
+                query,
+                candidates,
+                runtime_context.user_context,
+                allowed_business_intents=self._allowed_business_intent_codes_getter(),
+                routing_hints=route_hint,
+                trace_id=state["trace_id"],
+            )
+            selected_entry = _find_selected_entry(candidates, routing_result)
+            if selected_entry is not None and selected_entry.operation_safety == "mutation":
+                planning_intent_codes = list(routing_result.business_intents or state.get("business_intent_codes", []))
+                return ApiQueryMutationFormContext(
+                    entry=selected_entry,
+                    pre_fill_params=dict(routing_result.params),
+                    business_intent_code=_resolve_write_intent_code(planning_intent_codes),
+                )
+        except Exception:
+            logger.warning(
+                "%s mutation candidate routing failed — fallback to unique mutation candidate",
+                _build_api_query_log_prefix(
+                    state["trace_id"],
+                    state.get("interaction_id"),
+                    state.get("conversation_id"),
+                ),
+            )
+
         mutation_entries = [candidate.entry for candidate in candidates if candidate.entry.operation_safety == "mutation"]
         if len(mutation_entries) != 1:
             return None
         mutation_entry = mutation_entries[0]
 
-        request_body = _require_request_body(runtime_context)
-        query = request_body.query or ""
-
-        # 用 LLM 为 mutation 接口提取预填参数（与单候选路径相同的提取逻辑）
-        extractor = self._get_extractor()
+        # 2. 兼容旧策略：当候选里只有一个 mutation 接口时，即便全候选路由不稳定，
+        # 仍然直接针对这条 mutation 接口做参数提取，避免写意图退化成 stage3 Notice。
         try:
             from app.services.api_catalog.schema import ApiCatalogSearchResult
 
@@ -554,6 +682,7 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
                 trace_id=state["trace_id"],
             )
             pre_fill_params = dict(routing_result.params)
+            planning_intent_codes = list(routing_result.business_intents or state.get("business_intent_codes", []))
         except Exception:
             logger.warning(
                 "%s mutation param extraction failed — using empty pre_fill",
@@ -564,13 +693,246 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
                 ),
             )
             pre_fill_params = {}
+            planning_intent_codes = list(state.get("business_intent_codes", []))
 
-        planning_intent_codes = list(state.get("business_intent_codes", []))
         return ApiQueryMutationFormContext(
             entry=mutation_entry,
             pre_fill_params=pre_fill_params,
             business_intent_code=_resolve_write_intent_code(planning_intent_codes),
         )
+
+    async def _try_build_delete_preview_context(
+        self,
+        state: ApiQueryState,
+        runtime_context: ApiQueryRuntimeContext,
+        *,
+        selected_entry: ApiCatalogEntry | None = None,
+        business_intent_code: str = "deleteCustomer",
+        pre_fill_params: dict[str, Any] | None = None,
+    ) -> ApiQueryDeletePreviewContext | None:
+        """删除类 mutation 先查候选，再决定返回确认页还是候选列表。
+
+        功能：
+            删除接口往往没有稳定的 request_schema，直接生成空表单会把前端逼到“盲删”。
+            这里统一把删除意图改成“只读预检”：
+
+            1. 从 query 中提取待删实体名称
+            2. 找到同资源的查询接口
+            3. 执行一次只读查询拿候选
+            4. 根据 0/1/N 条结果生成后续 UI
+        """
+
+        request_body = _require_request_body(runtime_context)
+        query_text = request_body.query or ""
+
+        delete_entry = selected_entry or await self._resolve_delete_mutation_entry(state, runtime_context)
+        if delete_entry is None:
+            return None
+
+        target_name = _infer_delete_target_name(query_text)
+        # if not target_name:
+        #     return ApiQueryDeletePreviewContext(
+        #         delete_entry=delete_entry,
+        #         status="unresolved",
+        #         business_intent_code=business_intent_code,
+        #         message="当前无法从请求中稳定识别待删除角色名称，请补充更具体条件后重试。",
+        #     )
+
+        candidate_lookup_entries = [
+            candidate.entry
+            for candidate in runtime_context.candidates
+            if candidate.entry.id != delete_entry.id and _score_delete_lookup_entry(delete_entry, candidate.entry) > 0
+        ]
+        if not candidate_lookup_entries:
+            direct_submit_payload = _build_direct_delete_submit_payload(
+                delete_entry=delete_entry,
+                pre_fill_params=pre_fill_params or {},
+                target_name=target_name,
+            )
+            if not direct_submit_payload:
+                return ApiQueryDeletePreviewContext(
+                    delete_entry=delete_entry,
+                    status="unresolved",
+                    business_intent_code=business_intent_code,
+                    target_name=target_name,
+                    message=f"当前无法确认“{target_name}”的删除参数，请补充更具体条件后重试。",
+                )
+
+            direct_row = dict(direct_submit_payload)
+            primary_field = next(iter(direct_submit_payload.keys()))
+            return ApiQueryDeletePreviewContext(
+                delete_entry=delete_entry,
+                status="confirm",
+                business_intent_code=business_intent_code,
+                target_name=target_name,
+                identifier_field=primary_field,
+                matched_rows=[direct_row],
+                submit_payload=direct_submit_payload,
+            )
+
+        lookup_entry = await self._find_delete_lookup_entry(delete_entry=delete_entry, runtime_context=runtime_context)
+        if lookup_entry is None:
+            return ApiQueryDeletePreviewContext(
+                delete_entry=delete_entry,
+                status="unresolved",
+                business_intent_code=business_intent_code,
+                target_name=target_name,
+                message=f"当前无法在删除前定位“{target_name}”的角色查询接口，请稍后重试或补充更具体条件。",
+            )
+
+        lookup_params = _build_delete_lookup_params(lookup_entry, target_name=target_name)
+        missing_required_params = _find_missing_required_params(lookup_entry, lookup_params)
+        if missing_required_params:
+            return ApiQueryDeletePreviewContext(
+                delete_entry=delete_entry,
+                status="unresolved",
+                business_intent_code=business_intent_code,
+                target_name=target_name,
+                lookup_entry=lookup_entry,
+                lookup_params=lookup_params,
+                message=(
+                    "删除前置查询缺少必要条件，当前无法安全确认待删除角色："
+                    f"{', '.join(missing_required_params)}"
+                ),
+            )
+
+        _, _, executor, _, _ = self._services_getter()
+        try:
+            lookup_result = await executor.call(
+                lookup_entry,
+                lookup_params,
+                user_token=runtime_context.user_token,
+                user_id=_resolve_runtime_user_id(runtime_context.user_context),
+                trace_id=state["trace_id"],
+            )
+        except Exception as exc:
+            logger.warning(
+                "%s delete preview lookup crashed api_id=%s error=%s",
+                runtime_context.log_prefix,
+                lookup_entry.id,
+                exc,
+            )
+            return ApiQueryDeletePreviewContext(
+                delete_entry=delete_entry,
+                status="unresolved",
+                business_intent_code=business_intent_code,
+                target_name=target_name,
+                lookup_entry=lookup_entry,
+                lookup_params=lookup_params,
+                message="删除前置查询失败，当前无法安全确认待删除角色，请稍后重试。",
+            )
+
+        if lookup_result.status == ApiQueryExecutionStatus.ERROR:
+            return ApiQueryDeletePreviewContext(
+                delete_entry=delete_entry,
+                status="unresolved",
+                business_intent_code=business_intent_code,
+                target_name=target_name,
+                lookup_entry=lookup_entry,
+                lookup_params=lookup_params,
+                message=lookup_result.error or "删除前置查询失败，当前无法安全确认待删除角色。",
+            )
+
+        matched_rows = _filter_delete_lookup_rows(_normalize_preview_rows(lookup_result.data), target_name=target_name)
+        identifier_field = _resolve_delete_identifier_field(
+            delete_entry=delete_entry,
+            lookup_entry=lookup_entry,
+            rows=matched_rows,
+        )
+        if not matched_rows:
+            return ApiQueryDeletePreviewContext(
+                delete_entry=delete_entry,
+                status="missing",
+                business_intent_code=business_intent_code,
+                target_name=target_name,
+                identifier_field=identifier_field,
+                lookup_entry=lookup_entry,
+                lookup_params=lookup_params,
+                message=f"不存在名为“{target_name}”的角色，无需执行删除。",
+            )
+
+        return ApiQueryDeletePreviewContext(
+            delete_entry=delete_entry,
+            status="confirm" if len(matched_rows) == 1 else "candidates",
+            business_intent_code=business_intent_code,
+            target_name=target_name,
+            identifier_field=identifier_field,
+            matched_rows=matched_rows,
+            submit_payload=(
+                _build_delete_lookup_submit_payload(
+                    delete_entry=delete_entry,
+                    row=matched_rows[0],
+                    identifier_field=identifier_field,
+                )
+                if len(matched_rows) == 1
+                else {}
+            ),
+            lookup_entry=lookup_entry,
+            lookup_params=lookup_params,
+        )
+
+    async def _resolve_delete_mutation_entry(
+        self,
+        state: ApiQueryState,
+        runtime_context: ApiQueryRuntimeContext,
+    ) -> ApiCatalogEntry | None:
+        """在候选集中定位本次删除意图对应的 mutation 接口。"""
+
+        candidates = runtime_context.candidates
+        if not candidates:
+            return None
+
+        route_hint = runtime_context.route_hint
+        request_body = _require_request_body(runtime_context)
+        extractor = self._get_extractor()
+
+        try:
+            routing_result = await extractor.extract_routing_result(
+                request_body.query or "",
+                candidates,
+                runtime_context.user_context,
+                allowed_business_intents=self._allowed_business_intent_codes_getter(),
+                routing_hints=route_hint,
+                trace_id=state["trace_id"],
+            )
+            selected_entry = _find_selected_entry(candidates, routing_result)
+            if selected_entry is not None and selected_entry.operation_safety == "mutation":
+                return selected_entry
+        except Exception:
+            logger.warning(
+                "%s delete mutation routing failed — fallback to mutation candidate heuristic",
+                runtime_context.log_prefix,
+            )
+
+        mutation_entries = [candidate.entry for candidate in candidates if candidate.entry.operation_safety == "mutation"]
+        if len(mutation_entries) == 1:
+            return mutation_entries[0]
+
+        ranked_entries = [entry for entry in mutation_entries if _is_delete_mutation_entry(entry)]
+        if len(ranked_entries) == 1:
+            return ranked_entries[0]
+        return ranked_entries[0] if ranked_entries else None
+
+    async def _find_delete_lookup_entry(
+        self,
+        *,
+        delete_entry: ApiCatalogEntry,
+        runtime_context: ApiQueryRuntimeContext,
+    ) -> ApiCatalogEntry | None:
+        """为删除预检找到同资源的只读查询接口。"""
+
+        candidate_entries = [candidate.entry for candidate in runtime_context.candidates if candidate.entry.id != delete_entry.id]
+
+        ranked_candidates: list[tuple[int, ApiCatalogEntry]] = []
+        for entry in candidate_entries:
+            score = _score_delete_lookup_entry(delete_entry, entry)
+            if score > 0:
+                ranked_candidates.append((score, entry))
+
+        if not ranked_candidates:
+            return None
+        ranked_candidates.sort(key=lambda item: item[0], reverse=True)
+        return ranked_candidates[0][1]
 
 
 
@@ -585,6 +947,7 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
             state["plan"],
             runtime_context.step_entries,
             user_token=runtime_context.user_token,
+            user_id=_resolve_runtime_user_id(runtime_context.user_context),
             trace_id=state["trace_id"],
             interaction_id=state.get("interaction_id"),
             conversation_id=state.get("conversation_id"),
@@ -647,6 +1010,12 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
                     business_intent_codes=degrade_context.business_intent_codes,
                     reasoning=degrade_context.reasoning,
                 )
+        elif runtime_context.delete_preview_context is not None:
+            response = await builder.build_delete_preview_response(
+                state=state,
+                delete_preview_context=runtime_context.delete_preview_context,
+                created_by=_resolve_runtime_user_id(runtime_context.user_context),
+            )
         elif runtime_context.mutation_form_context is not None:
             mutation_ctx = runtime_context.mutation_form_context
             response = await builder.build_mutation_form_response(
@@ -655,6 +1024,7 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
                 pre_fill_params=mutation_ctx.pre_fill_params,
                 business_intent_code=mutation_ctx.business_intent_code,
                 query_domains_hint=state.get("query_domains_hint", []),
+                created_by=_resolve_runtime_user_id(runtime_context.user_context),
             )
         else:
             if runtime_context.execution_state is None:
@@ -705,6 +1075,8 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
         if state.get("degrade_stage"):
             return "build_response"
         runtime_context = self._get_runtime_context(state)
+        if runtime_context.delete_preview_context is not None:
+            return "build_response"
         if runtime_context.mutation_form_context is not None:
             return "build_mutation_form"
         return "validate_plan"
@@ -715,6 +1087,8 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
         if state.get("degrade_stage"):
             return "build_response"
         runtime_context = self._get_runtime_context(state)
+        if runtime_context.delete_preview_context is not None:
+            return "build_response"
         if runtime_context.mutation_form_context is not None:
             return "build_mutation_form"
         return "execute_plan"
@@ -916,6 +1290,30 @@ def _build_api_query_log_prefix(trace_id: str, interaction_id: str | None, conve
     return f"api_query[trace={trace_id} interaction={interaction_id or '-'} conversation={conversation_id or '-'}]"
 
 
+def _resolve_runtime_user_id(user_context: dict[str, Any]) -> str | None:
+    """从请求级用户上下文提取最终用户主键。
+
+    功能：
+        `/api-query` 第二阶段到第四阶段都共享同一份 `user_context`。把“最终用于 runtime invoke
+        的用户主键”集中收敛在这里，可以避免 workflow、delete preview、执行图分别手写
+        `dict.get("userId")` 与空值判断，降低后续身份字段扩展时的遗漏风险。
+
+    Args:
+        user_context: route 层通过身份中间件注入的请求级用户事实。
+
+    Returns:
+        规范化后的最终用户主键；若上下文中不存在，则返回 `None`。
+
+    Edge Cases:
+        - 空字符串或纯空白 `userId` 会被视为缺失，避免污染 runtime invoke 的 `createdBy`
+    """
+    raw_user_id = user_context.get("userId")
+    if raw_user_id is None:
+        return None
+    normalized_user_id = str(raw_user_id).strip()
+    return normalized_user_id or None
+
+
 def _summarize_request_query(request_body: ApiQueryRequest) -> str:
     """生成适合日志与审计的请求摘要。"""
 
@@ -1115,6 +1513,311 @@ def _find_missing_required_params(entry: ApiCatalogEntry, params: dict[str, Any]
         if value in (None, "", [], {}):
             missing.append(field)
     return missing
+
+
+def _infer_delete_target_name(query_text: str) -> str | None:
+    """从“删除健管师角色”这类短句中抽取删除目标名称。"""
+
+    normalized_query = " ".join(str(query_text or "").split())
+    if not normalized_query:
+        return None
+
+    for pattern in _DELETE_NAME_PATTERNS:
+        match = pattern.search(normalized_query)
+        if not match:
+            continue
+        candidate = str(match.group("name") or "").strip().strip("“”\"'‘’：:，。,.;； ")
+        candidate = re.sub(r"^(?:一个|一名|一条|名为|叫做|叫)\s*", "", candidate)
+        candidate = candidate.strip()
+        if candidate:
+            return candidate
+    return None
+
+
+def _is_delete_mutation_entry(entry: ApiCatalogEntry) -> bool:
+    """基于接口元数据判断当前 mutation 是否更像删除语义。"""
+
+    if entry.operation_safety != "mutation":
+        return False
+    haystack = f"{entry.description} {entry.path}".lower()
+    return any(keyword in haystack for keyword in _DELETE_ENTRY_KEYWORDS)
+
+
+def _score_delete_lookup_entry(delete_entry: ApiCatalogEntry, candidate: ApiCatalogEntry) -> int:
+    """为删除预检选择最匹配的只读查询接口。"""
+
+    if candidate.operation_safety == "mutation" or candidate.method not in _QUERY_SAFE_METHODS:
+        return 0
+    if _is_delete_mutation_entry(candidate):
+        return 0
+
+    score = 0
+    if candidate.operation_safety == "list":
+        score += 6
+    elif candidate.operation_safety == "query":
+        score += 4
+
+    if candidate.domain and delete_entry.domain and candidate.domain == delete_entry.domain:
+        score += 3
+
+    delete_dir = delete_entry.path.rsplit("/", 1)[0].lower()
+    candidate_path = candidate.path.lower()
+    if delete_dir and candidate_path.startswith(delete_dir):
+        score += 10
+
+    last_segment = candidate_path.rsplit("/", 1)[-1]
+    if any(keyword in last_segment for keyword in _DELETE_LOOKUP_SEGMENT_KEYWORDS):
+        score += 4
+
+    shared_tokens = _extract_lookup_tokens(delete_entry.path, delete_entry.description) & _extract_lookup_tokens(
+        candidate.path,
+        candidate.description,
+    )
+    score += min(len(shared_tokens), 4) * 2
+
+    if _find_delete_lookup_name_field(candidate):
+        score += 3
+    return score
+
+
+def _extract_lookup_tokens(*texts: str) -> set[str]:
+    """抽取路径与描述中的资源词，用于删除预检接口匹配。"""
+
+    tokens: set[str] = set()
+    for text in texts:
+        for token in re.split(r"[^a-zA-Z0-9]+", str(text or "").lower()):
+            normalized = token.strip()
+            if len(normalized) < 3 or normalized in _DELETE_ENTRY_KEYWORDS or normalized in _DELETE_LOOKUP_SEGMENT_KEYWORDS:
+                continue
+            tokens.add(normalized)
+    return tokens
+
+
+def _find_delete_lookup_name_field(entry: ApiCatalogEntry) -> str | None:
+    """找到最适合按名称筛选候选记录的查询字段。"""
+
+    properties = entry.param_schema.properties
+    if not properties:
+        return None
+
+    preferred_fields = [
+        field_name
+        for field_name, schema in properties.items()
+        if str(schema.get("type") or "string").lower() == "string"
+        and field_name.lower() not in _DELETE_LOOKUP_EXCLUDED_FIELDS
+    ]
+    if not preferred_fields:
+        return None
+
+    for field_name in preferred_fields:
+        lower_name = field_name.lower()
+        if lower_name.endswith("name") or lower_name in {"name", "roleName".lower(), "realname"}:
+            return field_name
+
+    for field_name in preferred_fields:
+        lower_name = field_name.lower()
+        if any(keyword in lower_name for keyword in _DELETE_LOOKUP_NAME_FIELD_KEYWORDS):
+            return field_name
+
+    for field_name in preferred_fields:
+        title = str(properties[field_name].get("title") or properties[field_name].get("label") or "").strip()
+        if any(keyword in title for keyword in ("名称", "名字", "姓名", "关键字")):
+            return field_name
+
+    return preferred_fields[0]
+
+
+def _build_delete_lookup_params(entry: ApiCatalogEntry, *, target_name: str) -> dict[str, Any]:
+    """组装删除预检查询参数。"""
+
+    lookup_field = _find_delete_lookup_name_field(entry)
+    if not lookup_field:
+        return {}
+
+    params: dict[str, Any] = {lookup_field: target_name}
+    properties = entry.param_schema.properties
+
+    page_param = entry.pagination_hint.page_param or _find_first_existing_field(
+        properties,
+        ("pageNum", "pageNo", "page", "currentPage"),
+    )
+    page_size_param = entry.pagination_hint.page_size_param or _find_first_existing_field(
+        properties,
+        ("pageSize", "size", "limit"),
+    )
+    if page_param and page_param in properties:
+        params[page_param] = 1
+    if page_size_param and page_size_param in properties:
+        params[page_size_param] = _DELETE_LOOKUP_PAGE_SIZE
+    return params
+
+
+def _find_first_existing_field(properties: dict[str, Any], field_names: tuple[str, ...]) -> str | None:
+    """按优先级找到 schema 中存在的字段名。"""
+
+    for field_name in field_names:
+        if field_name in properties:
+            return field_name
+    return None
+
+
+def _normalize_preview_rows(data: Any) -> list[dict[str, Any]]:
+    """把删除预检查询结果统一压成行数组。"""
+
+    if isinstance(data, list):
+        return [dict(item) for item in data if isinstance(item, dict)]
+    if isinstance(data, dict):
+        return [dict(data)]
+    return []
+
+
+def _filter_delete_lookup_rows(rows: list[dict[str, Any]], *, target_name: str) -> list[dict[str, Any]]:
+    """优先按名称精确匹配删除候选；找不到精确值时回退原结果。"""
+
+    if not rows:
+        return []
+
+    normalized_target = _normalize_delete_match_value(target_name)
+    exact_matches: list[dict[str, Any]] = []
+    fuzzy_matches: list[dict[str, Any]] = []
+
+    for row in rows:
+        row_hit = False
+        for field_name, value in row.items():
+            if not isinstance(value, str):
+                continue
+            if not _is_name_like_delete_field(field_name):
+                continue
+
+            normalized_value = _normalize_delete_match_value(value)
+            if normalized_value == normalized_target:
+                exact_matches.append(row)
+                row_hit = True
+                break
+            if normalized_target and normalized_target in normalized_value:
+                fuzzy_matches.append(row)
+                row_hit = True
+                break
+        if row_hit:
+            continue
+
+    if exact_matches:
+        return exact_matches
+    if fuzzy_matches:
+        return fuzzy_matches
+    return rows
+
+
+def _normalize_delete_match_value(value: str) -> str:
+    """规整删除匹配值，减少空白和大小写噪声。"""
+
+    return "".join(str(value or "").strip().lower().split())
+
+
+def _is_name_like_delete_field(field_name: str) -> bool:
+    """判断当前字段是否更像实体名称列。"""
+
+    normalized = field_name.lower()
+    return normalized.endswith("name") or normalized in {"name", "rolename", "realname"} or "name" in normalized
+
+
+def _resolve_delete_identifier_field(
+    *,
+    delete_entry: ApiCatalogEntry,
+    lookup_entry: ApiCatalogEntry | None,
+    rows: list[dict[str, Any]],
+) -> str:
+    """决定删除动作应从候选记录里读取哪个主键字段。"""
+
+    row_keys = list(rows[0].keys()) if rows else []
+
+    preferred_keys: list[str] = []
+    if lookup_entry is not None and lookup_entry.detail_hint.identifier_field:
+        preferred_keys.append(lookup_entry.detail_hint.identifier_field)
+    preferred_keys.extend(
+        [field_name for field_name in delete_entry.param_schema.properties if field_name.lower().endswith("id")]
+    )
+    preferred_keys.extend(["id", "roleId", "role_id"])
+
+    for field_name in preferred_keys:
+        if field_name in row_keys:
+            return field_name
+
+    for field_name in row_keys:
+        if field_name.lower().endswith("id"):
+            return field_name
+    return "id"
+
+
+def _build_direct_delete_submit_payload(
+    *,
+    delete_entry: ApiCatalogEntry,
+    pre_fill_params: dict[str, Any],
+    target_name: str,
+) -> dict[str, Any]:
+    """在没有查询候选时，为删除确认页直接构造可提交 payload。"""
+
+    payload = {
+        field_name: value
+        for field_name, value in dict(pre_fill_params).items()
+        if value not in (None, "", [], {})
+    }
+    if payload:
+        return payload
+
+    name_field = _resolve_delete_name_payload_field(delete_entry)
+    if target_name:
+        return {name_field: target_name}
+    return {}
+
+
+def _resolve_delete_name_payload_field(delete_entry: ApiCatalogEntry) -> str:
+    """为按名称删除场景推断最合适的名称入参字段。"""
+
+    properties = delete_entry.param_schema.properties
+    for field_name, schema in properties.items():
+        if str(schema.get("type") or "string").lower() != "string":
+            continue
+        normalized_name = field_name.lower()
+        title = str(schema.get("title") or schema.get("label") or "").strip()
+        if normalized_name.endswith("name") or normalized_name in {"name", "rolename", "realname"}:
+            return field_name
+        if any(keyword in title for keyword in ("名称", "名字", "姓名")):
+            return field_name
+
+    haystack = f"{delete_entry.description} {delete_entry.path}".lower()
+    if "role" in haystack or "角色" in haystack:
+        return "roleName"
+    return "name"
+
+
+def _build_delete_lookup_submit_payload(
+    *,
+    delete_entry: ApiCatalogEntry,
+    row: dict[str, Any],
+    identifier_field: str,
+) -> dict[str, Any]:
+    """把查询命中的候选记录压成删除提交 payload。"""
+
+    payload_key = _resolve_delete_lookup_payload_key(delete_entry, identifier_field=identifier_field)
+    identifier_value = row.get(identifier_field)
+    schema = delete_entry.param_schema.properties.get(payload_key, {})
+    if str(schema.get("type") or "").lower() == "array":
+        return {payload_key: [identifier_value]}
+    return {payload_key: identifier_value}
+
+
+def _resolve_delete_lookup_payload_key(delete_entry: ApiCatalogEntry, *, identifier_field: str) -> str:
+    """为候选命中的删除动作选择主键入参。"""
+
+    schema_properties = delete_entry.param_schema.properties
+    preferred_keys = [field_name for field_name in schema_properties if field_name.lower() in {"id", "ids"}]
+    preferred_keys.extend(
+        [field_name for field_name in schema_properties if field_name.lower().endswith("id")]
+    )
+    if preferred_keys:
+        return preferred_keys[0]
+    return identifier_field or "id"
 
 
 def _build_step_id(entry: ApiCatalogEntry) -> str:

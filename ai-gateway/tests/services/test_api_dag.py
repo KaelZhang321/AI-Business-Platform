@@ -115,7 +115,7 @@ async def test_execute_plan_skips_downstream_when_json_binding_is_empty() -> Non
         def __init__(self) -> None:
             self.calls: list[tuple[str, dict[str, object]]] = []
 
-        async def call(self, entry, params, user_token=None, trace_id=None):
+        async def call(self, entry, params, user_token=None, trace_id=None, user_id=None):
             self.calls.append((entry.id, dict(params)))
             if entry.id == "customers":
                 return ApiQueryExecutionResult(
@@ -174,7 +174,7 @@ async def test_execute_plan_keeps_partial_success_report_shape_after_graph_cutov
     )
 
     class StubApiExecutor:
-        async def call(self, entry, params, user_token=None, trace_id=None):
+        async def call(self, entry, params, user_token=None, trace_id=None, user_id=None):
             if entry.id == "customers":
                 return ApiQueryExecutionResult(
                     status=ApiQueryExecutionStatus.SUCCESS,
@@ -221,7 +221,7 @@ async def test_execute_plan_returns_synthetic_report_when_graph_runtime_crashes(
     )
 
     class BrokenApiExecutor:
-        async def call(self, entry, params, user_token=None, trace_id=None):
+        async def call(self, entry, params, user_token=None, trace_id=None, user_id=None):
             raise RuntimeError("executor crashed")
 
     report = await ApiDagExecutor(BrokenApiExecutor()).execute_plan(

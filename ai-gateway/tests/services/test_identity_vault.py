@@ -5,6 +5,8 @@ import hashlib
 import hmac
 import json
 
+from starlette.requests import Request
+
 from app.services.identity_vault import IdentityVault
 
 
@@ -77,3 +79,54 @@ def test_identity_vault_extracts_unverified_context_without_secret() -> None:
 
 def test_identity_vault_returns_none_for_invalid_header() -> None:
     assert IdentityVault(jwt_secret="stage1-secret").extract_from_auth_header("Token abc") is None
+
+
+def test_identity_vault_prefers_trusted_user_id_header_over_token_user_id() -> None:
+    token = _build_hs256_token(
+        {
+            "sub": "u_003",
+            "userId": "token-user-003",
+            "employeeId": "emp_003",
+            "role": "viewer",
+        },
+        secret="stage1-secret",
+    )
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/api/v1/api-query",
+            "headers": [
+                (b"authorization", f"Bearer {token}".encode("utf-8")),
+                (b"x-user-id", b"header-user-003"),
+            ],
+        }
+    )
+
+    identity = IdentityVault(jwt_secret="stage1-secret").extract_from_request(request)
+
+    assert identity is not None
+    assert identity.user_id == "header-user-003"
+    assert identity.employee_id == "emp_003"
+    assert identity.role == "viewer"
+    assert identity.to_request_context()["userId"] == "header-user-003"
+
+
+def test_identity_vault_builds_minimal_identity_from_trusted_user_id_header() -> None:
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/api/v1/api-query",
+            "headers": [(b"x-user-id", b"header-user-004")],
+        }
+    )
+
+    identity = IdentityVault(jwt_secret="stage1-secret").extract_from_request(request)
+
+    assert identity is not None
+    assert identity.user_id == "header-user-004"
+    assert identity.subject_id == "header-user-004"
+    assert identity.verified is False
+    assert identity.role is None
+    assert identity.to_request_context()["userId"] == "header-user-004"

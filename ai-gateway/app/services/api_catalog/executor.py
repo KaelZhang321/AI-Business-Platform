@@ -65,6 +65,7 @@ class LegacyApiExecutor:
         user_token: str | None = None,
         trace_id: str | None = None,
         allow_methods: Collection[str] | None = None,
+        user_id: str | None = None,
     ) -> ApiQueryExecutionResult:
         """按历史模式调用 business-server 并规范化响应。"""
         allowed_methods = _normalize_allowed_methods(allow_methods)
@@ -142,8 +143,30 @@ class RuntimeInvokeExecutor:
         user_token: str | None = None,
         trace_id: str | None = None,
         allow_methods: Collection[str] | None = None,
+        user_id: str | None = None,
     ) -> ApiQueryExecutionResult:
-        """通过 runtime invoke 调用查询接口。"""
+        """通过 runtime invoke 调用查询接口。
+
+        功能：
+            当目录项被切到 runtime invoke 模式后，这里负责把“查询参数、认证凭证、请求级身份、
+            追踪 ID”压平成 business-server 期望的统一请求壳。把身份映射集中在执行器层，
+            是为了让 workflow 只表达业务计划，而不感知不同执行后端的协议差异。
+
+        Args:
+            entry: 当前命中的目录接口定义。
+            params: 已完成参数绑定的业务入参。
+            user_token: 需要透传给下游的用户认证头。
+            trace_id: 当前 `/api-query` 请求链路的唯一追踪键。
+            allow_methods: 执行器级方法白名单，默认只允许 GET / POST 查询。
+            user_id: 当前请求最终认定的用户主键，会写入 runtime invoke 的 `createdBy`。
+
+        Returns:
+            标准化后的 `ApiQueryExecutionResult`，屏蔽 runtime invoke 的协议细节。
+
+        Edge Cases:
+            - mutation 接口会在真正发请求前被硬阻断，避免网关误放行写操作
+            - 非 HTTP 上下文缺少 `trace_id` / `user_id` 时，会在 payload 构造阶段自动回退配置
+        """
         if entry.operation_safety == "mutation":
             logger.warning(
                 "stage4 runtime invoke blocked unsafe entry trace_id=%s api_id=%s safety=%s",
@@ -162,7 +185,7 @@ class RuntimeInvokeExecutor:
             return _build_method_blocked_result(entry, allowed_methods, trace_id=trace_id)
 
         url = _build_runtime_invoke_url(entry)
-        payload = _build_runtime_invoke_payload(entry, params, trace_id=trace_id)
+        payload = _build_runtime_invoke_payload(entry, params, trace_id=trace_id, user_id=user_id)
         client = self._get_client()
         headers = _build_gateway_headers(entry, user_token, always_forward_auth=True)
 
@@ -254,8 +277,15 @@ class ApiExecutor:
         user_token: str | None = None,
         trace_id: str | None = None,
         allow_methods: Collection[str] | None = None,
+        user_id: str | None = None,
     ) -> ApiQueryExecutionResult:
-        """路由到实际执行器并透传统一调用契约。"""
+        """路由到实际执行器并透传统一调用契约。
+
+        功能：
+            `user_id` 对 legacy 直连路径没有意义，但 runtime invoke 需要把“本次查询最终归属
+            于谁”写入请求壳。统一把该字段挂在门面层，是为了让 workflow / LangGraph 只维护
+            一份执行接口，而不用感知底层执行模式差异。
+        """
         executor, executor_type = self._resolve_executor(entry)
         effective_allow_methods = allow_methods or _derive_default_allow_methods(entry, executor_type)
         return await executor.call(
@@ -264,6 +294,7 @@ class ApiExecutor:
             user_token=user_token,
             trace_id=trace_id,
             allow_methods=effective_allow_methods,
+            user_id=user_id,
         )
 
     async def close(self) -> None:
@@ -524,17 +555,77 @@ def _build_runtime_invoke_url(entry: ApiCatalogEntry) -> str:
         raise RuntimeError("API_QUERY_RUNTIME_INVOKE_URL_TEMPLATE 缺少 {id} 占位符") from exc
 
 
+def _resolve_runtime_flow_num(trace_id: str | None) -> str:
+    """为 runtime invoke 决定最终 `flowNum`。
+
+    功能：
+        `flowNum` 现在承担的是跨 `ai-gateway` 与 `business-server runtime invoke` 的统一追踪键，
+        因此主路径必须直接复用当前请求 `trace_id`。同时保留配置回退，是为了兼容 CLI、单测
+        或运维脚本可能直接调用执行器而没有 HTTP Trace 上下文的场景。
+
+    Args:
+        trace_id: 当前请求链路 Trace ID。
+
+    Returns:
+        优先返回当前请求 `trace_id`；缺失时回退到历史配置值。
+
+    Edge Cases:
+        - 空白 `trace_id` 会被视为缺失，避免把无效追踪键写入下游日志
+    """
+    normalized_trace_id = trace_id.strip() if trace_id else ""
+    if normalized_trace_id:
+        return normalized_trace_id
+    return str(settings.api_query_runtime_flow_num)
+
+
+def _resolve_runtime_created_by(user_id: str | None) -> str:
+    """为 runtime invoke 决定最终 `createdBy`。
+
+    功能：
+        查询链路的 `createdBy` 不再是部署配置，而是本次请求最终认定的用户主键。只有在
+        非 HTTP 场景没有请求级 `user_id` 时，才回退到旧配置，保证历史脚本不因为新增
+        请求级身份依赖而直接失效。
+
+    Args:
+        user_id: 当前请求最终认定的用户主键。
+
+    Returns:
+        优先返回请求级 `user_id`；缺失时回退到历史配置值。
+
+    Edge Cases:
+        - 仅包含空白字符的 `user_id` 会被视为缺失，避免污染审计字段
+    """
+    normalized_user_id = user_id.strip() if user_id else ""
+    if normalized_user_id:
+        return normalized_user_id
+    return settings.api_query_runtime_created_by
+
+
 def _build_runtime_invoke_payload(
     entry: ApiCatalogEntry,
     params: dict[str, Any],
     *,
     trace_id: str | None,
+    user_id: str | None,
 ) -> dict[str, Any]:
     """构造 runtime invoke 请求壳。
 
     功能：
-        GET 查询接口把业务参数落到 `queryParams`，POST 查询接口落到 `body`，从而保持
-        ai-gateway 不理解业务 URL 细节，只负责把规划结果装配成 runtime invoke 的稳定契约。
+        GET 查询接口把业务参数落到 `queryParams`，POST 查询接口落到 `body`，同时把
+        请求级 `trace_id` / `user_id` 映射成 `flowNum` / `createdBy`。这样下游 runtime invoke
+        日志就能直接串回当前 `/api-query` 链路，而不需要再维护一套独立流水号。
+
+    Args:
+        entry: 当前命中的目录接口实体。
+        params: 已完成参数提取与绑定的业务参数。
+        trace_id: 当前请求 Trace ID，用作 runtime invoke 的统一追踪键。
+        user_id: 当前请求最终认定的用户主键，用作 runtime invoke 的调用人标识。
+
+    Returns:
+        符合 `ui-builder/runtime/endpoints/{id}/invoke` 契约的请求体。
+
+    Edge Cases:
+        - 非 HTTP 触发场景缺少 `trace_id` / `user_id` 时，会回退到历史配置，避免运维脚本断裂
     """
     runtime_query_params: dict[str, Any] = {}
     business_params = dict(params)
@@ -546,9 +637,9 @@ def _build_runtime_invoke_payload(
         runtime_body = business_params
 
     return {
-        "flowNum": settings.api_query_runtime_flow_num,
+        "flowNum": _resolve_runtime_flow_num(trace_id),
         "queryParams": runtime_query_params,
-        "createdBy": settings.api_query_runtime_created_by,
+        "createdBy": _resolve_runtime_created_by(user_id),
         # "useSampleWhenEmpty": False,
         "body": runtime_body,
     }

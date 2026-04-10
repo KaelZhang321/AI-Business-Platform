@@ -3,12 +3,18 @@ from __future__ import annotations
 import json
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field as dataclass_field
 from statistics import mean
 from typing import Any
 
 from app.core.config import settings
-from app.models.schemas import ApiQueryExecutionStatus, ApiQueryFormFieldRuntime, ApiQueryUIRuntime, KnowledgeResult
+from app.models.schemas import (
+    ApiQueryExecutionStatus,
+    ApiQueryFormFieldRuntime,
+    ApiQueryListFilterFieldRuntime,
+    ApiQueryUIRuntime,
+    KnowledgeResult,
+)
 from app.services.ui_catalog_service import UICatalogService
 from app.services.ui_spec_guard import UISpecGuard, UISpecValidationResult
 
@@ -18,6 +24,7 @@ _LLM_RENDER_ROW_LIMIT = 3
 _LLM_RENDER_KEY_LIMIT = 8
 _LLM_RENDER_STRING_LIMIT = 200
 _LLM_RENDER_MAX_ATTEMPTS = 2
+_RUNTIME_INVOKE_API_TEMPLATE = "/api/v1/ui-builder/runtime/endpoints/{id}/invoke"
 
 
 @dataclass(slots=True)
@@ -35,7 +42,7 @@ class UISpecBuildResult:
     """
 
     spec: dict[str, Any] | None = None
-    validation: UISpecValidationResult = field(default_factory=UISpecValidationResult)
+    validation: UISpecValidationResult = dataclass_field(default_factory=UISpecValidationResult)
     frozen: bool = False
 
 
@@ -317,7 +324,7 @@ class DynamicUIService:
                 "type": "PlannerCard",
                 "props": {
                     "title": (context or {}).get("title", "确认提交"),
-                    "subtitle": "请确认本次变更后再提交",
+                    "subtitle": (context or {}).get("subtitle", "请确认本次变更后再提交"),
                 },
                 "children": ["form"],
             },
@@ -330,19 +337,42 @@ class DynamicUIService:
             },
         }
 
-        submit_payload: dict[str, Any] = {}
+        default_submit_payload: dict[str, Any] = {}
         for index, field in enumerate(visible_fields, start=1):
             element_id = f"form_field_{index}"
             elements["form"]["children"].append(element_id)
             elements[element_id] = self._build_mutation_field_element(field=field, state=initial_state)
-            submit_payload[field.submit_key] = {"$bindState": field.state_path}
+            default_submit_payload[field.submit_key] = {"$bindState": field.state_path}
+
+        custom_submit_payload = (context or {}).get("submit_payload")
+        submit_payload = custom_submit_payload if isinstance(custom_submit_payload, dict) else default_submit_payload
+        submit_request_fields = _build_runtime_request_fields(
+            runtime.form.api_id,
+            param_source="body",
+            params=submit_payload,
+            flow_num=(context or {}).get("flow_num"),
+            created_by=(context or {}).get("created_by"),
+        )
 
         submit_element_id = "form_submit"
         elements["form"]["children"].append(submit_element_id)
+        elements["form"]["props"].update(
+            _build_runtime_request_fields(
+                runtime.form.api_id,
+                param_source="body",
+                params=submit_payload,
+                flow_num=(context or {}).get("flow_num"),
+                created_by=(context or {}).get("created_by"),
+            )
+        )
         elements[submit_element_id] = {
             "type": "PlannerButton",
             "props": {
-                "label": "确认提交" if runtime.form.submit.confirm_required else "提交",
+                "label": (
+                    (context or {}).get("submit_label")
+                    if isinstance((context or {}).get("submit_label"), str) and (context or {}).get("submit_label")
+                    else ("确认提交" if runtime.form.submit.confirm_required else "提交")
+                ),
             },
             "on": {
                 "press": {
@@ -350,8 +380,7 @@ class DynamicUIService:
                     "params": {
                         "api_id": runtime.form.api_id,
                         "payload": submit_payload,
-                        # 为前端动作适配器补齐直接可用的提交地址，避免只能额外回外层 runtime 取值。
-                        "route_url": runtime.form.route_url,
+                        **submit_request_fields,
                     },
                 }
             },
@@ -1172,36 +1201,131 @@ class DynamicUIService:
             "title": (context or {}).get("question", "数据查询结果"),
             "subtitle": self._build_query_subtitle(rows, context, render_mode),
         }
-        children: list[dict[str, Any]] = []
-
         if include_partial_notice:
-            children.append(
-                {
-                    "type": "PlannerNotice",
-                    "props": {
-                        "text": (context or {}).get("partial_message", "部分步骤执行失败，当前仅展示成功返回的数据。"),
-                        "tone": "info",
-                    },
-                }
-            )
+            partial_message = (context or {}).get("partial_message", "部分步骤执行失败，当前仅展示成功返回的数据。")
+            subtitle = root_props.get("subtitle")
+            root_props["subtitle"] = f"{subtitle} · {partial_message}" if subtitle else partial_message
 
         if render_mode == "detail":
-            children.append(
-                {
-                    "type": "PlannerDetailCard",
-                    "props": {
-                        "title": (context or {}).get("detail_title", "详情信息"),
-                        "items": self._build_detail_items(rows[0]),
-                    },
-                }
+            detail_props = {
+                "title": (context or {}).get("detail_title", "详情信息"),
+                "items": self._build_detail_items(rows[0]),
+            }
+            if runtime and runtime.detail.enabled and runtime.detail.api_id:
+                detail_identifier_field = runtime.detail.source.identifier_field
+                detail_identifier_param = runtime.detail.request.identifier_param or detail_identifier_field
+                if detail_identifier_field and detail_identifier_param:
+                    detail_props.update(
+                        _build_runtime_request_fields(
+                            runtime.detail.api_id,
+                            param_source=runtime.detail.request.param_source,
+                            params={detail_identifier_param: rows[0].get(detail_identifier_field)},
+                            flow_num=(context or {}).get("flow_num"),
+                            created_by=(context or {}).get("created_by"),
+                        )
+                    )
+            return self._build_flat_card_spec(
+                root_props=root_props,
+                children=[
+                    {
+                        "type": "PlannerDetailCard",
+                        "props": detail_props,
+                    }
+                ],
             )
-            return self._build_flat_card_spec(root_props=root_props, children=children)
+
+        filters_state = _build_query_filter_state(runtime)
+        filter_fields = list(runtime.list.filters.fields) if runtime else []
+        current_params = dict(runtime.list.query_context.current_params) if runtime else {}
+        list_request_fields = _build_runtime_request_fields(
+            runtime.list.api_id if runtime else None,
+            param_source=runtime.list.param_source if runtime else None,
+            params=current_params,
+            flow_num=(context or {}).get("flow_num"),
+            created_by=(context or {}).get("created_by"),
+        )
+        filter_submit_request_fields = _build_runtime_request_fields(
+            runtime.list.api_id if runtime else None,
+            param_source=runtime.list.param_source if runtime else None,
+            params=_build_filter_submit_params(runtime, filter_fields),
+            flow_num=(context or {}).get("flow_num"),
+            created_by=(context or {}).get("created_by"),
+        )
+        filter_reset_request_fields = _build_runtime_request_fields(
+            runtime.list.api_id if runtime else None,
+            param_source=runtime.list.param_source if runtime else None,
+            params=_build_filter_reset_params(runtime, filter_fields),
+            flow_num=(context or {}).get("flow_num"),
+            created_by=(context or {}).get("created_by"),
+        )
+
+        elements: dict[str, Any] = {
+            "root": {
+                "type": "PlannerCard",
+                "props": root_props,
+                "children": ["query-filters", "report-table", "report-pagination"],
+            },
+            "query-filters": {
+                "type": "PlannerForm",
+                "props": {
+                    "formCode": "query_filters",
+                    **list_request_fields,
+                },
+                "children": [],
+            },
+        }
+
+        for index, field in enumerate(filter_fields, start=1):
+            element_id = f"filter_field_{index}"
+            elements["query-filters"]["children"].append(element_id)
+            elements[element_id] = {
+                "type": "PlannerInput",
+                "props": {
+                    "label": field.label,
+                    "value": {"$bindState": f"/filters/{field.name}"},
+                    "placeholder": f"请输入{field.label}",
+                    "required": field.required,
+                },
+            }
+
+        if runtime and runtime.list.enabled:
+            elements["filter_reset"] = {
+                "type": "PlannerButton",
+                "props": {"label": "重置"},
+                "on": {
+                    "press": {
+                        "action": runtime.list.ui_action or "remoteQuery",
+                        "params": {
+                            "api_id": runtime.list.api_id,
+                            **filter_reset_request_fields,
+                        },
+                    }
+                },
+            }
+            elements["filter_submit"] = {
+                "type": "PlannerButton",
+                "props": {"label": "查询"},
+                "on": {
+                    "press": {
+                        "action": runtime.list.ui_action or "remoteQuery",
+                        "params": {
+                            "api_id": runtime.list.api_id,
+                            **filter_submit_request_fields,
+                        },
+                    }
+                },
+            }
+            elements["query-filters"]["children"].extend(["filter_reset", "filter_submit"])
 
         table_props: dict[str, Any] = {
             "columns": self._build_table_columns(rows[0]),
             "dataSource": rows,
+            **list_request_fields,
         }
-        if runtime and runtime.detail.enabled:
+        context_row_actions = (context or {}).get("row_actions")
+        if isinstance(context_row_actions, list) and context_row_actions:
+            table_props["rowActions"] = context_row_actions
+        elif runtime and runtime.detail.enabled:
             # 详情动作只下发运行时契约，不在网关 UI 层硬编码具体业务参数。
             table_props["rowActions"] = [
                 {
@@ -1209,41 +1333,39 @@ class DynamicUIService:
                     "label": "查看详情",
                     "params": {
                         "api_id": runtime.detail.api_id,
-                        "route_url": runtime.detail.route_url,
-                        "request": runtime.detail.request.model_dump(exclude_none=True),
-                        "source": runtime.detail.source.model_dump(exclude_none=True),
+                        **_build_runtime_request_fields(
+                            runtime.detail.api_id,
+                            param_source=runtime.detail.request.param_source,
+                            params={
+                                (runtime.detail.request.identifier_param or runtime.detail.source.identifier_field): {
+                                    "$bindRow": runtime.detail.source.identifier_field
+                                }
+                            },
+                            flow_num=(context or {}).get("flow_num"),
+                            created_by=(context or {}).get("created_by"),
+                        ),
                     },
                 }
             ]
-        if runtime and runtime.list.pagination.enabled:
-            # 分页后续走 remoteQuery + mutation_target 做局部补丁，不重新生成整页 UI。
-            table_props["pagination"] = {
-                "enabled": True,
-                "total": runtime.list.pagination.total,
-                "currentPage": runtime.list.pagination.current_page,
-                "pageSize": runtime.list.pagination.page_size,
-                "action": {
-                    "type": runtime.list.ui_action or "remoteQuery",
-                    "params": {
-                        "api_id": runtime.list.api_id,
-                        "route_url": runtime.list.route_url,
-                        "response_mode": "patch",
-                        "param_source": runtime.list.param_source,
-                        "pagination": runtime.list.pagination.model_dump(exclude_none=True),
-                        "filters": runtime.list.filters.model_dump(exclude_none=True),
-                        "query_context": runtime.list.query_context.model_dump(exclude_none=True),
-                        "patch_context": {
-                            "patch_type": "list_query",
-                            "trigger": "pagination",
-                            "mutation_target": runtime.list.pagination.mutation_target,
-                        },
-                        "mutation_target": runtime.list.pagination.mutation_target,
-                    },
-                },
-            }
+        elements["report-table"] = {"type": "PlannerTable", "props": table_props}
+        elements["report-pagination"] = {
+            "type": "PlannerPagination",
+            "props": {
+                "enabled": runtime.list.pagination.enabled if runtime else False,
+                "total": runtime.list.pagination.total if runtime else len(rows),
+                "currentPage": runtime.list.pagination.current_page if runtime else None,
+                "pageSize": runtime.list.pagination.page_size if runtime else None,
+                "pageParam": runtime.list.pagination.page_param if runtime else None,
+                "pageSizeParam": runtime.list.pagination.page_size_param if runtime else None,
+                **list_request_fields,
+            },
+        }
 
-        children.append({"type": "PlannerTable", "props": table_props})
-        return self._build_flat_card_spec(root_props=root_props, children=children)
+        return {
+            "root": "root",
+            "state": {"filters": filters_state},
+            "elements": elements,
+        }
 
     def _notice_spec(self, title: str, message: str, tone: str) -> dict[str, Any]:
         """构造统一 `PlannerNotice` 读态卡片。
@@ -1653,3 +1775,110 @@ class DynamicUIService:
         if priority_value in ("low", "低"):
             return "blue"
         return "orange"
+
+
+def _build_runtime_request_fields(
+    api_id: str | None,
+    *,
+    param_source: str | None,
+    params: Any,
+    flow_num: str | None,
+    created_by: str | None,
+) -> dict[str, Any]:
+    """构造前端二跳请求所需的统一元数据。
+
+    功能：
+        `/api-query` 对外已经不再暴露 `ui_runtime`，因此列表、详情、表单组件必须在
+        `ui_spec` 自身携带运行时调用元数据。这里统一输出一套稳定字段，避免不同组件
+        自己拼 `api/queryParams/body/flowNum/createdBy` 导致前端读取口径分裂。
+
+    Args:
+        api_id: 当前业务接口或 runtime endpoint 的逻辑 ID。
+        param_source: 当前接口参数承载位置，`body` 代表非 GET，其他值按 query 处理。
+        params: 当前请求参数模板；允许普通对象，也允许包含 `$bindState/$bindRow` 绑定。
+        flow_num: 当前链路唯一码；响应层要求与 `trace_id` 保持一致。
+        created_by: 已可信任的最终用户标识，来自 `X-User-Id` 解析结果。
+
+    Returns:
+        统一元数据字典，始终包含 `api/queryParams/body/flowNum/createdBy` 五个字段。
+    """
+
+    normalized_params = params if isinstance(params, dict) else {}
+    is_body_request = (param_source or "").strip().lower() == "body"
+    return {
+        "api": _build_runtime_invoke_api(api_id),
+        "queryParams": {} if is_body_request else normalized_params,
+        "body": normalized_params if is_body_request else {},
+        "flowNum": flow_num or "",
+        "createdBy": created_by or "",
+    }
+
+
+def _build_runtime_invoke_api(api_id: str | None) -> str:
+    """把业务接口 ID 转换成前端可直连的 runtime invoke 路径。"""
+
+    normalized_api_id = str(api_id or "").strip()
+    if not normalized_api_id:
+        return ""
+    return _RUNTIME_INVOKE_API_TEMPLATE.format(id=normalized_api_id)
+
+
+def _build_query_filter_state(runtime: ApiQueryUIRuntime | None) -> dict[str, Any]:
+    """构造列表筛选区的初始 state。
+
+    功能：
+        筛选表单的输入组件全部依赖 `$bindState`，因此即使某些字段当前为空，也必须在
+        `state.filters` 下预留出稳定键位，避免 Guard 把合法输入组件误判为断链。
+    """
+
+    if runtime is None:
+        return {}
+
+    current_params = dict(runtime.list.query_context.current_params)
+    filter_state: dict[str, Any] = {}
+    for field in runtime.list.filters.fields:
+        filter_state[field.name] = current_params.get(field.name)
+    return filter_state
+
+
+def _build_filter_submit_params(
+    runtime: ApiQueryUIRuntime | None,
+    filter_fields: list[ApiQueryListFilterFieldRuntime],
+) -> dict[str, Any]:
+    """构造查询按钮提交参数。
+
+    功能：
+        查询按钮的目标不是“只发当前输入框”，而是复用当前列表上下文并覆盖筛选字段。
+        这样既能保留分页大小等隐含参数，也能在筛选变化时把页码安全归零到第一页。
+    """
+
+    if runtime is None:
+        return {}
+
+    next_params = dict(runtime.list.query_context.current_params)
+    for field in filter_fields:
+        next_params[field.name] = {"$bindState": f"/filters/{field.name}"}
+
+    if runtime.list.query_context.reset_page_on_filter_change:
+        page_param = runtime.list.query_context.page_param
+        if page_param:
+            # 筛选条件变化后回到第一页，避免保留旧页码导致“有条件却无结果”的假空列表。
+            next_params[page_param] = 1
+    return next_params
+
+
+def _build_filter_reset_params(
+    runtime: ApiQueryUIRuntime | None,
+    filter_fields: list[ApiQueryListFilterFieldRuntime],
+) -> dict[str, Any]:
+    """构造重置按钮提交参数。
+
+    功能：
+        重置操作应回到“本页首次渲染时的基线参数”，而不是把所有字段强行清空成 `null`。
+        这样能保留上游已经判定为必需的默认值，也避免把 query 参数重置成非法请求。
+    """
+
+    del filter_fields
+    if runtime is None:
+        return {}
+    return dict(runtime.list.query_context.current_params)

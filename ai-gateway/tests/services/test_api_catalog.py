@@ -290,8 +290,6 @@ class TestRuntimeInvokeExecutor:
             "api_query_runtime_invoke_url_template",
             "http://runtime.example/ui-builder/runtime/endpoints/{id}/invoke",
         )
-        monkeypatch.setattr(settings, "api_query_runtime_flow_num", 1212)
-        monkeypatch.setattr(settings, "api_query_runtime_reserved_id", "71592")
         monkeypatch.setattr(settings, "api_query_runtime_created_by", "gateway")
 
         executor = RuntimeInvokeExecutor()
@@ -309,15 +307,15 @@ class TestRuntimeInvokeExecutor:
             entry,
             {"id": "business-side-value", "pageNum": 1},
             user_token="Bearer token",
+            user_id="header-user-001",
             trace_id="trace-runtime-get",
         )
 
         assert captured["url"] == "http://runtime.example/ui-builder/runtime/endpoints/customer_list/invoke"
         assert captured["json"] == {
-            "flowNum": "1212",
-            "queryParams": {"id": "27", "pageNum": 1},
-            "createdBy": "gateway",
-            "useSampleWhenEmpty": False,
+            "flowNum": "trace-runtime-get",
+            "queryParams": {"id": "business-side-value", "pageNum": 1},
+            "createdBy": "header-user-001",
             "body": {},
         }
         assert result.status == ApiQueryExecutionStatus.SUCCESS
@@ -346,8 +344,6 @@ class TestRuntimeInvokeExecutor:
             "api_query_runtime_invoke_url_template",
             "http://runtime.example/ui-builder/runtime/endpoints/{id}/invoke",
         )
-        monkeypatch.setattr(settings, "api_query_runtime_reserved_id", "99")
-        monkeypatch.setattr(settings, "api_query_runtime_flow_num", "9001")
         monkeypatch.setattr(settings, "api_query_runtime_created_by", "")
 
         executor = RuntimeInvokeExecutor()
@@ -365,14 +361,14 @@ class TestRuntimeInvokeExecutor:
         result = await executor.call(
             entry,
             {"customerId": "C002", "filters": {"level": "A"}},
+            user_id="header-user-002",
             trace_id="trace-runtime-post",
         )
 
         assert captured["json"] == {
-            "flowNum": "9001",
-            "queryParams": {"id": "99"},
-            "createdBy": "",
-            "useSampleWhenEmpty": False,
+            "flowNum": "trace-runtime-post",
+            "queryParams": {},
+            "createdBy": "header-user-002",
             "body": {"customerId": "C002", "filters": {"level": "A"}},
         }
         assert result.status == ApiQueryExecutionStatus.SUCCESS
