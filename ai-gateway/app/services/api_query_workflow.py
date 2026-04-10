@@ -120,7 +120,20 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
         return "api_query_workflow"
 
     def build_graph(self):
-        """构建 `/api-query` 外层静态图。"""
+        """构建 `/api-query` 外层静态图。
+
+        功能：
+            外层图的职责是把 direct、自然语言、写意图快路和降级出口收敛到一个稳定骨架，
+            这样新增阶段节点时只需调整图，不需要再回到 route 层改分支判断。
+
+        Returns:
+            已注册节点与条件边的 `StateGraph`。
+
+        Edge Cases:
+            - direct 快路会跳过 stage2/stage3 路由链，直接进入执行阶段
+            - 所有降级路径最终都汇入 `build_response`，避免不同节点直接返回不一致响应
+            - mutation/delete 快路不进入执行图，防止读链误触发写接口
+        """
 
         graph = StateGraph(ApiQueryState)
         graph.add_node("prepare_request", self._prepare_request)
@@ -142,6 +155,7 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
                 "nl": "route_query",
             },
         )
+        # direct 模式已经拿到确定的单步计划，因此不再经过 route/retrieve/build_plan。
         graph.add_edge("prepare_direct_plan", "execute_plan")
         graph.add_conditional_edges(
             "route_query",
@@ -177,6 +191,7 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
                 "build_response": "build_response",
             },
         )
+        # 所有成功、写快路和降级分支都只允许从一个出口折叠响应，保证返回契约稳定。
         graph.add_edge("execute_plan", "build_response")
         graph.add_edge("build_mutation_form", "build_response")
         graph.add_edge("build_response", END)
@@ -207,6 +222,11 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
 
         Raises:
             RuntimeError: 当工作流未产出最终响应时抛出。
+
+        Edge Cases:
+            - runtime context 必须按 trace_id 隔离，避免并发请求互相污染用户上下文
+            - 即使 invoke 抛错，也要在 finally 中清理 runtime context，防止内存泄漏
+            - 工作流结束但没有 response 会被视为编排错误，显式抛出而不是返回空体
         """
 
         log_prefix = _build_api_query_log_prefix(trace_id, interaction_id, conversation_id)
@@ -226,6 +246,7 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
             ),
         )
 
+        # 运行时重对象只放在请求级 side table，避免 LangGraph state 挂载敏感数据。
         self._runtime_contexts[trace_id] = ApiQueryRuntimeContext(
             user_context=user_context,
             user_token=user_token,
@@ -293,7 +314,19 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
         }
 
     async def _route_query(self, state: ApiQueryState) -> dict[str, Any]:
-        """第二阶段：轻量路由。"""
+        """第二阶段：轻量路由。
+
+        功能：
+            在不触碰候选检索的前提下，先判断当前问题属于哪个业务域和意图集合，为后续
+            分层召回缩小范围。这样可以减少多域混召带来的噪声和误匹配。
+
+        Returns:
+            路由提示摘要及域/意图更新；失败时同时写入降级原因。
+
+        Edge Cases:
+            - route_status 非 `ok` 时不会继续召回，避免把错误域提示放大成检索噪声
+            - 路由失败仍保留 reasoning/query_domains，便于前端和日志解释为什么降级
+        """
 
         self._log_node_event(state, node="route_query", phase="stage2")
         runtime_context = self._get_runtime_context(state)
@@ -333,7 +366,19 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
         }
 
     async def _retrieve_candidates(self, state: ApiQueryState) -> dict[str, Any]:
-        """第二阶段：按业务域分层召回候选接口。"""
+        """第二阶段：按业务域分层召回候选接口。
+
+        功能：
+            这一层负责把路由提示转成实际的目录检索约束，尽量在进入 planner 之前先把
+            候选集压到“少而准”的范围，避免第三阶段被无关接口拖垮。
+
+        Returns:
+            候选 ID 列表；未召回时返回降级状态字段。
+
+        Edge Cases:
+            - 自然语言模式才会记录 retrieval filters，供后续快照审计复盘
+            - 候选为空时立即降级，不允许 planner 在空候选上继续猜接口
+        """
 
         self._log_node_event(state, node="retrieve_candidates", phase="stage2")
         runtime_context = self._get_runtime_context(state)
@@ -371,7 +416,20 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
         }
 
     async def _build_plan(self, state: ApiQueryState) -> dict[str, Any]:
-        """第三阶段：生成内部执行计划。"""
+        """第三阶段：生成内部执行计划。
+
+        功能：
+            这里统一承接“单候选确定执行”“多候选交给 planner”“写意图改走确认快路”三类
+            决策，保证 route 层和 response builder 不需要知道 planner 的分支细节。
+
+        Returns:
+            计划、业务意图或降级状态增量；写意图快路会把上下文写入 runtime_context。
+
+        Edge Cases:
+            - 单候选 mutation 不进入执行图，优先改写为 mutation/delete 预检快路
+            - 多候选写意图即使 planner 失败，也应尽量回退到确认页而不是直接 Notice
+            - `selected_entry` 无法解析时按 stage2 降级处理，避免把“路由未定”误报成 planner 失败
+        """
 
         self._log_node_event(state, node="build_plan", phase="stage3")
         runtime_context = self._get_runtime_context(state)
@@ -382,6 +440,7 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
         route_hint = runtime_context.route_hint
         planning_intent_codes = list(state.get("business_intent_codes", []))
 
+        # 单候选优先走 extractor 精确提参；只有真正多候选才让 planner 参与选路。
         if len(candidates) == 1:
             routing_result = await self._get_extractor().extract_routing_result(
                 request_body.query,
@@ -486,8 +545,8 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
             )
             return {"plan": plan, "business_intent_codes": planning_intent_codes}
 
-        # 多候选 + 写意图时，若候选里只有一个 mutation 接口，优先走表单快路。
-        # 这样可以避免被 Planner 噪声（例如 unknown_api / api_id_mismatch）拖入 stage3 降级。
+        # 多候选 + 写意图时，优先尝试确认页/表单快路。
+        # 这一步的目标是把“可确认的写请求”从 planner 噪声里提前捞出来。
         if _has_write_intent(planning_intent_codes):
             write_intent_code = _resolve_write_intent_code(planning_intent_codes)
             if write_intent_code == "deleteCustomer":
@@ -551,7 +610,19 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
         return {"plan": plan, "business_intent_codes": planning_intent_codes}
 
     async def _validate_plan(self, state: ApiQueryState) -> dict[str, Any]:
-        """第三阶段：对白名单与依赖关系做确定性校验。"""
+        """第三阶段：对白名单与依赖关系做确定性校验。
+
+        功能：
+            planner 的输出仍需经过执行前硬校验，确保步骤只引用已召回目录项、依赖图安全，
+            并在必要时把失败改写为更适合用户确认的写快路。
+
+        Returns:
+            成功时返回空增量；失败时写入降级状态，或把 mutation/delete 上下文挂入 runtime_context。
+
+        Edge Cases:
+            - 删除写意图在 validate 失败时仍会尝试回退到 delete preview，而不是直接 Notice
+            - `planner_unsafe_api` 之外的写意图错误同样允许转 mutation form，避免误伤可确认写请求
+        """
 
         self._log_node_event(state, node="validate_plan", phase="stage3")
         runtime_context = self._get_runtime_context(state)
@@ -626,6 +697,10 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
 
         Returns:
             若候选集中存在 mutation 接口则返回 ApiQueryMutationFormContext，否则返回 None。
+
+        Edge Cases:
+            - 若全候选路由已经稳定选中 mutation 接口，优先复用该结果，避免唯一 mutation 候选被误忽略
+            - 全候选路由失败时才回退到“唯一 mutation 接口”启发式，降低误选概率
         """
 
         request_body = _require_request_body(runtime_context)
@@ -720,6 +795,21 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
             2. 找到同资源的查询接口
             3. 执行一次只读查询拿候选
             4. 根据 0/1/N 条结果生成后续 UI
+
+        Args:
+            state: 当前工作流状态。
+            runtime_context: 当前请求运行时上下文。
+            selected_entry: 已经明确选中的删除接口；若为空则从候选集中再解析。
+            business_intent_code: 当前删除业务意图编码。
+            pre_fill_params: 上游已提取出的删除参数，可用于无查询候选时直接兜底。
+
+        Returns:
+            删除预检上下文；若无法稳定定位删除接口则返回 `None`。
+
+        Edge Cases:
+            - 找不到同资源查询接口时，会尝试基于 pre_fill/name 直接构造确认 payload，避免把简单删除全部打回
+            - 删除前置查询失败或缺参时统一回 unresolved，强制人工补充信息，避免盲删
+            - 单命中与多命中会返回不同 status，供响应层决定确认页还是候选列表
         """
 
         request_body = _require_request_body(runtime_context)
@@ -738,6 +828,7 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
         #         message="当前无法从请求中稳定识别待删除角色名称，请补充更具体条件后重试。",
         #     )
 
+        # 先基于当前候选集判断是否存在可用查询接口，再决定是否走“直接确认”兜底。
         candidate_lookup_entries = [
             candidate.entry
             for candidate in runtime_context.candidates
@@ -780,6 +871,7 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
                 message=f"当前无法在删除前定位“{target_name}”的角色查询接口，请稍后重试或补充更具体条件。",
             )
 
+        # 删除预检必须先构造一笔安全、可复盘的只读查询，而不是直接把用户短句塞给删除接口。
         lookup_params = _build_delete_lookup_params(lookup_entry, target_name=target_name)
         missing_required_params = _find_missing_required_params(lookup_entry, lookup_params)
         if missing_required_params:
@@ -876,7 +968,19 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
         state: ApiQueryState,
         runtime_context: ApiQueryRuntimeContext,
     ) -> ApiCatalogEntry | None:
-        """在候选集中定位本次删除意图对应的 mutation 接口。"""
+        """在候选集中定位本次删除意图对应的 mutation 接口。
+
+        功能：
+            删除预检依赖一个明确的 delete mutation 作为最终提交目标。这里先尊重路由器
+            的显式选中结果，再退回到删除语义启发式，尽量降低误把查询接口当成删除接口的风险。
+
+        Returns:
+            最匹配的删除 mutation 目录项；无法确定时返回 `None`。
+
+        Edge Cases:
+            - 路由失败不会直接终止，而是继续尝试唯一 mutation / 删除关键词启发式兜底
+            - 多个 mutation 并存时只优先选择显著带删除语义的目录项，避免误删其他写接口
+        """
 
         candidates = runtime_context.candidates
         if not candidates:
@@ -983,11 +1087,20 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
         功能：
             外层图里不再允许第二、三、四阶段各自 `return ApiQueryResponse`。所有主路径和
             降级路径都统一汇总到这里，再交给 response builder 折叠成对外契约。
+
+        Returns:
+            对最终 `ApiQueryResponse` 的 state 增量镜像，供 workflow state 保持一致。
+
+        Edge Cases:
+            - delete preview、mutation form、执行成功三条主路互斥，优先级必须固定
+            - 如果没有 execution_state 且也不属于任一快路，会抛错暴露编排缺陷
         """
 
         self._log_node_event(state, node="build_response", phase="response", execution_status=state.get("execution_status"))
         runtime_context = self._get_runtime_context(state)
         builder = self._response_builder_getter()
+        # 响应优先级按“降级 -> 删除预检 -> mutation 表单 -> 正常执行”固定，
+        # 这样状态推进再复杂，最终出口也只有一套可预测决策。
         if runtime_context.degrade_context is not None:
             degrade_context = runtime_context.degrade_context
             if degrade_context.stage == "stage2":
@@ -1181,7 +1294,20 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
         interaction_id: str | None,
         conversation_id: str | None,
     ) -> tuple[ApiQueryExecutionPlan, dict[str, ApiCatalogEntry], list[str], list[str], str]:
-        """为 `direct` 快路准备单步执行计划。"""
+        """为 `direct` 快路准备单步执行计划。
+
+        功能：
+            direct 模式要求调用方已经明确知道目标 api_id，因此这一层只负责做目录校验、
+            只读安全拦截、参数校验和 patch 附加约束，不再走自然语言路由。
+
+        Returns:
+            单步执行计划、步骤映射、业务域、业务意图和渲染用 query_text。
+
+        Edge Cases:
+            - 目录加载失败会抛 503，明确区分“治理源异常”和“用户传错 api_id”
+            - direct 模式不会偷偷回退自然语言链路，任何契约错误都直接抛 422
+            - patch 模式只允许分页 GET 列表接口，避免前端对任意接口发局部刷新
+        """
 
         assert request_body.direct_query is not None
 
@@ -1213,6 +1339,7 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
             conversation_id=conversation_id,
         )
         self._ensure_query_safe_entry(entry, trace_id=trace_id, interaction_id=interaction_id, conversation_id=conversation_id)
+        # direct 模式是“强契约调用”，必须先在网关层卡掉未知字段和缺参。
         validated_params = _validate_direct_query_params(
             entry,
             direct_query.params,
@@ -1245,7 +1372,16 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
         interaction_id: str | None,
         conversation_id: str | None,
     ) -> None:
-        """强制拦截非查询安全接口。"""
+        """强制拦截非查询安全接口。
+
+        功能：
+            `/api-query` 的系统边界是“读链安全执行”。这里把 mutation 语义和非 GET/POST
+            查询方法统一拦下，避免 direct 模式绕开路由层的只读护栏。
+
+        Edge Cases:
+            - operation_safety 只要是 mutation 就直接 422，不允许 method 侥幸穿透
+            - POST 仍可视为查询安全，但前提是目录明确标记为非 mutation
+        """
 
         if entry.operation_safety == "mutation":
             logger.warning(
@@ -1384,7 +1520,19 @@ def _validate_direct_query_params(
     interaction_id: str | None,
     conversation_id: str | None,
 ) -> dict[str, Any]:
-    """校验 `direct` 模式的显式参数。"""
+    """校验 `direct` 模式的显式参数。
+
+    功能：
+        direct 模式不经过 LLM 提参，因此网关必须对调用方显式提交的字段做硬校验，防止
+        前端把未声明参数、拼写错误或缺参请求直接带到业务系统。
+
+    Returns:
+        通过校验后的参数副本。
+
+    Edge Cases:
+        - 任意未声明字段都会直接 422，避免下游接口出现“静默忽略”的假成功
+        - 必填参数为空字符串、空数组、空对象时同样视为缺失
+    """
 
     declared_fields = set(entry.param_schema.properties.keys())
     unknown_fields = [field for field in params if field not in declared_fields]
@@ -1424,7 +1572,17 @@ def _validate_direct_patch_request(
     interaction_id: str | None,
     conversation_id: str | None,
 ) -> None:
-    """校验列表 patch 快路的专属约束。"""
+    """校验列表 patch 快路的专属约束。
+
+    功能：
+        patch 模式本质上是前端二跳分页/筛选刷新，因此只能作用于“已声明分页能力的 GET
+        列表接口”。这里集中卡掉所有会让 patch 语义失真的请求。
+
+    Edge Cases:
+        - 非分页 GET 列表接口不允许进入 patch 模式，避免前端误把全量刷新当局部 patch
+        - filter submit/reset 必须把页码重置为 1，防止前端在旧页号上查询出错位数据
+        - pageSize 超上限会被硬拦截，避免前端利用 patch 通道放大单次查询负载
+    """
 
     if request_body.response_mode != ApiQueryResponseMode.PATCH:
         return
@@ -1544,7 +1702,19 @@ def _is_delete_mutation_entry(entry: ApiCatalogEntry) -> bool:
 
 
 def _score_delete_lookup_entry(delete_entry: ApiCatalogEntry, candidate: ApiCatalogEntry) -> int:
-    """为删除预检选择最匹配的只读查询接口。"""
+    """为删除预检选择最匹配的只读查询接口。
+
+    功能：
+        删除预检需要一条“尽可能能查到待删对象”的只读接口。这里用确定性打分替代 LLM，
+        保证删除前置查询的选择可审计、可复现。
+
+    Returns:
+        匹配分数；0 表示不适合作为删除预检查询接口。
+
+    Edge Cases:
+        - mutation 或删除语义接口直接记 0，防止预检链路误走到写接口
+        - 路径同目录、共享资源词和名称筛选字段会叠加加分，优先选择可精确定位对象的查询接口
+    """
 
     if candidate.operation_safety == "mutation" or candidate.method not in _QUERY_SAFE_METHODS:
         return 0
@@ -1594,7 +1764,19 @@ def _extract_lookup_tokens(*texts: str) -> set[str]:
 
 
 def _find_delete_lookup_name_field(entry: ApiCatalogEntry) -> str | None:
-    """找到最适合按名称筛选候选记录的查询字段。"""
+    """找到最适合按名称筛选候选记录的查询字段。
+
+    功能：
+        删除前置查询最好按“实体名称”缩小候选范围。这里优先从 schema 字段名和标题里找到
+        最像名称/关键字输入的字段，避免把状态、分页等控制字段误当成筛选主条件。
+
+    Returns:
+        最优名称筛选字段；若 schema 无合适字段则返回 `None`。
+
+    Edge Cases:
+        - 只考虑字符串字段，防止把数值型主键误用成模糊名称查询条件
+        - 若没有明显 name-like 字段，会退回首个可用字符串字段，保证预检仍可尝试执行
+    """
 
     properties = entry.param_schema.properties
     if not properties:
@@ -1672,7 +1854,19 @@ def _normalize_preview_rows(data: Any) -> list[dict[str, Any]]:
 
 
 def _filter_delete_lookup_rows(rows: list[dict[str, Any]], *, target_name: str) -> list[dict[str, Any]]:
-    """优先按名称精确匹配删除候选；找不到精确值时回退原结果。"""
+    """优先按名称精确匹配删除候选；找不到精确值时回退原结果。
+
+    功能：
+        删除预检的目标不是“尽可能返回更多数据”，而是帮助用户快速确认真正要删哪一条。
+        因此这里优先做精确名命中，其次做包含匹配，最后才退回原始候选列表。
+
+    Returns:
+        过滤后的候选行列表。
+
+    Edge Cases:
+        - 若没有任何名称列命中，不会强行清空结果，而是回退原列表供用户人工确认
+        - 同一行多个名称字段命中时只记一次，避免重复候选
+    """
 
     if not rows:
         return []

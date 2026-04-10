@@ -160,14 +160,35 @@ async def api_query(
     request: Request,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
 ) -> ApiQueryResponse:
-    """调用 `/api-query` 外层工作流。"""
+    """调用 `/api-query` 外层工作流。
 
+    功能：
+        route 层只负责收敛一次请求的链路身份与观测字段，然后把真正的业务推进委托给
+        `ApiQueryWorkflow`。这样可以避免后续有人在 HTTP 入口继续堆编排逻辑，破坏
+        “路由只做适配、工作流负责决策”的边界。
+
+    Args:
+        request_body: `/api-query` 标准请求体，包含自然语言或 direct 快路参数。
+        request: FastAPI 原始请求对象，用于读取 trace/header 和 request-scoped 用户事实。
+        credentials: 透过 `HTTPBearer` 解析出的 Authorization 凭证；缺失时允许匿名读链继续。
+
+    Returns:
+        由外层工作流统一折叠后的 `ApiQueryResponse`。
+
+    Edge Cases:
+        - `X-User-Id`、`Authorization`、trace 头的最终口径都必须在 route 层一次性确定，避免后续节点各自再猜
+        - 即使请求最终会走降级分支，route 也必须先补齐观测字段，保证链路日志可串联
+        - route 不直接吞掉 workflow 异常，避免把真正的契约错误伪装成成功响应
+    """
+
+    # 身份与链路字段必须在入口处冻结，后续 workflow 和执行图只消费这份标准事实。
     trace_id = _resolve_trace_id(request)
     interaction_id = _resolve_interaction_id(request)
     conversation_id = _resolve_conversation_id(request_body)
     user_context = _extract_user_context(request)
     user_token = f"Bearer {credentials.credentials}" if credentials else None
 
+    # route 只记录“收到请求并准备分发”的统一事件；真正的阶段推进由 workflow 内部继续细分。
     logger.info(
         "%s",
         format_workflow_observability_log(
@@ -200,7 +221,20 @@ async def api_query(
 
 @router.get("/runtime-metadata", response_model=ApiQueryRuntimeMetadataResponse, summary="获取 api_query 运行时元数据")
 async def get_runtime_metadata() -> ApiQueryRuntimeMetadataResponse:
-    """返回前端运行时所需的 UI 目录与模板场景。"""
+    """返回前端运行时所需的 UI 目录与模板场景。
+
+    功能：
+        该接口只暴露“平台级固定元数据”，例如组件目录、动作目录与模板场景；它故意不携带
+        任何请求级上下文，避免前端误把这里返回的数据当成某次查询的真实执行契约。
+
+    Returns:
+        固定的 `ApiQueryRuntimeMetadataResponse`，用于前端初始化组件能力认知。
+
+    Edge Cases:
+        - 运行时元数据中的 route 只是静态能力声明，不能替代真实查询响应里的动态调用元数据
+        - mutation form 在这里不暴露占位 URL，避免前端把无上下文地址误当成可直接提交入口
+        - 目录服务会先 warmup，确保首个前端请求不会因为惰性加载拿到不完整动作集
+    """
 
     catalog_service = _get_ui_catalog_service()
     await catalog_service.warmup()

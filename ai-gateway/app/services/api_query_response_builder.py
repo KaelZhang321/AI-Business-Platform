@@ -131,6 +131,11 @@ class ApiQueryResponseBuilder:
             2. 选择响应锚点
             3. 生成或冻结 UI Spec
             4. 在必要时附加快照审计元数据
+
+        Edge Cases:
+            - patch 模式不会走完整第五阶段渲染，而是直接压成局部更新协议
+            - 多步骤执行即使没有 anchor，也必须返回可解释的聚合状态和错误摘要
+            - 高风险写意图只有在页面未冻结时才附加快照，避免给无效视图生成审计垃圾
         """
 
         execution_report = DagExecutionReport(
@@ -151,6 +156,7 @@ class ApiQueryResponseBuilder:
         state["plan"] = response_plan
         created_by = _normalize_response_created_by(runtime_context.user_context)
 
+        # 运行时契约与 UI 主数据必须从同一份执行报告派生，避免前端看到的元数据与表格内容错位。
         data_for_ui = _build_ui_data_from_execution_report(execution_report, anchor_record)
         runtime = _build_runtime_from_execution_report(
             execution_report,
@@ -159,6 +165,7 @@ class ApiQueryResponseBuilder:
             ui_catalog_service=self._ui_catalog_service,
         )
 
+        # patch 响应只服务列表局部刷新，不再额外生成完整页面结构。
         if response_mode == ApiQueryResponseMode.PATCH:
             response = _build_patch_mode_response(
                 trace_id=state["trace_id"],
@@ -274,7 +281,12 @@ class ApiQueryResponseBuilder:
         business_intent_codes: list[str],
         reasoning: str | None = None,
     ) -> ApiQueryResponse:
-        """把第二阶段失败折叠为冻结只读 Notice。"""
+        """把第二阶段失败折叠为冻结只读 Notice。
+
+        Edge Cases:
+            - stage2 降级也会保留 query_domains 与 reasoning 摘要，方便解释为什么没继续执行
+            - 这里固定返回只读 Notice，防止前端把“未识别路由”误渲染成空列表
+        """
 
         response_query_domains = _format_query_domains_for_response(query_domains)
         execution_result = ApiQueryExecutionResult(
@@ -352,7 +364,12 @@ class ApiQueryResponseBuilder:
         business_intent_codes: list[str],
         reasoning: str | None = None,
     ) -> ApiQueryResponse:
-        """把第三阶段规划失败折叠为冻结只读 Notice。"""
+        """把第三阶段规划失败折叠为冻结只读 Notice。
+
+        Edge Cases:
+            - stage3 降级强调的是“计划不可安全执行”，因此不会继续保留任何可交互查询动作
+            - 虽然是降级页面，仍会把 stage3 原因写入 context_pool，方便渲染器生成解释文案
+        """
 
         response_query_domains = _format_query_domains_for_response(query_domains)
         execution_result = ApiQueryExecutionResult(
@@ -443,6 +460,11 @@ class ApiQueryResponseBuilder:
             前端拿到响应后，展示预填表单让用户核对。用户点击"确认"后，直接调用
             `ui_runtime.form.route_url` 指向的 runtime invoke 入口提交变更；`/api-query`
             只负责生成待确认表单，不参与最终写入。
+
+        Edge Cases:
+            - mutation 响应对外固定表现为 `SKIPPED`，明确表达“未真正执行写操作”
+            - 创建类 mutation 会在预填阶段补名称兜底，避免确认页出现空标题字段
+            - execution_plan 仍会保留 mutation 步骤，供前端确认后发起二跳调用
         """
 
         business_intents = _build_business_intents([business_intent_code])
@@ -452,7 +474,7 @@ class ApiQueryResponseBuilder:
             query_text=state.get("query_text", ""),
         )
 
-        # 从接口参数 Schema 与预填值构建表单字段列表
+        # 表单字段必须严格基于 request_schema 生成，避免 UI 展示字段和最终提交契约脱节。
         form_fields = _build_mutation_form_fields(
             entry,
             normalized_pre_fill_params,
@@ -494,7 +516,7 @@ class ApiQueryResponseBuilder:
             ),
         )
 
-        # 生成预填表单 UI Spec
+        # 生成预填表单 UI Spec 时同步注入 flow_num/created_by，保证前端确认后无需再拼装身份壳。
         form_state = _build_prefilled_form_state(
             fields=form_fields,
             pre_fill_params=normalized_pre_fill_params,
@@ -579,6 +601,10 @@ class ApiQueryResponseBuilder:
             1. `missing` / `unresolved`：只读提示
             2. `confirm`：带确认删除按钮的只读表单
             3. `candidates`：候选列表，每行直接挂删除动作
+
+        Edge Cases:
+            - 删除预检状态决定最终 UI 形态，响应层不再重新猜测候选数量
+            - 所有删除预检结果都保持 `SKIPPED`，明确表明尚未实际删除数据
         """
 
         if delete_preview_context.status in {"missing", "unresolved"}:
@@ -604,7 +630,12 @@ class ApiQueryResponseBuilder:
         state: ApiQueryState,
         delete_preview_context: ApiQueryDeletePreviewContext,
     ) -> ApiQueryResponse:
-        """为删除预检的未命中或无法确认场景构造只读提示。"""
+        """为删除预检的未命中或无法确认场景构造只读提示。
+
+        Edge Cases:
+            - `missing` 不视为系统错误，因此对外 `error` 为空；`unresolved` 才透出错误文案
+            - 删除无法确认时只保留刷新动作，防止前端继续误触发写链
+        """
 
         message = delete_preview_context.message or "当前无法确认待删除角色，请稍后重试。"
         title = "未找到待删除角色" if delete_preview_context.status == "missing" else "无法确认删除对象"
@@ -654,7 +685,12 @@ class ApiQueryResponseBuilder:
         delete_preview_context: ApiQueryDeletePreviewContext,
         created_by: str | None = None,
     ) -> ApiQueryResponse:
-        """单候选删除预检：输出确认删除表单。"""
+        """单候选删除预检：输出确认删除表单。
+
+        Edge Cases:
+            - 删除确认页字段全部只读，避免把“确认删除”变成“现场编辑后再删”
+            - submit_payload 优先尊重预检阶段已解析出的结果，确保真正删除目标与候选一致
+        """
 
         row = delete_preview_context.matched_rows[0]
         form_fields = _build_delete_confirm_form_fields(
@@ -694,6 +730,7 @@ class ApiQueryResponseBuilder:
             ),
         )
         entity_name = delete_preview_context.target_name or row.get("roleName") or row.get("name") or "目标角色"
+        # 删除确认页本质上仍是 mutation_form，只是通过只读字段和危险文案收紧交互范围。
         ui_build_result = await _generate_ui_spec_result(
             self._dynamic_ui,
             intent="mutation_form",
@@ -752,7 +789,12 @@ class ApiQueryResponseBuilder:
         delete_preview_context: ApiQueryDeletePreviewContext,
         created_by: str | None = None,
     ) -> ApiQueryResponse:
-        """多候选删除预检：输出候选列表，并为每行挂删除动作。"""
+        """多候选删除预检：输出候选列表，并为每行挂删除动作。
+
+        Edge Cases:
+            - 页面展示候选列表时，渲染阶段临时按 `SUCCESS` 处理，否则规则渲染会被 `SKIPPED` Notice 短路
+            - 每行动作模板只绑定标识字段，不把整行数据整包塞进删除 payload，避免误删字段漂移
+        """
 
         candidate_rows = _build_delete_candidate_rows(
             rows=delete_preview_context.matched_rows,
@@ -834,7 +876,16 @@ class ApiQueryResponseBuilder:
 
 
 def _build_business_intents(intent_codes: list[str]) -> list[ApiQueryBusinessIntent]:
-    """将业务意图编码转换为对外响应对象。"""
+    """将业务意图编码转换为对外响应对象。
+
+    功能：
+        对外响应不应暴露内部目录的全部意图定义，因此这里只输出允许公开、且当前请求真正命中的
+        意图列表；若没有合法命中，则回退到 `none`。
+
+    Edge Cases:
+        - 被禁用或禁止出现在响应中的意图会被直接过滤
+        - 空结果会回退到 noop 意图，避免前端再写一套“无意图”兼容逻辑
+    """
 
     intent_catalog = get_business_intent_catalog_service()
     codes = normalize_business_intent_codes(intent_codes)
@@ -888,6 +939,10 @@ def _build_mutation_form_fields(
 
         主键/ID 字段（名称以 id/Id 结尾或以 Id 开头）会标记为 `writable=False`，
         让 `_infer_form_mode` 推导出 `edit`，符合"修改已知记录"的语义。
+
+    Edge Cases:
+        - 创建类 mutation 会隐藏纯 `id` 字段，避免把服务端生成主键误展示给用户填写
+        - 字典字段会转为 `PlannerSelect` 语义，确保前端走稳定选项源而不是自由输入
     """
 
     schema_properties = entry.param_schema.properties if entry.param_schema else {}
@@ -963,6 +1018,10 @@ def _enrich_mutation_prefill_params(
 
     Returns:
         合并兜底后的参数字典；若不存在可安全推断的名称，则原样返回。
+
+    Edge Cases:
+        - 仅创建类 mutation 允许做名称兜底，避免修改类表单被错误覆盖现有主键/名称
+        - 若 name-like 字段已有值，则绝不再覆盖，尊重上游提参结果
     """
 
     normalized = dict(pre_fill_params)
@@ -1230,7 +1289,16 @@ def _build_list_filter_fields(
     page_param: str | None,
     page_size_param: str | None,
 ) -> list[ApiQueryListFilterFieldRuntime]:
-    """根据目录参数 schema 推导列表筛选字段。"""
+    """根据目录参数 schema 推导列表筛选字段。
+
+    功能：
+        列表筛选区只展示对用户有意义的业务过滤字段，分页控制字段和内部保留字段不应直接暴露
+        给前端筛选表单。
+
+    Edge Cases:
+        - 当前接口声明的 page/pageSize 字段会与全局排除集一起过滤，避免重复暴露
+        - 标签优先取 title/label，保证前端不必再猜字段中文名
+    """
 
     excluded_fields = set(_LIST_FILTER_EXCLUDED_FIELDS)
     if page_param:
@@ -1271,7 +1339,17 @@ def _build_ui_runtime(
     business_intents: list[ApiQueryBusinessIntent],
     ui_catalog_service: UICatalogService,
 ) -> ApiQueryUIRuntime:
-    """根据接口元数据和执行结果推导前端运行时契约。"""
+    """根据接口元数据和执行结果推导前端运行时契约。
+
+    功能：
+        `/api-query` 已不再把 `ui_runtime` 直接暴露给前端执行二跳，但内部仍需要一份稳定
+        运行时事实来驱动 UI 生成、动作白名单和 patch/detail 能力判定。
+
+    Edge Cases:
+        - detail/list 是否启用不仅取决于目录 hint，还要结合实际数据形态和执行状态
+        - 多步骤汇总结果不会误启详情/分页能力，避免前端把摘要表当单接口列表继续查询
+        - preserve_on_pagination 会主动排除分页字段和 id，避免二跳请求把旧定位参数重复透传
+    """
 
     rows = _normalize_rows(execution_result.data)
     action_codes = {"refresh", "export"}
@@ -1285,6 +1363,7 @@ def _build_ui_runtime(
         and (detail_hint.enabled or identifier_field is not None)
     )
 
+    # 分页和筛选能力来自目录 hint + 执行事实双重判定，不能只看 schema 是否“像列表”。
     pagination_hint = entry.pagination_hint
     page_param = pagination_hint.page_param or "pageNum"
     page_size_param = pagination_hint.page_size_param or "pageSize"
@@ -1406,7 +1485,18 @@ async def _extract_form_runtime_from_spec(
     trace_id: str,
     registry_source: ApiCatalogRegistrySource,
 ) -> ApiQueryFormRuntime:
-    """从最终 Spec 中提取表单运行时契约。"""
+    """从最终 Spec 中提取表单运行时契约。
+
+    功能：
+        规则渲染和 LLM 渲染最终都只输出 `ui_spec`，因此若后续还需要恢复表单提交契约，
+        就必须在这一层从真实渲染结果反推。这样可以确保最终暴露的 form runtime 与页面
+        实际字段一致，而不是和理论 schema 脱节。
+
+    Edge Cases:
+        - 没有写意图、没有 remoteMutation、或 payload 不含 `$bindState` 时都会直接视为“无表单”
+        - 治理源查询失败不会让整个响应失败，只会回退到最小表单契约
+        - 未出现在交互组件中的绑定会被视为只读上下文字段，避免误标为可编辑输入
+    """
 
     write_intent = next(
         (intent for intent in business_intents if intent.category == "write" and intent.code != NOOP_BUSINESS_INTENT),
@@ -1454,6 +1544,7 @@ async def _extract_form_runtime_from_spec(
             continue
 
         bind_paths.append(state_path)
+        # 绑定路径是否出现在交互组件里，决定了这个字段应被视为用户输入还是只读上下文。
         binding_meta = interactive_bindings.get(state_path, {})
         component_type = binding_meta.get("component_type")
         source_kind = "user_input"
@@ -2110,7 +2201,16 @@ def _build_list_patch_spec(
     aggregate_status: ApiQueryExecutionStatus,
     requested_target: str | None,
 ) -> dict[str, Any]:
-    """把单步列表结果压缩成前端可直接应用的 patch spec。"""
+    """把单步列表结果压缩成前端可直接应用的 patch spec。
+
+    功能：
+        patch 响应只解决“列表数据与分页状态如何局部更新”，而不是重新返回整页 UI。
+        这里统一约定 mutation target 和 replace 操作，便于前端做幂等刷新。
+
+    Edge Cases:
+        - 只有 SUCCESS/EMPTY 才会输出 replace 操作，错误态交由前端沿用旧视图并看外层状态
+        - 若 mutation_target 指向表格 dataSource，会同步更新分页器当前页/页大小/总数
+    """
 
     mutation_target = runtime.list.pagination.mutation_target or requested_target or "report-table.props.dataSource"
     rows: list[dict[str, Any]] = []
@@ -2229,7 +2329,16 @@ def _build_error_detail(execution_result: ApiQueryExecutionResult) -> ApiQueryEx
 def _shape_context_data(
     data: list[dict[str, Any]] | dict[str, Any] | None,
 ) -> tuple[list[dict[str, Any]] | dict[str, Any], dict[str, Any]]:
-    """裁剪进入 `context_pool` 和 Renderer 的数据体量。"""
+    """裁剪进入 `context_pool` 和 Renderer 的数据体量。
+
+    功能：
+        `context_pool` 的任务是支撑解释和渲染，而不是替代完整数据翻页接口。这里统一裁剪到
+        少量样本，兼顾可解释性与网关负载控制。
+
+    Edge Cases:
+        - 单对象保持对象形态，避免详情页被强行改写成单元素数组
+        - 超过 `_CONTEXT_ROW_LIMIT` 时会补 `truncated_count`，方便前端和日志识别这是预览不是全量
+    """
 
     if data is None:
         return [], {
@@ -2287,7 +2396,16 @@ def _maybe_attach_snapshot(
     ui_runtime: ApiQueryUIRuntime,
     metadata: dict[str, Any],
 ) -> ApiQueryUIRuntime:
-    """在高危写意图场景下挂载快照凭证。"""
+    """在高危写意图场景下挂载快照凭证。
+
+    功能：
+        快照只服务高风险写意图审计，因此这里把是否采集的判断集中在响应出口，避免不同调用方
+        各自决定是否留痕。
+
+    Edge Cases:
+        - 非高危意图不会生成快照，避免普通查询把快照存储打爆
+        - 即使 ui_spec 为空，也仍允许 snapshot_service 自行决定是否记录最小审计信息
+    """
 
     if not snapshot_service.should_capture(business_intents):
         return ui_runtime
@@ -2323,7 +2441,16 @@ async def _generate_ui_spec_result(
     runtime: ApiQueryUIRuntime | None,
     trace_id: str,
 ) -> UISpecBuildResult:
-    """兼容第五阶段新旧接口，统一返回带 Guard 状态的结果对象。"""
+    """兼容第五阶段新旧接口，统一返回带 Guard 状态的结果对象。
+
+    功能：
+        当前代码库里 `DynamicUIService` 仍处于新旧接口并存阶段。这里提供一层兼容包装，
+        让响应构建器始终拿到统一的 `UISpecBuildResult`，避免调用方到处判断方法签名。
+
+    Edge Cases:
+        - 老版本 `generate_ui_spec_result/generate_ui_spec` 不支持 `trace_id` 时会自动回退旧签名
+        - 旧接口只能返回裸 spec，因此 validation/frozen 会回退为空结果和 `False`
+    """
 
     if hasattr(dynamic_ui, "generate_ui_spec_result"):
         try:

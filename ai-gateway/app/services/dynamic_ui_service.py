@@ -221,7 +221,17 @@ class DynamicUIService:
         runtime: ApiQueryUIRuntime | None,
         trace_id: str | None,
     ) -> dict[str, Any] | None:
-        """生成待 Guard 校验的候选 Spec。"""
+        """生成待 Guard 校验的候选 Spec。
+
+        功能：
+            Guard 只负责验证结构合法性，不负责决定“当前该渲染什么”。这里先按执行状态、
+            渲染意图和数据形态挑选候选 Spec，再交给 Guard 做最后安全兜底。
+
+        Edge Cases:
+            - mutation_form 必须优先于通用 `SKIPPED -> Notice` 规则，否则确认页会被误短路
+            - 没有主数据时返回 `None`，让上层明确感知“无需渲染”，而不是造空壳页面
+            - LLM 渲染失败会自动回退规则模式，不影响主链可用性
+        """
         execution_status = ApiQueryExecutionStatus(status) if status else None
 
         if intent == "mutation_form":
@@ -302,8 +312,15 @@ class DynamicUIService:
 
         Returns:
             合法的 flat form spec；当运行时缺少表单契约时返回 `None`，交回上层兜底。
+
+        Edge Cases:
+            - `runtime.form` 未启用或缺少 `api_id` 时，必须返回 `None`，避免生成一个前端可见但无法提交的假表单
+            - `context.submit_payload` 缺失时，回退到基于 `$bindState` 的延迟取值模板，保证用户修改后的最新输入能进入最终请求
+            - runtime 元数据会同时挂到表单容器和提交按钮，兼容前端从“表单级上下文”或“动作级参数”两种入口取值
         """
 
+        # 1. mutation confirm 是“可确认后提交”的业务页；如果运行时契约本身不完整，
+        # 就不要向前端暴露半成品表单，交给上层退回安全兜底视图。
         if runtime is None or not runtime.form.enabled or not runtime.form.api_id:
             return None
 
@@ -311,6 +328,8 @@ class DynamicUIService:
         if not form_fields:
             return None
 
+        # 2. 先补全完整 state，再决定展示字段。这样做的目的不是美观，而是确保
+        # Guard 校验 `$bindState` 时每条路径都真实存在，提交按钮也能稳定复用同一份状态树。
         initial_state = self._build_mutation_form_state(
             fields=form_fields,
             form_state=(context or {}).get("form_state"),
@@ -342,9 +361,13 @@ class DynamicUIService:
             element_id = f"form_field_{index}"
             elements["form"]["children"].append(element_id)
             elements[element_id] = self._build_mutation_field_element(field=field, state=initial_state)
+            # 默认提交模板使用 `$bindState`，是为了让最终请求读取“用户确认后的当前值”，
+            # 而不是把服务端首屏预填值写死在 action params 中。
             default_submit_payload[field.submit_key] = {"$bindState": field.state_path}
 
         custom_submit_payload = (context or {}).get("submit_payload")
+        # 删除确认等特殊写场景会覆盖 submit_payload；普通 mutation confirm 继续走
+        # 字段级绑定模板，保证所有可编辑字段天然参与提交。
         submit_payload = custom_submit_payload if isinstance(custom_submit_payload, dict) else default_submit_payload
         submit_request_fields = _build_runtime_request_fields(
             runtime.form.api_id,
@@ -356,6 +379,8 @@ class DynamicUIService:
 
         submit_element_id = "form_submit"
         elements["form"]["children"].append(submit_element_id)
+        # 表单容器和按钮同时携带 runtime 元数据，是为了兼容两类前端实现：
+        # 一类从表单节点读取提交上下文，另一类只消费按钮 action params。
         elements["form"]["props"].update(
             _build_runtime_request_fields(
                 runtime.form.api_id,
@@ -368,6 +393,8 @@ class DynamicUIService:
         elements[submit_element_id] = {
             "type": "PlannerButton",
             "props": {
+                # 文案优先尊重上游上下文覆盖，其次才根据 confirm_required 区分“确认提交”和普通“提交”，
+                # 这样删除/审核等高风险动作可以复用同一套表单结构但给出更准确的用户提示。
                 "label": (
                     (context or {}).get("submit_label")
                     if isinstance((context or {}).get("submit_label"), str) and (context or {}).get("submit_label")
@@ -435,7 +462,16 @@ class DynamicUIService:
         field: ApiQueryFormFieldRuntime,
         state: dict[str, Any],
     ) -> dict[str, Any]:
-        """将单个 mutation 字段折叠为对应的 json-render 元素。"""
+        """将单个 mutation 字段折叠为对应的 json-render 元素。
+
+        功能：
+            mutation confirm 的字段组件类型必须和运行时契约严格对齐，避免前端看到的控件形态
+            与最终提交 payload 语义不一致。
+
+        Edge Cases:
+            - 不可写字段统一降为 `PlannerMetric`，防止用户误以为这些值可编辑
+            - 字典字段优先转 `PlannerSelect`，确保前端走约束选项而不是自由文本
+        """
 
         if not field.writable:
             return {
@@ -623,6 +659,10 @@ class DynamicUIService:
         功能：
             Prompt 的重点不是追求文采，而是建立稳定的“组件白名单 + 数据使用规则”。
             这里按 `query` 与其他旧链路区分，确保 `api_query` 优先收敛到 `Planner*` 原语。
+
+        Edge Cases:
+            - `query` 意图会显式强调 `Planner*` 组件和读态规则，防止模型回退到旧组件命名
+            - runtime 为空时仍会输出目录占位，避免模型误以为可以自由造动作
         """
         component_catalog = self._format_component_catalog(intent, runtime)
         action_catalog = self._format_action_catalog(runtime)
@@ -675,6 +715,10 @@ class DynamicUIService:
             网关返回给前端的 `ui_spec` 可以包含完整展示数据，但喂给 LLM 的输入必须更克制。
             这里单独做 prompt 级裁剪，避免一次请求把整个 `context_pool`、所有分页结果和
             冗长 runtime schema 一起塞进模型窗口。
+
+        Edge Cases:
+            - `user_query` 同时兼容 `user_query/question` 两种上下文字段，避免上游旧调用点失效
+            - 主数据、context_pool、runtime 都会被二次裁剪，防止 prompt 体积失控
         """
         renderer_context = context or {}
         return {
@@ -719,6 +763,10 @@ class DynamicUIService:
         功能：
             `context_pool` 是第五阶段最重要的事实输入，但也是最容易导致 token 爆炸的部分。
             这里保留状态机决策所必需的字段，把执行细节、原始参数和大结果集缩减为摘要。
+
+        Edge Cases:
+            - 非字典步骤结果会被直接忽略，避免模型看到不可解释的运行时对象
+            - meta 只保留渲染决策相关字段，故意不透传完整原始参数，防止 prompt 泄漏实现细节
         """
         if not isinstance(context_pool, dict):
             return {}
@@ -762,6 +810,10 @@ class DynamicUIService:
         功能：
             Renderer 需要知道“能用什么”，但不需要把每个动作的完整 Schema 全量记住。
             这里保留组件名、启用动作和关键读态能力，既能做约束，也不会把 prompt 撑大。
+
+        Edge Cases:
+            - runtime 为空时回退最小只读能力，避免模型误生成交互动作
+            - 列表/详情/表单都会保留 enabled 与关键元数据，兼容不同渲染模式的判定
         """
         if runtime is None:
             return {"mode": "read_only", "components": []}
@@ -838,6 +890,10 @@ class DynamicUIService:
             规则渲染可以消费完整裁剪结果，LLM Renderer 则更怕无关噪音。
             这里按深度、字段数和行数做二次收缩，把“足够理解业务”与“避免 token 爆炸”
             两件事同时兼顾。
+
+        Edge Cases:
+            - 深层非标量对象会被折叠成字符串摘要，防止递归结构把 prompt 撑爆
+            - 超长字符串、超长数组和超大对象都会按固定阈值截断，保证 prompt 规模可预测
         """
         if value is None:
             return None
@@ -932,7 +988,16 @@ class DynamicUIService:
 
     @staticmethod
     def _strip_json_comments(text: str) -> str:
-        """删除 JSON 中的注释，同时保留字符串字面量原文。"""
+        """删除 JSON 中的注释，同时保留字符串字面量原文。
+
+        功能：
+            某些模型会把 JSON 包上 `//` 或 `/* */` 注释。这里用字符级状态机清洗，是为了
+            精确避开字符串字面量里的 `//` 与 `/*`，避免把合法文本误删。
+
+        Edge Cases:
+            - 只有在字符串外部才识别注释起始符，保证 URL、代码片段等文本内容不受影响
+            - 未闭合块注释会被尽可能跳过到文本末尾，优先保证解析继续进行
+        """
         result: list[str] = []
         index = 0
         in_string = False
@@ -980,7 +1045,16 @@ class DynamicUIService:
 
     @staticmethod
     def _strip_trailing_commas(text: str) -> str:
-        """删除对象和数组闭合前的尾逗号。"""
+        """删除对象和数组闭合前的尾逗号。
+
+        功能：
+            模型常见脏输出之一是对象或数组尾逗号。这里继续沿用字符级扫描，避免正则在字符串
+            场景下误删合法逗号。
+
+        Edge Cases:
+            - 仅在字符串外部识别尾逗号，防止正文里的 `,]`/`,}` 片段被误处理
+            - 只跳过真正紧邻闭合符的逗号，不影响正常字段分隔
+        """
         result: list[str] = []
         index = 0
         in_string = False
@@ -1122,7 +1196,16 @@ class DynamicUIService:
         return normalized or "element"
 
     def _knowledge_spec(self, results: list[KnowledgeResult], context: dict | None) -> dict[str, Any]:
-        """把知识检索结果渲染成列表卡片。"""
+        """把知识检索结果渲染成列表卡片。
+
+        功能：
+            知识检索链路仍沿用旧组件，但这里保留稳定的卡片/列表组织方式，确保未来迁移
+            `Planner*` 组件前，前端也能消费统一结构。
+
+        Edge Cases:
+            - metadata 缺失时会回退默认来源与空标签，避免页面出现 `None`
+            - 内容摘要只截取前 160 字，防止知识正文撑爆列表视图
+        """
         items = [
             {
                 "id": result.doc_id,
@@ -1410,7 +1493,16 @@ class DynamicUIService:
         )
 
     def _task_spec(self, tasks: list[dict[str, Any]]) -> dict[str, Any]:
-        """将待办列表渲染成带筛选器的工作台视图。"""
+        """将待办列表渲染成带筛选器的工作台视图。
+
+        功能：
+            task 视图仍是旧链路遗留能力，这里保持“筛选器 + 列表”结构稳定，避免旧页面在
+            新渲染器接入后突然失去工作台语义。
+
+        Edge Cases:
+            - 缺失 `id/title/status` 时会回退默认值，保证任务卡片最小可展示
+            - 来源系统标签是可选信息，缺失时不会生成空 tag
+        """
         items = [
             {
                 "id": task.get("id", task.get("sourceId", str(index))),
@@ -1497,6 +1589,10 @@ class DynamicUIService:
 
         Returns:
             合法的 `root/state/elements` flat spec。
+
+        Edge Cases:
+            - `state=None` 时统一回退空对象，避免前端处理两套状态空值语义
+            - 子元素 ID 按顺序编号，保证快照和测试断言稳定
         """
         elements: dict[str, Any] = {
             "root": {
@@ -1615,7 +1711,16 @@ class DynamicUIService:
 
     @staticmethod
     def _build_metrics(numeric_fields: dict[str, list[float]]) -> list[dict[str, Any]]:
-        """为数值字段生成多种聚合指标（sum/avg/count）。"""
+        """为数值字段生成多种聚合指标（sum/avg/count）。
+
+        功能：
+            指标卡的目标是快速暴露数据概貌，而不是把所有数值列都塞进页面。这里按分布特征
+            选取更有解释价值的合计/均值组合，并控制指标数量上限。
+
+        Edge Cases:
+            - 单值列不会重复生成“合计+均值”两张卡，避免信息冗余
+            - 指标数量最多保留 4 个，防止摘要区喧宾夺主
+        """
         metrics: list[dict[str, Any]] = []
         for column, values in numeric_fields.items():
             if not values:
@@ -1659,7 +1764,16 @@ class DynamicUIService:
         rows: list[dict[str, Any]],
         numeric_fields: dict[str, list[float]],
     ) -> dict[str, Any] | None:
-        """从查询结果中推导一个最小可用图表。"""
+        """从查询结果中推导一个最小可用图表。
+
+        功能：
+            图表只作为补充洞察，因此这里坚持“能稳定解释再画”。只有在存在明确分类轴和数值轴时，
+            才会生成最小可用图表，避免为了画图而画图。
+
+        Edge Cases:
+            - 缺少数值列或分类列时直接返回 `None`，不强行生成误导性图表
+            - 数值列里没有任何真实数值时，说明这批数据不适合画图，直接放弃
+        """
         if not rows or not numeric_fields:
             return None
 
@@ -1714,7 +1828,16 @@ class DynamicUIService:
         values: list[Any],
         series_name: str,
     ) -> dict[str, Any]:
-        """根据图表类型生成 ECharts option。"""
+        """根据图表类型生成 ECharts option。
+
+        功能：
+            这里统一输出最小可用的 ECharts 配置，保证不同图表类型都沿用同一套标题、图例
+            与数据映射口径，方便前端直接透传。
+
+        Edge Cases:
+            - 饼图会主动过滤非数值点，避免 ECharts 因脏数据报错
+            - 未识别类型时默认回退柱状图，保证始终有稳定配置输出
+        """
         if kind == "pie":
             return {
                 "tooltip": {"trigger": "item"},
@@ -1801,6 +1924,10 @@ def _build_runtime_request_fields(
 
     Returns:
         统一元数据字典，始终包含 `api/queryParams/body/flowNum/createdBy` 五个字段。
+
+    Edge Cases:
+        - `param_source=body` 时会强制把 queryParams 置空，避免前端二跳出现双通道传参
+        - api_id 缺失时 `api` 会回退空串，但其余元数据字段仍保持稳定形状
     """
 
     normalized_params = params if isinstance(params, dict) else {}
