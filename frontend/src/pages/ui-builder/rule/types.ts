@@ -15,11 +15,11 @@ export interface RuleRemotePage<T> {
 export interface RuleListQuery {
   pageNo?: number
   pageSize?: number
-  id?: number
+  id?: string
 }
 
 export interface RuleRecord {
-  id?: number
+  id?: string
   ruleName: string
   ruleCode: string
   description?: string
@@ -34,8 +34,8 @@ export interface RuleRecord {
 }
 
 export interface RuleNodeRecord {
-  id?: number
-  ruleId?: number
+  id?: string
+  ruleId?: string
   nodeName?: string
   nodeType?: string
   nodeGroup?: string

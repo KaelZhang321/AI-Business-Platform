@@ -235,7 +235,7 @@ export function RuleEngineTab() {
   const [rules, setRules] = useState<RuleRecord[]>([])
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
-  const [selectedRuleId, setSelectedRuleId] = useState<number>()
+  const [selectedRuleId, setSelectedRuleId] = useState<string>()
   const [selectedNodeId, setSelectedNodeId] = useState<string>()
   const [pagination, setPagination] = useState({ current: 1, pageSize: DEFAULT_PAGE_SIZE, total: 0 })
   const [createOpen, setCreateOpen] = useState(false)
@@ -382,7 +382,7 @@ export function RuleEngineTab() {
     }
   }
 
-  async function handleEditRule(ruleId?: number) {
+  async function handleEditRule(ruleId?: string) {
     if (!ruleId) {
       return
     }
@@ -399,7 +399,7 @@ export function RuleEngineTab() {
     }
   }
 
-  async function handleDeleteRule(ruleId?: number) {
+  async function handleDeleteRule(ruleId?: string) {
     if (!ruleId) {
       return
     }
