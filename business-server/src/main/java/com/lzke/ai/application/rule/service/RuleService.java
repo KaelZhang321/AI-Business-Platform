@@ -74,7 +74,7 @@ public class RuleService extends ServiceImpl<RuleMapper, Rule> {
 	 * @param ruleQueryDTO
 	 * @return
 	 */
-	@Transactional(value = "bserviceDataSourceTransactionManager",rollbackFor = Exception.class)
+	@Transactional
 	public ResponseDto<Rule> saveOrUpdateRule(Rule rule) {
 		if (rule.getId() == null) {
 			Long id = IdUtil.getSnowflake().nextId();
