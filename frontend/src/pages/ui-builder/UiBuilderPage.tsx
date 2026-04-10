@@ -9,6 +9,7 @@ import { ReleaseTab } from './components/ReleaseTab'
 import { SemanticFieldTab } from './components/SemanticFieldTab'
 import { SourceCenterTab } from './components/SourceCenterTab'
 import { StudioTab } from './components/StudioTab'
+import { RuleEngineTab } from './rule/RuleEngineTab'
 import type {
   PageQuery,
   PageResult,
@@ -1402,6 +1403,11 @@ export function UiBuilderPage() {
                 onRefreshPreview={handleRefreshPreview}
               />
             ),
+          },
+          {
+            key: 'rule-engine',
+            label: '规则引擎',
+            children: <RuleEngineTab />,
           },
           {
             key: 'release',
