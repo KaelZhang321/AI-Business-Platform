@@ -34,9 +34,10 @@
  *     其中 props 通过 element.props 访问
  */
 import { createRenderer, useBoundProp } from '@json-render/react';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import { apiClient } from '../../../services/api';
 import { assistantCatalog } from './catalog';
+import { Table, Descriptions } from 'antd';
 
 // ─── 字典选项类型 ────────────────────────────────────────────────────────────
 interface DictOption {
@@ -194,11 +195,10 @@ export const AssistantRenderer = createRenderer(assistantCatalog, {
     const isSuccess = tone === 'success';
     return (
       <div
-        className={`rounded-xl px-3 py-2 text-xs font-medium ${
-          isSuccess
+        className={`rounded-xl px-3 py-2 text-xs font-medium ${isSuccess
             ? 'bg-emerald-50 text-emerald-700 border border-emerald-100'
             : 'bg-brand/10 text-brand border border-brand/15'
-        }`}
+          }`}
       >
         {text}
       </div>
@@ -259,6 +259,157 @@ export const AssistantRenderer = createRenderer(assistantCatalog, {
           ))}
         </select>
       </label>
+    );
+  },
+
+  /**
+   * PlannerTable — 服务端分页表格
+   * 
+   * 工作流程：
+   * 1. 挂载时根据传入的 api 发送请求，附带 pageNum 参数
+   * 2. 当用户点击分页（antd pagination onChange），由于绑定的 page 值改变
+   * 3. 触发再次按照新页码拉取，更新结果。
+   */
+  PlannerTable: ({ element, bindings, emit }) => {
+    const { title, api, columns, dataSource, rowActions } = element.props;
+
+    const [data, setData] = useState<any[]>(dataSource || []);
+    const [total, setTotal] = useState(dataSource?.length || 0);
+    const [loading, setLoading] = useState(false);
+
+    // currentPage 的双向绑定
+    const [boundPage, setBoundPage] = useBoundProp<number | Record<string, unknown> | null>(
+      element.props.currentPage,
+      bindings?.currentPage,
+    );
+    // 默认页码是 1
+    const page = typeof boundPage === 'number' ? boundPage : 1;
+
+    useEffect(() => {
+      let active = true;
+      // 支持后端直接下发 dataSource 进行静态展示
+      if (!api) {
+        if (dataSource) {
+          setData(dataSource);
+          setTotal(dataSource.length);
+        }
+        return;
+      }
+
+      setLoading(true);
+      apiClient.get(api, {
+        // 请求后台时一般需要 pageNum 和 pageSize 字段
+        params: { pageNum: page, pageSize: 5 }
+      })
+        .then(res => {
+          if (!active) return;
+          // 适配大多标准后端响应：包裹层可能是 res.data.data.records，也可能是 res.data.rows
+          const records = res.data?.data?.rows || res.data?.data?.records || res.data?.rows || res.data?.data || [];
+          const totalCount = res.data?.data?.total || res.data?.total || records.length || 0;
+          setData(records);
+          setTotal(totalCount);
+          setLoading(false);
+        })
+        .catch(err => {
+          console.error('表格数据获取失败:', err);
+          setLoading(false);
+        });
+
+      return () => { active = false; };
+    }, [api, page]);
+
+    const tableColumns = useMemo(() => {
+      const cols = Array.isArray(columns) ? [...columns] : [];
+      if (rowActions && Array.isArray(rowActions) && rowActions.length > 0) {
+        cols.push({
+          title: '操作',
+          key: 'action',
+          render: (_: any, record: any) => (
+            <div className="flex gap-3">
+              {rowActions.map((action: any, idx: number) => (
+                <button
+                  key={idx}
+                  type="button"
+                  className="text-brand hover:text-brand-dark hover:underline text-[11px] font-bold transition-colors"
+                  onClick={() => {
+                    if (emit) {
+                      emit(action.type || 'remoteQuery', { record, action });
+                    }
+                  }}
+                >
+                  {action.label}
+                </button>
+              ))}
+            </div>
+          )
+        });
+      }
+      return cols;
+    }, [columns, rowActions]);
+
+    return (
+      <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
+        {title && <h5 className="mb-3 text-[13px] font-bold text-slate-700">{title}</h5>}
+
+        {/* 使用 Ant Design 的原生 Table 来做展示和分页控制 */}
+        <Table
+          size="small"
+          dataSource={data}
+          columns={tableColumns}
+          loading={loading}
+          // 根据实际后端的 id 或其它字段提供一个唯一 key
+          rowKey={(record: any) => record.id || record.uid || JSON.stringify(record)}
+          pagination={{
+            current: page,
+            pageSize: 5,
+            total: total,
+            onChange: (newPage) => setBoundPage(newPage),
+            showSizeChanger: false, // 卡片区域小，建议禁用页面大小调节
+          }}
+          scroll={{ x: 'max-content' }} // 数据列太多时允许左右拖滚
+          className="text-xs"
+        />
+      </div>
+    );
+  },
+
+  PlannerDetailCard: ({ element }) => {
+    const { title, items } = element.props;
+
+    return (
+      <div className="mt-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+        <div className="mb-4 flex items-center justify-between border-b border-slate-100 pb-3">
+          <h5 className="text-[14px] font-extrabold text-slate-800">
+            {title || '详细资料'}
+          </h5>
+        </div>
+
+        <Descriptions
+          column={{ xxl: 3, xl: 3, lg: 2, md: 2, sm: 1, xs: 1 }}
+          size="small"
+          labelStyle={{ fontWeight: 600, color: 'red', whiteSpace: 'nowrap' }}
+          contentStyle={{ color: '#0F172A', wordBreak: 'break-all' }}
+        >
+          {items?.map((item: any, idx: number) => {
+            // 对长文本的 value 可以加省略或者弹窗，这里暂时直接渲染
+            const displayValue = item.value === '-' || !item.value ? '暂无' : item.value;
+            // 判断是否是类似 JSON 的过长字符串
+            const isLongJson = displayValue.length > 50 && (displayValue.startsWith('{') || displayValue.startsWith('['));
+
+            return (
+              <Descriptions.Item key={idx} label={item.label} span={isLongJson ? 3 : 1}>
+                {isLongJson ? (
+                  <div className="max-h-24 overflow-y-auto w-full custom-scrollbar text-[11px] bg-slate-50 p-2 rounded border border-slate-100" title={displayValue}>
+                    {displayValue}
+                  </div>
+                ) : (
+                  <span className="text-[12px]">{displayValue}</span>
+                )}
+              </Descriptions.Item>
+            );
+          })}
+        </Descriptions>
+      </div>
     );
   },
 });

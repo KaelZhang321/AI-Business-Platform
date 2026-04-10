@@ -27,6 +27,8 @@ interface DashboardRouteContext {
 
 interface RouteRenderContext {
   navigateToPage: (page: AppPage) => void;
+  isDarkMode: boolean;
+  setIsDarkMode: React.Dispatch<React.SetStateAction<boolean>>;
   dashboard: DashboardRouteContext;
 }
 
@@ -77,6 +79,16 @@ const ConsultantAIWorkbench = lazy(async () => {
   return { default: module.ConsultantAIWorkbench };
 });
 
+const AIReportComparisonDetailView = lazy(async () => {
+  const module = await import('./components/ai-report/AIReportInterpretationDetailView');
+  return { default: module.AIReportComparisonDetailView };
+});
+
+const AIFourQuadrantView = lazy(async () => {
+  const module = await import('./components/ai-four-quadrant/AIFourQuadrantView');
+  return { default: module.AIFourQuadrantView };
+});
+
 function PageLoadingFallback() {
   return (
     <section className="rounded-[32px] border border-slate-200/70 bg-white/80 px-8 py-12 shadow-sm">
@@ -97,6 +109,20 @@ const PAGE_RENDERERS: Partial<Record<AppPage, PageRenderer>> = {
   dashboard: ({ dashboard }) => <DashboardView {...dashboard} />,
   'function-square': ({ navigateToPage }) => (
     <FunctionSquareView setCurrentPage={navigateToPage} />
+  ),
+  'ai-report-comparison': ({ navigateToPage, isDarkMode, setIsDarkMode }) => (
+    <AIReportComparisonDetailView
+      setCurrentPage={navigateToPage}
+      isDarkMode={isDarkMode}
+      setIsDarkMode={setIsDarkMode}
+    />
+  ),
+  'ai-four-quadrant': ({ navigateToPage, isDarkMode, setIsDarkMode }) => (
+    <AIFourQuadrantView
+      setCurrentPage={navigateToPage}
+      isDarkMode={isDarkMode}
+      setIsDarkMode={setIsDarkMode}
+    />
   ),
   'ui-builder': () => <UiBuilderPage />,
   'meeting-bi': () => <MeetingBiView />,

@@ -6,10 +6,11 @@ import { defineConfig, loadEnv } from 'vite';
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, '.', '');
+  console.log(env)
   const apiUrl = env.VITE_API_BASE_URL?.trim() || 'http://172.23.15.59:9080/ai-platform';
 
   return {
-    base: mode === 'development' ? '/' : '/ai-platform/',
+    base: env.NODE_ENV === 'development' ? '/' : '/ai-platform/',
     plugins: [react(), tailwindcss()],
     define: {
       'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY),
@@ -22,13 +23,13 @@ export default defineConfig(({ mode }) => {
     server: {
       hmr: process.env.DISABLE_HMR !== 'true',
       proxy: {
-        // 业务编排层接口 (auth, tasks, knowledge, audit...)
-        '/api/v1': {
-          target: apiUrl,
+        // AI网关其余接口 (chat, health, bi...)
+        '/api/v1/api-query': {
+          target: 'http://192.168.18.97:8000',
           changeOrigin: true,
         },
-        // AI网关其余接口 (chat, health, bi...)
-        '/api': {
+        // 业务编排层接口 (auth, tasks, knowledge, audit...)
+        '/api/v1': {
           target: apiUrl,
           changeOrigin: true,
         },

@@ -1,4 +1,5 @@
 import { AnimatePresence, motion } from 'motion/react';
+import { useState, useEffect } from 'react';
 import { ArrowRight, BarChart3, Brain, CheckCircle2, Clock, Heart, Sparkles, Users, Zap, Activity } from 'lucide-react';
 import type { Spec } from '@json-render/react';
 import type { HistoryItem, WorkbenchViewMode } from './types';
@@ -16,9 +17,26 @@ interface MainReportsPanelProps {
 }
 
 export function MainReportsPanel({ viewMode, showNewPlan, historyItems, suggestionItems, aiSpec }: MainReportsPanelProps) {
+  const [renderState, setRenderState] = useState<Record<string, unknown>>({});
+
+  useEffect(() => {
+    if (aiSpec?.state && typeof aiSpec.state === 'object') {
+      setRenderState(aiSpec.state as Record<string, unknown>);
+    } else {
+      setRenderState({});
+    }
+  }, [aiSpec]);
+
   /** 处理 AssistantRenderer 的自定义动作，逻辑与 AssistantMessageContent 保持一致 */
   const handleAction = async (actionName: string, params?: Record<string, unknown>) => {
     switch (actionName) {
+      case 'remoteQuery': {
+        // 当用户点击"查看详情"时，更新 renderState 展示卡片
+        if (params?.action && (params.action as any).params?.api_id === 'customer_detail') {
+           setRenderState(prev => ({ ...prev, showDetail: true }));
+        }
+        break;
+      }
       case 'saveToServer': {
         const goal = typeof params?.goal === 'string' ? params.goal : '';
         try {
@@ -33,10 +51,6 @@ export function MainReportsPanel({ viewMode, showNewPlan, historyItems, suggesti
         console.warn(`[MainReportsPanel] 未处理的 action: ${actionName}`, params);
     }
   };
-
-  const initialState = aiSpec?.state && typeof aiSpec.state === 'object'
-    ? (aiSpec.state as Record<string, unknown>)
-    : {};
 
   return (
     <div className="col-span-6 flex flex-col space-y-6 overflow-y-auto pr-2 custom-scrollbar">
@@ -61,7 +75,7 @@ export function MainReportsPanel({ viewMode, showNewPlan, historyItems, suggesti
             {/* AssistantRenderer：Standalone Mode，直接渲染 Spec 卡片 */}
             <AssistantRenderer
               spec={aiSpec}
-              state={initialState}
+              state={renderState}
               onAction={handleAction}
             />
           </motion.div>

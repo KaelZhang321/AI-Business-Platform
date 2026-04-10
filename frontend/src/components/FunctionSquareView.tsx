@@ -10,6 +10,20 @@ interface FunctionSquareViewProps {
 }
 
 export function FunctionSquareView({ setCurrentPage }: FunctionSquareViewProps) {
+  const FEATURE_PAGE_MAP: Record<string, AppPage> = {
+    'AI辅助诊断': 'ai-diagnosis',
+    'AI报告对比': 'ai-report-comparison',
+    'AI报告解读': 'ai-report-comparison',
+    'AI四象限健康评估': 'ai-four-quadrant',
+  };
+
+  const handleModuleClick = (title: string) => {
+    const targetPage = FEATURE_PAGE_MAP[title];
+    if (targetPage) {
+      setCurrentPage(targetPage);
+    }
+  };
+
   return (
     <div className="space-y-10 pb-12">
       {/* Hero / Search Section */}
@@ -54,7 +68,7 @@ export function FunctionSquareView({ setCurrentPage }: FunctionSquareViewProps) 
               transition={{ delay: idx * 0.1 }}
               aria-label={item.title}
               className="group bg-white rounded-2xl overflow-hidden shadow-sm hover:shadow-xl transition-all border border-slate-100 cursor-pointer text-left"
-              onClick={() => item.title === 'AI辅助诊断' && setCurrentPage('ai-diagnosis')}
+              onClick={() => handleModuleClick(item.title)}
             >
               <div className="relative h-40 overflow-hidden">
                 <img 
@@ -92,12 +106,15 @@ export function FunctionSquareView({ setCurrentPage }: FunctionSquareViewProps) 
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {FUNCTION_MODULES.recommended.map((item, idx) => (
-            <motion.div 
+            <motion.button
+              type="button"
               key={item.id}
               initial={{ opacity: 0, x: -20 }}
               animate={{ opacity: 1, x: 0 }}
               transition={{ delay: idx * 0.05 }}
               className="flex items-start p-4 bg-white rounded-2xl shadow-sm hover:shadow-md transition-all border border-slate-50 group cursor-pointer"
+              aria-label={item.title}
+              onClick={() => handleModuleClick(item.title)}
             >
               <div className="w-12 h-12 rounded-xl overflow-hidden shrink-0 mr-4 shadow-sm">
                 <img src={item.icon} alt={item.title} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
@@ -109,7 +126,7 @@ export function FunctionSquareView({ setCurrentPage }: FunctionSquareViewProps) 
                 </div>
                 <p className="text-xs text-slate-500 line-clamp-1">{item.desc}</p>
               </div>
-            </motion.div>
+            </motion.button>
           ))}
         </div>
       </section>
@@ -128,12 +145,15 @@ export function FunctionSquareView({ setCurrentPage }: FunctionSquareViewProps) 
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {FUNCTION_MODULES.all.map((item, idx) => (
-            <motion.div 
+            <motion.button
+              type="button"
               key={item.id}
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               transition={{ delay: idx * 0.05 }}
               className="flex items-start p-4 bg-white rounded-2xl shadow-sm hover:shadow-md transition-all border border-slate-50 group cursor-pointer"
+              aria-label={item.title}
+              onClick={() => handleModuleClick(item.title)}
             >
               <div className="w-12 h-12 rounded-xl overflow-hidden shrink-0 mr-4 shadow-sm">
                 <img src={item.icon} alt={item.title} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
@@ -145,7 +165,7 @@ export function FunctionSquareView({ setCurrentPage }: FunctionSquareViewProps) 
                 </div>
                 <p className="text-xs text-slate-500 line-clamp-1">{item.desc}</p>
               </div>
-            </motion.div>
+            </motion.button>
           ))}
         </div>
       </section>

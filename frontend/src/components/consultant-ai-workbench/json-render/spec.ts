@@ -54,8 +54,8 @@ export function buildStructuredSpec(message: string): Spec {
           title,
           subtitle,
         },
-        // 按顺序渲染以下子元素
-        children: ['metric-1', 'metric-2', 'exercise-select', 'goal-input', 'apply-btn', 'pending-notice', 'success-notice'],
+        // 按顺序渲染以下子元素，注意这里新增了 'customer-table'
+        children: ['metric-1', 'metric-2', 'customer-table', 'exercise-select', 'goal-input', 'apply-btn', 'pending-notice', 'success-notice'],
       },
 
       // 指标展示：只读的 label + value 条目
@@ -72,6 +72,26 @@ export function buildStructuredSpec(message: string): Spec {
           label: '下次复查',
           value: '2026-04-15',
         },
+      },
+
+      /**
+       * 分页表格展示（我们刚刚新加进工程的组件）
+       * 只需要写接口和列信息即可，翻页操作和请求会在 PlannerTable 内部自己完成
+       */
+      'customer-table': {
+        type: 'PlannerTable',
+        props: {
+          title: '近期检查列表 (演示用地址)',
+          // 这里填你们后端真实的带分页的业务接口
+          api: '/api/v1/customers/records', 
+          columns: [
+            { dataIndex: 'examDate', title: '体检日期' },
+            { dataIndex: 'hospital', title: '就诊机构' },
+            { dataIndex: 'result', title: '异常项' },
+          ],
+          // 将目前表格停留在第几页，存入到 state 的某个变量里（如果不需要与外层交互可以不写）
+          currentPage: { $bindState: '/plan/tableCurrentPage' } 
+        }
       },
 
       /**
@@ -183,18 +203,33 @@ export function buildStructuredSpec(message: string): Spec {
  *   useJsonRenderMessage(parts) → 分离出 text 和 spec，分别渲染
  */
 export function buildJsonRenderParts(message: string): DataPart[] {
+  let specObj = null;
+  let textContent = message;
+
+  // 1. 尝试将收到的内容当作大模型返回的真实 JSON 解析
+  try {
+    // 真实业务中，一旦接口能直接把 JSON 字符串下发，这里就能拦截并在内存恢复成对象
+    const parsed = JSON.parse(message);
+    if (parsed && typeof parsed === 'object' && parsed.spec) {
+      specObj = parsed.spec;
+      textContent = parsed.text || "已根据指令生成结构化卡片方案，请在旁侧查阅。";
+    }
+  } catch (e) {
+    // 解析失败没关系，说明这是一条普通的纯文本回复（或者是还没接入 JSON 的兜底逻辑）
+  }
+
   return [
     {
-      // 文本部分：AI 原始回复，逐行渲染为 <p> 标签
+      // 文本部分：AI 的讲解会话，逐行渲染为 <p> 标签
       type: 'text',
-      text: message,
+      text: textContent,
     },
     {
-      // Spec 部分：声明式 UI 规格，由框架解析渲染为交互卡片组件
+      // Spec 部分：声明式 UI 规格
       type: SPEC_DATA_PART_TYPE,
       data: {
-        type: 'flat', // flat 表示所有 elements 平铺在同一层，框架用 root 字段确定入口
-        spec: buildStructuredSpec(message),
+        type: 'flat', // flat 表示所有 elements 平铺在同一层
+        spec: specObj || buildStructuredSpec(message), // 优先使用接口直出的 Spec JSON，如果没有，再回退到本地的关键词模糊匹配生成
       },
     },
   ];

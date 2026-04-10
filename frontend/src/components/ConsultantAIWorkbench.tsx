@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { apiClient } from '../services/api';
 import { useJsonRenderMessage } from '@json-render/react';
 import type { Spec } from '@json-render/react';
 import { AssistantSidebar } from './consultant-ai-workbench/AssistantSidebar';
@@ -8,7 +9,7 @@ import { InsightsSidebar } from './consultant-ai-workbench/InsightsSidebar';
 import { WorkbenchHeader } from './consultant-ai-workbench/WorkbenchHeader';
 import { getAiResponse, createPlanningMessage } from './consultant-ai-workbench/chat';
 import { historyItems, suggestionItems } from './consultant-ai-workbench/data';
-import { buildJsonRenderParts } from './consultant-ai-workbench/json-render/spec';
+import { buildJsonRenderParts, buildStructuredSpec } from './consultant-ai-workbench/json-render/spec';
 import type { PlanningMessage, WorkbenchViewMode } from './consultant-ai-workbench/types';
 
 /**
@@ -26,7 +27,7 @@ function AiSpecExtractor({ content, onSpec }: { content: string; onSpec: (spec: 
   // 每次 spec 变化时上报（只在变化时执行，通过 useMemo 缓存比较）
   useMemo(() => {
     onSpec(spec ?? null);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [spec]);
 
   return null; // 纯逻辑组件，不渲染任何 DOM
@@ -39,12 +40,7 @@ export function ConsultantAIWorkbench() {
   const [aiName, setAiName] = useState('小智');
   const [isNaming, setIsNaming] = useState(false);
   const [viewMode, setViewMode] = useState<WorkbenchViewMode>('PLAN');
-  const [planningMessages, setPlanningMessages] = useState<PlanningMessage[]>([
-    createPlanningMessage(
-      'ai',
-      `您好！我是您的 AI 助手 ${aiName}。作为您的健康管家助手，我可以帮您整理客户的全量信息、查询治疗记录、对比治疗结果并生成追踪建议。您可以试着对我说："整理张三的所有信息"或"对比张三近半年的治疗结果"。`,
-    ),
-  ]);
+  const [planningMessages, setPlanningMessages] = useState<PlanningMessage[]>([]);
 
   /**
    * latestAiSpec — 最新 AI 回复中解析出的 Spec 对象。
@@ -62,7 +58,7 @@ export function ConsultantAIWorkbench() {
     [planningMessages],
   );
 
-  const handleSendPlanningMessage = (text?: string) => {
+  const handleSendPlanningMessage = async (text?: string) => {
     const input = text || planningChatMessage;
     if (!input.trim()) return;
 
@@ -70,19 +66,27 @@ export function ConsultantAIWorkbench() {
     setPlanningChatMessage('');
     setIsGeneratingPlan(true);
 
-    setTimeout(() => {
-      const result = getAiResponse(input);
+    try {
+      const res = await apiClient.post('/api/v1/api-query', {
+        query: input
+      });
+      // 优先取 res.data.data（后端标准响应体），其次取 res.data
+      const aiResponseContent = res.data?.data ?? res.data ?? '';
+      aiResponseContent.spec = aiResponseContent.ui_spec
+      // 如果后端返回的是对象（可能包含 { spec, text } 结构），
+      // 保持 JSON 字符串格式，让 buildJsonRenderParts 能正确解析出 Spec 并渲染交互卡片；
+      // 如果是纯字符串则直接使用。
+      const finalAIContent = typeof aiResponseContent === 'string'
+        ? aiResponseContent
+        : JSON.stringify(aiResponseContent);
 
-      if (result.viewMode) {
-        setViewMode(result.viewMode);
-      }
-      if (typeof result.showNewPlan === 'boolean') {
-        setShowNewPlan(result.showNewPlan);
-      }
-
-      setPlanningMessages((prev) => [...prev, createPlanningMessage('ai', result.response)]);
+      setPlanningMessages((prev) => [...prev, createPlanningMessage('ai', finalAIContent)]);
+    } catch (err) {
+      console.error('API Query error:', err);
+      setPlanningMessages((prev) => [...prev, createPlanningMessage('ai', '服务暂不可用，请稍后重试。')]);
+    } finally {
       setIsGeneratingPlan(false);
-    }, 1500);
+    }
   };
 
   /**

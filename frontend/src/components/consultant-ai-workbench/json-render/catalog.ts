@@ -117,6 +117,39 @@ export const assistantCatalog = defineCatalog(jsonRenderSchema, {
       }),
       description: '字典下拉选择框，选项从接口动态加载',
     },
+
+    /**
+     * PlannerTable — 带分页的后台数据表格
+     * 组件内部封装了分页逻辑和请求动作
+     */
+    PlannerTable: {
+      props: z.object({
+        title: z.string().nullable().optional(),
+        api: z.string().optional(), // 数据源接口地址，可能是静态给的
+        dataSource: z.array(z.any()).optional(), // 新增：直接接受后端打包的数据列
+        rowActions: z.array(z.record(z.string(), z.unknown())).optional(), // 新增：操作列配置
+        columns: z.array(z.record(z.string(), z.unknown())), // 放宽到接受任意标准列结构（比如带 key）
+        // 如果想把当前的页码和卡片交互同步（例如某按钮点击将页重置为 1），可以使用这个：
+        currentPage: z.union([z.number(), z.record(z.string(), z.unknown())]).nullable().optional(),
+      }),
+      description: '动态数据表格，带服务端分页及直出数据功能',
+    },
+
+    /**
+     * PlannerDetailCard — 展示详情信息的表卡片
+     */
+    PlannerDetailCard: {
+      props: z.object({
+        title: z.string().nullable().optional(),
+        items: z.array(
+          z.object({
+            label: z.string(),
+            value: z.string().nullable().optional()
+          })
+        ),
+      }),
+      description: '详情属性卡片，用于展示Key-Value列表型数据',
+    },
   },
 
   /**

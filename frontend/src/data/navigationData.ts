@@ -3,6 +3,8 @@ export type AppPage =
   | 'login'
   | 'dashboard'
   | 'function-square'
+  | 'ai-report-comparison'
+  | 'ai-four-quadrant'
   | 'ui-builder'
   | 'meeting-bi'
   | 'consultant-ai'
@@ -50,6 +52,16 @@ export const PAGE_DEFINITIONS: Record<AppPage, PageDefinition> = {
   login: { path: '/login', title: '登录', implemented: false },
   dashboard: { path: '/', title: 'AI业务工作台', implemented: true },
   'function-square': { path: '/function-square', title: '功能广场', implemented: true },
+  'ai-report-comparison': {
+    path: '/ai-report-comparison',
+    title: 'AI报告对比',
+    implemented: true,
+  },
+  'ai-four-quadrant': {
+    path: '/ai-four-quadrant',
+    title: 'AI四象限健康评估',
+    implemented: true,
+  },
   'ui-builder': { path: '/ui-builder', title: 'JSON Render Builder', implemented: true },
   'meeting-bi': { path: '/meeting-bi', title: '会议BI', implemented: true },
   'consultant-ai': { path: '/consultant-ai', title: '我的AI工作台', implemented: true },

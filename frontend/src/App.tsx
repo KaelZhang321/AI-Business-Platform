@@ -166,6 +166,8 @@ export function App() {
       <div id="root-app-container" className="h-screen bg-[#050f24] text-slate-100">
         {renderAppPage(currentPage, {
           navigateToPage: (page: AppPage) => navigate(PAGE_PATHS[page]),
+          isDarkMode,
+          setIsDarkMode,
           dashboard: {
             activeTab,
             setActiveTab,
@@ -204,11 +206,11 @@ export function App() {
       />
 
       <div className="flex-1 flex flex-col h-screen overflow-hidden relative">
-        <Header
+        {/* <Header
           currentNoticeIndex={currentNoticeIndex}
           currentPage={currentPage}
           currentUserName={user?.displayName}
-        />
+        /> */}
 
         <main id="main-content-area" className={`flex-1 overflow-y-auto pb-8 relative px-8 ${currentPage === 'dashboard' ? 'pt-4' : 'pt-8'}`}>
           <div className="absolute top-0 left-0 w-full h-[500px] bg-gradient-to-br from-brand-light/40 via-brand-light/20 to-transparent pointer-events-none -z-10"></div>
@@ -216,6 +218,8 @@ export function App() {
           <div className="max-w-[1720px] mx-auto space-y-6 h-full">
             {renderAppPage(currentPage, {
               navigateToPage: (page: AppPage) => navigate(PAGE_PATHS[page]),
+              isDarkMode,
+              setIsDarkMode,
               dashboard: {
                 activeTab,
                 setActiveTab,
