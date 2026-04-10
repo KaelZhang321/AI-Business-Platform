@@ -3,9 +3,24 @@ import type {
   ApiResponse,
   PageQuery,
   PageResult,
+  RemotePageResult,
+  RemoteResponse,
+  SemanticFieldAlias,
+  SemanticFieldAliasRequest,
+  SemanticFieldDict,
+  SemanticFieldDictRequest,
+  SemanticFieldValueMap,
+  SemanticFieldValueMapRequest,
   UiApiEndpoint,
   UiApiEndpointRequest,
+  UiApiEndpointRole,
+  UiApiEndpointRoleBindRequest,
   UiApiInvokeRequest,
+  UiJsonRenderInvokeRequest,
+  UiJsonRenderInvokeResponse,
+  UiJsonRenderSubmitRequest,
+  UiJsonRenderSubmitResponse,
+  UiRole,
   UiApiSource,
   UiApiSourceRequest,
   UiApiTag,
@@ -39,9 +54,66 @@ function buildPageParams(query?: PageQuery) {
   }
 }
 
+async function unwrapRemote<T>(promise: Promise<{ data: RemoteResponse<T> }>) {
+  const response = await promise
+  return response.data.data
+}
+
 export const uiBuilderApi = {
   getOverview() {
     return unwrap<UiBuilderOverview>(businessClient.get('/api/v1/ui-builder/overview'))
+  },
+  listSemanticFields(query?: PageQuery) {
+    return unwrap<PageResult<SemanticFieldDict>>(businessClient.get('/api/v1/ui-builder/semantic-fields', {
+      params: buildPageParams(query),
+    }))
+  },
+  createSemanticField(payload: SemanticFieldDictRequest) {
+    return unwrap<SemanticFieldDict>(businessClient.post('/api/v1/ui-builder/semantic-fields', payload))
+  },
+  updateSemanticField(dictId: number, payload: SemanticFieldDictRequest) {
+    return unwrap<SemanticFieldDict>(businessClient.put(`/api/v1/ui-builder/semantic-fields/${dictId}`, payload))
+  },
+  deleteSemanticField(dictId: number) {
+    return unwrap<void>(businessClient.delete(`/api/v1/ui-builder/semantic-fields/${dictId}`))
+  },
+  listSemanticFieldAliases(standardKey: string, query?: PageQuery) {
+    return unwrap<PageResult<SemanticFieldAlias>>(businessClient.get(`/api/v1/ui-builder/semantic-fields/${standardKey}/aliases`, {
+      params: buildPageParams(query),
+    }))
+  },
+  createSemanticFieldAlias(payload: SemanticFieldAliasRequest) {
+    return unwrap<SemanticFieldAlias>(businessClient.post('/api/v1/ui-builder/semantic-field-aliases', payload))
+  },
+  updateSemanticFieldAlias(aliasId: number, payload: SemanticFieldAliasRequest) {
+    return unwrap<SemanticFieldAlias>(businessClient.put(`/api/v1/ui-builder/semantic-field-aliases/${aliasId}`, payload))
+  },
+  deleteSemanticFieldAlias(aliasId: number) {
+    return unwrap<void>(businessClient.delete(`/api/v1/ui-builder/semantic-field-aliases/${aliasId}`))
+  },
+  listSemanticFieldValueMaps(standardKey: string, query?: PageQuery) {
+    return unwrap<PageResult<SemanticFieldValueMap>>(businessClient.get(`/api/v1/ui-builder/semantic-fields/${standardKey}/value-maps`, {
+      params: buildPageParams(query),
+    }))
+  },
+  createSemanticFieldValueMap(payload: SemanticFieldValueMapRequest) {
+    return unwrap<SemanticFieldValueMap>(businessClient.post('/api/v1/ui-builder/semantic-field-value-maps', payload))
+  },
+  updateSemanticFieldValueMap(valueMapId: number, payload: SemanticFieldValueMapRequest) {
+    return unwrap<SemanticFieldValueMap>(businessClient.put(`/api/v1/ui-builder/semantic-field-value-maps/${valueMapId}`, payload))
+  },
+  deleteSemanticFieldValueMap(valueMapId: number) {
+    return unwrap<void>(businessClient.delete(`/api/v1/ui-builder/semantic-field-value-maps/${valueMapId}`))
+  },
+  async listRoles(appCode = 'AI-RND-WORKFLOW') {
+    const result = await unwrapRemote<RemotePageResult<UiRole>>(businessClient.get('/api/v1/auth/roles', {
+      params: {
+        appCode,
+        pageNo: 1,
+        pageSize: 200,
+      },
+    }))
+    return result.records
   },
   listSources(query?: PageQuery) {
     return unwrap<PageResult<UiApiSource>>(businessClient.get('/api/v1/ui-builder/sources', { params: buildPageParams(query) }))
@@ -91,10 +163,30 @@ export const uiBuilderApi = {
   invokeEndpoint(endpointId: string, payload: UiApiInvokeRequest) {
     return unwrap<unknown>(businessClient.post(`/api/v1/ui-builder/runtime/endpoints/${endpointId}/invoke`, payload))
   },
+  invokeEndpointAsJsonRender(endpointId: string, payload: UiJsonRenderInvokeRequest) {
+    return unwrap<UiJsonRenderInvokeResponse>(businessClient.post(`/api/v1/ui-builder/runtime/endpoints/${endpointId}/render`, payload))
+  },
+  submitJsonRenderForm(payload: UiJsonRenderSubmitRequest) {
+    return unwrap<UiJsonRenderSubmitResponse>(businessClient.post('/api/v1/ui-builder/runtime/forms/submit', payload))
+  },
   listTestLogs(endpointId: string, query?: PageQuery) {
     return unwrap<PageResult<UiApiTestLog>>(businessClient.get(`/api/v1/ui-builder/endpoints/${endpointId}/test-logs`, {
       params: buildPageParams(query),
     }))
+  },
+  listEndpointRoleRelations(roleId?: string, query?: PageQuery) {
+    return unwrap<PageResult<UiApiEndpointRole>>(businessClient.get('/api/v1/ui-builder/endpoint-role-relations', {
+      params: {
+        ...buildPageParams(query),
+        ...(roleId ? { roleId } : {}),
+      },
+    }))
+  },
+  bindEndpointRoleRelations(payload: UiApiEndpointRoleBindRequest) {
+    return unwrap<UiApiEndpointRole[]>(businessClient.post('/api/v1/ui-builder/endpoint-role-relations', payload))
+  },
+  deleteEndpointRoleRelation(relationId: string) {
+    return unwrap<void>(businessClient.delete(`/api/v1/ui-builder/endpoint-role-relations/${relationId}`))
   },
   listProjects(query?: PageQuery) {
     return unwrap<PageResult<UiProject>>(businessClient.get('/api/v1/ui-builder/projects', { params: buildPageParams(query) }))

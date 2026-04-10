@@ -7,12 +7,13 @@ class Settings(BaseSettings):
     app_debug: bool = True
     app_port: int = 8000
 
-    # MySQL
-    ai_mysql_host: str = "localhost"
-    ai_mysql_port: int = 3306
-    ai_mysql_user: str = "ai_platform"
-    ai_mysql_password: str = "ai_platform_dev"
-    ai_mysql_database: str = "ai_platform"
+    # Business MySQL
+    # ai-gateway 直连的治理元数据和问数库统一收敛到业务库配置，避免维护第二套网关专属 MySQL 变量。
+    business_mysql_host: str = Field(default="localhost")
+    business_mysql_port: int = Field(default=3306)
+    business_mysql_user: str = Field(default="ai_platform")
+    business_mysql_password: str = Field(default="ai_platform_dev")
+    business_mysql_database: str = Field(default="ai_platform_business")
 
     # Redis
     redis_url: str = "redis://:redis_dev@localhost:6379/0"
@@ -20,7 +21,7 @@ class Settings(BaseSettings):
     # Milvus
     milvus_host: str = "localhost"
     milvus_port: int = 19530
-    milvus_collection: str = "knowledge_chunks"
+    milvus_collection: str = "api_catalog"
     milvus_vector_field: str = "embedding"
     milvus_output_fields: list[str] = ["doc_id", "title", "content", "doc_type", "metadata"]
     milvus_search_limit: int = Field(20, ge=1, le=100)
@@ -57,6 +58,7 @@ class Settings(BaseSettings):
 
     # Embedding & Reranker
     embedding_model_name: str = "BAAI/bge-m3"
+    embedding_model_path: str = ""
     reranker_model_name: str = "BAAI/bge-reranker-large"
     rag_rerank_limit: int = 8
 
@@ -81,11 +83,45 @@ class Settings(BaseSettings):
     # 动态UI
     llm_ui_spec_enabled: bool = False
 
+    # API Query 专用 LLM（Volcengine Ark）
+    # 这一组配置只服务 `/api/v1/api-query`，避免把网关内其他问答/聊天链路强行绑到同一供应商。
+    ark_api_key: str = ""
+    ark_api_base: str = "https://ark.cn-beijing.volces.com/api/v3"
+    ark_default_model: str = "doubao-1-5-pro-32k-250115"
+
+    # API Query Stage-2
+    api_query_route_timeout_seconds: float = 8.0
+    api_query_route_retry_count: int = 1
+    api_query_retrieval_timeout_seconds: float = 0.8
+    api_query_retrieval_per_domain_top_k: int = 2
+    # 第二阶段默认改为 0.45，是为了更贴近设计文档中的“宁可少给候选，也不喂垃圾接口”的保守策略。
+    api_query_score_threshold: float = 0.45
+    api_query_runtime_invoke_url_template: str = (
+        "https://beta-ai-platform.kaibol.net/ai-platform/api/v1/ui-builder/runtime/endpoints/{id}/invoke"
+    )
+    api_query_runtime_flow_num: int = 1212
+    api_query_runtime_created_by: str = ""
+    api_query_runtime_timeout_seconds: float = 8.0
+    api_query_runtime_enabled: bool = True
+    api_query_execution_max_step_count: int = Field(8, ge=1, le=50)
+    api_query_execution_step_timeout_seconds: float = Field(8.0, ge=0.1, le=60.0)
+    api_query_execution_graph_timeout_seconds: float = Field(20.0, ge=0.1, le=120.0)
+    api_query_execution_min_step_budget_seconds: float = Field(0.5, ge=0.1, le=10.0)
+
     # Intent classification
     intent_confidence_threshold: float = Field(0.55, ge=0.0, le=1.0)
 
     # 业务编排层
     business_server_url: str = "http://localhost:8080"
+    business_server_timeout_seconds: float = 15.0
+
+    # API Catalog Indexer
+    api_catalog_mysql_connect_timeout_seconds: float = Field(5.0, ge=0.1, le=60.0)
+    api_catalog_milvus_connect_timeout_seconds: float = Field(5.0, ge=0.1, le=60.0)
+
+    # 身份金库
+    identity_vault_enabled: bool = True
+    gateway_jwt_secret: str = ""
 
     # 外部LLM API
     openai_api_key: str = ""

@@ -68,11 +68,6 @@
             <groupId>com.mysql</groupId>
             <artifactId>mysql-connector-j</artifactId>
         </dependency>
-        <dependency>
-            <groupId>com.h2database</groupId>
-            <artifactId>h2</artifactId>
-            <scope>runtime</scope>
-        </dependency>
 
         <!-- Apache HttpClient 5（Flowable 7.x 依赖）-->
         <dependency>
@@ -159,6 +154,13 @@
             <artifactId>redisson-spring-boot-starter</artifactId>
             <version>3.37.0</version>
         </dependency>
+        
+        <dependency>
+		  <groupId>com.baomidou</groupId>
+		  <artifactId>dynamic-datasource-spring-boot3-starter</artifactId>
+		  <version>4.3.1</version>
+		</dependency>
+
 
         <!-- Test -->
         <dependency>

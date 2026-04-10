@@ -1,7 +1,7 @@
 """
 API Catalog — 数据模型
 
-ApiCatalogEntry: 单条接口目录记录（YAML → Pydantic → Milvus 向量记录）
+ApiCatalogEntry: 单条接口目录记录（MySQL 注册表 → Pydantic → Milvus 向量记录）
 ApiCatalogSearchResult: 带相似度分数的检索结果
 """
 from __future__ import annotations
@@ -12,13 +12,19 @@ from pydantic import BaseModel, Field
 
 
 class ParamSchema(BaseModel):
-    """接口参数 JSON Schema（简化版，够用于 LLM 提取）。"""
+    """接口参数 Schema 的最小子集。
+
+    功能：
+        只保留第二阶段参数提取真正需要的字段，避免把完整 OpenAPI schema 全量塞给 LLM。
+    """
     type: str = "object"
     properties: dict[str, dict[str, Any]] = Field(default_factory=dict)
     required: list[str] = Field(default_factory=list)
 
 
 class ApiCatalogDetailHint(BaseModel):
+    """详情页运行时提示。"""
+
     enabled: bool = False
     api_id: str | None = Field(None, description="详情查询使用的接口 ID")
     identifier_field: str | None = Field(None, description="详情主键字段")
@@ -29,6 +35,8 @@ class ApiCatalogDetailHint(BaseModel):
 
 
 class ApiCatalogPaginationHint(BaseModel):
+    """分页运行时提示。"""
+
     enabled: bool = False
     api_id: str | None = Field(None, description="分页刷新使用的接口 ID")
     page_param: str = Field("pageNum", description="页码参数名")
@@ -38,6 +46,8 @@ class ApiCatalogPaginationHint(BaseModel):
 
 
 class ApiCatalogTemplateHint(BaseModel):
+    """模板快路提示。"""
+
     enabled: bool = False
     template_code: str | None = Field(None, description="模板编码")
     render_mode: str = Field("dynamic_ui", description="模板渲染模式")
@@ -45,6 +55,8 @@ class ApiCatalogTemplateHint(BaseModel):
 
 
 class ApiCatalogSearchFilters(BaseModel):
+    """Milvus 标量过滤器。"""
+
     domains: list[str] = Field(default_factory=list)
     envs: list[str] = Field(default_factory=list)
     statuses: list[str] = Field(default_factory=list)
@@ -54,8 +66,9 @@ class ApiCatalogSearchFilters(BaseModel):
 class ApiCatalogEntry(BaseModel):
     """单条业务接口目录记录。
 
-    对应 config/api_catalog.yaml 中一个 api 条目，
-    也对应 Milvus `api_catalog` collection 中一条向量记录。
+    功能：
+        承接业务 MySQL 中 `ui_api_endpoints / ui_api_sources / ui_api_tags` 的联表结果，
+        并转成网关内部统一的 API Catalog 契约，再投影为 Milvus `api_catalog` 的一条向量记录。
     """
 
     # ---------- 标识 ----------
@@ -76,6 +89,10 @@ class ApiCatalogEntry(BaseModel):
         default_factory=lambda: ["query_business_data"],
         description="该接口可支持的业务意图编码",
     )
+    operation_safety: Literal["query", "list", "mutation"] = Field(
+        "mutation",
+        description="接口安全语义。query 表示可进入 /api-query，mutation 表示必须被阻断。",
+    )
 
     # ---------- 调用元数据 ----------
     method: Literal["GET", "POST", "PUT", "DELETE", "PATCH"] = "GET"
@@ -89,6 +106,14 @@ class ApiCatalogEntry(BaseModel):
     param_schema: ParamSchema = Field(
         default_factory=ParamSchema,
         description="接口参数 JSON Schema，供 LLM 参数提取使用",
+    )
+    response_schema: dict[str, Any] = Field(
+        default_factory=dict,
+        description="接口响应 JSON Schema，供 LLM 理解返回结构与字段层级",
+    )
+    sample_request: dict[str, Any] = Field(
+        default_factory=dict,
+        description="接口示例请求，用于提示 LLM 更贴近真实参数形状",
     )
 
     # ---------- 响应规范化 ----------
@@ -112,7 +137,11 @@ class ApiCatalogEntry(BaseModel):
 
     @property
     def embed_text(self) -> str:
-        """生成用于 embedding 的文本（描述 + 示例问法）。"""
+        """生成 embedding 文本。
+
+        功能：
+            把语义描述、业务域、标签、业务意图压成一段检索文本，兼顾召回率与过滤稳定性。
+        """
         parts = [self.description, f"domain:{self.domain}", f"status:{self.status}"]
         if self.example_queries:
             parts.extend(self.example_queries)
@@ -123,6 +152,28 @@ class ApiCatalogEntry(BaseModel):
         if self.business_intents:
             parts.append(" ".join(self.business_intents))
         return "\n".join(parts)
+
+    @property
+    def api_path(self) -> str:
+        """兼容第一阶段命名习惯的别名字段。"""
+        return self.path
+
+    @property
+    def api_schema(self) -> dict[str, Any]:
+        """输出给 LLM 的稳定接口说明书契约。
+
+        功能：
+            对齐设计文档中 `api_schema` 的职责，明确区分给 LLM 使用的说明书
+            与给执行器使用的 `executor_config`。这里保留请求/响应主体，并额外
+            附带网关运行时必需的裁剪提示，避免后续链路再去猜响应展开路径。
+        """
+        return {
+            "request": self.param_schema.model_dump(),
+            "response_schema": self.response_schema,
+            "sample_request": self.sample_request,
+            "response_data_path": self.response_data_path,
+            "field_labels": self.field_labels,
+        }
 
 
 class ApiCatalogSearchResult(BaseModel):

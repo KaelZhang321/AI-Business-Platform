@@ -1,3 +1,10 @@
+"""会议 BI 固定看板与 AI 问数路由。
+
+该路由同时承载两类能力：
+1. 固定指标 / 图表接口，供前端直接拉取稳定 BI 看板
+2. 会议 BI 垂直问数接口，供自然语言转 SQL 使用
+"""
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sse_starlette.sse import EventSourceResponse
@@ -140,7 +147,7 @@ def proposal_detail(
 
 @router.post("/bi/ai/query", response_model=MeetingBIQueryResponse, tags=["会议BI-AI"])
 async def bi_ai_query(req: MeetingBIQueryRequest):
-    """自然语言问数（同步返回完整结果）。"""
+    """执行会议 BI 自然语言问数并同步返回完整结果。"""
     executor = MeetingBIQueryExecutor()
     result = await executor.query(req.question, conversation_id=req.conversation_id)
     return MeetingBIQueryResponse(
@@ -154,7 +161,7 @@ async def bi_ai_query(req: MeetingBIQueryRequest):
 
 @router.post("/bi/ai/query/stream", tags=["会议BI-AI"])
 async def bi_ai_query_stream(req: MeetingBIQueryRequest):
-    """自然语言问数（SSE 流式推送）。"""
+    """以 SSE 方式流式返回会议 BI 问数过程。"""
     executor = MeetingBIQueryExecutor()
     return EventSourceResponse(
         executor.stream(req.question, conversation_id=req.conversation_id)
@@ -163,7 +170,11 @@ async def bi_ai_query_stream(req: MeetingBIQueryRequest):
 
 @router.get("/bi/chart/{chart_id}", tags=["会议BI-AI"])
 async def bi_get_chart(chart_id: str):
-    """获取已缓存的图表配置（用于企微卡片跳转）。"""
+    """获取缓存图表配置。
+
+    功能：
+        让图表型回答可以在企微卡片或外部跳转场景中通过 `chart_id` 二次拉取配置。
+    """
     data = await get_chart(chart_id)
     if data is None:
         raise HTTPException(status_code=404, detail="图表不存在或已过期")

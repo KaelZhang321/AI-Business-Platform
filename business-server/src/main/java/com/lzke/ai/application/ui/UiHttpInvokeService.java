@@ -6,6 +6,8 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
@@ -19,6 +21,7 @@ import org.springframework.util.StringUtils;
 import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.util.UriComponentsBuilder;
+import org.springframework.web.util.UriUtils;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -54,6 +57,7 @@ public class UiHttpInvokeService {
 	
 	private static final String IAM_OPENAPI = "iam_openapi";
 	private static final String CRM_OPENAPI = "crm_openapi";
+    private static final Pattern PATH_VARIABLE_PATTERN = Pattern.compile("\\{([^/{}]+)}");
     private static final String OA_ACCESS_TOKEN_CACHE_KEY = "httpToken:oa:access_token:";
     private static final long OA_ACCESS_TOKEN_TTL_SECONDS = 3500L;
     
@@ -81,7 +85,7 @@ public class UiHttpInvokeService {
             Map<String, Object> queryParams,
             Object requestBody
     ) {
-        String requestUrl = buildRequestUrl(source, endpoint, queryParams);
+        String requestUrl = buildRequestUrl(source, endpoint, queryParams, requestBody);
         HttpHeaders headers = buildRequestHeaders(source, requestHeaders);
         HttpMethod httpMethod = HttpMethod.valueOf(endpoint.getMethod());
         HttpEntity<Object> entity = new HttpEntity<>(requestBody, headers);
@@ -124,11 +128,12 @@ public class UiHttpInvokeService {
      * @param queryParams 调用时的查询参数
      * @return 最终请求地址
      */
-    private String buildRequestUrl(UiApiSource source, UiApiEndpoint endpoint, Map<String, Object> queryParams) {
+    private String buildRequestUrl(UiApiSource source, UiApiEndpoint endpoint, Map<String, Object> queryParams, Object requestBody) {
         String baseUrl = defaultIfBlank(source.getBaseUrl(), "");
-        String path = defaultIfBlank(endpoint.getPath(), "");
+        String path = resolvePathVariables(defaultIfBlank(endpoint.getPath(), ""), queryParams, requestBody);
         UriComponentsBuilder builder = UriComponentsBuilder.fromUriString(baseUrl + path);
-        Map<String, Object> safeQueryParams = queryParams != null ? queryParams : Collections.emptyMap();
+        Map<String, Object> safeQueryParams = queryParams != null ? new LinkedHashMap<>(queryParams) : new LinkedHashMap<>();
+        removeResolvedPathVariables(safeQueryParams, defaultIfBlank(endpoint.getPath(), ""));
         safeQueryParams.forEach((key, value) -> {
             if (value instanceof Iterable<?> iterable) {
                 for (Object item : iterable) {
@@ -144,6 +149,63 @@ public class UiHttpInvokeService {
             builder.queryParam(String.valueOf(authConfig.get("queryName")), authConfig.get("queryValue"));
         }
         return builder.build(true).toUriString();
+    }
+
+    /**
+     * 把路径模板中的 `{variable}` 替换成实际值。
+     *
+     * <p>优先从 query 参数中取值；如果 query 中不存在，再尝试从请求体的顶层对象中取值。
+     * 这样可以同时兼容：
+     *
+     * <ul>
+     *     <li>`GET /user/{id}` + queryParams</li>
+     *     <li>`POST /customer/{customerId}` + body 中携带 customerId</li>
+     * </ul>
+     *
+     * @param rawPath 原始路径模板
+     * @param queryParams 查询参数
+     * @param requestBody 请求体
+     * @return 替换后的路径
+     */
+    private String resolvePathVariables(String rawPath, Map<String, Object> queryParams, Object requestBody) {
+        Matcher matcher = PATH_VARIABLE_PATTERN.matcher(rawPath);
+        StringBuffer resolvedPath = new StringBuffer();
+        Map<String, Object> bodyMap = requestBody instanceof Map<?, ?> map ? castToObjectMap(map) : Collections.emptyMap();
+
+        while (matcher.find()) {
+            String variableName = matcher.group(1);
+            Object variableValue = queryParams != null ? queryParams.get(variableName) : null;
+            if (variableValue == null) {
+                variableValue = bodyMap.get(variableName);
+            }
+            if (variableValue == null) {
+                continue;
+            }
+            matcher.appendReplacement(
+                    resolvedPath,
+                    Matcher.quoteReplacement(UriUtils.encodePathSegment(String.valueOf(variableValue), StandardCharsets.UTF_8))
+            );
+        }
+        matcher.appendTail(resolvedPath);
+        return resolvedPath.toString();
+    }
+
+    private void removeResolvedPathVariables(Map<String, Object> queryParams, String rawPath) {
+        Matcher matcher = PATH_VARIABLE_PATTERN.matcher(rawPath);
+        while (matcher.find()) {
+            queryParams.remove(matcher.group(1));
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> castToObjectMap(Map<?, ?> source) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        source.forEach((key, value) -> {
+            if (key != null) {
+                result.put(String.valueOf(key), value);
+            }
+        });
+        return result;
     }
 
     /**
@@ -194,12 +256,12 @@ public class UiHttpInvokeService {
             }
             case "oauth2_client" -> {
             	
-            	if(source.getCode().equals(IAM_OPENAPI)||source.getCode().equals(CRM_OPENAPI)) {
+//            	if(source.getCode().equals(IAM_OPENAPI)||source.getCode().equals(CRM_OPENAPI)) {
             		 String accessToken = resolveOauth2ClientAccessToken(authConfig);
                      if (StringUtils.hasText(accessToken)) {
                          headers.setBearerAuth(accessToken);
                      }
-				}
+//				}
             }
             default -> {
             }

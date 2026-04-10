@@ -25,12 +25,12 @@ public class RedisConfig {
         template.afterPropertiesSet();
         return template;
     }
-    
-    @Bean
-    public RestTemplate restTemplate(RestTemplateBuilder builder) {
-        return builder
-                .setConnectTimeout(Duration.ofSeconds(5))
-                .setReadTimeout(Duration.ofSeconds(30))
-                .build();
-    }
+//    
+//    @Bean
+//    public RestTemplate restTemplate(RestTemplateBuilder builder) {
+//        return builder
+//                .setConnectTimeout(Duration.ofSeconds(5))
+//                .setReadTimeout(Duration.ofSeconds(30))
+//                .build();
+//    }
 }

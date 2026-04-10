@@ -40,12 +40,14 @@ CREATE TABLE IF NOT EXISTS ui_api_endpoints (
     name                 VARCHAR(128) NOT NULL COMMENT '接口名称',
     path                 VARCHAR(255) NOT NULL COMMENT '接口路径',
     method               VARCHAR(16) NOT NULL COMMENT 'HTTP方法',
+    operation_safety     VARCHAR(16) NOT NULL DEFAULT 'query' COMMENT '操作安全等级: query/list/mutation',
     summary              VARCHAR(255) NULL COMMENT '接口摘要',
     request_content_type VARCHAR(64) NULL COMMENT '请求内容类型',
     request_schema       JSON NULL COMMENT '请求Schema',
     response_schema      JSON NULL COMMENT '响应Schema',
     sample_request       JSON NULL COMMENT '样例请求',
     sample_response      JSON NULL COMMENT '样例响应',
+    field_orchestration  JSON NULL COMMENT '字段编排配置',
     status               VARCHAR(32) NOT NULL DEFAULT 'active' COMMENT '状态',
     created_at           TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     updated_at           TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
@@ -53,6 +55,58 @@ CREATE TABLE IF NOT EXISTS ui_api_endpoints (
     KEY idx_ui_api_endpoints_tag (tag_id),
     KEY idx_ui_api_endpoints_method_path (method, path)
 ) COMMENT='UI Builder 接口定义';
+
+CREATE TABLE IF NOT EXISTS ui_api_endpoint_roles (
+    id               VARCHAR(64) PRIMARY KEY COMMENT '主键',
+    endpoint_id      VARCHAR(64) NOT NULL COMMENT '接口定义ID',
+    role_id          VARCHAR(64) NOT NULL COMMENT '角色ID',
+    role_code        VARCHAR(128) NULL COMMENT '角色编码',
+    role_name        VARCHAR(128) NOT NULL COMMENT '角色名称',
+    field_orchestration JSON NULL COMMENT '字段编排配置',
+    created_by       VARCHAR(64) NULL COMMENT '创建人',
+    created_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    updated_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    UNIQUE KEY uk_ui_api_endpoint_roles_endpoint_role (endpoint_id, role_id),
+    KEY idx_ui_api_endpoint_roles_role (role_id),
+    KEY idx_ui_api_endpoint_roles_endpoint (endpoint_id)
+) COMMENT='UI Builder 接口与角色关系';
+
+CREATE TABLE IF NOT EXISTS semantic_field_dict (
+    id            BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '主键',
+    standard_key  VARCHAR(64)  NOT NULL UNIQUE COMMENT '标准字段key，如 gender',
+    label         VARCHAR(64)  NOT NULL COMMENT '展示名，如 性别',
+    field_type    VARCHAR(32)  NOT NULL COMMENT '组件类型，如 text/select/date/number',
+    category      VARCHAR(64)  NULL COMMENT '业务域，如 user/order/product',
+    value_map     JSON NULL COMMENT '全局值映射',
+    description   TEXT NULL COMMENT '字段语义描述，给 AI 作为上下文使用',
+    is_active     TINYINT      NOT NULL DEFAULT 1 COMMENT '是否启用',
+    created_at    DATETIME NULL COMMENT '创建时间',
+    updated_at    DATETIME NULL COMMENT '更新时间'
+) COMMENT='语义字段字典主表';
+
+CREATE TABLE IF NOT EXISTS semantic_field_alias (
+    id            BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '主键',
+    standard_key  VARCHAR(64)  NOT NULL COMMENT '关联 standard_key',
+    alias         VARCHAR(64)  NOT NULL COMMENT '接口原始字段名',
+    api_id        VARCHAR(64)  NOT NULL COMMENT '绑定接口ID',
+    source        VARCHAR(16)  NULL COMMENT '来源：manual/ai',
+    created_at    DATETIME NULL COMMENT '创建时间',
+    UNIQUE KEY uk_alias_api (alias, api_id),
+    KEY idx_semantic_field_alias_standard_key (standard_key),
+    KEY idx_semantic_field_alias_api_id (api_id)
+) COMMENT='语义字段别名表';
+
+CREATE TABLE IF NOT EXISTS semantic_field_value_map (
+    id              BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '主键',
+    standard_key    VARCHAR(64)  NOT NULL COMMENT '关联 standard_key',
+    api_id          VARCHAR(64)  NULL COMMENT 'NULL=全局，有值=接口级覆盖',
+    standard_value  VARCHAR(64)  NOT NULL COMMENT '标准值（前端用）',
+    raw_value       VARCHAR(64)  NOT NULL COMMENT '接口原始值',
+    sort_order      INT          NOT NULL DEFAULT 0 COMMENT '排序号',
+    UNIQUE KEY uk_value_api (standard_key, api_id, raw_value),
+    KEY idx_semantic_field_value_map_standard_key (standard_key),
+    KEY idx_semantic_field_value_map_api_id (api_id)
+) COMMENT='语义字段值映射扩展表';
 
 CREATE TABLE IF NOT EXISTS ui_api_test_logs (
     id               VARCHAR(64) PRIMARY KEY COMMENT '主键',

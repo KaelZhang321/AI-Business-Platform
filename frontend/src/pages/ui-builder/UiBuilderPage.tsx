@@ -2,15 +2,27 @@ import { useEffect, useState } from 'react'
 import { Alert, Spin, Tabs, Typography, message } from 'antd'
 
 import { uiBuilderApi } from './api'
+import { EndpointRoleTab } from './components/EndpointRoleTab'
+import { JsonRenderPlaygroundTab } from './components/JsonRenderPlaygroundTab'
 import { OverviewTab } from './components/OverviewTab'
 import { ReleaseTab } from './components/ReleaseTab'
+import { SemanticFieldTab } from './components/SemanticFieldTab'
 import { SourceCenterTab } from './components/SourceCenterTab'
 import { StudioTab } from './components/StudioTab'
+import { RuleEngineTab } from './rule/RuleEngineTab'
 import type {
   PageQuery,
   PageResult,
+  SemanticFieldAlias,
+  SemanticFieldAliasRequest,
+  SemanticFieldDict,
+  SemanticFieldDictRequest,
+  SemanticFieldValueMap,
+  SemanticFieldValueMapRequest,
   UiApiEndpoint,
   UiApiEndpointRequest,
+  UiApiEndpointRole,
+  UiApiEndpointRoleBindRequest,
   UiApiSource,
   UiApiSourceRequest,
   UiApiTag,
@@ -27,6 +39,7 @@ import type {
   UiPageRequest,
   UiProject,
   UiProjectRequest,
+  UiRole,
   UiSpecVersion,
 } from './types'
 
@@ -74,9 +87,14 @@ function buildEndpointFilters(tagFilter: string) {
 export function UiBuilderPage() {
   const [messageApi, contextHolder] = message.useMessage()
   const [overview, setOverview] = useState<UiBuilderOverview | null>(null)
+  const [semanticFields, setSemanticFields] = useState<SemanticFieldDict[]>([])
+  const [semanticFieldAliases, setSemanticFieldAliases] = useState<SemanticFieldAlias[]>([])
+  const [semanticFieldValueMaps, setSemanticFieldValueMaps] = useState<SemanticFieldValueMap[]>([])
   const [sources, setSources] = useState<UiApiSource[]>([])
   const [endpoints, setEndpoints] = useState<UiApiEndpoint[]>([])
   const [tags, setTags] = useState<UiApiTag[]>([])
+  const [roles, setRoles] = useState<UiRole[]>([])
+  const [endpointRoleRelations, setEndpointRoleRelations] = useState<UiApiEndpointRole[]>([])
   const [testLogs, setTestLogs] = useState<UiApiTestLog[]>([])
   const [testResult, setTestResult] = useState<UiApiTestResponse | null>(null)
   const [projects, setProjects] = useState<UiProject[]>([])
@@ -87,12 +105,18 @@ export function UiBuilderPage() {
 
   const [selectedSourceId, setSelectedSourceId] = useState<string>()
   const [selectedEndpointId, setSelectedEndpointId] = useState<string>()
+  const [selectedSemanticFieldId, setSelectedSemanticFieldId] = useState<number>()
+  const [selectedRoleId, setSelectedRoleId] = useState<string>()
   const [selectedProjectId, setSelectedProjectId] = useState<string>()
   const [selectedPageId, setSelectedPageId] = useState<string>()
   const [selectedEndpointTagFilter, setSelectedEndpointTagFilter] = useState<string>('all')
 
   const [sourcePagination, setSourcePagination] = useState<PaginationState>(createPaginationState())
+  const [semanticFieldPagination, setSemanticFieldPagination] = useState<PaginationState>(createPaginationState())
+  const [semanticAliasPagination, setSemanticAliasPagination] = useState<PaginationState>(createPaginationState())
+  const [semanticValueMapPagination, setSemanticValueMapPagination] = useState<PaginationState>(createPaginationState())
   const [endpointPagination, setEndpointPagination] = useState<PaginationState>(createPaginationState())
+  const [roleRelationPagination, setRoleRelationPagination] = useState<PaginationState>(createPaginationState())
   const [testLogPagination, setTestLogPagination] = useState<PaginationState>(createPaginationState())
   const [projectPagination, setProjectPagination] = useState<PaginationState>(createPaginationState())
   const [pagePagination, setPagePagination] = useState<PaginationState>(createPaginationState())
@@ -100,11 +124,14 @@ export function UiBuilderPage() {
 
   const [booting, setBooting] = useState(true)
   const [sourceLoading, setSourceLoading] = useState(false)
+  const [semanticLoading, setSemanticLoading] = useState(false)
+  const [roleLoading, setRoleLoading] = useState(false)
   const [studioLoading, setStudioLoading] = useState(false)
   const [releaseLoading, setReleaseLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const selectedEndpoint = endpoints.find((item) => item.id === selectedEndpointId)
+  const selectedSemanticField = semanticFields.find((item) => item.id === selectedSemanticFieldId)
   const selectedPage = pages.find((item) => item.id === selectedPageId)
 
   useEffect(() => {
@@ -136,6 +163,66 @@ export function UiBuilderPage() {
       cancelled = true
     }
   }, [])
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function loadSemanticFields() {
+      setSemanticLoading(true)
+      try {
+        const result = await uiBuilderApi.listSemanticFields({
+          page: semanticFieldPagination.page,
+          size: semanticFieldPagination.size,
+        })
+        if (!cancelled) {
+          setSemanticFields(result.data)
+          setSemanticFieldPagination(toPaginationState(result))
+        }
+      } catch (err) {
+        if (!cancelled) {
+          messageApi.error(getErrorMessage(err, '加载语义字段字典失败'))
+        }
+      } finally {
+        if (!cancelled) {
+          setSemanticLoading(false)
+        }
+      }
+    }
+
+    void loadSemanticFields()
+
+    return () => {
+      cancelled = true
+    }
+  }, [messageApi, semanticFieldPagination.page, semanticFieldPagination.size])
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function loadRoles() {
+      setRoleLoading(true)
+      try {
+        const result = await uiBuilderApi.listRoles()
+        if (!cancelled) {
+          setRoles(result)
+        }
+      } catch (err) {
+        if (!cancelled) {
+          messageApi.error(getErrorMessage(err, '加载角色列表失败'))
+        }
+      } finally {
+        if (!cancelled) {
+          setRoleLoading(false)
+        }
+      }
+    }
+
+    void loadRoles()
+
+    return () => {
+      cancelled = true
+    }
+  }, [messageApi])
 
   useEffect(() => {
     let cancelled = false
@@ -224,6 +311,30 @@ export function UiBuilderPage() {
       setSelectedProjectId(projects[0].id)
     }
   }, [projects, selectedProjectId])
+
+  useEffect(() => {
+    if (!semanticFields.length) {
+      setSelectedSemanticFieldId(undefined)
+      setSemanticFieldAliases([])
+      setSemanticFieldValueMaps([])
+      return
+    }
+
+    if (!selectedSemanticFieldId || !semanticFields.some((item) => item.id === selectedSemanticFieldId)) {
+      setSelectedSemanticFieldId(semanticFields[0].id)
+    }
+  }, [selectedSemanticFieldId, semanticFields])
+
+  useEffect(() => {
+    if (!roles.length) {
+      setSelectedRoleId(undefined)
+      return
+    }
+
+    if (!selectedRoleId || !roles.some((item) => item.id === selectedRoleId)) {
+      setSelectedRoleId(roles[0].id)
+    }
+  }, [roles, selectedRoleId])
 
   useEffect(() => {
     let cancelled = false
@@ -323,6 +434,96 @@ export function UiBuilderPage() {
       cancelled = true
     }
   }, [messageApi, selectedEndpointId, testLogPagination.page, testLogPagination.size])
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function loadSemanticFieldDetails() {
+      if (!selectedSemanticField?.standardKey) {
+        setSemanticFieldAliases([])
+        setSemanticFieldValueMaps([])
+        return
+      }
+
+      setSemanticLoading(true)
+      try {
+        const [aliasResult, valueMapResult] = await Promise.all([
+          uiBuilderApi.listSemanticFieldAliases(selectedSemanticField.standardKey, {
+            page: semanticAliasPagination.page,
+            size: semanticAliasPagination.size,
+          }),
+          uiBuilderApi.listSemanticFieldValueMaps(selectedSemanticField.standardKey, {
+            page: semanticValueMapPagination.page,
+            size: semanticValueMapPagination.size,
+          }),
+        ])
+        if (!cancelled) {
+          setSemanticFieldAliases(aliasResult.data)
+          setSemanticAliasPagination(toPaginationState(aliasResult))
+          setSemanticFieldValueMaps(valueMapResult.data)
+          setSemanticValueMapPagination(toPaginationState(valueMapResult))
+        }
+      } catch (err) {
+        if (!cancelled) {
+          messageApi.error(getErrorMessage(err, '加载语义字段明细失败'))
+        }
+      } finally {
+        if (!cancelled) {
+          setSemanticLoading(false)
+        }
+      }
+    }
+
+    void loadSemanticFieldDetails()
+
+    return () => {
+      cancelled = true
+    }
+  }, [
+    messageApi,
+    selectedSemanticField?.standardKey,
+    semanticAliasPagination.page,
+    semanticAliasPagination.size,
+    semanticValueMapPagination.page,
+    semanticValueMapPagination.size,
+  ])
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function loadEndpointRoleRelations() {
+      if (!selectedRoleId) {
+        setEndpointRoleRelations([])
+        return
+      }
+
+      setRoleLoading(true)
+      try {
+        const result = await uiBuilderApi.listEndpointRoleRelations(selectedRoleId, {
+          page: roleRelationPagination.page,
+          size: roleRelationPagination.size,
+        })
+        if (!cancelled) {
+          setEndpointRoleRelations(result.data)
+          setRoleRelationPagination(toPaginationState(result))
+        }
+      } catch (err) {
+        if (!cancelled) {
+          messageApi.error(getErrorMessage(err, '加载接口角色关系失败'))
+        }
+      } finally {
+        if (!cancelled) {
+          setRoleLoading(false)
+        }
+      }
+    }
+
+    void loadEndpointRoleRelations()
+
+    return () => {
+      cancelled = true
+    }
+  }, [messageApi, roleRelationPagination.page, roleRelationPagination.size, selectedRoleId])
 
   useEffect(() => {
     let cancelled = false
@@ -467,6 +668,39 @@ export function UiBuilderPage() {
     }
   }
 
+  async function reloadSemanticFields(preferredId?: number, query: PageQuery = semanticFieldPagination) {
+    const result = await uiBuilderApi.listSemanticFields(query)
+    setSemanticFields(result.data)
+    setSemanticFieldPagination(toPaginationState(result))
+    if (preferredId && result.data.some((item) => item.id === preferredId)) {
+      setSelectedSemanticFieldId(preferredId)
+      return
+    }
+    if (result.data.length) {
+      setSelectedSemanticFieldId(result.data[0].id)
+    }
+  }
+
+  async function reloadSemanticFieldDetails(
+    standardKey = selectedSemanticField?.standardKey,
+    aliasQuery: PageQuery = semanticAliasPagination,
+    valueMapQuery: PageQuery = semanticValueMapPagination,
+  ) {
+    if (!standardKey) {
+      setSemanticFieldAliases([])
+      setSemanticFieldValueMaps([])
+      return
+    }
+    const [aliasResult, valueMapResult] = await Promise.all([
+      uiBuilderApi.listSemanticFieldAliases(standardKey, aliasQuery),
+      uiBuilderApi.listSemanticFieldValueMaps(standardKey, valueMapQuery),
+    ])
+    setSemanticFieldAliases(aliasResult.data)
+    setSemanticAliasPagination(toPaginationState(aliasResult))
+    setSemanticFieldValueMaps(valueMapResult.data)
+    setSemanticValueMapPagination(toPaginationState(valueMapResult))
+  }
+
   async function reloadEndpoints(
     preferredId?: string,
     query: PageQuery = endpointPagination,
@@ -491,6 +725,28 @@ export function UiBuilderPage() {
     if (endpointResult.data.length) {
       setSelectedEndpointId(endpointResult.data[0].id)
     }
+  }
+
+  async function reloadRoles(preferredId?: string) {
+    const result = await uiBuilderApi.listRoles()
+    setRoles(result)
+    if (preferredId && result.some((item) => item.id === preferredId)) {
+      setSelectedRoleId(preferredId)
+      return
+    }
+    if (result.length) {
+      setSelectedRoleId(result[0].id)
+    }
+  }
+
+  async function reloadEndpointRoleRelations(roleId = selectedRoleId, query: PageQuery = roleRelationPagination) {
+    if (!roleId) {
+      setEndpointRoleRelations([])
+      return
+    }
+    const result = await uiBuilderApi.listEndpointRoleRelations(roleId, query)
+    setEndpointRoleRelations(result.data)
+    setRoleRelationPagination(toPaginationState(result))
   }
 
   async function reloadProjects(preferredId?: string, query: PageQuery = projectPagination) {
@@ -587,6 +843,89 @@ export function UiBuilderPage() {
     }
   }
 
+  async function handleSaveSemanticField(dictId: number | undefined, payload: SemanticFieldDictRequest) {
+    try {
+      const saved = dictId
+        ? await uiBuilderApi.updateSemanticField(dictId, payload)
+        : await uiBuilderApi.createSemanticField(payload)
+      await reloadSemanticFields(saved.id)
+      messageApi.success(dictId ? '语义字段已更新' : '语义字段已创建')
+    } catch (err) {
+      messageApi.error(getErrorMessage(err, '保存语义字段失败'))
+      throw err
+    }
+  }
+
+  async function handleDeleteSemanticField(dictId: number) {
+    try {
+      await uiBuilderApi.deleteSemanticField(dictId)
+      await reloadSemanticFields(undefined, { page: 1, size: semanticFieldPagination.size })
+      setSemanticFieldPagination((prev) => ({ ...prev, page: 1 }))
+      messageApi.success('语义字段已删除')
+    } catch (err) {
+      messageApi.error(getErrorMessage(err, '删除语义字段失败'))
+    }
+  }
+
+  async function handleSaveSemanticFieldAlias(aliasId: number | undefined, payload: SemanticFieldAliasRequest) {
+    try {
+      await (aliasId
+        ? uiBuilderApi.updateSemanticFieldAlias(aliasId, payload)
+        : uiBuilderApi.createSemanticFieldAlias(payload))
+      await reloadSemanticFieldDetails(payload.standardKey, { page: 1, size: semanticAliasPagination.size }, semanticValueMapPagination)
+      setSemanticAliasPagination((prev) => ({ ...prev, page: 1 }))
+      messageApi.success(aliasId ? '字段别名已更新' : '字段别名已创建')
+    } catch (err) {
+      messageApi.error(getErrorMessage(err, '保存字段别名失败'))
+      throw err
+    }
+  }
+
+  async function handleDeleteSemanticFieldAlias(aliasId: number) {
+    if (!selectedSemanticField?.standardKey) {
+      return
+    }
+    try {
+      await uiBuilderApi.deleteSemanticFieldAlias(aliasId)
+      await reloadSemanticFieldDetails(selectedSemanticField.standardKey, { page: 1, size: semanticAliasPagination.size }, semanticValueMapPagination)
+      setSemanticAliasPagination((prev) => ({ ...prev, page: 1 }))
+      messageApi.success('字段别名已删除')
+    } catch (err) {
+      messageApi.error(getErrorMessage(err, '删除字段别名失败'))
+    }
+  }
+
+  async function handleSaveSemanticFieldValueMap(
+    valueMapId: number | undefined,
+    payload: SemanticFieldValueMapRequest,
+  ) {
+    try {
+      await (valueMapId
+        ? uiBuilderApi.updateSemanticFieldValueMap(valueMapId, payload)
+        : uiBuilderApi.createSemanticFieldValueMap(payload))
+      await reloadSemanticFieldDetails(payload.standardKey, semanticAliasPagination, { page: 1, size: semanticValueMapPagination.size })
+      setSemanticValueMapPagination((prev) => ({ ...prev, page: 1 }))
+      messageApi.success(valueMapId ? '字段值映射已更新' : '字段值映射已创建')
+    } catch (err) {
+      messageApi.error(getErrorMessage(err, '保存字段值映射失败'))
+      throw err
+    }
+  }
+
+  async function handleDeleteSemanticFieldValueMap(valueMapId: number) {
+    if (!selectedSemanticField?.standardKey) {
+      return
+    }
+    try {
+      await uiBuilderApi.deleteSemanticFieldValueMap(valueMapId)
+      await reloadSemanticFieldDetails(selectedSemanticField.standardKey, semanticAliasPagination, { page: 1, size: semanticValueMapPagination.size })
+      setSemanticValueMapPagination((prev) => ({ ...prev, page: 1 }))
+      messageApi.success('字段值映射已删除')
+    } catch (err) {
+      messageApi.error(getErrorMessage(err, '删除字段值映射失败'))
+    }
+  }
+
   async function handleImportOpenApi(sourceId: string, payload: UiOpenApiImportPayload) {
     try {
       await uiBuilderApi.importOpenApi(sourceId, payload, { page: 1, size: endpointPagination.size })
@@ -624,6 +963,34 @@ export function UiBuilderPage() {
     } catch (err) {
       messageApi.error(getErrorMessage(err, '删除接口定义失败'))
     }
+  }
+
+  async function handleBindEndpointRoleRelations(payload: UiApiEndpointRoleBindRequest) {
+    try {
+      await uiBuilderApi.bindEndpointRoleRelations(payload)
+      await reloadEndpointRoleRelations(payload.roleId, { page: 1, size: roleRelationPagination.size })
+      setRoleRelationPagination((prev) => ({ ...prev, page: 1 }))
+      messageApi.success('接口角色关系已保存')
+    } catch (err) {
+      messageApi.error(getErrorMessage(err, '保存接口角色关系失败'))
+      throw err
+    }
+  }
+
+  async function handleDeleteEndpointRoleRelation(relationId: string) {
+    try {
+      await uiBuilderApi.deleteEndpointRoleRelation(relationId)
+      await reloadEndpointRoleRelations(selectedRoleId, { page: 1, size: roleRelationPagination.size })
+      setRoleRelationPagination((prev) => ({ ...prev, page: 1 }))
+      messageApi.success('接口角色关系已删除')
+    } catch (err) {
+      messageApi.error(getErrorMessage(err, '删除接口角色关系失败'))
+    }
+  }
+
+  async function handleLoadEndpointsBySource(sourceId: string) {
+    const result = await uiBuilderApi.listEndpoints(sourceId, { page: 1, size: 100 })
+    return result.data
   }
 
   async function handleTestEndpoint(endpointId: string, payload: UiApiTestRequest) {
@@ -915,6 +1282,85 @@ export function UiBuilderPage() {
             ),
           },
           {
+            key: 'semantic',
+            label: '语义字典',
+            children: (
+              <SemanticFieldTab
+                semanticFields={semanticFields}
+                aliases={semanticFieldAliases}
+                valueMaps={semanticFieldValueMaps}
+                selectedSemanticFieldId={selectedSemanticFieldId}
+                loading={semanticLoading}
+                fieldPagination={{
+                  current: semanticFieldPagination.page,
+                  pageSize: semanticFieldPagination.size,
+                  total: semanticFieldPagination.total,
+                }}
+                aliasPagination={{
+                  current: semanticAliasPagination.page,
+                  pageSize: semanticAliasPagination.size,
+                  total: semanticAliasPagination.total,
+                }}
+                valueMapPagination={{
+                  current: semanticValueMapPagination.page,
+                  pageSize: semanticValueMapPagination.size,
+                  total: semanticValueMapPagination.total,
+                }}
+                onSelectSemanticField={(dictId) => {
+                  setSelectedSemanticFieldId(dictId)
+                  setSemanticAliasPagination((prev) => ({ ...prev, page: 1, total: 0 }))
+                  setSemanticValueMapPagination((prev) => ({ ...prev, page: 1, total: 0 }))
+                }}
+                onFieldPageChange={(page, size) => {
+                  setSemanticFieldPagination((prev) => ({ ...prev, page, size }))
+                }}
+                onAliasPageChange={(page, size) => {
+                  setSemanticAliasPagination((prev) => ({ ...prev, page, size }))
+                }}
+                onValueMapPageChange={(page, size) => {
+                  setSemanticValueMapPagination((prev) => ({ ...prev, page, size }))
+                }}
+                onSaveSemanticField={handleSaveSemanticField}
+                onDeleteSemanticField={handleDeleteSemanticField}
+                onSaveAlias={handleSaveSemanticFieldAlias}
+                onDeleteAlias={handleDeleteSemanticFieldAlias}
+                onSaveValueMap={handleSaveSemanticFieldValueMap}
+                onDeleteValueMap={handleDeleteSemanticFieldValueMap}
+              />
+            ),
+          },
+          {
+            key: 'endpoint-roles',
+            label: '接口角色',
+            children: (
+              <EndpointRoleTab
+                roles={roles}
+                sources={sources}
+                relations={endpointRoleRelations}
+                selectedRoleId={selectedRoleId}
+                loading={roleLoading}
+                relationPagination={{
+                  current: roleRelationPagination.page,
+                  pageSize: roleRelationPagination.size,
+                  total: roleRelationPagination.total,
+                }}
+                onSelectRole={(roleId) => {
+                  setSelectedRoleId(roleId)
+                  setRoleRelationPagination((prev) => ({ ...prev, page: 1, total: 0 }))
+                }}
+                onRelationPageChange={(page, size) => {
+                  setRoleRelationPagination((prev) => ({ ...prev, page, size }))
+                }}
+                onRefreshRoles={async () => {
+                  await reloadRoles(selectedRoleId)
+                }}
+                onLoadEndpointsBySource={handleLoadEndpointsBySource}
+                onBindRelations={handleBindEndpointRoleRelations}
+                onDeleteRelation={handleDeleteEndpointRoleRelation}
+              />
+            ),
+          },
+          {
             key: 'studio',
             label: '页面工作台',
             children: (
@@ -959,6 +1405,11 @@ export function UiBuilderPage() {
             ),
           },
           {
+            key: 'rule-engine',
+            label: '规则引擎',
+            children: <RuleEngineTab />,
+          },
+          {
             key: 'release',
             label: '预览与发布',
             children: (
@@ -979,6 +1430,11 @@ export function UiBuilderPage() {
                 onPublishPage={handlePublishPage}
               />
             ),
+          },
+          {
+            key: 'json-render-playground',
+            label: 'JSON 预览器',
+            children: <JsonRenderPlaygroundTab />,
           },
         ]}
       />

@@ -8,8 +8,6 @@ spring:
   # 本地开发默认在 IDE 或命令行中传入 --spring.profiles.active=dev
   profiles:
     active: local
-  datasource:
-    driver-class-name: com.mysql.cj.jdbc.Driver
 
   data:
     redis:

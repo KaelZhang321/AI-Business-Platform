@@ -11,6 +11,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from app.core.config import settings
+from app.core.model_source import resolve_model_source
 from app.models.schemas import KnowledgeResult
 
 
@@ -51,7 +52,19 @@ class RAGService:
 
     def _embedder(self) -> BGEM3FlagModel:
         if self._embedding_model is None:
-            self._embedding_model = BGEM3FlagModel(settings.embedding_model_name, use_fp16=True)
+            model_source = resolve_model_source(
+                model_name=settings.embedding_model_name,
+                local_model_path=settings.embedding_model_path,
+            )
+            if model_source.source_kind == "local_path":
+                self._logger.info("Loading RAG embedding model from local path: %s", model_source.source)
+            elif model_source.configured_path:
+                self._logger.warning(
+                    "Configured EMBEDDING_MODEL_PATH is unavailable, fallback to EMBEDDING_MODEL_NAME: path=%s model=%s",
+                    model_source.configured_path,
+                    settings.embedding_model_name,
+                )
+            self._embedding_model = BGEM3FlagModel(model_source.source, use_fp16=True)
         return self._embedding_model
 
     def _reranker_model(self) -> FlagReranker:

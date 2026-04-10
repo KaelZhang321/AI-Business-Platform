@@ -11,8 +11,16 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.lzke.ai.application.dto.PageQuery;
+import com.lzke.ai.application.dto.SemanticFieldAliasRequest;
+import com.lzke.ai.application.dto.SemanticFieldDictRequest;
+import com.lzke.ai.application.dto.SemanticFieldValueMapRequest;
 import com.lzke.ai.application.dto.UiApiEndpointRequest;
+import com.lzke.ai.application.dto.UiApiEndpointRoleBindRequest;
 import com.lzke.ai.application.dto.UiApiInvokeRequest;
+import com.lzke.ai.application.dto.UiJsonRenderInvokeRequest;
+import com.lzke.ai.application.dto.UiJsonRenderInvokeResponse;
+import com.lzke.ai.application.dto.UiJsonRenderSubmitRequest;
+import com.lzke.ai.application.dto.UiJsonRenderSubmitResponse;
 import com.lzke.ai.application.dto.UiApiSourceRequest;
 import com.lzke.ai.application.dto.UiApiTestRequest;
 import com.lzke.ai.application.dto.UiApiTestResponse;
@@ -27,6 +35,10 @@ import com.lzke.ai.application.dto.UiPagePreviewResponse;
 import com.lzke.ai.application.dto.UiPageRequest;
 import com.lzke.ai.application.dto.UiProjectRequest;
 import com.lzke.ai.domain.entity.UiApiEndpoint;
+import com.lzke.ai.domain.entity.UiApiEndpointRole;
+import com.lzke.ai.domain.entity.SemanticFieldAlias;
+import com.lzke.ai.domain.entity.SemanticFieldDict;
+import com.lzke.ai.domain.entity.SemanticFieldValueMap;
 import com.lzke.ai.domain.entity.UiApiFlowLog;
 import com.lzke.ai.domain.entity.UiApiSource;
 import com.lzke.ai.domain.entity.UiApiTag;
@@ -39,6 +51,7 @@ import com.lzke.ai.domain.entity.UiSpecVersion;
 import com.lzke.ai.exception.BusinessException;
 import com.lzke.ai.exception.ErrorCode;
 import com.lzke.ai.infrastructure.persistence.mapper.UiApiEndpointMapper;
+import com.lzke.ai.infrastructure.persistence.mapper.UiApiEndpointRoleMapper;
 import com.lzke.ai.infrastructure.persistence.mapper.UiApiFlowLogMapper;
 import com.lzke.ai.infrastructure.persistence.mapper.UiApiSourceMapper;
 import com.lzke.ai.infrastructure.persistence.mapper.UiApiTagMapper;
@@ -48,6 +61,9 @@ import com.lzke.ai.infrastructure.persistence.mapper.UiPageMapper;
 import com.lzke.ai.infrastructure.persistence.mapper.UiPageNodeMapper;
 import com.lzke.ai.infrastructure.persistence.mapper.UiProjectMapper;
 import com.lzke.ai.infrastructure.persistence.mapper.UiSpecVersionMapper;
+import com.lzke.ai.infrastructure.persistence.mapper.SemanticFieldAliasMapper;
+import com.lzke.ai.infrastructure.persistence.mapper.SemanticFieldDictMapper;
+import com.lzke.ai.infrastructure.persistence.mapper.SemanticFieldValueMapMapper;
 import com.lzke.ai.interfaces.dto.PageResult;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -55,6 +71,9 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestTemplate;
+
+import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -91,16 +110,24 @@ public class UiBuilderApplicationService {
 
     private static final Set<String> OPEN_API_METHODS = Set.of("get", "post", "put", "delete", "patch");
     private static final Pattern ARRAY_SEGMENT_PATTERN = Pattern.compile("([A-Za-z0-9_\\-]+)\\[(\\d+)]");
+    private static final String EMPTY_FIELD_ORCHESTRATION = """
+            {"fieldConfig":{"ignore":[],"passthrough":[],"groups":[],"render":[]}}
+            """;
 
     private final ObjectMapper objectMapper;
     private final RestTemplate restTemplate;
     private final UiBuilderMetadataService uiBuilderMetadataService;
     private final UiHttpInvokeService uiHttpInvokeService;
+    private final UiJsonRenderTransformService uiJsonRenderTransformService;
     private final UiApiSourceMapper uiApiSourceMapper;
     private final UiApiTagMapper uiApiTagMapper;
     private final UiApiEndpointMapper uiApiEndpointMapper;
+    private final UiApiEndpointRoleMapper uiApiEndpointRoleMapper;
     private final UiApiFlowLogMapper uiApiFlowLogMapper;
     private final UiApiTestLogMapper uiApiTestLogMapper;
+    private final SemanticFieldDictMapper semanticFieldDictMapper;
+    private final SemanticFieldAliasMapper semanticFieldAliasMapper;
+    private final SemanticFieldValueMapMapper semanticFieldValueMapMapper;
     private final UiProjectMapper uiProjectMapper;
     private final UiPageMapper uiPageMapper;
     private final UiPageNodeMapper uiPageNodeMapper;
@@ -159,6 +186,214 @@ public class UiBuilderApplicationService {
      */
     public PageResult<UiBuilderAuthTypeResponse> getAuthTypes(PageQuery query) {
         return paginateList(getAuthTypes(), query);
+    }
+
+    /**
+     * 分页查询语义字段字典。
+     *
+     * @param query 分页参数
+     * @return 分页后的语义字段列表
+     */
+    public PageResult<SemanticFieldDict> listSemanticFields(PageQuery query) {
+        Page<SemanticFieldDict> pageParam = buildPage(query);
+        Page<SemanticFieldDict> result = semanticFieldDictMapper.selectPage(pageParam, new LambdaQueryWrapper<SemanticFieldDict>()
+                .orderByDesc(SemanticFieldDict::getUpdatedAt)
+                .orderByDesc(SemanticFieldDict::getCreatedAt));
+        return PageResult.of(result.getRecords(), result.getTotal(), query.getPage(), query.getSize());
+    }
+
+    /**
+     * 创建语义字段字典。
+     *
+     * @param request 语义字段请求
+     * @return 持久化后的字典记录
+     */
+    @Transactional
+    public SemanticFieldDict createSemanticField(SemanticFieldDictRequest request) {
+        validateSemanticFieldDictRequest(request, false);
+        ensureSemanticFieldStandardKeyUnique(request.getStandardKey(), null);
+
+        SemanticFieldDict dict = new SemanticFieldDict();
+        applySemanticFieldDictRequest(dict, request);
+        semanticFieldDictMapper.insert(dict);
+        return dict;
+    }
+
+    /**
+     * 更新语义字段字典。
+     *
+     * @param dictId 主键
+     * @param request 更新请求
+     * @return 更新后的字典记录
+     */
+    @Transactional
+    public SemanticFieldDict updateSemanticField(Long dictId, SemanticFieldDictRequest request) {
+        validateSemanticFieldDictRequest(request, true);
+        SemanticFieldDict dict = requireSemanticFieldDict(dictId);
+        ensureSemanticFieldStandardKeyUnique(request.getStandardKey(), dictId);
+
+        String originalStandardKey = dict.getStandardKey();
+        applySemanticFieldDictRequest(dict, request);
+        semanticFieldDictMapper.updateById(dict);
+
+        if (!Objects.equals(originalStandardKey, dict.getStandardKey())) {
+            semanticFieldAliasMapper.update(null, new LambdaUpdateWrapper<SemanticFieldAlias>()
+                    .eq(SemanticFieldAlias::getStandardKey, originalStandardKey)
+                    .set(SemanticFieldAlias::getStandardKey, dict.getStandardKey()));
+            semanticFieldValueMapMapper.update(null, new LambdaUpdateWrapper<SemanticFieldValueMap>()
+                    .eq(SemanticFieldValueMap::getStandardKey, originalStandardKey)
+                    .set(SemanticFieldValueMap::getStandardKey, dict.getStandardKey()));
+        }
+        return dict;
+    }
+
+    /**
+     * 删除语义字段字典及其下游别名和值映射。
+     *
+     * @param dictId 主键
+     */
+    @Transactional
+    public void deleteSemanticField(Long dictId) {
+        SemanticFieldDict dict = requireSemanticFieldDict(dictId);
+        semanticFieldAliasMapper.delete(new LambdaQueryWrapper<SemanticFieldAlias>()
+                .eq(SemanticFieldAlias::getStandardKey, dict.getStandardKey()));
+        semanticFieldValueMapMapper.delete(new LambdaQueryWrapper<SemanticFieldValueMap>()
+                .eq(SemanticFieldValueMap::getStandardKey, dict.getStandardKey()));
+        semanticFieldDictMapper.deleteById(dictId);
+    }
+
+    /**
+     * 分页查询某个标准字段下的别名映射。
+     *
+     * @param standardKey 标准字段 key
+     * @param query 分页参数
+     * @return 分页后的别名列表
+     */
+    public PageResult<SemanticFieldAlias> listSemanticFieldAliases(String standardKey, PageQuery query) {
+        requireSemanticFieldDict(standardKey);
+        Page<SemanticFieldAlias> pageParam = buildPage(query);
+        Page<SemanticFieldAlias> result = semanticFieldAliasMapper.selectPage(pageParam, new LambdaQueryWrapper<SemanticFieldAlias>()
+                .eq(SemanticFieldAlias::getStandardKey, standardKey)
+                .orderByAsc(SemanticFieldAlias::getApiId)
+                .orderByAsc(SemanticFieldAlias::getAlias)
+                .orderByDesc(SemanticFieldAlias::getId));
+        return PageResult.of(result.getRecords(), result.getTotal(), query.getPage(), query.getSize());
+    }
+
+    /**
+     * 创建字段别名映射。
+     *
+     * @param request 别名请求
+     * @return 持久化后的别名记录
+     */
+    @Transactional
+    public SemanticFieldAlias createSemanticFieldAlias(SemanticFieldAliasRequest request) {
+        validateSemanticFieldAliasRequest(request, false);
+        requireSemanticFieldDict(request.getStandardKey());
+        requireEndpoint(request.getApiId());
+
+        SemanticFieldAlias alias = new SemanticFieldAlias();
+        applySemanticFieldAliasRequest(alias, request);
+        semanticFieldAliasMapper.insert(alias);
+        return alias;
+    }
+
+    /**
+     * 更新字段别名映射。
+     *
+     * @param aliasId 主键
+     * @param request 更新请求
+     * @return 更新后的别名记录
+     */
+    @Transactional
+    public SemanticFieldAlias updateSemanticFieldAlias(Long aliasId, SemanticFieldAliasRequest request) {
+        validateSemanticFieldAliasRequest(request, true);
+        SemanticFieldAlias alias = requireSemanticFieldAlias(aliasId);
+        requireSemanticFieldDict(request.getStandardKey());
+        requireEndpoint(request.getApiId());
+        applySemanticFieldAliasRequest(alias, request);
+        semanticFieldAliasMapper.updateById(alias);
+        return alias;
+    }
+
+    /**
+     * 删除字段别名映射。
+     *
+     * @param aliasId 主键
+     */
+    @Transactional
+    public void deleteSemanticFieldAlias(Long aliasId) {
+        requireSemanticFieldAlias(aliasId);
+        semanticFieldAliasMapper.deleteById(aliasId);
+    }
+
+    /**
+     * 分页查询某个标准字段下的值映射。
+     *
+     * @param standardKey 标准字段 key
+     * @param query 分页参数
+     * @return 分页后的值映射列表
+     */
+    public PageResult<SemanticFieldValueMap> listSemanticFieldValueMaps(String standardKey, PageQuery query) {
+        requireSemanticFieldDict(standardKey);
+        Page<SemanticFieldValueMap> pageParam = buildPage(query);
+        Page<SemanticFieldValueMap> result = semanticFieldValueMapMapper.selectPage(pageParam, new LambdaQueryWrapper<SemanticFieldValueMap>()
+                .eq(SemanticFieldValueMap::getStandardKey, standardKey)
+                .orderByAsc(SemanticFieldValueMap::getApiId)
+                .orderByAsc(SemanticFieldValueMap::getSortOrder)
+                .orderByDesc(SemanticFieldValueMap::getId));
+        return PageResult.of(result.getRecords(), result.getTotal(), query.getPage(), query.getSize());
+    }
+
+    /**
+     * 创建字段值映射。
+     *
+     * @param request 值映射请求
+     * @return 持久化后的值映射记录
+     */
+    @Transactional
+    public SemanticFieldValueMap createSemanticFieldValueMap(SemanticFieldValueMapRequest request) {
+        validateSemanticFieldValueMapRequest(request, false);
+        requireSemanticFieldDict(request.getStandardKey());
+        if (StringUtils.hasText(request.getApiId())) {
+            requireEndpoint(request.getApiId());
+        }
+
+        SemanticFieldValueMap valueMap = new SemanticFieldValueMap();
+        applySemanticFieldValueMapRequest(valueMap, request);
+        semanticFieldValueMapMapper.insert(valueMap);
+        return valueMap;
+    }
+
+    /**
+     * 更新字段值映射。
+     *
+     * @param valueMapId 主键
+     * @param request 更新请求
+     * @return 更新后的值映射记录
+     */
+    @Transactional
+    public SemanticFieldValueMap updateSemanticFieldValueMap(Long valueMapId, SemanticFieldValueMapRequest request) {
+        validateSemanticFieldValueMapRequest(request, true);
+        SemanticFieldValueMap valueMap = requireSemanticFieldValueMap(valueMapId);
+        requireSemanticFieldDict(request.getStandardKey());
+        if (StringUtils.hasText(request.getApiId())) {
+            requireEndpoint(request.getApiId());
+        }
+        applySemanticFieldValueMapRequest(valueMap, request);
+        semanticFieldValueMapMapper.updateById(valueMap);
+        return valueMap;
+    }
+
+    /**
+     * 删除字段值映射。
+     *
+     * @param valueMapId 主键
+     */
+    @Transactional
+    public void deleteSemanticFieldValueMap(Long valueMapId) {
+        requireSemanticFieldValueMap(valueMapId);
+        semanticFieldValueMapMapper.deleteById(valueMapId);
     }
 
     /**
@@ -262,6 +497,7 @@ public class UiBuilderApplicationService {
         List<UiApiEndpoint> endpoints = listEndpointsBySource(sourceId);
         List<String> endpointIds = endpoints.stream().map(UiApiEndpoint::getId).toList();
         if (!endpointIds.isEmpty()) {
+            uiApiEndpointRoleMapper.delete(new LambdaQueryWrapper<UiApiEndpointRole>().in(UiApiEndpointRole::getEndpointId, endpointIds));
             uiApiFlowLogMapper.delete(new LambdaQueryWrapper<UiApiFlowLog>().in(UiApiFlowLog::getEndpointId, endpointIds));
             uiApiTestLogMapper.delete(new LambdaQueryWrapper<UiApiTestLog>().in(UiApiTestLog::getEndpointId, endpointIds));
             uiApiEndpointMapper.delete(new LambdaQueryWrapper<UiApiEndpoint>().in(UiApiEndpoint::getId, endpointIds));
@@ -364,6 +600,81 @@ public class UiBuilderApplicationService {
     }
 
     /**
+     * 分页查询接口与角色的关联关系。
+     *
+     * <p>该接口主要服务前端“接口角色”页签。当前支持按 `roleId` 过滤，
+     * 返回结果里会额外补充接口名称、路径、方法、标签和接口源名称，方便页面直接渲染。
+     *
+     * @param roleId 角色 ID，可为空；为空时返回全部关系
+     * @param query 分页参数
+     * @return 分页后的接口角色关系列表
+     */
+    public PageResult<UiApiEndpointRole> listEndpointRoleRelations(String roleId, PageQuery query) {
+        LambdaQueryWrapper<UiApiEndpointRole> wrapper = new LambdaQueryWrapper<UiApiEndpointRole>()
+                .orderByAsc(UiApiEndpointRole::getRoleName)
+                .orderByDesc(UiApiEndpointRole::getUpdatedAt)
+                .orderByDesc(UiApiEndpointRole::getCreatedAt);
+        if (StringUtils.hasText(roleId)) {
+            wrapper.eq(UiApiEndpointRole::getRoleId, roleId);
+        }
+        Page<UiApiEndpointRole> pageParam = buildPage(query);
+        Page<UiApiEndpointRole> result = uiApiEndpointRoleMapper.selectPage(pageParam, wrapper);
+        attachEndpointRoleDetails(result.getRecords());
+        return PageResult.of(result.getRecords(), result.getTotal(), query.getPage(), query.getSize());
+    }
+
+    /**
+     * 批量把接口定义绑定到指定角色。
+     *
+     * <p>关系表使用 `(endpoint_id, role_id)` 唯一键保证幂等性。
+     * 如果前端重复提交相同接口和角色的绑定，后端只会更新角色快照信息，不会重复插入。
+     *
+     * @param request 绑定请求
+     * @return 最新的关系记录
+     */
+    @Transactional
+    public List<UiApiEndpointRole> bindEndpointRoleRelations(UiApiEndpointRoleBindRequest request) {
+        validateEndpointRoleBindRequest(request);
+
+        List<UiApiEndpointRole> relations = new ArrayList<>();
+        for (String endpointId : request.getEndpointIds()) {
+            UiApiEndpoint endpoint = requireEndpoint(endpointId);
+            UiApiEndpointRole relation = uiApiEndpointRoleMapper.selectOne(new LambdaQueryWrapper<UiApiEndpointRole>()
+                    .eq(UiApiEndpointRole::getEndpointId, endpoint.getId())
+                    .eq(UiApiEndpointRole::getRoleId, request.getRoleId())
+                    .last("limit 1"));
+            if (relation == null) {
+                relation = new UiApiEndpointRole();
+                relation.setEndpointId(endpoint.getId());
+            }
+            relation.setRoleId(request.getRoleId());
+            relation.setRoleCode(trimToNull(request.getRoleCode()));
+            relation.setRoleName(request.getRoleName().trim());
+
+            if (relation.getId() == null) {
+                relation.setCreatedBy(trimToNull(request.getCreatedBy()));
+                uiApiEndpointRoleMapper.insert(relation);
+            } else {
+                uiApiEndpointRoleMapper.updateById(relation);
+            }
+            relations.add(relation);
+        }
+        attachEndpointRoleDetails(relations);
+        return relations;
+    }
+
+    /**
+     * 删除单条接口角色关系。
+     *
+     * @param relationId 关系 ID
+     */
+    @Transactional
+    public void deleteEndpointRoleRelation(String relationId) {
+        requireEndpointRoleRelation(relationId);
+        uiApiEndpointRoleMapper.deleteById(relationId);
+    }
+
+    /**
      * 创建接口定义。
      *
      * @param request 接口定义请求
@@ -414,6 +725,7 @@ public class UiBuilderApplicationService {
     @Transactional
     public void deleteEndpoint(String endpointId) {
         requireEndpoint(endpointId);
+        uiApiEndpointRoleMapper.delete(new LambdaQueryWrapper<UiApiEndpointRole>().eq(UiApiEndpointRole::getEndpointId, endpointId));
         uiApiFlowLogMapper.delete(new LambdaQueryWrapper<UiApiFlowLog>().eq(UiApiFlowLog::getEndpointId, endpointId));
         uiApiTestLogMapper.delete(new LambdaQueryWrapper<UiApiTestLog>().eq(UiApiTestLog::getEndpointId, endpointId));
         uiApiEndpointMapper.deleteById(endpointId);
@@ -471,12 +783,14 @@ public class UiBuilderApplicationService {
                 endpoint.setMethod(method.toUpperCase(Locale.ROOT));
                 endpoint.setPath(path);
                 endpoint.setName(firstNonBlank(summary, endpoint.getMethod() + " " + path));
+                endpoint.setOperationSafety(defaultIfBlank(endpoint.getOperationSafety(), "query"));
                 endpoint.setSummary(summary);
                 endpoint.setRequestContentType(extractRequestContentType(operationNode));
                 endpoint.setRequestSchema(toJsonString(extractRequestSchema(rootNode, operationNode)));
                 endpoint.setResponseSchema(toJsonString(extractResponseSchema(rootNode, operationNode)));
                 endpoint.setSampleRequest(toJsonString(extractRequestExample(rootNode, operationNode)));
                 endpoint.setSampleResponse(toJsonString(extractResponseExample(rootNode, operationNode)));
+                endpoint.setFieldOrchestration(defaultIfBlank(endpoint.getFieldOrchestration(), EMPTY_FIELD_ORCHESTRATION));
                 endpoint.setStatus("active");
 
                 if (StringUtils.hasText(endpoint.getId())) {
@@ -573,6 +887,39 @@ public class UiBuilderApplicationService {
             throw new BusinessException(ErrorCode.BAD_REQUEST, defaultIfBlank(result.errorMessage(), "接口调用失败"));
         }
         return parsePossiblyJson((String) result.responseBody());
+    }
+
+    /**
+     * 按接口定义先发起真实调用，再把结果转换成 json-render 返回。
+     *
+     * <p>这个接口面向“运行时直接渲染”的场景：前端不需要自己拆成
+     * “先调接口，再调转换服务”两步，而是一次请求拿到：
+     *
+     * <ul>
+     *     <li>接口真实响应值</li>
+     *     <li>基于该响应值生成的 json-render</li>
+     * </ul>
+     *
+     * @param endpointId 接口定义 ID
+     * @param request 运行时渲染请求
+     * @return 聚合后的渲染结果
+     */
+    public UiJsonRenderInvokeResponse invokeEndpointAsJsonRender(String endpointId, UiJsonRenderInvokeRequest request) {
+        return uiJsonRenderTransformService.invokeAndTransformResponse(
+                endpointId,
+                request != null ? request.getRoleId() : null,
+                request
+        );
+    }
+
+    /**
+     * 按标准语义字段值驱动多个接口完成表单提交。
+     *
+     * @param request 表单提交请求
+     * @return 多接口执行结果
+     */
+    public UiJsonRenderSubmitResponse submitJsonRenderForm(UiJsonRenderSubmitRequest request) {
+        return uiJsonRenderTransformService.submitSemanticForm(request);
     }
 
     /**
@@ -1128,6 +1475,55 @@ public class UiBuilderApplicationService {
         if (!allowPartial || StringUtils.hasText(request.getMethod())) {
             requireText(request.getMethod(), "HTTP 方法不能为空");
         }
+        if (StringUtils.hasText(request.getOperationSafety())
+                && !List.of("query", "list", "mutation").contains(request.getOperationSafety().trim().toLowerCase(Locale.ROOT))) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "operationSafety 仅支持 query、list、mutation");
+        }
+    }
+
+    private void validateSemanticFieldDictRequest(SemanticFieldDictRequest request, boolean allowPartial) {
+        if (request == null) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "语义字段字典请求不能为空");
+        }
+        if (!allowPartial || StringUtils.hasText(request.getStandardKey())) {
+            requireText(request.getStandardKey(), "standardKey 不能为空");
+        }
+        if (!allowPartial || StringUtils.hasText(request.getLabel())) {
+            requireText(request.getLabel(), "label 不能为空");
+        }
+        if (!allowPartial || StringUtils.hasText(request.getFieldType())) {
+            requireText(request.getFieldType(), "fieldType 不能为空");
+        }
+    }
+
+    private void validateSemanticFieldAliasRequest(SemanticFieldAliasRequest request, boolean allowPartial) {
+        if (request == null) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "语义字段别名请求不能为空");
+        }
+        if (!allowPartial || StringUtils.hasText(request.getStandardKey())) {
+            requireText(request.getStandardKey(), "standardKey 不能为空");
+        }
+        if (!allowPartial || StringUtils.hasText(request.getAlias())) {
+            requireText(request.getAlias(), "alias 不能为空");
+        }
+        if (!allowPartial || StringUtils.hasText(request.getApiId())) {
+            requireText(request.getApiId(), "apiId 不能为空");
+        }
+    }
+
+    private void validateSemanticFieldValueMapRequest(SemanticFieldValueMapRequest request, boolean allowPartial) {
+        if (request == null) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "语义字段值映射请求不能为空");
+        }
+        if (!allowPartial || StringUtils.hasText(request.getStandardKey())) {
+            requireText(request.getStandardKey(), "standardKey 不能为空");
+        }
+        if (!allowPartial || StringUtils.hasText(request.getStandardValue())) {
+            requireText(request.getStandardValue(), "standardValue 不能为空");
+        }
+        if (!allowPartial || StringUtils.hasText(request.getRawValue())) {
+            requireText(request.getRawValue(), "rawValue 不能为空");
+        }
     }
 
     /**
@@ -1238,12 +1634,14 @@ public class UiBuilderApplicationService {
         endpoint.setName(request.getName());
         endpoint.setPath(request.getPath());
         endpoint.setMethod(request.getMethod() != null ? request.getMethod().toUpperCase(Locale.ROOT) : null);
+        endpoint.setOperationSafety(defaultIfBlank(trimToNull(request.getOperationSafety()), "query"));
         endpoint.setSummary(request.getSummary());
         endpoint.setRequestContentType(request.getRequestContentType());
         endpoint.setRequestSchema(defaultIfBlank(request.getRequestSchema(), "{}"));
         endpoint.setResponseSchema(defaultIfBlank(request.getResponseSchema(), "{}"));
         endpoint.setSampleRequest(defaultIfBlank(request.getSampleRequest(), "{}"));
         endpoint.setSampleResponse(defaultIfBlank(request.getSampleResponse(), "{}"));
+        endpoint.setFieldOrchestration(defaultIfBlank(request.getFieldOrchestration(), EMPTY_FIELD_ORCHESTRATION));
         endpoint.setStatus(defaultIfBlank(request.getStatus(), "active"));
     }
 
@@ -1260,6 +1658,31 @@ public class UiBuilderApplicationService {
         project.setCategory(request.getCategory());
         project.setStatus(defaultIfBlank(request.getStatus(), "draft"));
         project.setCreatedBy(request.getCreatedBy());
+    }
+
+    private void applySemanticFieldDictRequest(SemanticFieldDict dict, SemanticFieldDictRequest request) {
+        dict.setStandardKey(trimToNull(request.getStandardKey()));
+        dict.setLabel(trimToNull(request.getLabel()));
+        dict.setFieldType(trimToNull(request.getFieldType()));
+        dict.setCategory(trimToNull(request.getCategory()));
+        dict.setValueMap(defaultIfBlank(trimToNull(request.getValueMap()), "{}"));
+        dict.setDescription(trimToNull(request.getDescription()));
+        dict.setIsActive(request.getIsActive() != null ? request.getIsActive() : 1);
+    }
+
+    private void applySemanticFieldAliasRequest(SemanticFieldAlias alias, SemanticFieldAliasRequest request) {
+        alias.setStandardKey(trimToNull(request.getStandardKey()));
+        alias.setAlias(trimToNull(request.getAlias()));
+        alias.setApiId(trimToNull(request.getApiId()));
+        alias.setSource(defaultIfBlank(trimToNull(request.getSource()), "manual"));
+    }
+
+    private void applySemanticFieldValueMapRequest(SemanticFieldValueMap valueMap, SemanticFieldValueMapRequest request) {
+        valueMap.setStandardKey(trimToNull(request.getStandardKey()));
+        valueMap.setApiId(trimToNull(request.getApiId()));
+        valueMap.setStandardValue(trimToNull(request.getStandardValue()));
+        valueMap.setRawValue(trimToNull(request.getRawValue()));
+        valueMap.setSortOrder(request.getSortOrder() != null ? request.getSortOrder() : 0);
     }
 
     /**
@@ -1669,6 +2092,85 @@ public class UiBuilderApplicationService {
         }
     }
 
+    /**
+     * 为接口角色关系补充接口侧信息。
+     *
+     * <p>该方法会把关系记录中的 `endpointId` 关联到接口定义、接口源和标签表，
+     * 使前端列表在一次请求里就能同时拿到：
+     *
+     * <ul>
+     *     <li>接口名称、路径、方法、状态</li>
+     *     <li>所属接口源名称</li>
+     *     <li>所属标签名称</li>
+     * </ul>
+     *
+     * @param relations 关系记录列表
+     */
+    private void attachEndpointRoleDetails(List<UiApiEndpointRole> relations) {
+        if (relations == null || relations.isEmpty()) {
+            return;
+        }
+        List<String> endpointIds = relations.stream()
+                .map(UiApiEndpointRole::getEndpointId)
+                .filter(StringUtils::hasText)
+                .distinct()
+                .toList();
+        if (endpointIds.isEmpty()) {
+            return;
+        }
+
+        List<UiApiEndpoint> endpoints = uiApiEndpointMapper.selectList(new LambdaQueryWrapper<UiApiEndpoint>()
+                .in(UiApiEndpoint::getId, endpointIds));
+        Map<String, UiApiEndpoint> endpointById = new LinkedHashMap<>();
+        Set<String> sourceIds = new HashSet<>();
+        Set<String> tagIds = new HashSet<>();
+        for (UiApiEndpoint endpoint : endpoints) {
+            endpointById.put(endpoint.getId(), endpoint);
+            if (StringUtils.hasText(endpoint.getSourceId())) {
+                sourceIds.add(endpoint.getSourceId());
+            }
+            if (StringUtils.hasText(endpoint.getTagId())) {
+                tagIds.add(endpoint.getTagId());
+            }
+        }
+
+        Map<String, UiApiSource> sourceById = new LinkedHashMap<>();
+        if (!sourceIds.isEmpty()) {
+            List<UiApiSource> sources = uiApiSourceMapper.selectList(new LambdaQueryWrapper<UiApiSource>()
+                    .in(UiApiSource::getId, sourceIds));
+            for (UiApiSource source : sources) {
+                sourceById.put(source.getId(), source);
+            }
+        }
+
+        Map<String, UiApiTag> tagById = new LinkedHashMap<>();
+        if (!tagIds.isEmpty()) {
+            List<UiApiTag> tags = uiApiTagMapper.selectList(new LambdaQueryWrapper<UiApiTag>()
+                    .in(UiApiTag::getId, tagIds));
+            for (UiApiTag tag : tags) {
+                tagById.put(tag.getId(), tag);
+            }
+        }
+
+        for (UiApiEndpointRole relation : relations) {
+            UiApiEndpoint endpoint = endpointById.get(relation.getEndpointId());
+            if (endpoint == null) {
+                continue;
+            }
+            relation.setEndpointName(endpoint.getName());
+            relation.setEndpointPath(endpoint.getPath());
+            relation.setEndpointMethod(endpoint.getMethod());
+            relation.setEndpointStatus(endpoint.getStatus());
+            relation.setSourceId(endpoint.getSourceId());
+
+            UiApiSource source = sourceById.get(endpoint.getSourceId());
+            relation.setSourceName(source != null ? source.getName() : null);
+
+            UiApiTag tag = tagById.get(endpoint.getTagId());
+            relation.setTagName(tag != null ? tag.getName() : null);
+        }
+    }
+
     private Map<String, UiApiTag> loadTagMapBySourceId(String sourceId) {
         List<UiApiTag> tags = uiApiTagMapper.selectList(new LambdaQueryWrapper<UiApiTag>()
                 .eq(UiApiTag::getSourceId, sourceId));
@@ -1698,6 +2200,48 @@ public class UiBuilderApplicationService {
             throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "接口定义不存在: " + endpointId);
         }
         return endpoint;
+    }
+
+    private UiApiEndpointRole requireEndpointRoleRelation(String relationId) {
+        UiApiEndpointRole relation = uiApiEndpointRoleMapper.selectById(relationId);
+        if (relation == null) {
+            throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "接口角色关系不存在: " + relationId);
+        }
+        return relation;
+    }
+
+    private SemanticFieldDict requireSemanticFieldDict(Long dictId) {
+        SemanticFieldDict dict = semanticFieldDictMapper.selectById(dictId);
+        if (dict == null) {
+            throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "语义字段字典不存在: " + dictId);
+        }
+        return dict;
+    }
+
+    private SemanticFieldDict requireSemanticFieldDict(String standardKey) {
+        SemanticFieldDict dict = semanticFieldDictMapper.selectOne(new LambdaQueryWrapper<SemanticFieldDict>()
+                .eq(SemanticFieldDict::getStandardKey, standardKey)
+                .last("limit 1"));
+        if (dict == null) {
+            throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "语义字段字典不存在: " + standardKey);
+        }
+        return dict;
+    }
+
+    private SemanticFieldAlias requireSemanticFieldAlias(Long aliasId) {
+        SemanticFieldAlias alias = semanticFieldAliasMapper.selectById(aliasId);
+        if (alias == null) {
+            throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "语义字段别名不存在: " + aliasId);
+        }
+        return alias;
+    }
+
+    private SemanticFieldValueMap requireSemanticFieldValueMap(Long valueMapId) {
+        SemanticFieldValueMap valueMap = semanticFieldValueMapMapper.selectById(valueMapId);
+        if (valueMap == null) {
+            throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "语义字段值映射不存在: " + valueMapId);
+        }
+        return valueMap;
     }
 
     private UiApiTag requireTag(String tagId) {
@@ -1756,6 +2300,17 @@ public class UiBuilderApplicationService {
         }
         if (uiApiSourceMapper.selectCount(wrapper) > 0) {
             throw new BusinessException(ErrorCode.DUPLICATE_ENTRY, "接口源编码已存在: " + code);
+        }
+    }
+
+    private void ensureSemanticFieldStandardKeyUnique(String standardKey, Long excludeId) {
+        QueryWrapper<SemanticFieldDict> wrapper = new QueryWrapper<>();
+        wrapper.eq("standard_key", standardKey);
+        if (excludeId != null) {
+            wrapper.ne("id", excludeId);
+        }
+        if (semanticFieldDictMapper.selectCount(wrapper) > 0) {
+            throw new BusinessException(ErrorCode.DUPLICATE_ENTRY, "standardKey 已存在: " + standardKey);
         }
     }
 
@@ -1839,16 +2394,18 @@ public class UiBuilderApplicationService {
      * @return 展开后的请求 schema
      */
     private JsonNode extractRequestSchema(JsonNode rootDocument, JsonNode operationNode) {
+        JsonNode parameterSchema = extractParameterSchema(rootDocument, operationNode);
         JsonNode requestBody = operationNode.path("requestBody").path("content");
         if (!requestBody.isObject()) {
-            return null;
+            return parameterSchema;
         }
         Iterator<String> fieldNames = requestBody.fieldNames();
         if (!fieldNames.hasNext()) {
-            return null;
+            return parameterSchema;
         }
         String contentType = fieldNames.next();
-        return resolveSchemaNode(rootDocument, requestBody.path(contentType).path("schema"), new HashSet<>());
+        JsonNode bodySchema = resolveSchemaNode(rootDocument, requestBody.path(contentType).path("schema"), new HashSet<>());
+        return mergeRequestSchema(parameterSchema, bodySchema, operationNode, contentType);
     }
 
     private String extractRequestContentType(JsonNode operationNode) {
@@ -1895,26 +2452,27 @@ public class UiBuilderApplicationService {
      * @return 请求样例
      */
     private JsonNode extractRequestExample(JsonNode rootDocument, JsonNode operationNode) {
+        JsonNode parameterExample = extractParameterExample(rootDocument, operationNode);
         JsonNode requestBody = operationNode.path("requestBody").path("content");
         if (!requestBody.isObject()) {
-            return null;
+            return parameterExample;
         }
         Iterator<String> fieldNames = requestBody.fieldNames();
         if (!fieldNames.hasNext()) {
-            return null;
+            return parameterExample;
         }
         String contentType = fieldNames.next();
         JsonNode mediaNode = requestBody.path(contentType);
         JsonNode example = mediaNode.path("example");
         if (!example.isMissingNode() && !example.isNull()) {
-            return example;
+            return mergeRequestExample(parameterExample, example);
         }
         JsonNode examplesNode = mediaNode.path("examples");
         if (examplesNode.isObject() && examplesNode.fields().hasNext()) {
-            return examplesNode.fields().next().getValue().path("value");
+            return mergeRequestExample(parameterExample, examplesNode.fields().next().getValue().path("value"));
         }
         JsonNode resolvedSchema = resolveSchemaNode(rootDocument, mediaNode.path("schema"), new HashSet<>());
-        return buildExampleFromSchema(resolvedSchema);
+        return mergeRequestExample(parameterExample, buildExampleFromSchema(resolvedSchema));
     }
 
     /**
@@ -2120,12 +2678,208 @@ public class UiBuilderApplicationService {
         JsonNode current = rootDocument;
         String[] segments = ref.substring(2).split("/");
         for (String segment : segments) {
-            current = current.path(segment);
+            current = current.path(decodeRefSegment(segment));
             if (current.isMissingNode()) {
                 return null;
             }
         }
         return current;
+    }
+
+    /**
+     * 解码 `$ref` 路径中的单个段。
+     *
+     * <p>一些 OpenAPI 生成器会把 schema 名中的特殊字符做 URL 编码，例如
+     * `Result%C2%ABCustBasicInfoVO%C2%BB`，而 JSON Pointer 本身又允许使用
+     * `~1`、`~0` 表示 `/` 和 `~`。这里统一做两层解码，确保能够稳定命中
+     * `components.schemas` 下的真实 key。
+     *
+     * @param segment `$ref` 中的单段路径
+     * @return 解码后的真实段名
+     */
+    private String decodeRefSegment(String segment) {
+        if (!StringUtils.hasText(segment)) {
+            return segment;
+        }
+        String decoded = URLDecoder.decode(segment, StandardCharsets.UTF_8);
+        return decoded.replace("~1", "/").replace("~0", "~");
+    }
+
+    /**
+     * 从 operation.parameters 中提取请求参数 schema。
+     *
+     * <p>对于没有 requestBody 的 GET/DELETE 类接口，这部分就是请求参数的完整来源。
+     * 每个参数会按参数名挂到根对象 properties 下，并通过 `x-in` 标注它来自
+     * `query/path/header/cookie` 中的哪一种位置。
+     *
+     * @param rootDocument OpenAPI 根文档
+     * @param operationNode 当前接口 operation
+     * @return 参数对象 schema；如果没有参数则返回 {@code null}
+     */
+    private JsonNode extractParameterSchema(JsonNode rootDocument, JsonNode operationNode) {
+        JsonNode parametersNode = operationNode.path("parameters");
+        if (!parametersNode.isArray() || parametersNode.isEmpty()) {
+            return null;
+        }
+
+        ObjectNode schema = objectMapper.createObjectNode();
+        schema.put("type", "object");
+        ObjectNode properties = schema.putObject("properties");
+        ArrayNode required = objectMapper.createArrayNode();
+
+        for (JsonNode rawParameterNode : parametersNode) {
+            JsonNode parameterNode = resolveParameterNode(rootDocument, rawParameterNode);
+            if (parameterNode == null || parameterNode.isMissingNode() || parameterNode.isNull()) {
+                continue;
+            }
+
+            String name = parameterNode.path("name").asText(null);
+            if (!StringUtils.hasText(name)) {
+                continue;
+            }
+
+            JsonNode parameterSchema = resolveSchemaNode(rootDocument, parameterNode.path("schema"), new HashSet<>());
+            ObjectNode normalizedSchema = parameterSchema != null && parameterSchema.isObject()
+                    ? parameterSchema.deepCopy()
+                    : objectMapper.createObjectNode();
+            if (!normalizedSchema.has("type")) {
+                normalizedSchema.put("type", "string");
+            }
+            if (StringUtils.hasText(parameterNode.path("description").asText(null)) && !normalizedSchema.has("description")) {
+                normalizedSchema.put("description", parameterNode.path("description").asText());
+            }
+            if (StringUtils.hasText(parameterNode.path("in").asText(null))) {
+                normalizedSchema.put("x-in", parameterNode.path("in").asText());
+            }
+            properties.set(name, normalizedSchema);
+
+            if (parameterNode.path("required").asBoolean(false)) {
+                required.add(name);
+            }
+        }
+
+        if (properties.isEmpty()) {
+            return null;
+        }
+        if (!required.isEmpty()) {
+            schema.set("required", required);
+        }
+        return schema;
+    }
+
+    /**
+     * 提取请求参数样例。
+     *
+     * <p>优先采用参数级 example/examples；如果文档没有显式样例，则根据参数 schema
+     * 自动生成一个最小可读示例，方便 UI Builder 在接口联调前直接看到参数骨架。
+     *
+     * @param rootDocument OpenAPI 根文档
+     * @param operationNode 当前接口 operation
+     * @return 参数样例对象
+     */
+    private JsonNode extractParameterExample(JsonNode rootDocument, JsonNode operationNode) {
+        JsonNode parametersNode = operationNode.path("parameters");
+        if (!parametersNode.isArray() || parametersNode.isEmpty()) {
+            return null;
+        }
+
+        ObjectNode example = objectMapper.createObjectNode();
+        for (JsonNode rawParameterNode : parametersNode) {
+            JsonNode parameterNode = resolveParameterNode(rootDocument, rawParameterNode);
+            if (parameterNode == null || parameterNode.isMissingNode() || parameterNode.isNull()) {
+                continue;
+            }
+
+            String name = parameterNode.path("name").asText(null);
+            if (!StringUtils.hasText(name)) {
+                continue;
+            }
+
+            JsonNode parameterExample = parameterNode.path("example");
+            if (parameterExample.isMissingNode() || parameterExample.isNull()) {
+                JsonNode examplesNode = parameterNode.path("examples");
+                if (examplesNode.isObject() && examplesNode.fields().hasNext()) {
+                    parameterExample = examplesNode.fields().next().getValue().path("value");
+                }
+            }
+            if (parameterExample.isMissingNode() || parameterExample.isNull()) {
+                parameterExample = buildExampleFromSchema(resolveSchemaNode(rootDocument, parameterNode.path("schema"), new HashSet<>()));
+            }
+            example.set(name, parameterExample != null ? parameterExample : objectMapper.nullNode());
+        }
+
+        return example.isEmpty() ? null : example;
+    }
+
+    /**
+     * 解析 parameter 节点上的本地 `$ref`。
+     *
+     * @param rootDocument OpenAPI 根文档
+     * @param parameterNode parameter 原始节点
+     * @return 展开的 parameter 节点
+     */
+    private JsonNode resolveParameterNode(JsonNode rootDocument, JsonNode parameterNode) {
+        if (parameterNode == null || parameterNode.isMissingNode() || parameterNode.isNull()) {
+            return null;
+        }
+        if (parameterNode.isObject() && parameterNode.has("$ref")) {
+            JsonNode referencedNode = resolveLocalRef(rootDocument, parameterNode.path("$ref").asText());
+            if (referencedNode == null || !referencedNode.isObject()) {
+                return referencedNode != null ? referencedNode : parameterNode;
+            }
+
+            ObjectNode mergedNode = referencedNode.deepCopy();
+            Iterator<Map.Entry<String, JsonNode>> fields = parameterNode.fields();
+            while (fields.hasNext()) {
+                Map.Entry<String, JsonNode> field = fields.next();
+                if (!"$ref".equals(field.getKey())) {
+                    mergedNode.set(field.getKey(), field.getValue());
+                }
+            }
+            return mergedNode;
+        }
+        return parameterNode;
+    }
+
+    private JsonNode mergeRequestSchema(JsonNode parameterSchema, JsonNode bodySchema, JsonNode operationNode, String contentType) {
+        if (parameterSchema == null) {
+            return bodySchema;
+        }
+        if (bodySchema == null) {
+            return parameterSchema;
+        }
+
+        ObjectNode mergedSchema = objectMapper.createObjectNode();
+        mergedSchema.put("type", "object");
+        ObjectNode properties = mergedSchema.putObject("properties");
+        properties.set("params", parameterSchema);
+        properties.set("body", bodySchema);
+
+        ArrayNode required = objectMapper.createArrayNode();
+        if (operationNode.path("requestBody").path("required").asBoolean(false)) {
+            required.add("body");
+        }
+        if (!required.isEmpty()) {
+            mergedSchema.set("required", required);
+        }
+        if (StringUtils.hasText(contentType)) {
+            mergedSchema.put("x-requestBodyContentType", contentType);
+        }
+        return mergedSchema;
+    }
+
+    private JsonNode mergeRequestExample(JsonNode parameterExample, JsonNode bodyExample) {
+        if (parameterExample == null) {
+            return bodyExample;
+        }
+        if (bodyExample == null) {
+            return parameterExample;
+        }
+
+        ObjectNode mergedExample = objectMapper.createObjectNode();
+        mergedExample.set("params", parameterExample);
+        mergedExample.set("body", bodyExample);
+        return mergedExample;
     }
 
     private void resolveObjectField(JsonNode rootDocument, ObjectNode objectNode, String fieldName, Set<String> visitedRefs) {
@@ -2291,9 +3045,27 @@ public class UiBuilderApplicationService {
         return StringUtils.hasText(value) ? value : defaultValue;
     }
 
+    private String trimToNull(String value) {
+        if (!StringUtils.hasText(value)) {
+            return null;
+        }
+        return value.trim();
+    }
+
     private void requireText(String value, String message) {
         if (!StringUtils.hasText(value)) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, message);
+        }
+    }
+
+    private void validateEndpointRoleBindRequest(UiApiEndpointRoleBindRequest request) {
+        if (request == null) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "接口角色绑定请求不能为空");
+        }
+        requireText(request.getRoleId(), "角色 ID 不能为空");
+        requireText(request.getRoleName(), "角色名称不能为空");
+        if (request.getEndpointIds() == null || request.getEndpointIds().isEmpty()) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "至少需要选择一个接口定义");
         }
     }
 

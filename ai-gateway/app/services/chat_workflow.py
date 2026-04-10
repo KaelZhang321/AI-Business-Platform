@@ -28,6 +28,8 @@ logger = logging.getLogger(__name__)
 
 
 class ChatState(TypedDict, total=False):
+    """聊天工作流在 LangGraph 中流转的共享状态。"""
+
     request: dict[str, Any]
     intent: IntentType | None
     sub_intent: SubIntentType | None
@@ -37,7 +39,16 @@ class ChatState(TypedDict, total=False):
 
 
 class ChatWorkflow:
-    """LangGraph workflow orchestrating intent classification and tool routing."""
+    """聊天总工作流。
+
+    功能：
+        统一承接聊天、知识检索、问数、待办等多种入口，把意图分类和能力路由固定在一条
+        可观测、可流式输出的状态图中。
+
+    Edge Cases:
+        - 上游能力失败时，优先做业务降级而不是直接把底层异常抛给用户
+        - 流式模式与非流式模式共享同一状态图，避免两套分叉逻辑长期漂移
+    """
 
     def __init__(
         self,
@@ -63,6 +74,7 @@ class ChatWorkflow:
         await self._http.aclose()
 
     def _build_graph(self):
+        """构建意图驱动的 LangGraph 状态图。"""
         graph = StateGraph(ChatState)
         graph.add_node("classify", self._classify_intent)
         graph.add_node("knowledge", self._handle_knowledge)
@@ -87,15 +99,18 @@ class ChatWorkflow:
         return graph.compile()
 
     async def run(self, request: ChatRequest) -> ChatResponse:
+        """执行非流式聊天工作流。"""
         state = await self._graph.ainvoke(self._initial_state(request))
         return self._to_response(request, state)
 
     async def stream(self, request: ChatRequest):
+        """执行流式聊天工作流，并把状态节点事件转换为 SSE 片段。"""
         initial_state = self._initial_state(request)
         async for event in self._graph.astream_events(initial_state, version="v1"):
             yield self._convert_event(request, event)
 
     def _convert_event(self, request: ChatRequest, event: dict[str, Any]):
+        """把 LangGraph 内部事件折叠为统一 SSE 信封。"""
         event_type: str | None = event.get("event")
         name: str | None = event.get("name")
         state = event.get("data", {}).get("state", {})
@@ -123,6 +138,7 @@ class ChatWorkflow:
             yield self._sse("STREAM_END", response.model_dump(), trace_id)
 
     def _initial_state(self, request: ChatRequest) -> ChatState:
+        """初始化图执行状态。"""
         return {
             "request": request.model_dump(),
             "intent": None,
@@ -133,11 +149,17 @@ class ChatWorkflow:
         }
 
     async def _classify_intent(self, state: ChatState) -> dict[str, Any]:
+        """工作流入口节点：识别一级/二级意图。"""
         req = ChatRequest(**state["request"])
         result: IntentResult = await self._intent_classifier.classify(req.message, req.context)
         return {"intent": result.intent, "sub_intent": result.sub_intent}
 
     async def _handle_knowledge(self, state: ChatState) -> dict[str, Any]:
+        """知识检索节点。
+
+        功能：
+            优先命中语义缓存，其次检索知识库，并在成功时写回缓存，兼顾稳定性与成本。
+        """
         req = ChatRequest(**state["request"])
 
         # S5-11: 语义缓存 — 命中则直接返回
@@ -171,6 +193,7 @@ class ChatWorkflow:
         return {"response_text": response_text, "ui_spec": ui_spec, "sources": sources}
 
     async def _handle_query(self, state: ChatState) -> dict[str, Any]:
+        """问数节点，统一走 `Text2SQLService` 门面。"""
         req = ChatRequest(**state["request"])
         result = await self._text2sql_service.query(
             req.message,
@@ -183,7 +206,11 @@ class ChatWorkflow:
         return {"response_text": result.answer or result.explanation, "ui_spec": ui_spec, "sources": sources}
 
     async def _handle_task(self, state: ChatState) -> dict[str, Any]:
-        """调用业务编排层获取用户待办任务。"""
+        """待办节点。
+
+        功能：
+            通过 business-server 聚合接口查询用户待办，并转换为可渲染的任务工作台。
+        """
         req = ChatRequest(**state["request"])
         tasks: list[dict[str, Any]] = []
         try:
@@ -227,6 +254,7 @@ class ChatWorkflow:
         return {"response_text": response_text, "ui_spec": ui_spec, "sources": []}
 
     async def _handle_chat(self, state: ChatState) -> dict[str, Any]:
+        """兜底闲聊节点。"""
         req = ChatRequest(**state["request"])
         reply = await self._llm_service.chat(
             messages=[{"role": "user", "content": req.message}],
@@ -234,10 +262,12 @@ class ChatWorkflow:
         return {"response_text": reply, "ui_spec": None, "sources": []}
 
     def _route_intent(self, state: ChatState) -> IntentType | str:
+        """将分类结果映射为状态图分支。"""
         intent = state.get("intent", IntentType.CHAT)
         return intent if isinstance(intent, IntentType) else IntentType.CHAT
 
     def _to_response(self, request: ChatRequest, state: ChatState) -> ChatResponse:
+        """把图内状态转换为对外响应模型。"""
         intent = state.get("intent", IntentType.CHAT)
         if not isinstance(intent, IntentType) and intent:
             intent = IntentType(intent)
