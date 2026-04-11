@@ -64,6 +64,16 @@ class GraphCacheService:
         """构造缓存单飞锁 key。"""
         return f"{_CACHE_PREFIX}:singleflight:{key}"
 
+    def build_index_key(self, scope: str, api_id: str) -> str:
+        """构造“API -> 实际缓存项”反向索引 key。
+
+        功能：
+            在线子图缓存会带上 hop、域约束和 support_limit 等护栏参数，真实 key 不能直接退化成
+            `api_id`。反向索引让图同步后仍能按 `impacted_api_ids` 精准失效所有相关视图。
+        """
+
+        return f"{_CACHE_PREFIX}:index:{scope}:{api_id}"
+
     async def get_subgraph(self, key: str) -> GraphCacheHitResult:
         """读取子图缓存。"""
         cache_key = self.build_cache_key("subgraph", key)
@@ -88,13 +98,17 @@ class GraphCacheService:
         subgraph: ApiCatalogSubgraphResult,
         *,
         ttl_seconds: int | None = None,
+        index_api_ids: list[str] | None = None,
     ) -> None:
         """写入子图缓存。"""
         if not self._enabled:
             return
         cache_key = self.build_cache_key("subgraph", key)
+        ttl = ttl_seconds or self._default_ttl_seconds
         try:
-            await self._get_client().set(cache_key, subgraph.model_dump_json(), ex=ttl_seconds or self._default_ttl_seconds)
+            client = self._get_client()
+            await client.set(cache_key, subgraph.model_dump_json(), ex=ttl)
+            await self._index_cache_key("subgraph", cache_key, index_api_ids=index_api_ids, ttl_seconds=ttl)
         except Exception as exc:  # pragma: no cover - 依赖外部 Redis
             logger.warning("graph cache set_subgraph skipped: key=%s error=%s", cache_key, exc)
 
@@ -118,13 +132,17 @@ class GraphCacheService:
         entry: GraphValidationCacheEntry,
         *,
         ttl_seconds: int | None = None,
+        index_api_ids: list[str] | None = None,
     ) -> None:
         """写入图校验缓存。"""
         if not self._enabled:
             return
         cache_key = self.build_cache_key("validate", key)
+        ttl = ttl_seconds or self._default_ttl_seconds
         try:
-            await self._get_client().set(cache_key, entry.model_dump_json(), ex=ttl_seconds or self._default_ttl_seconds)
+            client = self._get_client()
+            await client.set(cache_key, entry.model_dump_json(), ex=ttl)
+            await self._index_cache_key("validate", cache_key, index_api_ids=index_api_ids, ttl_seconds=ttl)
         except Exception as exc:  # pragma: no cover - 依赖外部 Redis
             logger.warning("graph cache set_validation skipped: key=%s error=%s", cache_key, exc)
 
@@ -134,13 +152,17 @@ class GraphCacheService:
         payload: dict[str, Any],
         *,
         ttl_seconds: int | None = None,
+        index_api_ids: list[str] | None = None,
     ) -> None:
         """写入字段绑定摘要缓存。"""
         if not self._enabled:
             return
         cache_key = self.build_cache_key("field_binding", key)
+        ttl = ttl_seconds or self._default_ttl_seconds
         try:
-            await self._get_client().set(cache_key, json.dumps(payload, ensure_ascii=False), ex=ttl_seconds or self._default_ttl_seconds)
+            client = self._get_client()
+            await client.set(cache_key, json.dumps(payload, ensure_ascii=False), ex=ttl)
+            await self._index_cache_key("field_binding", cache_key, index_api_ids=index_api_ids, ttl_seconds=ttl)
         except Exception as exc:  # pragma: no cover - 依赖外部 Redis
             logger.warning("graph cache set_field_binding_summary skipped: key=%s error=%s", cache_key, exc)
 
@@ -149,16 +171,45 @@ class GraphCacheService:
         if not self._enabled or not request.impacted_api_ids:
             return 0
 
-        keys_to_delete: list[str] = []
-        for api_id in request.impacted_api_ids:
-            for scope in request.scopes:
-                keys_to_delete.append(self.build_cache_key(scope, api_id))
-
         try:
-            return int(await self._get_client().delete(*keys_to_delete))
+            client = self._get_client()
+            keys_to_delete: set[str] = set()
+            for api_id in request.impacted_api_ids:
+                for scope in request.scopes:
+                    keys_to_delete.add(self.build_cache_key(scope, api_id))
+                    index_key = self.build_index_key(scope, api_id)
+                    keys_to_delete.add(index_key)
+                    keys_to_delete.update(await client.smembers(index_key))
+            if not keys_to_delete:
+                return 0
+            return int(await client.delete(*sorted(keys_to_delete)))
         except Exception as exc:  # pragma: no cover - 依赖外部 Redis
             logger.warning("graph cache invalidate degraded: api_ids=%s error=%s", request.impacted_api_ids, exc)
             return 0
+
+    async def _index_cache_key(
+        self,
+        scope: str,
+        cache_key: str,
+        *,
+        index_api_ids: list[str] | None,
+        ttl_seconds: int,
+    ) -> None:
+        """把真实缓存项登记到参与 API 名下。
+
+        功能：
+            这层反向索引解决的是“复合缓存 key”与“定向失效”之间的矛盾。
+            没有它，Stage 2 要么只能退回单一 `api_id` key，要么同步后无法准确删除历史视图。
+        """
+
+        if not index_api_ids:
+            return
+
+        client = self._get_client()
+        for api_id in sorted(set(index_api_ids)):
+            index_key = self.build_index_key(scope, api_id)
+            await client.sadd(index_key, cache_key)
+            await client.expire(index_key, ttl_seconds)
 
     async def acquire_singleflight(self, key: str) -> bool:
         """尝试获取缓存单飞锁。
@@ -192,4 +243,3 @@ class GraphCacheService:
         if self._client is not None:
             await self._client.aclose()
             self._client = None
-

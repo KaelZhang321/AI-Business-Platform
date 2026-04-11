@@ -38,6 +38,7 @@ from app.models.schemas import (
 from app.services.api_catalog.business_intents import get_business_intent_catalog_service
 from app.services.api_catalog.dag_planner import ApiDagPlanner
 from app.services.api_catalog.executor import ApiExecutor
+from app.services.api_catalog.hybrid_retriever import ApiCatalogHybridRetriever
 from app.services.api_catalog.param_extractor import ApiParamExtractor
 from app.services.api_catalog.registry_source import ApiCatalogRegistrySource
 from app.services.api_catalog.retriever import ApiCatalogRetriever
@@ -71,7 +72,7 @@ def _get_services() -> tuple[ApiCatalogRetriever, ApiParamExtractor, ApiExecutor
 
     global _retriever, _extractor, _executor, _dynamic_ui, _snapshot_service
     if _retriever is None:
-        _retriever = ApiCatalogRetriever()
+        _retriever = ApiCatalogHybridRetriever()
     if _extractor is None:
         _extractor = ApiParamExtractor(llm_service=_get_api_query_llm_service())
     if _executor is None:

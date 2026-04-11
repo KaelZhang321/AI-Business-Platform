@@ -80,6 +80,16 @@ class ApiFieldSemanticResolver:
             bindings.extend(self.resolve_entry_bindings(entry, governance_snapshot=snapshot))
         return bindings
 
+    async def load_governance_snapshot(self) -> SemanticGovernanceSnapshot:
+        """加载当前字段治理快照。
+
+        功能：
+            全量重建索引时通常会连续处理大批接口。把快照加载显式开放出来，可以让 indexer
+            先读一次治理三表，再把同一份只读快照复用到整轮任务里，避免重复访问 MySQL。
+        """
+
+        return await self._repository.load_active_rules()
+
     def resolve_entry_bindings(
         self,
         entry: ApiCatalogEntry,
@@ -156,9 +166,14 @@ def _resolve_field_profile(
         raw_description=profile.raw_description,
         json_path=profile.json_path,
         semantic_key=field_record.semantic_key,
+        entity_code=field_record.entity_code,
+        canonical_name=field_record.canonical_name,
+        normalized_label=field_record.label,
         normalized_field_type=normalized_field_type,
         normalized_value_type=normalized_value_type,
         normalized_description=normalized_description,
+        category=field_record.category,
+        business_domain=field_record.business_domain,
         display_domain_code=field_record.display_domain_code,
         display_domain_label=field_record.display_domain_label,
         display_section_code=field_record.display_section_code,
@@ -537,4 +552,3 @@ def _extract_schema_description(field_schema: dict[str, object], *, fallback_lab
 def _schema_is_array(field_schema: dict[str, object]) -> bool:
     """判断 schema 是否数组。"""
     return str(field_schema.get("type") or "").strip().lower() == "array"
-

@@ -251,6 +251,37 @@ class ApiCatalogRetriever:
             return None
         return _build_entry_from_fields(results[0])
 
+    async def get_many_by_ids(self, api_ids: list[str]) -> list[ApiCatalogEntry]:
+        """按 ID 批量读取接口记录。
+
+        功能：
+            Hybrid Retriever 在拿到 support API 列表后，需要把它们重新补成完整 `ApiCatalogEntry`。
+            这里提供批量读取入口，避免对同一批 support API 做串行查询，把 Stage 2 延迟浪费在
+            Milvus 元数据回填上。
+        """
+
+        normalized_ids = [api_id for api_id in api_ids if api_id]
+        if not normalized_ids:
+            return []
+
+        collection = self._get_collection()
+        quoted_ids = ",".join(json.dumps(api_id, ensure_ascii=False) for api_id in normalized_ids)
+        try:
+            rows = collection.query(
+                expr=f"id in [{quoted_ids}]",
+                output_fields=self._get_output_fields(),
+                limit=len(normalized_ids),
+            )
+        except Exception as exc:
+            logger.warning("api_catalog query by ids failed: ids=%s error=%s", normalized_ids, exc)
+            return []
+
+        entry_map = {
+            entry.id: entry
+            for entry in (_build_entry_from_fields(row) for row in rows)
+        }
+        return [entry_map[api_id] for api_id in normalized_ids if api_id in entry_map]
+
     async def _encode_query(self, query: str) -> list[float]:
         """统一管理 query embedding，避免多域召回时重复编码。"""
         embedder = self._get_embedder()

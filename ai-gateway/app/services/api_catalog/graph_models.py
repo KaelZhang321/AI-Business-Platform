@@ -143,9 +143,14 @@ class NormalizedFieldBinding(BaseModel):
     raw_description: str | None = None
     json_path: str
     semantic_key: str
+    entity_code: str | None = None
+    canonical_name: str | None = None
+    normalized_label: str | None = None
     normalized_field_type: str
     normalized_value_type: str
     normalized_description: str | None = None
+    category: str | None = None
+    business_domain: str | None = None
     display_domain_code: str | None = None
     display_domain_label: str | None = None
     display_section_code: str | None = None
