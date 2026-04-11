@@ -63,6 +63,28 @@ class ApiCatalogSearchFilters(BaseModel):
     tag_names: list[str] = Field(default_factory=list)
 
 
+class ApiCatalogFieldProfile(BaseModel):
+    """接口字段原始画像。
+
+    功能：
+        在进入字段治理三表归一之前，先把接口 schema 中“这个字段在哪、长什么样”稳定保存下来。
+        这样 resolver 可以复用统一的 raw 证据，而不是每次都从不同 schema 结构里重新猜。
+
+    返回值约束：
+        - `direction + location + json_path` 必须共同定位字段来源
+        - `raw_field_type` 和 `raw_description` 允许为空，但字段名和路径不能为空
+    """
+
+    direction: Literal["request", "response"]
+    location: Literal["queryParams", "body", "path", "response", "header"]
+    field_name: str = Field(..., min_length=1, description="字段原始名称")
+    json_path: str = Field(..., min_length=1, description="字段路径，如 body.roleId / data.records[].id")
+    raw_field_type: str | None = Field(None, description="字段原始类型，如 string/int64/list<object>")
+    raw_description: str | None = Field(None, description="字段原始描述，来自 schema/label/title")
+    required: bool = Field(False, description="请求字段是否必填；响应字段默认 false")
+    array_mode: bool = Field(False, description="字段是否来自数组元素或本身为数组")
+
+
 class ApiCatalogEntry(BaseModel):
     """单条业务接口目录记录。
 
@@ -92,6 +114,10 @@ class ApiCatalogEntry(BaseModel):
     operation_safety: Literal["query", "list", "mutation"] = Field(
         "mutation",
         description="接口安全语义。query 表示可进入 /api-query，mutation 表示必须被阻断。",
+    )
+    requires_confirmation: bool = Field(
+        False,
+        description="是否属于高风险 mutation。GraphRAG 命中后需先进入确认分支。",
     )
 
     # ---------- 调用元数据 ----------
@@ -131,6 +157,14 @@ class ApiCatalogEntry(BaseModel):
     detail_hint: ApiCatalogDetailHint = Field(default_factory=ApiCatalogDetailHint)
     pagination_hint: ApiCatalogPaginationHint = Field(default_factory=ApiCatalogPaginationHint)
     template_hint: ApiCatalogTemplateHint = Field(default_factory=ApiCatalogTemplateHint)
+    request_field_profiles: list[ApiCatalogFieldProfile] = Field(
+        default_factory=list,
+        description="请求侧原始字段画像，供字段治理与图同步复用",
+    )
+    response_field_profiles: list[ApiCatalogFieldProfile] = Field(
+        default_factory=list,
+        description="响应侧原始字段画像，供字段治理与图同步复用",
+    )
 
     # ---------- 向量（Milvus 回填，入库前不填）----------
     embedding: list[float] | None = Field(None, exclude=True)

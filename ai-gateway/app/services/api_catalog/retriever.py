@@ -43,6 +43,7 @@ _OUTPUT_FIELDS = [
     "status",
     "tag_name",
     "operation_safety",
+    "requires_confirmation",
     "method",
     "path",
     "auth_required",
@@ -370,6 +371,15 @@ def _build_entry_from_fields(fields: dict) -> ApiCatalogEntry:
             "security_rules_json",
             {},
         ).get("operation_safety", "mutation"),
+        requires_confirmation=bool(
+            fields.get("requires_confirmation")
+            if fields.get("requires_confirmation") is not None
+            else (
+                fields.get("operation_safety")
+                or _read_json_field(fields, "security_rules", "security_rules_json", {}).get("operation_safety", "mutation")
+            )
+            == "mutation"
+        ),
         method=fields.get("method", "GET"),
         path=fields.get("path", ""),
         auth_required=fields.get("auth_required", True),

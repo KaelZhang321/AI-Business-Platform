@@ -104,6 +104,11 @@ def _get_collection_schema() -> CollectionSchema:
             description="接口安全语义。用于在候选后校验、Planner 和执行器阶段硬拦截 mutation 接口。",
         ),
         FieldSchema(
+            name="requires_confirmation",
+            dtype=DataType.BOOL,
+            description="高风险 mutation 的确认护栏。后续 GraphRAG 会据此决定是否转入 WAIT_CONFIRM。",
+        ),
+        FieldSchema(
             name="method",
             dtype=DataType.VARCHAR,
             max_length=16,
@@ -372,6 +377,7 @@ class ApiCatalogIndexer:
             [entry.status],
             [entry.tag_name or ""],
             [entry.operation_safety],
+            [entry.requires_confirmation],
             [entry.method],
             [entry.path],
             [entry.auth_required],

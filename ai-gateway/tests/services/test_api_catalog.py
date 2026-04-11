@@ -22,12 +22,19 @@ from pymilvus import DataType
 import app.services.api_catalog.indexer as indexer_module
 from app.core.config import settings
 from app.models.schemas import ApiQueryExecutionStatus
+from app.services.api_catalog.field_semantic_resolver import ApiFieldSemanticResolver
 from app.services.api_catalog.executor import (
     ApiExecutor,
     LegacyApiExecutor,
     RuntimeInvokeExecutor,
     _apply_field_labels,
     _extract_data,
+)
+from app.services.api_catalog.graph_models import (
+    SemanticFieldAliasRecord,
+    SemanticFieldDictRecord,
+    SemanticFieldValueMapRecord,
+    SemanticGovernanceSnapshot,
 )
 from app.services.api_catalog.indexer import _create_collection, _get_collection_schema
 from app.services.api_catalog.param_extractor import _coerce_type, _parse_json, _validate_params
@@ -39,6 +46,7 @@ from app.services.api_catalog.retriever import (
 )
 from app.services.api_catalog.schema import (
     ApiCatalogEntry,
+    ApiCatalogFieldProfile,
     ApiCatalogSearchFilters,
     ApiCatalogSearchResult,
     ParamSchema,
@@ -81,6 +89,9 @@ class TestApiCatalogEntry:
         assert entry.status == "active"
         assert entry.business_intents == ["query_business_data"]
         assert entry.operation_safety == "mutation"
+        assert entry.requires_confirmation is False
+        assert entry.request_field_profiles == []
+        assert entry.response_field_profiles == []
 
     def test_embed_text_includes_registry_fields(self):
         entry = self._make_entry(domain="crm", tag_name="customer_management", business_intents=["query_business_data"])
@@ -869,6 +880,7 @@ class TestRetrieverCompatibility:
                 "field_labels": {"customerId": "客户ID"},
                 "executor_config": {"base_url": "http://business-server"},
                 "security_rules": {"read_only": True},
+                "requires_confirmation": False,
                 "detail_hint": {"enabled": False},
                 "pagination_hint": {"enabled": True, "page_param": "pageNum"},
                 "template_hint": {"enabled": False},
@@ -880,6 +892,30 @@ class TestRetrieverCompatibility:
         assert entry.sample_request == {"pageNum": 1}
         assert entry.field_labels["customerId"] == "客户ID"
         assert entry.operation_safety == "query"
+        assert entry.requires_confirmation is False
+
+    def test_build_entry_from_fields_infers_requires_confirmation_for_legacy_mutation_record(self):
+        entry = _build_entry_from_fields(
+            {
+                "id": "role_delete",
+                "description": "删除角色",
+                "domain": "iam",
+                "env": "prod",
+                "status": "active",
+                "operation_safety": "mutation",
+                "method": "POST",
+                "path": "/system/employee/sys-role/delete",
+                "auth_required": True,
+                "ui_hint": "table",
+                "example_queries": [],
+                "tags": [],
+                "business_intents": ["query_business_data"],
+                "api_schema": {"request": {"type": "object", "properties": {}}, "response_schema": {}},
+                "security_rules": {"operation_safety": "mutation"},
+            }
+        )
+
+        assert entry.requires_confirmation is True
 
     def test_retriever_uses_legacy_output_fields_before_reindex(self):
         retriever = ApiCatalogRetriever()
@@ -902,3 +938,240 @@ class TestRetrieverCompatibility:
 
         assert retriever._get_output_fields() == _LEGACY_OUTPUT_FIELDS
         assert retriever._get_search_param() == {"metric_type": "IP", "params": {"nprobe": 16}}
+
+
+class TestFieldSemanticResolver:
+    def test_resolver_normalizes_request_field_and_filters_pagination_noise(self):
+        entry = ApiCatalogEntry(
+            id="role_delete",
+            description="删除角色",
+            domain="iam",
+            tag_name="role_management",
+            method="POST",
+            path="/system/employee/sys-role/delete",
+            operation_safety="mutation",
+            request_field_profiles=[
+                ApiCatalogFieldProfile(
+                    direction="request",
+                    location="body",
+                    field_name="roleId",
+                    json_path="body.roleId",
+                    raw_field_type="string",
+                    raw_description="角色ID",
+                    required=True,
+                ),
+                ApiCatalogFieldProfile(
+                    direction="request",
+                    location="body",
+                    field_name="pageSize",
+                    json_path="body.pageSize",
+                    raw_field_type="int32",
+                    raw_description="分页大小",
+                    required=False,
+                ),
+            ],
+        )
+        snapshot = SemanticGovernanceSnapshot(
+            field_dicts=[
+                SemanticFieldDictRecord(
+                    semantic_key="Role.id",
+                    standard_key="id",
+                    entity_code="Role",
+                    canonical_name="id",
+                    label="角色ID",
+                    field_type="text",
+                    value_type="string",
+                    description="角色主键",
+                    display_domain_code="role",
+                    display_domain_label="角色",
+                    display_section_code="basic",
+                    display_section_label="基本信息",
+                    graph_role="identifier",
+                    is_identifier=True,
+                    is_graph_enabled=True,
+                ),
+                SemanticFieldDictRecord(
+                    semantic_key="System.page_size",
+                    standard_key="pageSize",
+                    entity_code="System",
+                    canonical_name="pageSize",
+                    label="分页大小",
+                    field_type="number",
+                    value_type="integer",
+                    description="分页大小",
+                    graph_role="pagination",
+                    is_graph_enabled=False,
+                ),
+            ],
+            aliases=[
+                SemanticFieldAliasRecord(
+                    semantic_key="Role.id",
+                    alias="roleId",
+                    scope_type="api",
+                    scope_value="role_delete",
+                    direction="request",
+                    location="body",
+                    priority=1,
+                    confidence=1.0,
+                ),
+                SemanticFieldAliasRecord(
+                    semantic_key="System.page_size",
+                    alias="pageSize",
+                    scope_type="global",
+                    scope_value="*",
+                    direction="request",
+                    location="body",
+                    priority=1,
+                    confidence=1.0,
+                ),
+            ],
+        )
+
+        resolver = ApiFieldSemanticResolver()
+        bindings = resolver.resolve_entry_bindings(entry, governance_snapshot=snapshot)
+
+        assert len(bindings) == 1
+        binding = bindings[0]
+        assert binding.semantic_key == "Role.id"
+        assert binding.normalized_field_type == "text"
+        assert binding.normalized_value_type == "string"
+        assert binding.normalized_description == "角色主键"
+        assert binding.display_partition_key == "role.basic"
+        assert binding.required is True
+        assert binding.name_source == "semantic_field_alias:api"
+
+    def test_resolver_prefers_tag_scope_alias_and_degrades_confidence_on_type_conflict(self):
+        entry = ApiCatalogEntry(
+            id="customer_list",
+            description="客户列表",
+            domain="crm",
+            tag_name="customer_management",
+            method="GET",
+            path="/api/customer/list",
+            operation_safety="list",
+            response_field_profiles=[
+                ApiCatalogFieldProfile(
+                    direction="response",
+                    location="response",
+                    field_name="id",
+                    json_path="data.records[].id",
+                    raw_field_type="int64",
+                    raw_description="客户ID",
+                    array_mode=True,
+                ),
+                ApiCatalogFieldProfile(
+                    direction="response",
+                    location="response",
+                    field_name="status",
+                    json_path="data.records[].status",
+                    raw_field_type="int32",
+                    raw_description="状态",
+                    array_mode=True,
+                ),
+            ],
+        )
+        snapshot = SemanticGovernanceSnapshot(
+            field_dicts=[
+                SemanticFieldDictRecord(
+                    semantic_key="Generic.id",
+                    standard_key="id",
+                    entity_code="Generic",
+                    canonical_name="id",
+                    label="通用ID",
+                    field_type="text",
+                    value_type="string",
+                    description="通用主键",
+                    graph_role="identifier",
+                    is_identifier=True,
+                    is_graph_enabled=True,
+                ),
+                SemanticFieldDictRecord(
+                    semantic_key="Customer.id",
+                    standard_key="id",
+                    entity_code="Customer",
+                    canonical_name="id",
+                    label="客户ID",
+                    field_type="text",
+                    value_type="string",
+                    description="客户主键",
+                    display_domain_code="customer",
+                    display_domain_label="客户",
+                    display_section_code="basic",
+                    display_section_label="基本信息",
+                    graph_role="identifier",
+                    is_identifier=True,
+                    is_graph_enabled=True,
+                ),
+                SemanticFieldDictRecord(
+                    semantic_key="Customer.status",
+                    standard_key="status",
+                    entity_code="Customer",
+                    canonical_name="status",
+                    label="客户状态",
+                    field_type="select",
+                    value_type="integer",
+                    description="客户状态",
+                    graph_role="display_only",
+                    is_graph_enabled=False,
+                ),
+            ],
+            aliases=[
+                SemanticFieldAliasRecord(
+                    semantic_key="Generic.id",
+                    alias="id",
+                    scope_type="global",
+                    scope_value="*",
+                    direction="response",
+                    location="response",
+                    priority=50,
+                    confidence=0.7,
+                ),
+                SemanticFieldAliasRecord(
+                    semantic_key="Customer.id",
+                    alias="id",
+                    scope_type="tag",
+                    scope_value="customer_management",
+                    direction="response",
+                    location="response",
+                    priority=1,
+                    confidence=0.95,
+                ),
+                SemanticFieldAliasRecord(
+                    semantic_key="Customer.status",
+                    alias="status",
+                    scope_type="tag",
+                    scope_value="customer_management",
+                    direction="response",
+                    location="response",
+                    priority=1,
+                    confidence=1.0,
+                ),
+            ],
+            value_maps=[
+                SemanticFieldValueMapRecord(
+                    semantic_key="Customer.id",
+                    scope_type="tag",
+                    scope_value="customer_management",
+                    standard_code="customer_id",
+                    standard_label="客户ID",
+                    raw_value="1",
+                )
+            ],
+        )
+
+        resolver = ApiFieldSemanticResolver()
+        bindings = resolver.resolve_entry_bindings(entry, governance_snapshot=snapshot)
+
+        assert len(bindings) == 1
+        binding = bindings[0]
+        assert binding.semantic_key == "Customer.id"
+        assert binding.display_partition_key == "customer.basic"
+        assert binding.name_source == "semantic_field_alias:tag"
+        assert binding.array_mode is True
+        assert binding.confidence == pytest.approx(0.35)
+        assert binding.value_mapping_rule == {
+            "mapping_count": 1,
+            "standard_codes": ["customer_id"],
+            "top_scope_type": "tag",
+            "top_scope_value": "customer_management",
+        }

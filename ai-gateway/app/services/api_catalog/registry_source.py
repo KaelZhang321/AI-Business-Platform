@@ -10,6 +10,7 @@ from app.core.config import settings
 from app.services.api_catalog.schema import (
     ApiCatalogDetailHint,
     ApiCatalogEntry,
+    ApiCatalogFieldProfile,
     ApiCatalogPaginationHint,
     ApiCatalogTemplateHint,
     ParamSchema,
@@ -255,6 +256,8 @@ def _build_entry(
     source_code = str(source.get("code") or "").strip()
     source_name = str(source.get("name") or "").strip()
     tag_name = _resolve_tag_name(endpoint, tag_name_by_id or {})
+    response_data_path = _infer_response_data_path(sample_response, response_schema)
+    field_labels = _extract_field_labels(response_schema)
 
     return ApiCatalogEntry(
         id=str(endpoint.get("id") or f"{method}:{path}"),
@@ -267,6 +270,7 @@ def _build_entry(
         tag_name=_normalize_tag_name(tag_name),
         business_intents=_infer_business_intents(name, summary, path),
         operation_safety=operation_safety,
+        requires_confirmation=_infer_requires_confirmation(operation_safety=operation_safety),
         method=method,
         path=path,
         auth_required=auth_required,
@@ -295,12 +299,14 @@ def _build_entry(
         param_schema=_to_param_schema(request_schema),
         response_schema=response_schema,
         sample_request=sample_request,
-        response_data_path=_infer_response_data_path(sample_response, response_schema),
-        field_labels=_extract_field_labels(response_schema),
+        response_data_path=response_data_path,
+        field_labels=field_labels,
         ui_hint=_infer_ui_hint(summary, path, sample_response),
         detail_hint=ApiCatalogDetailHint(),
         pagination_hint=ApiCatalogPaginationHint(),
         template_hint=ApiCatalogTemplateHint(),
+        request_field_profiles=_extract_request_field_profiles(method, _to_param_schema(request_schema)),
+        response_field_profiles=_extract_response_field_profiles(response_schema, response_data_path, field_labels),
     )
 
 
@@ -332,6 +338,34 @@ def _build_system_dict_entry() -> ApiCatalogEntry:
         再通过 `allowed_values` 约束可用字典编码，避免为每个下拉框膨胀一条 API。
     """
     allowed_values = ["customer_region", "customer_level", "industry", "contract_type"]
+    param_schema = ParamSchema(
+        type="object",
+        properties={
+            "types": {
+                "type": "string",
+                "description": "字典编码，多个用逗号分隔",
+                "allowed_values": allowed_values,
+            }
+        },
+        required=["types"],
+    )
+    response_schema = {
+        "type": "object",
+        "properties": {
+            "data": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "label": {"type": "string", "description": "显示文案"},
+                        "value": {"type": "string", "description": "提交值"},
+                        "type": {"type": "string", "description": "字典编码"},
+                    },
+                },
+            }
+        },
+    }
+    field_labels = {"label": "标签", "value": "值"}
     return ApiCatalogEntry(
         id="system_dicts_v1",
         description="批量获取系统级字典项。用于生成表单下拉选项和枚举值映射。",
@@ -343,6 +377,7 @@ def _build_system_dict_entry() -> ApiCatalogEntry:
         tag_name="dictionary",
         business_intents=["query_business_data"],
         operation_safety="query",
+        requires_confirmation=False,
         method="GET",
         path="/api/system/dicts",
         auth_required=True,
@@ -360,40 +395,17 @@ def _build_system_dict_entry() -> ApiCatalogEntry:
             "query_safe": True,
             "enforcement": "delegated_to_business_server",
         },
-        param_schema=ParamSchema(
-            type="object",
-            properties={
-                "types": {
-                    "type": "string",
-                    "description": "字典编码，多个用逗号分隔",
-                    "allowed_values": allowed_values,
-                }
-            },
-            required=["types"],
-        ),
-        response_schema={
-            "type": "object",
-            "properties": {
-                "data": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "label": {"type": "string", "description": "显示文案"},
-                            "value": {"type": "string", "description": "提交值"},
-                            "type": {"type": "string", "description": "字典编码"},
-                        },
-                    },
-                }
-            },
-        },
+        param_schema=param_schema,
+        response_schema=response_schema,
         sample_request={"types": "customer_region,customer_level"},
         response_data_path="data",
-        field_labels={"label": "标签", "value": "值"},
+        field_labels=field_labels,
         ui_hint="list",
         detail_hint=ApiCatalogDetailHint(),
         pagination_hint=ApiCatalogPaginationHint(),
         template_hint=ApiCatalogTemplateHint(),
+        request_field_profiles=_extract_request_field_profiles("GET", param_schema),
+        response_field_profiles=_extract_response_field_profiles(response_schema, "data", field_labels),
     )
 
 
@@ -553,6 +565,139 @@ def _infer_ui_hint(summary: str, path: str, sample_response: Any) -> str:
         ):
             return "table"
     return "table"
+
+
+def _infer_requires_confirmation(*, operation_safety: str) -> bool:
+    """推断接口是否需要确认。
+
+    功能：
+        Phase 04 先把“高风险 mutation 默认需要确认”固化进 catalog 层，避免后续 workflow
+        继续靠零散 if/else 去补判安全语义。等业务元数据表补齐显式字段后，这里再切换为主读 DB。
+    """
+    return operation_safety == "mutation"
+
+
+def _extract_request_field_profiles(method: str, param_schema: ParamSchema) -> list[ApiCatalogFieldProfile]:
+    """提取请求侧原始字段画像。
+
+    功能：
+        GraphRAG 后续要做字段名称 / 类型 / 描述三元归一，因此 catalog 层必须先保存原始证据，
+        避免 resolver 每次都重新遍历 schema 并重复推断字段位置。
+    """
+    location: str = "queryParams" if method.upper() == "GET" else "body"
+    required_fields = set(param_schema.required)
+    profiles: list[ApiCatalogFieldProfile] = []
+    for field_name, field_schema in param_schema.properties.items():
+        if not isinstance(field_schema, dict):
+            continue
+        profiles.append(
+            ApiCatalogFieldProfile(
+                direction="request",
+                location=location,
+                field_name=field_name,
+                json_path=f"{location}.{field_name}",
+                raw_field_type=_describe_schema_type(field_schema),
+                raw_description=_extract_schema_description(field_schema),
+                required=field_name in required_fields,
+                array_mode=_schema_is_array(field_schema),
+            )
+        )
+    return profiles
+
+
+def _extract_response_field_profiles(
+    response_schema: dict[str, Any],
+    response_data_path: str,
+    field_labels: dict[str, str],
+) -> list[ApiCatalogFieldProfile]:
+    """提取响应侧原始字段画像。
+
+    功能：
+        第一阶段不追求穷尽所有深层字段，只稳定提取主数据区的业务字段，供 GraphRAG 建图使用。
+    """
+    data_schema, array_mode = _resolve_schema_at_data_path(response_schema, response_data_path)
+    if not isinstance(data_schema, dict):
+        return []
+
+    properties = data_schema.get("properties")
+    if not isinstance(properties, dict):
+        return []
+
+    profiles: list[ApiCatalogFieldProfile] = []
+    for field_name, field_schema in properties.items():
+        if not isinstance(field_schema, dict):
+            continue
+        json_path = f"{response_data_path}[].{field_name}" if array_mode else f"{response_data_path}.{field_name}"
+        profiles.append(
+            ApiCatalogFieldProfile(
+                direction="response",
+                location="response",
+                field_name=field_name,
+                json_path=json_path,
+                raw_field_type=_describe_schema_type(field_schema),
+                raw_description=_extract_schema_description(field_schema, fallback_label=field_labels.get(field_name)),
+                required=False,
+                array_mode=array_mode or _schema_is_array(field_schema),
+            )
+        )
+    return profiles
+
+
+def _resolve_schema_at_data_path(response_schema: dict[str, Any], response_data_path: str) -> tuple[dict[str, Any], bool]:
+    """按 `response_data_path` 定位响应 schema 节点。
+
+    功能：
+        `response_data_path` 是执行器和渲染层共享的主数据事实。这里复用同一锚点提取字段，
+        可以避免“执行时认 data.list，建图时却误从根节点抽字段”的结构漂移。
+    """
+    current = response_schema
+    array_mode = False
+    for segment in [part for part in response_data_path.split(".") if part]:
+        properties = current.get("properties") if isinstance(current, dict) else None
+        next_schema = properties.get(segment) if isinstance(properties, dict) else None
+        if not isinstance(next_schema, dict):
+            return {}, False
+        if next_schema.get("type") == "array":
+            items = next_schema.get("items")
+            if not isinstance(items, dict):
+                return {}, False
+            current = items
+            array_mode = True
+            continue
+        current = next_schema
+    return current if isinstance(current, dict) else {}, array_mode
+
+
+def _describe_schema_type(field_schema: dict[str, Any]) -> str | None:
+    """把 OpenAPI 风格 schema 类型压成稳定字符串。"""
+    schema_type = str(field_schema.get("type") or "").strip().lower()
+    schema_format = str(field_schema.get("format") or "").strip().lower()
+    if schema_type == "array":
+        items = field_schema.get("items")
+        if isinstance(items, dict):
+            item_type = str(items.get("type") or "object").strip().lower() or "object"
+            return f"list<{item_type}>"
+        return "list<object>"
+    if schema_type == "string" and schema_format:
+        return schema_format
+    if schema_type == "integer" and schema_format:
+        return schema_format
+    if schema_type:
+        return schema_type
+    return None
+
+
+def _extract_schema_description(field_schema: dict[str, Any], *, fallback_label: str | None = None) -> str | None:
+    """抽取字段原始描述。"""
+    label = field_schema.get("description") or field_schema.get("title") or fallback_label
+    if isinstance(label, str) and label.strip():
+        return label.strip()
+    return None
+
+
+def _schema_is_array(field_schema: dict[str, Any]) -> bool:
+    """判断字段是否数组。"""
+    return str(field_schema.get("type") or "").strip().lower() == "array"
 
 
 def _to_param_schema(value: dict[str, Any]) -> ParamSchema:
