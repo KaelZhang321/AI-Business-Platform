@@ -368,6 +368,87 @@ async def test_generate_ui_spec_parses_dirty_renderer_json_payload(
 
 
 @pytest.mark.asyncio
+async def test_generate_ui_spec_sanitizes_llm_detail_request_keys_to_request_schema(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "llm_ui_spec_enabled", True)
+    service = DynamicUIService(catalog_service=StubUICatalogService())
+    service._llm_service = RecordingLLM(
+        [
+            """
+            {
+              "root": "root",
+              "state": {},
+              "elements": {
+                "root": {
+                  "type": "PlannerCard",
+                  "props": {"title": "客户详情"},
+                  "children": ["detail"]
+                },
+                "detail": {
+                  "type": "PlannerDetailCard",
+                  "props": {
+                    "title": "客户详情",
+                    "items": [
+                      {"label": "主键ID", "value": "71593"},
+                      {"label": "客户姓名", "value": "张三"}
+                    ],
+                    "api": "/api/v1/ui-builder/runtime/endpoints/customer_detail/invoke",
+                    "queryParams": {"主键ID": "71593"},
+                    "body": {},
+                    "flowNum": "trace-detail-001",
+                    "createdBy": "user-001"
+                  }
+                }
+              }
+            }
+            """
+        ]
+    )
+    runtime = _make_runtime().model_copy(
+        update={
+            "detail": ApiQueryDetailRuntime(
+                enabled=True,
+                api_id="customer_detail",
+                route_url="/api/v1/api-query",
+                ui_action="remoteQuery",
+                request=ApiQueryDetailRequestRuntime(
+                    param_source="queryParams",
+                    identifier_param="id",
+                    request_schema_fields=["id"],
+                ),
+                source=ApiQueryDetailSourceRuntime(
+                    identifier_field="主键ID",
+                    value_type="string",
+                    required=True,
+                ),
+            )
+        }
+    )
+
+    result = await service.generate_ui_spec_result(
+        intent="query",
+        data=[{"主键ID": "71593", "客户姓名": "张三"}],
+        context={
+            "question": "帮我查一下客户71593的详情",
+            "title": "客户详情",
+            "query_render_mode": "detail",
+            "request_params": {"id": 71593},
+            "flow_num": "trace-detail-001",
+            "created_by": "user-001",
+        },
+        runtime=runtime,
+        trace_id="trace-detail-001",
+    )
+
+    assert result.frozen is False
+    assert result.spec is not None
+    detail = _root_child_by_type(result.spec, "PlannerDetailCard")
+    assert detail["props"]["queryParams"] == {"id": 71593}
+    assert detail["props"]["body"] == {}
+
+
+@pytest.mark.asyncio
 async def test_generate_ui_spec_falls_back_to_rule_renderer_when_llm_output_is_invalid(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -519,7 +600,7 @@ async def test_mutation_form_skipped_status_still_renders_planner_form() -> None
                 code="remoteMutation",
                 description="远程写入",
                 enabled=True,
-                params_schema={"type": "object", "required": ["api_id", "payload"]},
+                params_schema={"type": "object", "required": ["api_id"]},
             )
         ],
         form=ApiQueryFormRuntime(
@@ -606,9 +687,8 @@ async def test_mutation_form_skipped_status_still_renders_planner_form() -> None
     assert submit["on"]["press"]["params"]["api_id"] == "employee_update"
     assert submit["on"]["press"]["params"]["api"] == "/api/v1/ui-builder/runtime/endpoints/employee_update/invoke"
     assert submit["on"]["press"]["params"]["queryParams"] == {}
-    assert submit["on"]["press"]["params"]["payload"]["email"] == {"$bindState": "/form/email"}
-    assert submit["on"]["press"]["params"]["payload"]["mobile"] == {"$bindState": "/form/mobile"}
     assert submit["on"]["press"]["params"]["body"]["email"] == {"$bindState": "/form/email"}
+    assert submit["on"]["press"]["params"]["body"]["mobile"] == {"$bindState": "/form/mobile"}
     assert submit["on"]["press"]["params"]["flowNum"] == ""
     assert submit["on"]["press"]["params"]["createdBy"] == ""
     root = _root_element(result.spec)

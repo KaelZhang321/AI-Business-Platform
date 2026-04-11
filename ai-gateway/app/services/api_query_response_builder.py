@@ -33,6 +33,7 @@ from app.models.schemas import (
 from app.services.api_catalog.dag_executor import DagExecutionReport, DagStepExecutionRecord
 from app.services.api_catalog.registry_source import ApiCatalogRegistrySource
 from app.services.api_catalog.schema import ApiCatalogEntry
+from app.services.api_query_request_schema_gate import build_request_schema_gated_fields
 from app.services.api_query_state import ApiQueryExecutionState, ApiQueryRuntimeContext, ApiQueryState
 from app.services.api_query_state import ApiQueryDeletePreviewContext
 from app.services.dynamic_ui_service import DynamicUIService, UISpecBuildResult
@@ -164,6 +165,10 @@ class ApiQueryResponseBuilder:
             business_intents=business_intents,
             ui_catalog_service=self._ui_catalog_service,
         )
+        runtime = await _enrich_detail_runtime_request_schema(
+            runtime,
+            registry_source=self._registry_source,
+        )
 
         # patch 响应只服务列表局部刷新，不再额外生成完整页面结构。
         if response_mode == ApiQueryResponseMode.PATCH:
@@ -199,6 +204,7 @@ class ApiQueryResponseBuilder:
                 "query_render_mode": _infer_query_render_mode(execution_report, anchor_record),
                 "flow_num": state["trace_id"],
                 "created_by": created_by,
+                "request_params": dict(anchor_record.resolved_params) if anchor_record is not None else {},
                 "context_pool": {step_id: step.model_dump(exclude_none=True) for step_id, step in context_pool.items()},
                 "business_intents": [intent.model_dump() for intent in business_intents],
             },
@@ -507,6 +513,7 @@ class ApiQueryResponseBuilder:
                 # 不到 flowNum/queryParams/body 这层运行时壳。
                 route_url=_build_runtime_invoke_url(entry.id),
                 ui_action="remoteMutation",
+                request_schema_fields=list(entry.param_schema.properties),
                 state_path="/form",
                 fields=form_fields,
                 submit=ApiQueryFormSubmitRuntime(
@@ -721,6 +728,7 @@ class ApiQueryResponseBuilder:
                 api_id=delete_preview_context.delete_entry.id,
                 route_url=_build_runtime_invoke_url(delete_preview_context.delete_entry.id),
                 ui_action="remoteMutation",
+                request_schema_fields=list(delete_preview_context.delete_entry.param_schema.properties),
                 state_path="/form",
                 fields=form_fields,
                 submit=ApiQueryFormSubmitRuntime(
@@ -793,7 +801,7 @@ class ApiQueryResponseBuilder:
 
         Edge Cases:
             - 页面展示候选列表时，渲染阶段临时按 `SUCCESS` 处理，否则规则渲染会被 `SKIPPED` Notice 短路
-            - 每行动作模板只绑定标识字段，不把整行数据整包塞进删除 payload，避免误删字段漂移
+            - 每行动作模板只绑定标识字段，不把整行数据整包塞进删除请求体，避免误删字段漂移
         """
 
         candidate_rows = _build_delete_candidate_rows(
@@ -806,17 +814,16 @@ class ApiQueryResponseBuilder:
                 "label": "删除该角色",
                 "params": {
                     "api_id": delete_preview_context.delete_entry.id,
-                    "api": _build_runtime_invoke_api(delete_preview_context.delete_entry.id),
-                    "flowNum": state["trace_id"],
-                    "createdBy": created_by or "",
-                    "queryParams": {},
-                    "body": _build_delete_row_payload_template(
-                        delete_entry=delete_preview_context.delete_entry,
-                        identifier_field=delete_preview_context.identifier_field,
-                    ),
-                    "payload": _build_delete_row_payload_template(
-                        delete_entry=delete_preview_context.delete_entry,
-                        identifier_field=delete_preview_context.identifier_field,
+                    **build_request_schema_gated_fields(
+                        api_id=delete_preview_context.delete_entry.id,
+                        param_source="body",
+                        params=_build_delete_row_payload_template(
+                            delete_entry=delete_preview_context.delete_entry,
+                            identifier_field=delete_preview_context.identifier_field,
+                        ),
+                        flow_num=state["trace_id"],
+                        created_by=created_by or "",
+                        allowed_fields=delete_preview_context.delete_entry.param_schema.properties.keys(),
                     ),
                     "source": {
                         "identifier_field": delete_preview_context.identifier_field,
@@ -830,7 +837,7 @@ class ApiQueryResponseBuilder:
             }
         ]
         base_runtime = ApiQueryUIRuntime(
-            components=["PlannerCard", "PlannerTable", "PlannerButton"],
+            components=["PlannerCard", "PlannerTable", "PlannerForm", "PlannerPagination", "PlannerButton"],
             ui_actions=_build_runtime_actions({"remoteMutation", "refresh"}, ui_catalog_service=self._ui_catalog_service),
         )
         ui_build_result = await _generate_ui_spec_result(
@@ -1413,6 +1420,7 @@ def _build_ui_runtime(
             route_url="/api/v1/api-query" if list_enabled else None,
             ui_action=(pagination_hint.ui_action or "remoteQuery") if list_enabled else None,
             param_source=param_source if list_enabled else None,
+            request_schema_fields=list(entry.param_schema.properties) if list_enabled else None,
             pagination=ApiQueryListPaginationRuntime(
                 enabled=pagination_enabled,
                 total=execution_result.total,
@@ -1440,6 +1448,11 @@ def _build_ui_runtime(
             request=ApiQueryDetailRequestRuntime(
                 param_source=param_source if detail_enabled else None,
                 identifier_param=(detail_hint.query_param or identifier_field) if detail_enabled else None,
+                request_schema_fields=(
+                    [(detail_hint.query_param or identifier_field)]
+                    if detail_enabled and (detail_hint.query_param or identifier_field)
+                    else None
+                ),
             ),
             source=ApiQueryDetailSourceRuntime(
                 identifier_field=identifier_field if detail_enabled else None,
@@ -1455,6 +1468,82 @@ def _build_ui_runtime(
             ),
         ),
     )
+
+
+async def _enrich_detail_runtime_request_schema(
+    runtime: ApiQueryUIRuntime,
+    *,
+    registry_source: ApiCatalogRegistrySource,
+) -> ApiQueryUIRuntime:
+    """按详情接口自己的 request_schema 修正详情请求参数键。"""
+
+    if not runtime.detail.enabled or not runtime.detail.api_id:
+        return runtime
+
+    try:
+        detail_entry = await registry_source.get_entry_by_id(runtime.detail.api_id)
+    except Exception as exc:  # pragma: no cover - 依赖外部治理源状态的兜底分支
+        logger.warning(
+            "api_query failed to load detail request_schema api_id=%s error=%s",
+            runtime.detail.api_id,
+            exc,
+        )
+        return runtime
+
+    if detail_entry is None:
+        return runtime
+
+    resolved_identifier_param = _resolve_detail_identifier_param(
+        detail_entry=detail_entry,
+        preferred_param=runtime.detail.request.identifier_param,
+        source_identifier_field=runtime.detail.source.identifier_field,
+    )
+    return runtime.model_copy(
+        update={
+            "detail": runtime.detail.model_copy(
+                update={
+                    "request": runtime.detail.request.model_copy(
+                        update={
+                            "identifier_param": resolved_identifier_param,
+                            "request_schema_fields": list(detail_entry.param_schema.properties),
+                        }
+                    )
+                }
+            )
+        }
+    )
+
+
+def _resolve_detail_identifier_param(
+    *,
+    detail_entry: ApiCatalogEntry,
+    preferred_param: str | None,
+    source_identifier_field: str | None,
+) -> str | None:
+    """选择一个真实存在于详情接口 request_schema 中的参数键。"""
+
+    schema_properties = list(detail_entry.param_schema.properties)
+    if not schema_properties:
+        return preferred_param or source_identifier_field
+
+    if preferred_param in schema_properties:
+        return preferred_param
+    if source_identifier_field in schema_properties:
+        return source_identifier_field
+
+    id_like_fields = [
+        field_name
+        for field_name in schema_properties
+        if field_name.lower() in {"id", "ids"} or field_name.lower().endswith("id")
+    ]
+    if id_like_fields:
+        return id_like_fields[0]
+
+    for required_field in detail_entry.param_schema.required:
+        if required_field in detail_entry.param_schema.properties:
+            return required_field
+
+    return schema_properties[0]
 
 
 async def _enrich_runtime_from_ui_spec(
@@ -1493,7 +1582,7 @@ async def _extract_form_runtime_from_spec(
         实际字段一致，而不是和理论 schema 脱节。
 
     Edge Cases:
-        - 没有写意图、没有 remoteMutation、或 payload 不含 `$bindState` 时都会直接视为“无表单”
+        - 没有写意图、没有 remoteMutation、或 `body/queryParams` 不含 `$bindState` 时都会直接视为“无表单”
         - 治理源查询失败不会让整个响应失败，只会回退到最小表单契约
         - 未出现在交互组件中的绑定会被视为只读上下文字段，避免误标为可编辑输入
     """
@@ -1514,8 +1603,10 @@ async def _extract_form_runtime_from_spec(
         return ApiQueryFormRuntime()
 
     api_id = action_params.get("api_id")
-    payload = action_params.get("payload")
-    if not isinstance(api_id, str) or not api_id.strip() or not isinstance(payload, dict):
+    request_params = action_params.get("body")
+    if not isinstance(request_params, dict) or not request_params:
+        request_params = action_params.get("queryParams")
+    if not isinstance(api_id, str) or not api_id.strip() or not isinstance(request_params, dict):
         return ApiQueryFormRuntime()
 
     mutation_entry: ApiCatalogEntry | None = None
@@ -1536,7 +1627,7 @@ async def _extract_form_runtime_from_spec(
 
     form_fields: list[ApiQueryFormFieldRuntime] = []
     bind_paths: list[str] = []
-    for submit_key, submit_value in payload.items():
+    for submit_key, submit_value in request_params.items():
         if not isinstance(submit_value, dict):
             continue
         state_path = submit_value.get("$bindState")
@@ -1582,6 +1673,7 @@ async def _extract_form_runtime_from_spec(
         # 这样不同环境、灰度域名和回滚切换都不会散落到 renderer 契约里。
         route_url=_build_runtime_invoke_url(api_id),
         ui_action="remoteMutation",
+        request_schema_fields=list(property_schemas),
         state_path=_infer_form_state_root(bind_paths),
         fields=form_fields,
         submit=ApiQueryFormSubmitRuntime(business_intent=write_intent.code, confirm_required=True),
@@ -1641,18 +1733,6 @@ def _build_runtime_invoke_url(api_id: str) -> str:
         return settings.api_query_runtime_invoke_url_template.format(id=api_id)
     except KeyError as exc:
         raise RuntimeError("API_QUERY_RUNTIME_INVOKE_URL_TEMPLATE 缺少 {id} 占位符") from exc
-
-
-def _build_runtime_invoke_api(api_id: str) -> str:
-    """构造前端二跳直连 runtime invoke 的相对 API 路径。
-
-    功能：
-        前端二跳不再回调 `/api-query`，而是直接命中 UI Builder 的 runtime invoke 入口。
-        这里固定返回相对路径，是为了让前端继续复用当前域名、网关鉴权和代理配置，而不把
-        环境域名硬编码进 `ui_spec`。
-    """
-
-    return f"/api/v1/ui-builder/runtime/endpoints/{api_id}/invoke"
 
 
 def _normalize_response_created_by(user_context: dict[str, Any]) -> str:

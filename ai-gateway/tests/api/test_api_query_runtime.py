@@ -11,7 +11,7 @@ from app.models.schemas import (
     ApiQueryPlanStep,
     ApiQueryRoutingResult,
 )
-from app.services.api_catalog.schema import ApiCatalogEntry, ApiCatalogSearchResult
+from app.services.api_catalog.schema import ApiCatalogDetailHint, ApiCatalogEntry, ApiCatalogSearchResult
 
 
 class StubRetriever:
@@ -116,10 +116,12 @@ class PassThroughSnapshotService:
 
 
 class StubRegistrySource:
-    def __init__(self, entry: ApiCatalogEntry | None) -> None:
+    def __init__(self, entry: ApiCatalogEntry | dict[str, ApiCatalogEntry] | None) -> None:
         self._entry = entry
 
     async def get_entry_by_id(self, api_id: str) -> ApiCatalogEntry | None:
+        if isinstance(self._entry, dict):
+            return self._entry.get(api_id)
         return self._entry
 
 
@@ -386,7 +388,7 @@ def test_api_query_renders_mutation_form_instead_of_skipped_notice(monkeypatch) 
     assert submit["api_id"] == "employee_update"
     _assert_runtime_metadata(submit, trace_id=body["trace_id"], api_suffix="employee_update")
     assert submit["body"]["email"] == {"$bindState": "/form/email"}
-    assert submit["payload"]["email"] == {"$bindState": "/form/email"}
+    assert submit["body"]["id"] == {"$bindState": "/form/id"}
     root_children = _get_root_children(body["ui_spec"])
     assert all(child["type"] != "PlannerNotice" for child in root_children)
 
@@ -498,6 +500,60 @@ def test_api_query_renders_single_object_as_detail_card(monkeypatch) -> None:
     assert {"label": "customerId", "value": "C001"} in detail_card["props"]["items"]
     assert {"label": "level", "value": "VIP"} in detail_card["props"]["items"]
     _assert_runtime_metadata(detail_card["props"], trace_id=body["trace_id"], api_suffix="customer_list")
+
+
+def test_api_query_detail_card_uses_detail_request_schema_keys(monkeypatch) -> None:
+    entry = _make_entry()
+    entry.detail_hint = ApiCatalogDetailHint(
+        enabled=True,
+        api_id="customer_detail",
+        identifier_field="customerId",
+        query_param="legacyId",
+    )
+    detail_entry = ApiCatalogEntry(
+        id="customer_detail",
+        description="查询客户详情",
+        domain="crm",
+        operation_safety="query",
+        method="GET",
+        path="/api/v1/customers/detail",
+        param_schema={
+            "type": "object",
+            "properties": {
+                "customerId": {"type": "string"},
+            },
+            "required": ["customerId"],
+        },
+    )
+    stub_services = (
+        StubRetriever(entry),
+        StubExtractor(entry),
+        StubExecutor(
+            ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.SUCCESS,
+                data={"customerId": "C001", "customerName": "张三"},
+                total=1,
+            )
+        ),
+        api_query_routes.DynamicUIService(),
+        PassThroughSnapshotService(),
+    )
+    monkeypatch.setattr(api_query_routes, "_get_services", lambda: stub_services)
+    monkeypatch.setattr(
+        api_query_routes,
+        "_get_registry_source",
+        lambda: StubRegistrySource({"customer_detail": detail_entry}),
+    )
+
+    client = TestClient(create_test_app())
+    response = client.post("/api/v1/api-query", json={"query": "查询客户详情"})
+
+    assert response.status_code == 200
+    body = response.json()
+    detail_card = _get_child_by_type(body["ui_spec"], "PlannerDetailCard")
+    assert detail_card["props"]["queryParams"] == {"customerId": "C001"}
+    assert detail_card["props"]["body"] == {}
+    assert "legacyId" not in detail_card["props"]["queryParams"]
 
 
 def test_api_query_direct_mode_renders_detail_card_without_nl_chain(monkeypatch) -> None:

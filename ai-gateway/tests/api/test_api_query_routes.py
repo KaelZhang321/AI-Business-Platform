@@ -265,10 +265,11 @@ class FormRuntimeDynamicUI:
                             "action": "remoteMutation",
                             "params": {
                                 "api_id": "customer_update",
-                                "payload": {
+                                "body": {
                                     "customerId": {"$bindState": "/form/customerId"},
                                     "industry": {"$bindState": "/form/industry"},
                                 },
+                                "queryParams": {},
                             },
                         }
                     },
@@ -1353,4 +1354,4 @@ def test_api_query_returns_generated_form_spec_for_write_intent(monkeypatch) -> 
     assert body["ui_spec"]["elements"]["child_2"]["type"] == "PlannerSelect"
     submit = body["ui_spec"]["elements"]["child_3"]["on"]["press"]["params"]
     assert submit["api_id"] == "customer_update"
-    assert submit["payload"]["industry"] == {"$bindState": "/form/industry"}
+    assert submit["body"]["industry"] == {"$bindState": "/form/industry"}

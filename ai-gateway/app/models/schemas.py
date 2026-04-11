@@ -426,6 +426,11 @@ class ApiQueryDetailRequestRuntime(BaseModel):
     response_mode: Literal["full_spec"] = Field("full_spec", description="详情二跳当前固定返回整页 Spec")
     param_source: Literal["queryParams", "body"] | None = Field(None, description="详情参数的归属位置")
     identifier_param: str | None = Field(None, description="详情查询使用的主键参数名")
+    request_schema_fields: list[str] | None = Field(
+        None,
+        description="详情接口 request_schema 的顶层字段白名单，仅供网关内部生成 ui_spec 使用。",
+        exclude=True,
+    )
 
 
 class ApiQueryDetailSourceRuntime(BaseModel):
@@ -510,6 +515,11 @@ class ApiQueryListRuntime(BaseModel):
     route_url: str | None = Field(None, description="建议调用的网关路由")
     ui_action: str | None = Field(None, description="推荐的前端动作编码")
     param_source: Literal["queryParams", "body"] | None = Field(None, description="列表参数的归属位置")
+    request_schema_fields: list[str] | None = Field(
+        None,
+        description="列表接口 request_schema 的顶层字段白名单，仅供网关内部生成 ui_spec 使用。",
+        exclude=True,
+    )
     pagination: ApiQueryListPaginationRuntime = Field(
         default_factory=ApiQueryListPaginationRuntime,
         description="列表分页运行时契约",
@@ -542,6 +552,7 @@ class ApiQueryFormFieldRuntime(BaseModel):
     """
 
     name: str = Field(..., description="字段业务名")
+    description: str = Field(None, description="字段描述")
     value_type: str = Field(..., description="字段值类型")
     state_path: str = Field(..., description="字段绑定到 `ui_spec.state` 的路径")
     submit_key: str = Field(..., description="提交给后端时使用的 payload 键名")
@@ -570,6 +581,11 @@ class ApiQueryFormRuntime(BaseModel):
     api_id: str | None = Field(None, description="表单提交使用的接口 ID")
     route_url: str | None = Field(None, description="建议调用的 runtime invoke URL；无具体接口上下文时为空")
     ui_action: str | None = Field(None, description="推荐的前端动作编码")
+    request_schema_fields: list[str] | None = Field(
+        None,
+        description="表单提交接口 request_schema 的顶层字段白名单，仅供网关内部生成 ui_spec 使用。",
+        exclude=True,
+    )
     state_path: str | None = Field(None, description="表单根状态路径")
     fields: list[ApiQueryFormFieldRuntime] = Field(default_factory=list, description="表单字段运行时契约")
     submit: ApiQueryFormSubmitRuntime = Field(

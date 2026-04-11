@@ -207,7 +207,10 @@ def _build_role_delete_entry() -> ApiCatalogEntry:
         operation_safety="mutation",
         param_schema={
             "type": "object",
-            "properties": {},
+            "properties": {
+                "id": {"type": "string"},
+                "roleName": {"type": "string"},
+            },
             "required": [],
         },
         detail_hint=ApiCatalogDetailHint(enabled=False),
@@ -872,7 +875,7 @@ async def test_workflow_delete_role_returns_confirm_form_when_single_match() -> 
     assert response.execution_plan.steps[0].params == {"roleName": "健管师"}
     assert response.ui_spec["state"]["form"]["roleName"] == "健管师"
     submit = response.ui_spec["elements"]["form_submit"]
-    assert submit["on"]["press"]["params"]["payload"] == {"roleName": "健管师"}
+    assert submit["on"]["press"]["params"]["body"] == {"roleName": "健管师"}
 
 
 @pytest.mark.asyncio
@@ -990,10 +993,10 @@ async def test_workflow_delete_role_returns_candidate_table_when_multiple_matche
     assert executor.calls == 1
     assert response.execution_status == ApiQueryExecutionStatus.SKIPPED
     assert response.execution_plan is None
-    table = response.ui_spec["elements"]["child_1"]
+    table = response.ui_spec["elements"]["report-table"]
     assert table["type"] == "PlannerTable"
     assert len(table["props"]["dataSource"]) == 2
     row_action = table["props"]["rowActions"][0]
     assert row_action["type"] == "remoteMutation"
     assert row_action["label"] == "删除该角色"
-    assert row_action["params"]["payload"] == {"id": {"$bindRow": "id"}}
+    assert row_action["params"]["body"] == {"id": {"$bindRow": "id"}}

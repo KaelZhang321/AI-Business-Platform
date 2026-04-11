@@ -49,6 +49,8 @@ LEFT JOIN ui_api_tags t ON e.tag_id = t.id
 WHERE e.status = 'active'
 """
 
+_API_CATALOG_REGISTRY_SELECT_BY_ID_SQL = _API_CATALOG_REGISTRY_SELECT_SQL + "AND e.id = %s\n"
+
 
 class ApiCatalogSourceError(RuntimeError):
     """Raised when the registry source cannot be loaded."""
@@ -103,7 +105,7 @@ class ApiCatalogRegistrySource:
             return builtin_entry
 
         try:
-            rows = await self._fetch_mysql_rows(_API_CATALOG_REGISTRY_SELECT_SQL, (api_id,))
+            rows = await self._fetch_mysql_rows(_API_CATALOG_REGISTRY_SELECT_BY_ID_SQL, (api_id,))
         except Exception as exc:
             raise ApiCatalogSourceError(f"无法从 MySQL 加载接口 {api_id}: {exc}") from exc
 

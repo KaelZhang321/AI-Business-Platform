@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import json
 import logging
 import re
@@ -15,6 +16,7 @@ from app.models.schemas import (
     ApiQueryUIRuntime,
     KnowledgeResult,
 )
+from app.services.api_query_request_schema_gate import build_request_schema_gated_fields
 from app.services.ui_catalog_service import UICatalogService
 from app.services.ui_spec_guard import UISpecGuard, UISpecValidationResult
 
@@ -24,7 +26,6 @@ _LLM_RENDER_ROW_LIMIT = 3
 _LLM_RENDER_KEY_LIMIT = 8
 _LLM_RENDER_STRING_LIMIT = 200
 _LLM_RENDER_MAX_ATTEMPTS = 2
-_RUNTIME_INVOKE_API_TEMPLATE = "/api/v1/ui-builder/runtime/endpoints/{id}/invoke"
 
 
 @dataclass(slots=True)
@@ -164,6 +165,13 @@ class DynamicUIService:
         if candidate_spec is None:
             return UISpecBuildResult()
 
+        candidate_spec = self._sanitize_runtime_request_metadata(
+            candidate_spec,
+            intent=intent,
+            context=context,
+            runtime=runtime,
+        )
+
         validation = self._get_guard().validate(candidate_spec, intent=intent, runtime=runtime)
         if validation.is_valid:
             return UISpecBuildResult(spec=candidate_spec, validation=validation, frozen=False)
@@ -180,6 +188,311 @@ class DynamicUIService:
             validation=validation,
             frozen=True,
         )
+
+    def _sanitize_runtime_request_metadata(
+        self,
+        spec: dict[str, Any],
+        *,
+        intent: str,
+        context: dict[str, Any] | None,
+        runtime: ApiQueryUIRuntime | None,
+    ) -> dict[str, Any]:
+        """在 Guard 校验前统一回写稳定的 runtime 请求元数据。
+
+        功能：
+            LLM 生成的详情卡片和动作对象可能会把展示 label 混进 `body/queryParams`，
+            导致请求键名漂移。这里基于 runtime 契约重新回写已知节点的请求元数据，
+            保证前端真正执行时只看到 request_schema 允许的键。
+        """
+
+        if runtime is None or not self._is_flat_spec(spec):
+            return spec
+
+        sanitized_spec = deepcopy(spec)
+        elements = sanitized_spec.get("elements")
+        if not isinstance(elements, dict):
+            return spec
+
+        normalized_context = context if isinstance(context, dict) else {}
+        state = sanitized_spec.get("state")
+        normalized_state = state if isinstance(state, dict) else {}
+
+        if intent == "query":
+            self._sanitize_query_runtime_metadata(
+                elements=elements,
+                state=normalized_state,
+                context=normalized_context,
+                runtime=runtime,
+            )
+        elif intent == "mutation_form":
+            self._sanitize_mutation_runtime_metadata(
+                elements=elements,
+                context=normalized_context,
+                runtime=runtime,
+            )
+        return sanitized_spec
+
+    def _sanitize_query_runtime_metadata(
+        self,
+        *,
+        elements: dict[str, Any],
+        state: dict[str, Any],
+        context: dict[str, Any],
+        runtime: ApiQueryUIRuntime,
+    ) -> None:
+        """修正查询页中列表、详情和行级动作的请求元数据。"""
+
+        if runtime.list.enabled:
+            list_request_fields = _build_runtime_request_fields(
+                runtime.list.api_id,
+                param_source=runtime.list.param_source,
+                params=dict(runtime.list.query_context.current_params),
+                flow_num=context.get("flow_num"),
+                created_by=context.get("created_by"),
+                request_schema_fields=runtime.list.request_schema_fields,
+            )
+            filter_fields = list(runtime.list.filters.fields)
+            filter_submit_request_fields = _build_runtime_request_fields(
+                runtime.list.api_id,
+                param_source=runtime.list.param_source,
+                params=_build_filter_submit_params(runtime, filter_fields),
+                flow_num=context.get("flow_num"),
+                created_by=context.get("created_by"),
+                request_schema_fields=runtime.list.request_schema_fields,
+            )
+            filter_reset_request_fields = _build_runtime_request_fields(
+                runtime.list.api_id,
+                param_source=runtime.list.param_source,
+                params=_build_filter_reset_params(runtime, filter_fields),
+                flow_num=context.get("flow_num"),
+                created_by=context.get("created_by"),
+                request_schema_fields=runtime.list.request_schema_fields,
+            )
+            for element in elements.values():
+                if not isinstance(element, dict):
+                    continue
+                props = element.get("props")
+                if not isinstance(props, dict):
+                    continue
+                element_type = element.get("type")
+                if element_type == "PlannerForm" and props.get("formCode") == "query_filters":
+                    props.update(list_request_fields)
+                elif element_type == "PlannerTable":
+                    props.update(list_request_fields)
+                    context_row_actions = context.get("row_actions")
+                    if isinstance(context_row_actions, list) and context_row_actions:
+                        props["rowActions"] = deepcopy(context_row_actions)
+                    elif runtime.detail.enabled and runtime.detail.api_id:
+                        props["rowActions"] = [
+                            {
+                                "type": runtime.detail.ui_action or "remoteQuery",
+                                "label": "查看详情",
+                                "params": {
+                                    "api_id": runtime.detail.api_id,
+                                    **_build_runtime_request_fields(
+                                        runtime.detail.api_id,
+                                        param_source=runtime.detail.request.param_source,
+                                        params={
+                                            (
+                                                runtime.detail.request.identifier_param
+                                                or runtime.detail.source.identifier_field
+                                            ): {"$bindRow": runtime.detail.source.identifier_field}
+                                        },
+                                        flow_num=context.get("flow_num"),
+                                        created_by=context.get("created_by"),
+                                        request_schema_fields=(
+                                            runtime.detail.request.request_schema_fields
+                                            or [runtime.detail.request.identifier_param]
+                                        ),
+                                    ),
+                                },
+                            }
+                        ]
+                elif element_type == "PlannerPagination":
+                    props.update(
+                        {
+                            "enabled": runtime.list.pagination.enabled,
+                            "total": runtime.list.pagination.total,
+                            "currentPage": runtime.list.pagination.current_page,
+                            "pageSize": runtime.list.pagination.page_size,
+                            "pageParam": runtime.list.pagination.page_param,
+                            "pageSizeParam": runtime.list.pagination.page_size_param,
+                            **list_request_fields,
+                        }
+                    )
+                elif element_type == "PlannerButton":
+                    label = props.get("label")
+                    if label == "查询":
+                        self._overwrite_button_action_params(
+                            element=element,
+                            expected_action=runtime.list.ui_action or "remoteQuery",
+                            api_id=runtime.list.api_id,
+                            request_fields=filter_submit_request_fields,
+                        )
+                    elif label == "重置":
+                        self._overwrite_button_action_params(
+                            element=element,
+                            expected_action=runtime.list.ui_action or "remoteQuery",
+                            api_id=runtime.list.api_id,
+                            request_fields=filter_reset_request_fields,
+                        )
+
+        if not runtime.detail.enabled or not runtime.detail.api_id:
+            return
+
+        detail_identifier_param = runtime.detail.request.identifier_param or runtime.detail.source.identifier_field
+        if not isinstance(detail_identifier_param, str) or not detail_identifier_param:
+            return
+        detail_identifier_value = self._resolve_detail_identifier_value(
+            elements=elements,
+            context=context,
+            state=state,
+            runtime=runtime,
+        )
+        detail_request_fields = _build_runtime_request_fields(
+            runtime.detail.api_id,
+            param_source=runtime.detail.request.param_source,
+            params={detail_identifier_param: detail_identifier_value} if detail_identifier_value is not None else {},
+            flow_num=context.get("flow_num"),
+            created_by=context.get("created_by"),
+            request_schema_fields=runtime.detail.request.request_schema_fields or [detail_identifier_param],
+        )
+        for element in elements.values():
+            if not isinstance(element, dict) or element.get("type") != "PlannerDetailCard":
+                continue
+            props = element.get("props")
+            if isinstance(props, dict):
+                props.update(detail_request_fields)
+
+    def _sanitize_mutation_runtime_metadata(
+        self,
+        *,
+        elements: dict[str, Any],
+        context: dict[str, Any],
+        runtime: ApiQueryUIRuntime,
+    ) -> None:
+        """修正 mutation 表单页的表单和提交按钮请求元数据。"""
+
+        if not runtime.form.enabled or not runtime.form.api_id:
+            return
+
+        submit_payload = self._resolve_mutation_submit_payload(context=context, runtime=runtime)
+        request_fields = _build_runtime_request_fields(
+            runtime.form.api_id,
+            param_source="body",
+            params=submit_payload,
+            flow_num=context.get("flow_num"),
+            created_by=context.get("created_by"),
+            request_schema_fields=runtime.form.request_schema_fields
+            or [field.submit_key for field in runtime.form.fields],
+        )
+        for element in elements.values():
+            if not isinstance(element, dict):
+                continue
+            props = element.get("props")
+            if element.get("type") == "PlannerForm" and isinstance(props, dict):
+                if runtime.form.form_code:
+                    props["formCode"] = runtime.form.form_code
+                props.update(request_fields)
+                continue
+            if element.get("type") == "PlannerButton":
+                self._overwrite_button_action_params(
+                    element=element,
+                    expected_action=runtime.form.ui_action or "remoteMutation",
+                    api_id=runtime.form.api_id,
+                    request_fields=request_fields,
+                )
+
+    @staticmethod
+    def _overwrite_button_action_params(
+        *,
+        element: dict[str, Any],
+        expected_action: str,
+        api_id: str | None,
+        request_fields: dict[str, Any],
+    ) -> None:
+        """按给定 runtime 契约覆写按钮动作参数。"""
+
+        on = element.get("on")
+        if not isinstance(on, dict):
+            return
+        press = on.get("press")
+        if not isinstance(press, dict):
+            return
+        action = press.get("action")
+        if action != expected_action:
+            return
+        press["params"] = {
+            "api_id": api_id,
+            **request_fields,
+        }
+
+    def _resolve_detail_identifier_value(
+        self,
+        *,
+        elements: dict[str, Any],
+        context: dict[str, Any],
+        state: dict[str, Any],
+        runtime: ApiQueryUIRuntime,
+    ) -> Any:
+        """尽量从稳定来源恢复详情主键值，而不是依赖展示 label。"""
+
+        request_params = context.get("request_params")
+        if isinstance(request_params, dict):
+            identifier_param = runtime.detail.request.identifier_param
+            if isinstance(identifier_param, str) and identifier_param in request_params:
+                return request_params.get(identifier_param)
+            source_identifier_field = runtime.detail.source.identifier_field
+            if isinstance(source_identifier_field, str) and source_identifier_field in request_params:
+                return request_params.get(source_identifier_field)
+
+        root_state = context.get("form_state")
+        if isinstance(root_state, dict):
+            identifier_param = runtime.detail.request.identifier_param
+            if isinstance(identifier_param, str):
+                state_value = self._read_state_value(root_state, f"/form/{identifier_param}")
+                if state_value is not None:
+                    return state_value
+
+        source_identifier_field = runtime.detail.source.identifier_field
+        if isinstance(source_identifier_field, str):
+            for element in elements.values():
+                if not isinstance(element, dict) or element.get("type") != "PlannerDetailCard":
+                    continue
+                props = element.get("props")
+                if not isinstance(props, dict):
+                    continue
+                items = props.get("items")
+                if not isinstance(items, list):
+                    continue
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    if item.get("label") == source_identifier_field:
+                        return item.get("value")
+
+        identifier_param = runtime.detail.request.identifier_param
+        if isinstance(identifier_param, str):
+            state_value = self._read_state_value(state, f"/form/{identifier_param}")
+            if state_value is not None:
+                return state_value
+        return None
+
+    @staticmethod
+    def _resolve_mutation_submit_payload(
+        *,
+        context: dict[str, Any],
+        runtime: ApiQueryUIRuntime,
+    ) -> dict[str, Any]:
+        """解析 mutation 表单提交模板。"""
+
+        custom_submit_payload = context.get("submit_payload")
+        if isinstance(custom_submit_payload, dict):
+            return custom_submit_payload
+        return {
+            field.submit_key: {"$bindState": field.state_path}
+            for field in runtime.form.fields
+        }
 
     def _get_llm_service(self):
         """懒加载 LLMService 单例，避免规则模式也承担额外初始化成本。"""
@@ -315,7 +628,7 @@ class DynamicUIService:
 
         Edge Cases:
             - `runtime.form` 未启用或缺少 `api_id` 时，必须返回 `None`，避免生成一个前端可见但无法提交的假表单
-            - `context.submit_payload` 缺失时，回退到基于 `$bindState` 的延迟取值模板，保证用户修改后的最新输入能进入最终请求
+            - `context.submit_payload` 缺失时，回退到基于 `$bindState` 的延迟取值模板，保证用户修改后的最新输入能进入最终 `body`
             - runtime 元数据会同时挂到表单容器和提交按钮，兼容前端从“表单级上下文”或“动作级参数”两种入口取值
         """
 
@@ -375,6 +688,7 @@ class DynamicUIService:
             params=submit_payload,
             flow_num=(context or {}).get("flow_num"),
             created_by=(context or {}).get("created_by"),
+            request_schema_fields=runtime.form.request_schema_fields,
         )
 
         submit_element_id = "form_submit"
@@ -388,6 +702,7 @@ class DynamicUIService:
                 params=submit_payload,
                 flow_num=(context or {}).get("flow_num"),
                 created_by=(context or {}).get("created_by"),
+                request_schema_fields=runtime.form.request_schema_fields,
             )
         )
         elements[submit_element_id] = {
@@ -406,7 +721,6 @@ class DynamicUIService:
                     "action": runtime.form.ui_action or "remoteMutation",
                     "params": {
                         "api_id": runtime.form.api_id,
-                        "payload": submit_payload,
                         **submit_request_fields,
                     },
                 }
@@ -430,7 +744,7 @@ class DynamicUIService:
         功能：
             Guard 会校验每一条 `$bindState` 路径是否真实存在，因此 mutation form 不能
             只把有值字段塞进 state。这里会按 `runtime.form.fields` 补全整棵 `/form` 状态树，
-            保证按钮 payload 和输入组件都能稳定绑定。
+            保证按钮请求元数据和输入组件都能稳定绑定。
         """
 
         state: dict[str, Any] = {}
@@ -466,7 +780,7 @@ class DynamicUIService:
 
         功能：
             mutation confirm 的字段组件类型必须和运行时契约严格对齐，避免前端看到的控件形态
-            与最终提交 payload 语义不一致。
+            与最终提交 `body/queryParams` 语义不一致。
 
         Edge Cases:
             - 不可写字段统一降为 `PlannerMetric`，防止用户误以为这些值可编辑
@@ -1305,6 +1619,7 @@ class DynamicUIService:
                             params={detail_identifier_param: rows[0].get(detail_identifier_field)},
                             flow_num=(context or {}).get("flow_num"),
                             created_by=(context or {}).get("created_by"),
+                            request_schema_fields=runtime.detail.request.request_schema_fields,
                         )
                     )
             return self._build_flat_card_spec(
@@ -1326,6 +1641,7 @@ class DynamicUIService:
             params=current_params,
             flow_num=(context or {}).get("flow_num"),
             created_by=(context or {}).get("created_by"),
+            request_schema_fields=runtime.list.request_schema_fields if runtime else None,
         )
         filter_submit_request_fields = _build_runtime_request_fields(
             runtime.list.api_id if runtime else None,
@@ -1333,6 +1649,7 @@ class DynamicUIService:
             params=_build_filter_submit_params(runtime, filter_fields),
             flow_num=(context or {}).get("flow_num"),
             created_by=(context or {}).get("created_by"),
+            request_schema_fields=runtime.list.request_schema_fields if runtime else None,
         )
         filter_reset_request_fields = _build_runtime_request_fields(
             runtime.list.api_id if runtime else None,
@@ -1340,6 +1657,7 @@ class DynamicUIService:
             params=_build_filter_reset_params(runtime, filter_fields),
             flow_num=(context or {}).get("flow_num"),
             created_by=(context or {}).get("created_by"),
+            request_schema_fields=runtime.list.request_schema_fields if runtime else None,
         )
 
         elements: dict[str, Any] = {
@@ -1426,6 +1744,7 @@ class DynamicUIService:
                             },
                             flow_num=(context or {}).get("flow_num"),
                             created_by=(context or {}).get("created_by"),
+                            request_schema_fields=runtime.detail.request.request_schema_fields,
                         ),
                     },
                 }
@@ -1907,6 +2226,7 @@ def _build_runtime_request_fields(
     params: Any,
     flow_num: str | None,
     created_by: str | None,
+    request_schema_fields: list[str] | None = None,
 ) -> dict[str, Any]:
     """构造前端二跳请求所需的统一元数据。
 
@@ -1930,24 +2250,14 @@ def _build_runtime_request_fields(
         - api_id 缺失时 `api` 会回退空串，但其余元数据字段仍保持稳定形状
     """
 
-    normalized_params = params if isinstance(params, dict) else {}
-    is_body_request = (param_source or "").strip().lower() == "body"
-    return {
-        "api": _build_runtime_invoke_api(api_id),
-        "queryParams": {} if is_body_request else normalized_params,
-        "body": normalized_params if is_body_request else {},
-        "flowNum": flow_num or "",
-        "createdBy": created_by or "",
-    }
-
-
-def _build_runtime_invoke_api(api_id: str | None) -> str:
-    """把业务接口 ID 转换成前端可直连的 runtime invoke 路径。"""
-
-    normalized_api_id = str(api_id or "").strip()
-    if not normalized_api_id:
-        return ""
-    return _RUNTIME_INVOKE_API_TEMPLATE.format(id=normalized_api_id)
+    return build_request_schema_gated_fields(
+        api_id,
+        param_source=param_source,
+        params=params,
+        flow_num=flow_num,
+        created_by=created_by,
+        allowed_fields=request_schema_fields,
+    )
 
 
 def _build_query_filter_state(runtime: ApiQueryUIRuntime | None) -> dict[str, Any]:

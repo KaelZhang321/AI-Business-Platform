@@ -516,10 +516,9 @@ def _build_builtin_snapshot() -> UICatalogSnapshot:
                     "body": {"type": "object"},
                     "flowNum": {"type": "string"},
                     "createdBy": {"type": "string"},
-                    "payload": {"type": "object"},
                     "snapshot_id": {"type": "string"},
                 },
-                "required": ["api_id", "payload"],
+                "required": ["api_id"],
             },
         ),
     }

@@ -1,6 +1,13 @@
 from __future__ import annotations
 
-from app.models.schemas import ApiQueryUIAction, ApiQueryUIRuntime
+from app.models.schemas import (
+    ApiQueryDetailRequestRuntime,
+    ApiQueryDetailRuntime,
+    ApiQueryDetailSourceRuntime,
+    ApiQueryUIAction,
+    ApiQueryUIRuntime,
+)
+from app.services.api_query_request_schema_gate import build_runtime_invoke_api
 from app.services.ui_spec_guard import UISpecGuard
 
 
@@ -18,6 +25,21 @@ def _make_runtime() -> ApiQueryUIRuntime:
                 },
             )
         ],
+        detail=ApiQueryDetailRuntime(
+            enabled=True,
+            api_id="customer_detail",
+            ui_action="remoteQuery",
+            request=ApiQueryDetailRequestRuntime(
+                param_source="queryParams",
+                identifier_param="id",
+                request_schema_fields=["id"],
+            ),
+            source=ApiQueryDetailSourceRuntime(
+                identifier_field="主键ID",
+                value_type="string",
+                required=True,
+            ),
+        ),
     )
 
 
@@ -97,3 +119,20 @@ def test_ui_spec_guard_rejects_missing_required_action_param() -> None:
 
     assert result.is_valid is False
     assert {error.code for error in result.errors} >= {"action_required_param_missing"}
+
+
+def test_ui_spec_guard_rejects_request_fields_outside_request_schema() -> None:
+    guard = UISpecGuard()
+    spec = _make_spec(child_type="PlannerDetailCard")
+    spec["elements"]["child_1"]["props"].update(
+        {
+            "api": build_runtime_invoke_api("customer_detail"),
+            "queryParams": {"主键ID": "71593"},
+            "body": {},
+        }
+    )
+
+    result = guard.validate(spec, intent="query", runtime=_make_runtime())
+
+    assert result.is_valid is False
+    assert {error.code for error in result.errors} >= {"request_field_not_allowed"}
