@@ -531,10 +531,21 @@ public class UiBuilderApplicationService {
      * @param sourceId 接口源 ID
      * @param query 分页参数
      * @param tagId 标签 ID，可为空
+     * @param name 接口名称模糊匹配，可为空
+     * @param path 接口路径模糊匹配，可为空
+     * @param status 接口状态精确匹配，可为空
      * @param untagged 是否仅查询未分组接口
      * @return 分页后的接口定义列表
      */
-    public PageResult<UiApiEndpoint> listEndpointsBySource(String sourceId, PageQuery query, String tagId, Boolean untagged) {
+    public PageResult<UiApiEndpoint> listEndpointsBySource(
+            String sourceId,
+            PageQuery query,
+            String tagId,
+            String name,
+            String path,
+            String status,
+            Boolean untagged
+    ) {
         requireSource(sourceId);
         LambdaQueryWrapper<UiApiEndpoint> wrapper = new LambdaQueryWrapper<UiApiEndpoint>()
                 .eq(UiApiEndpoint::getSourceId, sourceId)
@@ -544,6 +555,15 @@ public class UiBuilderApplicationService {
             wrapper.and(condition -> condition.isNull(UiApiEndpoint::getTagId).or().eq(UiApiEndpoint::getTagId, ""));
         } else if (StringUtils.hasText(tagId)) {
             wrapper.eq(UiApiEndpoint::getTagId, tagId);
+        }
+        if (StringUtils.hasText(name)) {
+            wrapper.like(UiApiEndpoint::getName, name.trim());
+        }
+        if (StringUtils.hasText(path)) {
+            wrapper.like(UiApiEndpoint::getPath, path.trim());
+        }
+        if (StringUtils.hasText(status)) {
+            wrapper.eq(UiApiEndpoint::getStatus, status.trim());
         }
 
         Page<UiApiEndpoint> pageParam = buildPage(query);

@@ -81,6 +81,9 @@ interface SourceCenterTabProps {
   selectedEndpointId?: string
   selectedEndpoint?: UiApiEndpoint
   selectedTagFilter: string
+  endpointKeyword: string
+  endpointPathKeyword: string
+  endpointStatusFilter: string
   testResult?: UiApiTestResponse | null
   testLogs: UiApiTestLog[]
   loading: boolean
@@ -102,6 +105,9 @@ interface SourceCenterTabProps {
   onSelectSource: (sourceId: string) => void
   onSelectEndpoint: (endpointId: string) => void
   onTagFilterChange: (value: string) => void
+  onEndpointKeywordChange: (value: string) => void
+  onEndpointPathKeywordChange: (value: string) => void
+  onEndpointStatusFilterChange: (value: string) => void
   onSourcePageChange: (page: number, size: number) => void
   onEndpointPageChange: (page: number, size: number) => void
   onLogPageChange: (page: number, size: number) => void
@@ -129,6 +135,9 @@ export function SourceCenterTab({
   selectedEndpointId,
   selectedEndpoint,
   selectedTagFilter,
+  endpointKeyword,
+  endpointPathKeyword,
+  endpointStatusFilter,
   testResult,
   testLogs,
   loading,
@@ -138,6 +147,9 @@ export function SourceCenterTab({
   onSelectSource,
   onSelectEndpoint,
   onTagFilterChange,
+  onEndpointKeywordChange,
+  onEndpointPathKeywordChange,
+  onEndpointStatusFilterChange,
   onSourcePageChange,
   onEndpointPageChange,
   onLogPageChange,
@@ -221,9 +233,12 @@ export function SourceCenterTab({
       title: '方法',
       dataIndex: 'method',
       key: 'method',
-      width: 96,
-      render: (value: string) => (
-        <Tag color={value === 'GET' ? 'blue' : value === 'POST' ? 'green' : 'purple'}>{value}</Tag>
+      width: 180,
+      render: (value: string, record) => (
+        <div className="space-y-1">
+          <Tag color={value === 'GET' ? 'blue' : value === 'POST' ? 'green' : 'purple'}>{value}</Tag>
+          <div className="text-xs text-slate-500 break-all">{record.id}</div>
+        </div>
       ),
     },
     {
@@ -555,13 +570,39 @@ export function SourceCenterTab({
               title="接口定义"
               className="rounded-[24px]"
               extra={selectedSource ? (
-                <Space>
-                  <Select
-                    value={selectedTagFilter}
-                    options={filterOptions}
+              <Space>
+                <Input
+                  allowClear
+                  placeholder="按名称查询"
+                  style={{ width: 180 }}
+                  value={endpointKeyword}
+                  onChange={(event) => onEndpointKeywordChange(event.target.value)}
+                />
+                <Input
+                  allowClear
+                  placeholder="按接口路径查询"
+                  style={{ width: 220 }}
+                  value={endpointPathKeyword}
+                  onChange={(event) => onEndpointPathKeywordChange(event.target.value)}
+                />
+                <Select
+                  value={selectedTagFilter}
+                  options={filterOptions}
                     style={{ width: 180 }}
                     onChange={onTagFilterChange}
                     placeholder="按标签筛选"
+                  />
+                  <Select
+                    value={endpointStatusFilter}
+                    style={{ width: 140 }}
+                    onChange={onEndpointStatusFilterChange}
+                    options={[
+                      { label: '全部状态', value: 'all' },
+                      { label: '启用', value: 'active' },
+                      { label: '草稿', value: 'draft' },
+                      { label: '停用', value: 'inactive' },
+                    ]}
+                    placeholder="按状态筛选"
                   />
                   <Button
                     onClick={() => {

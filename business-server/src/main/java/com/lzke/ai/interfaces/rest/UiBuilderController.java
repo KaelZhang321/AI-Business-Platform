@@ -261,9 +261,12 @@ public class UiBuilderController {
             @PathVariable String sourceId,
             @Valid PageQuery query,
             @RequestParam(required = false) String tagId,
+            @RequestParam(required = false) String name,
+            @RequestParam(required = false) String path,
+            @RequestParam(required = false) String status,
             @RequestParam(required = false) Boolean untagged
     ) {
-        return ApiResponse.ok(uiBuilderApplicationService.listEndpointsBySource(sourceId, query, tagId, untagged));
+        return ApiResponse.ok(uiBuilderApplicationService.listEndpointsBySource(sourceId, query, tagId, name, path, status, untagged));
     }
 
     /**

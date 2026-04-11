@@ -132,12 +132,19 @@ export const uiBuilderApi = {
   deleteSource(sourceId: string) {
     return unwrap<void>(businessClient.delete(`/api/v1/ui-builder/sources/${sourceId}`))
   },
-  listEndpoints(sourceId: string, query?: PageQuery, filters?: { tagId?: string; untagged?: boolean }) {
+  listEndpoints(
+    sourceId: string,
+    query?: PageQuery,
+    filters?: { tagId?: string; untagged?: boolean; name?: string; path?: string; status?: string },
+  ) {
     return unwrap<PageResult<UiApiEndpoint>>(businessClient.get(`/api/v1/ui-builder/sources/${sourceId}/endpoints`, {
       params: {
         ...buildPageParams(query),
         ...(filters?.tagId ? { tagId: filters.tagId } : {}),
         ...(filters?.untagged ? { untagged: true } : {}),
+        ...(filters?.name ? { name: filters.name } : {}),
+        ...(filters?.path ? { path: filters.path } : {}),
+        ...(filters?.status ? { status: filters.status } : {}),
       },
     }))
   },

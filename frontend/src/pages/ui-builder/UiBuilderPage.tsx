@@ -84,6 +84,20 @@ function buildEndpointFilters(tagFilter: string) {
   return undefined
 }
 
+function buildEndpointQueryFilters(
+  tagFilter: string,
+  endpointKeyword: string,
+  endpointPathKeyword: string,
+  endpointStatusFilter: string,
+) {
+  return {
+    ...buildEndpointFilters(tagFilter),
+    ...(endpointKeyword.trim() ? { name: endpointKeyword.trim() } : {}),
+    ...(endpointPathKeyword.trim() ? { path: endpointPathKeyword.trim() } : {}),
+    ...(endpointStatusFilter !== 'all' ? { status: endpointStatusFilter } : {}),
+  }
+}
+
 export function UiBuilderPage() {
   const [messageApi, contextHolder] = message.useMessage()
   const [overview, setOverview] = useState<UiBuilderOverview | null>(null)
@@ -110,6 +124,9 @@ export function UiBuilderPage() {
   const [selectedProjectId, setSelectedProjectId] = useState<string>()
   const [selectedPageId, setSelectedPageId] = useState<string>()
   const [selectedEndpointTagFilter, setSelectedEndpointTagFilter] = useState<string>('all')
+  const [endpointKeyword, setEndpointKeyword] = useState('')
+  const [endpointPathKeyword, setEndpointPathKeyword] = useState('')
+  const [endpointStatusFilter, setEndpointStatusFilter] = useState('all')
 
   const [sourcePagination, setSourcePagination] = useState<PaginationState>(createPaginationState())
   const [semanticFieldPagination, setSemanticFieldPagination] = useState<PaginationState>(createPaginationState())
@@ -357,7 +374,7 @@ export function UiBuilderPage() {
               page: endpointPagination.page,
               size: endpointPagination.size,
             },
-            buildEndpointFilters(selectedEndpointTagFilter),
+            buildEndpointQueryFilters(selectedEndpointTagFilter, endpointKeyword, endpointPathKeyword, endpointStatusFilter),
           ),
           uiBuilderApi.listTags(selectedSourceId, { page: 1, size: 100 }),
         ])
@@ -388,6 +405,9 @@ export function UiBuilderPage() {
     endpointPagination.size,
     messageApi,
     selectedEndpointTagFilter,
+    endpointKeyword,
+    endpointPathKeyword,
+    endpointStatusFilter,
     selectedSourceId,
   ])
 
@@ -712,7 +732,11 @@ export function UiBuilderPage() {
       return
     }
     const [endpointResult, tagResult] = await Promise.all([
-      uiBuilderApi.listEndpoints(selectedSourceId, query, buildEndpointFilters(tagFilter)),
+      uiBuilderApi.listEndpoints(
+        selectedSourceId,
+        query,
+        buildEndpointQueryFilters(tagFilter, endpointKeyword, endpointPathKeyword, endpointStatusFilter),
+      ),
       uiBuilderApi.listTags(selectedSourceId, { page: 1, size: 100 }),
     ])
     setEndpoints(endpointResult.data)
@@ -1236,6 +1260,9 @@ export function UiBuilderPage() {
                 selectedEndpointId={selectedEndpointId}
                 selectedEndpoint={selectedEndpoint}
                 selectedTagFilter={selectedEndpointTagFilter}
+                endpointKeyword={endpointKeyword}
+                endpointPathKeyword={endpointPathKeyword}
+                endpointStatusFilter={endpointStatusFilter}
                 testResult={testResult}
                 testLogs={testLogs}
                 loading={sourceLoading}
@@ -1258,6 +1285,18 @@ export function UiBuilderPage() {
                 onSelectEndpoint={handleSelectEndpoint}
                 onTagFilterChange={(value) => {
                   setSelectedEndpointTagFilter(value)
+                  setEndpointPagination((prev) => ({ ...prev, page: 1 }))
+                }}
+                onEndpointKeywordChange={(value) => {
+                  setEndpointKeyword(value)
+                  setEndpointPagination((prev) => ({ ...prev, page: 1 }))
+                }}
+                onEndpointPathKeywordChange={(value) => {
+                  setEndpointPathKeyword(value)
+                  setEndpointPagination((prev) => ({ ...prev, page: 1 }))
+                }}
+                onEndpointStatusFilterChange={(value) => {
+                  setEndpointStatusFilter(value)
                   setEndpointPagination((prev) => ({ ...prev, page: 1 }))
                 }}
                 onSourcePageChange={(page, size) => {

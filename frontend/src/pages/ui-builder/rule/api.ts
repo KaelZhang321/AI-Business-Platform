@@ -1,5 +1,5 @@
 import { businessClient } from '../../../services/api'
-import type { RuleListQuery, RuleRecord, RuleRemotePage, RuleRemoteResponse } from './types'
+import type { RuleExecuteParams, RuleListQuery, RuleRecord, RuleRemotePage, RuleRemoteResponse } from './types'
 
 async function unwrapRemote<T>(promise: Promise<{ data: RuleRemoteResponse<T> }>) {
   const response = await promise
@@ -21,5 +21,8 @@ export const ruleApi = {
   },
   enableRule(id: number | string) {
     return unwrapRemote<void>(businessClient.get(`/api/v1/rule/enable/${id}`))
+  },
+  executeRule(ruleCode: string, version: number | string, params: RuleExecuteParams) {
+    return unwrapRemote<unknown>(businessClient.post(`/api/v1/rule/${ruleCode}/${version}`, params))
   },
 }

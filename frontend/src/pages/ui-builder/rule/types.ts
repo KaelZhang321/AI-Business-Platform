@@ -4,6 +4,8 @@ export interface RuleRemoteResponse<T> {
   data: T
 }
 
+export type RuleExecuteParams = Record<string, unknown>
+
 export interface RuleRemotePage<T> {
   records: T[]
   total: number
