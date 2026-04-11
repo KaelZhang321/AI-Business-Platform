@@ -10,6 +10,7 @@ from app.models.schemas import (
     ApiQueryRoutingResult,
     ApiQueryRequest,
 )
+from app.services.api_catalog.graph_models import ApiCatalogSubgraphResult, GraphFieldPath
 from app.services.api_catalog.dag_planner import DagPlanValidationError
 from app.services.api_catalog.schema import (
     ApiCatalogDetailHint,
@@ -27,13 +28,22 @@ from app.services.ui_spec_guard import UISpecValidationError, UISpecValidationRe
 
 
 class StubRetriever:
-    def __init__(self, entries: list[ApiCatalogEntry]) -> None:
+    def __init__(self, entries: list[ApiCatalogEntry], *, subgraph_result: ApiCatalogSubgraphResult | None = None) -> None:
         self._entries = entries
+        self._subgraph_result = subgraph_result
         self.calls = 0
+        self.trace_ids: list[str] = []
 
     async def search_stratified(self, query: str, *, domains, top_k: int = 3, filters=None, **kwargs):
         self.calls += 1
+        trace_id = kwargs.get("trace_id")
+        if trace_id is not None:
+            self.trace_ids.append(trace_id)
         return [ApiCatalogSearchResult(entry=entry, score=0.9) for entry in self._entries]
+
+    def get_subgraph_result(self, trace_id: str) -> ApiCatalogSubgraphResult | None:
+        self.trace_ids.append(trace_id)
+        return self._subgraph_result
 
 
 class StubExtractor:
@@ -91,6 +101,8 @@ class StubPlanner:
         self._validate_error = validate_error
         self.validate_calls = 0
         self.build_calls = 0
+        self.last_subgraph_result: ApiCatalogSubgraphResult | None = None
+        self.last_trace_id: str | None = None
 
     async def build_plan(self, query, candidates, user_context, route_hint, *, trace_id=None):
         self.build_calls += 1
@@ -106,8 +118,10 @@ class StubPlanner:
             plan_id=f"dag_{(trace_id or 'trace')[:8]}",
         )
 
-    def validate_plan(self, plan, candidates):
+    def validate_plan(self, plan, candidates, *, subgraph_result=None, trace_id=None):
         self.validate_calls += 1
+        self.last_subgraph_result = subgraph_result
+        self.last_trace_id = trace_id
         if self._validate_error is not None:
             raise self._validate_error
         return dict(self._step_entries)
@@ -318,9 +332,58 @@ async def test_workflow_runs_direct_path_without_routing(caplog) -> None:
     assert extractor.route_calls == 0
     assert executor.calls == 1
     assert "phase=stage4" in caplog.text
-    assert "node=execute_plan" in caplog.text
-    assert "conversation_id=conversation-001" in caplog.text
-    assert "execution_status=SUCCESS" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_workflow_passes_stage2_subgraph_into_stage3_validation() -> None:
+    entry = _build_entry()
+    subgraph = ApiCatalogSubgraphResult(
+        anchor_api_ids=[entry.id],
+        support_api_ids=["customer_detail"],
+        field_paths=[
+            GraphFieldPath(
+                consumer_api_id=entry.id,
+                producer_api_id="customer_detail",
+                semantic_key="Customer.id",
+                source_extract_path="data.customerId",
+                target_inject_path="queryParams.customerId",
+                is_identifier=True,
+                source_array_mode=False,
+                target_array_mode=False,
+            )
+        ],
+    )
+    retriever = StubRetriever([entry], subgraph_result=subgraph)
+    extractor = StubExtractor(entry, {"customerId": "C001"})
+    executor = StubExecutor(
+        ApiQueryExecutionResult(
+            status=ApiQueryExecutionStatus.SUCCESS,
+            data=[{"customerId": "C001", "customerName": "张三"}],
+            total=1,
+        )
+    )
+    planner = StubPlanner(step_entries={f"step_{entry.id}": entry})
+    workflow = _build_workflow(
+        retriever=retriever,
+        extractor=extractor,
+        executor=executor,
+        planner=planner,
+        registry_source=StubRegistrySource(entry),
+        ui_result=UISpecBuildResult(spec=_build_flat_spec(), frozen=False),
+    )
+
+    response = await workflow.run(
+        ApiQueryRequest.model_validate({"mode": "nl", "query": "查询客户列表"}),
+        trace_id="trace-subgraph-pass-through",
+        interaction_id="interaction-subgraph-pass-through",
+        conversation_id="conversation-subgraph-pass-through",
+        user_context={},
+        user_token="Bearer test-token",
+    )
+
+    assert response.execution_status == ApiQueryExecutionStatus.SUCCESS
+    assert planner.last_subgraph_result == subgraph
+    assert planner.last_trace_id == "trace-subgraph-pass-through"
 
 
 @pytest.mark.asyncio

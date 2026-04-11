@@ -177,7 +177,17 @@ class NormalizedFieldBinding(BaseModel):
 
 
 class GraphFieldPath(BaseModel):
-    """字段级图路径摘要。"""
+    """字段级图路径摘要。
+
+    功能：
+        用最小事实集表达“哪个 producer 的哪个字段，可以注入到哪个 consumer 的哪个参数”。
+        Stage 3 不应该再去反查 Neo4j 原始边属性，因此这里顺带携带标识字段和基数信息。
+
+    返回值约束：
+        - `source_extract_path` 仍然保持图同步时的原始 schema 路径
+        - `source_array_mode/target_array_mode` 是 Stage 3 基数对齐的唯一事实来源
+        - `is_identifier=true` 时，代表这条路径可作为对象寻址链路参与校验
+    """
 
     consumer_api_id: str
     producer_api_id: str
@@ -185,6 +195,9 @@ class GraphFieldPath(BaseModel):
     source_extract_path: str
     target_inject_path: str
     confidence: float = Field(1.0, ge=0.0, le=1.0)
+    is_identifier: bool = False
+    source_array_mode: bool = False
+    target_array_mode: bool = False
 
 
 class ApiCatalogSubgraphResult(BaseModel):

@@ -395,6 +395,7 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
             trace_id=state["trace_id"],
         )
         runtime_context.candidates = candidates
+        runtime_context.subgraph_result = self._get_subgraph_result_for_trace(state["trace_id"])
         if candidates:
             return {"candidate_ids": [candidate.entry.id for candidate in candidates]}
 
@@ -627,7 +628,12 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
         self._log_node_event(state, node="validate_plan", phase="stage3")
         runtime_context = self._get_runtime_context(state)
         try:
-            runtime_context.step_entries = self._planner_getter().validate_plan(state["plan"], runtime_context.candidates)
+            runtime_context.step_entries = self._validate_plan_with_runtime_context(
+                state["plan"],
+                runtime_context.candidates,
+                subgraph_result=runtime_context.subgraph_result,
+                trace_id=state["trace_id"],
+            )
         except DagPlanValidationError as exc:
             write_intent_code = _resolve_write_intent_code(list(state.get("business_intent_codes", [])))
             if write_intent_code == "deleteCustomer":
@@ -1221,6 +1227,48 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
 
         retriever, _, _, _, _ = self._services_getter()
         return retriever
+
+    def _get_subgraph_result_for_trace(self, trace_id: str):
+        """读取当前 trace 对应的 Stage 2 子图摘要。
+
+        功能：
+            Wave 2 已经把子图缓存在 hybrid retriever 里，但 workflow 还需要显式把这份
+            事实接到 runtime context，Stage 3 才能基于同一次召回结果做确定性校验。
+        """
+
+        retriever = self._get_retriever()
+        get_subgraph_result = getattr(retriever, "get_subgraph_result", None)
+        if callable(get_subgraph_result):
+            return get_subgraph_result(trace_id)
+        return None
+
+    def _validate_plan_with_runtime_context(
+        self,
+        plan: ApiQueryExecutionPlan,
+        candidates: list[Any],
+        *,
+        subgraph_result,
+        trace_id: str,
+    ) -> dict[str, ApiCatalogEntry]:
+        """兼容新旧 planner seam 的 Stage 3 校验入口。
+
+        功能：
+            这次改动把 Stage 2 子图正式接进 Stage 3，但现有测试桩和少量旧注入对象还只实现了
+            `validate_plan(plan, candidates)`。这里做一次兼容分发，避免过渡期把所有调用方一次性打碎。
+        """
+
+        planner = self._planner_getter()
+        try:
+            return planner.validate_plan(
+                plan,
+                candidates,
+                subgraph_result=subgraph_result,
+                trace_id=trace_id,
+            )
+        except TypeError as exc:
+            if "unexpected keyword argument" not in str(exc):
+                raise
+            return planner.validate_plan(plan, candidates)
 
     def _get_extractor(self) -> ApiParamExtractor:
         """读取当前 extractor 依赖。"""

@@ -24,6 +24,8 @@ from pydantic import ValidationError
 from app.core.config import settings
 from app.models.schemas import ApiQueryExecutionPlan, ApiQueryPlanStep, ApiQueryRoutingResult
 from app.services.api_catalog.dag_bindings import DagBindingSyntaxError, collect_binding_step_ids
+from app.services.api_catalog.graph_models import ApiCatalogSubgraphResult
+from app.services.api_catalog.graph_plan_validator import GraphPlanValidationError, GraphPlanValidator
 from app.services.api_catalog.schema import ApiCatalogEntry, ApiCatalogSearchResult
 
 logger = logging.getLogger(__name__)
@@ -33,10 +35,11 @@ _QUERY_SAFE_METHODS = {"GET", "POST"}
 class DagPlanValidationError(ValueError):
     """第三阶段 DAG 校验失败。"""
 
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(self, code: str, message: str, metadata: dict[str, Any] | None = None) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
+        self.metadata = metadata or {}
 
 
 class ApiDagPlanner:
@@ -53,7 +56,7 @@ class ApiDagPlanner:
         - 任意一步引用候选集外接口、未声明依赖或形成环，都会被直接拦截
     """
 
-    def __init__(self, llm_service: Any | None = None) -> None:
+    def __init__(self, llm_service: Any | None = None, graph_plan_validator: GraphPlanValidator | None = None) -> None:
         """初始化第三阶段 DAG Planner。
 
         Args:
@@ -64,6 +67,7 @@ class ApiDagPlanner:
             注入进来，避免 Planner 在不同运行环境里命中不同默认后端。
         """
         self._llm = llm_service
+        self._graph_plan_validator = graph_plan_validator or GraphPlanValidator()
 
     def _get_llm(self):
         """懒加载 LLM 服务，避免单接口直达路径也初始化 Planner 客户端。"""
@@ -128,8 +132,11 @@ class ApiDagPlanner:
         self,
         plan: ApiQueryExecutionPlan,
         candidates: list[ApiCatalogSearchResult],
+        *,
+        subgraph_result: ApiCatalogSubgraphResult | None = None,
+        trace_id: str | None = None,
     ) -> dict[str, ApiCatalogEntry]:
-        """对查询 DAG 做结构与白名单校验。
+        """对查询 DAG 做结构、白名单与图事实校验。
 
         Args:
             plan: Planner 生成的 DAG。
@@ -144,6 +151,7 @@ class ApiDagPlanner:
         Edge Cases:
             - 同一路径允许被多个步骤复用，但每个步骤 ID 必须唯一
             - JSONPath 引用到未声明依赖时直接拦截，避免执行阶段出现隐式依赖
+            - 子图可用时，会追加字段路径与基数对齐校验，把危险误编排拦在 Stage 3
         """
         allowed_entries_by_id = _build_allowed_entries_by_id(candidates)
         allowed_entries_by_path = _build_allowed_entries_by_path(candidates)
@@ -209,6 +217,15 @@ class ApiDagPlanner:
             tuple(TopologicalSorter(dependency_graph).static_order())
         except CycleError as exc:
             raise DagPlanValidationError("planner_cycle_detected", "Planner 生成的 DAG 存在循环依赖。") from exc
+
+        try:
+            self._graph_plan_validator.validate_plan(
+                plan=plan,
+                step_entries=step_entries,
+                subgraph_result=subgraph_result,
+            )
+        except GraphPlanValidationError as exc:
+            raise DagPlanValidationError(exc.code, exc.message, metadata=exc.metadata) from exc
 
         return step_entries
 

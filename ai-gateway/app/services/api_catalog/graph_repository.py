@@ -185,7 +185,10 @@ RETURN anchor.api_id AS consumer_api_id,
        field.field_key AS semantic_key,
        produce.json_path AS source_extract_path,
        consume.json_path AS target_inject_path,
-       toFloat(coalesce(consume.confidence, 1.0) + coalesce(produce.confidence, 1.0)) / 2.0 AS confidence
+       toFloat(coalesce(consume.confidence, 1.0) + coalesce(produce.confidence, 1.0)) / 2.0 AS confidence,
+       coalesce(field.is_identifier, false) AS is_identifier,
+       coalesce(produce.array_mode, false) AS source_array_mode,
+       coalesce(consume.array_mode, false) AS target_array_mode
 LIMIT $row_limit
 """
 
@@ -217,7 +220,10 @@ RETURN anchor.api_id AS consumer_api_id,
        field.field_key AS semantic_key,
        produce.json_path AS source_extract_path,
        consume.json_path AS target_inject_path,
-       toFloat(coalesce(consume.confidence, 1.0) + coalesce(produce.confidence, 1.0)) / 2.0 AS confidence
+       toFloat(coalesce(consume.confidence, 1.0) + coalesce(produce.confidence, 1.0)) / 2.0 AS confidence,
+       coalesce(field.is_identifier, false) AS is_identifier,
+       coalesce(produce.array_mode, false) AS source_array_mode,
+       coalesce(consume.array_mode, false) AS target_array_mode
 LIMIT $row_limit
 """
 
@@ -609,6 +615,9 @@ def _build_subgraph_result(
                 source_extract_path=str(row.get("source_extract_path") or ""),
                 target_inject_path=str(row.get("target_inject_path") or ""),
                 confidence=float(row.get("confidence") or 1.0),
+                is_identifier=bool(row.get("is_identifier") or False),
+                source_array_mode=bool(row.get("source_array_mode") or False),
+                target_array_mode=bool(row.get("target_array_mode") or False),
             )
         )
 

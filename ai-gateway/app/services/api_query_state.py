@@ -16,6 +16,7 @@ from app.models.schemas import (
     ApiQueryUIRuntime,
 )
 from app.services.api_catalog.dag_executor import DagStepExecutionRecord
+from app.services.api_catalog.graph_models import ApiCatalogSubgraphResult
 from app.services.api_catalog.schema import ApiCatalogEntry, ApiCatalogSearchFilters
 
 
@@ -157,6 +158,7 @@ class ApiQueryRuntimeContext:
         - `user_token`：透传给业务系统的授权头
         - `retrieval_filters`：自然语言链路下的检索过滤条件，供响应快照复盘
         - `candidates`：原始候选对象，仅请求期内使用
+        - `subgraph_result`：Stage 2 图扩散摘要，只保留给 Stage 3/4 做确定性判断
         - `step_entries`：`step_id -> ApiCatalogEntry` 的执行白名单
         - `route_hint`：第二阶段原始路由结果，仅供后续规划节点消费
         - `request_body`：原始请求对象，只在节点内部拆字段，不进入 graph state
@@ -171,6 +173,7 @@ class ApiQueryRuntimeContext:
     user_token: str | None = None
     retrieval_filters: ApiCatalogSearchFilters | None = None
     candidates: list[Any] = field(default_factory=list)
+    subgraph_result: ApiCatalogSubgraphResult | None = None
     step_entries: dict[str, ApiCatalogEntry] = field(default_factory=dict)
     route_hint: ApiQueryRoutingResult | None = None
     request_body: ApiQueryRequest | None = None
