@@ -37,6 +37,7 @@ import com.lzke.ai.security.UserPrincipal;
 import jakarta.servlet.http.HttpServletRequest;
 
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 
 /**
  * UI Builder HTTP 调用工具服务。
@@ -58,6 +59,7 @@ import lombok.RequiredArgsConstructor;
  *     <li>把执行结果写入联调日志或运行时日志</li>
  * </ul>
  */
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class UiHttpInvokeService {
@@ -391,7 +393,7 @@ public class UiHttpInvokeService {
             return;
         }
 
-        String openId = resolveOmsOpenId(employeeId);
+        String openId = resolveOmsOpenId(source,employeeId);
         if (StringUtils.hasText(openId)) {
             headers.set("userid", openId);
         }
@@ -434,7 +436,7 @@ public class UiHttpInvokeService {
      *
      * <p>这样既能减少 OMS 回源压力，也便于后续按 openId 反查当前系统员工。
      */
-    private String resolveOmsOpenId(String employeeId) {
+    private String resolveOmsOpenId(UiApiSource source,String employeeId) {
         String cachedOpenId = stringRedisTemplate.opsForValue().get(OMS_OPEN_ID_CACHE_KEY_PREFIX + employeeId);
         if (StringUtils.hasText(cachedOpenId)) {
             return cachedOpenId;
@@ -446,10 +448,17 @@ public class UiHttpInvokeService {
                 .build(true)
                 .toUriString();
         try {
+        	HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.APPLICATION_JSON);
+            Map<String, Object> authConfig = readMap(source.getAuthConfig());
+        	String accessToken = resolveOauth2ClientAccessToken(authConfig);
+            if (StringUtils.hasText(accessToken)) {
+                headers.setBearerAuth(accessToken);
+            }
             ResponseEntity<ResponseDto> responseEntity = restTemplate.exchange(
                     requestUrl,
                     HttpMethod.GET,
-                    new HttpEntity<>(new HttpHeaders()),
+                    new HttpEntity<>(headers),
                     ResponseDto.class
             );
             ResponseDto<?> response = responseEntity.getBody();
@@ -465,6 +474,7 @@ public class UiHttpInvokeService {
             );
             return openId;
         } catch (RestClientException ex) {
+        	log.error("Failed to resolve OMS openId for employeeId={}", employeeId, ex);
             return null;
         }
     }
