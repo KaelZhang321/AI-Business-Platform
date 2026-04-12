@@ -18,10 +18,11 @@ import logging
 from typing import Annotated, Any
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.models.schemas import (
+    ApiCatalogIndexJobResponse,
     ApiQueryDetailRequestRuntime,
     ApiQueryDetailRuntime,
     ApiQueryDetailSourceRuntime,
@@ -39,6 +40,10 @@ from app.services.api_catalog.business_intents import get_business_intent_catalo
 from app.services.api_catalog.dag_planner import ApiDagPlanner
 from app.services.api_catalog.executor import ApiExecutor
 from app.services.api_catalog.hybrid_retriever import ApiCatalogHybridRetriever
+from app.services.api_catalog.index_job_service import (
+    ApiCatalogIndexJobService,
+    ApiCatalogIndexJobStartError,
+)
 from app.services.api_catalog.param_extractor import ApiParamExtractor
 from app.services.api_catalog.registry_source import ApiCatalogRegistrySource
 from app.services.api_catalog.retriever import ApiCatalogRetriever
@@ -64,6 +69,7 @@ _snapshot_service: UISnapshotService | None = None
 _registry_source: ApiCatalogRegistrySource | None = None
 _api_query_llm: ApiQueryLLMService | None = None
 _workflow: ApiQueryWorkflow | None = None
+_catalog_index_job_service: ApiCatalogIndexJobService | None = None
 _bearer = HTTPBearer(auto_error=False)
 
 
@@ -153,6 +159,21 @@ def _get_workflow() -> ApiQueryWorkflow:
             allowed_business_intent_codes_getter=lambda: get_business_intent_catalog_service().get_allowed_codes(),
         )
     return _workflow
+
+
+def _get_catalog_index_job_service() -> ApiCatalogIndexJobService:
+    """获取 API Catalog 重建任务服务单例。
+
+    功能：
+        该服务维护的是“当前 API 进程视角下的重建任务句柄”。把它做成进程级单例，
+        是为了让 `/catalog/index` 的触发接口和状态查询接口共享同一份任务表，而不是
+        每次请求都重新实例化后把任务状态丢掉。
+    """
+
+    global _catalog_index_job_service
+    if _catalog_index_job_service is None:
+        _catalog_index_job_service = ApiCatalogIndexJobService()
+    return _catalog_index_job_service
 
 
 @router.post("", response_model=ApiQueryResponse, summary="业务接口查询（支持自然语言与直达模式）")
@@ -278,14 +299,65 @@ async def get_runtime_metadata() -> ApiQueryRuntimeMetadataResponse:
     )
 
 
-@router.post("/catalog/index", summary="重建 API Catalog 向量索引（管理端）")
-async def rebuild_catalog_index() -> dict[str, Any]:
-    """从治理元数据重建 API Catalog 索引。"""
+@router.post(
+    "/catalog/index",
+    response_model=ApiCatalogIndexJobResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="异步触发 API Catalog 重建（管理端）",
+)
+async def rebuild_catalog_index() -> ApiCatalogIndexJobResponse:
+    """异步触发 API Catalog 重建任务。
 
-    from app.services.api_catalog.indexer import ApiCatalogIndexer
+    功能：
+        管理端需要的是“发起一次重建并拿到任务句柄”，而不是把整个索引过程塞进一次 HTTP
+        请求里同步等待。这里改成后台子进程触发后，route 立刻返回 202，避免重建索引阻塞
+        在线 API worker。
 
-    indexer = ApiCatalogIndexer()
-    return await indexer.index_all()
+    Returns:
+        当前重建任务快照；若已经存在运行中的任务，则返回同一任务并标记复用。
+
+    Raises:
+        HTTPException: 当后台子进程无法启动时抛出 500。
+    """
+
+    try:
+        return await _get_catalog_index_job_service().start_rebuild()
+    except ApiCatalogIndexJobStartError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(exc),
+        ) from exc
+
+
+@router.get(
+    "/catalog/index/{job_id}",
+    response_model=ApiCatalogIndexJobResponse,
+    summary="查询 API Catalog 重建任务状态（管理端）",
+)
+async def get_catalog_index_job(job_id: str) -> ApiCatalogIndexJobResponse:
+    """读取指定重建任务的状态快照。
+
+    功能：
+        非阻塞重建意味着前端或运维脚本必须有一条正式的状态查询链路，否则 POST 触发之后
+        就无法知道任务是否真正完成。这里返回的是任务事实快照，而不是重新触发任何索引逻辑。
+
+    Args:
+        job_id: 触发重建时返回的任务 ID。
+
+    Returns:
+        当前任务状态快照。
+
+    Raises:
+        HTTPException: 当任务不存在时返回 404。
+    """
+
+    job_snapshot = _get_catalog_index_job_service().get_job(job_id)
+    if job_snapshot is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"未找到 API Catalog 重建任务: {job_id}",
+        )
+    return job_snapshot
 
 
 def _extract_user_context(request: Request) -> dict[str, Any]:

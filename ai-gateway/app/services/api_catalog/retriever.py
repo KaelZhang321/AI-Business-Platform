@@ -22,7 +22,7 @@ from pymilvus import Collection, connections
 
 from app.core.config import settings
 from app.core.model_source import resolve_model_source
-from app.services.api_catalog.indexer import API_CATALOG_COLLECTION
+from app.services.api_catalog.constants import API_CATALOG_COLLECTION
 from app.services.api_catalog.schema import (
     ApiCatalogDetailHint,
     ApiCatalogEntry,

@@ -5,6 +5,8 @@ from fastapi.testclient import TestClient
 
 from app.api.routes import api_query as api_query_routes
 from app.models.schemas import (
+    ApiCatalogIndexJobResponse,
+    ApiCatalogIndexJobStatus,
     ApiQueryResponse,
     ApiQueryExecutionResult,
     ApiQueryExecutionStatus,
@@ -397,6 +399,38 @@ class StubUICatalogService:
         ]
 
 
+class StubCatalogIndexJobService:
+    """模拟管理端索引重建任务服务。"""
+
+    def __init__(self) -> None:
+        self.started = False
+        self.requested_job_id: str | None = None
+        self.snapshot = ApiCatalogIndexJobResponse(
+            job_id="job_catalog_index_001",
+            status=ApiCatalogIndexJobStatus.RUNNING,
+            message="API Catalog 重建任务已启动。",
+            reused_existing_job=False,
+            requested_at="2026-04-12T09:30:00Z",
+            started_at="2026-04-12T09:30:00Z",
+            finished_at=None,
+            pid=4321,
+            exit_code=None,
+            command=["python", "-m", "app.services.api_catalog.indexer"],
+            stdout_tail="",
+            stderr_tail="",
+        )
+
+    async def start_rebuild(self) -> ApiCatalogIndexJobResponse:
+        self.started = True
+        return self.snapshot
+
+    def get_job(self, job_id: str) -> ApiCatalogIndexJobResponse | None:
+        self.requested_job_id = job_id
+        if job_id != self.snapshot.job_id:
+            return None
+        return self.snapshot
+
+
 def create_test_app() -> FastAPI:
     app = FastAPI()
     app.include_router(api_query_routes.router, prefix="/api/v1")
@@ -460,6 +494,35 @@ def test_api_query_route_delegates_to_workflow(monkeypatch) -> None:
         "user_context": {},
         "user_token": "Bearer route-token",
     }
+
+
+def test_catalog_index_route_triggers_async_job_instead_of_running_indexer_directly(monkeypatch) -> None:
+    """管理端重建入口应只返回任务句柄，不能在 HTTP 请求内同步跑完整索引。"""
+
+    stub_job_service = StubCatalogIndexJobService()
+    monkeypatch.setattr(api_query_routes, "_get_catalog_index_job_service", lambda: stub_job_service)
+
+    client = TestClient(create_test_app())
+    response = client.post("/api/v1/api-query/catalog/index")
+
+    assert response.status_code == 202
+    assert stub_job_service.started is True
+    assert response.json()["job_id"] == "job_catalog_index_001"
+    assert response.json()["status"] == "RUNNING"
+
+
+def test_catalog_index_route_returns_job_snapshot(monkeypatch) -> None:
+    """任务状态查询必须复用同一份任务表，而不是重新触发一次索引。"""
+
+    stub_job_service = StubCatalogIndexJobService()
+    monkeypatch.setattr(api_query_routes, "_get_catalog_index_job_service", lambda: stub_job_service)
+
+    client = TestClient(create_test_app())
+    response = client.get("/api/v1/api-query/catalog/index/job_catalog_index_001")
+
+    assert response.status_code == 200
+    assert stub_job_service.requested_job_id == "job_catalog_index_001"
+    assert response.json()["message"] == "API Catalog 重建任务已启动。"
 
 
 def _build_flat_stub_spec(

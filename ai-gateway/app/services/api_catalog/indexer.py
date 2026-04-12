@@ -33,6 +33,7 @@ from pymilvus import (
 )
 
 from app.core.config import settings
+from app.services.api_catalog.constants import API_CATALOG_COLLECTION, EMBEDDING_DIM
 from app.core.model_source import resolve_model_source
 from app.services.api_catalog.field_semantic_resolver import ApiFieldSemanticResolver
 from app.services.api_catalog.graph_models import GraphSyncImpactResult, SemanticGovernanceSnapshot
@@ -44,12 +45,6 @@ if TYPE_CHECKING:
     from FlagEmbedding import BGEM3FlagModel
 
 logger = logging.getLogger(__name__)
-
-# Milvus collection 名称（独立于知识库 collection，避免污染）
-API_CATALOG_COLLECTION = "api_catalog"
-
-# BGE-M3 dense vector 维度
-EMBEDDING_DIM = 1024
 
 # 这里故意使用一个极短的稳定文本做 warmup，而不是空字符串。
 # 原因不是“求语义准确”，而是强制触发底层 embedding runtime 的首次真实 encode，

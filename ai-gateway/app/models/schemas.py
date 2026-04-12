@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from enum import Enum
 from typing import Any, List, Literal
 
@@ -624,6 +625,50 @@ class ApiQueryRuntimeMetadataResponse(BaseModel):
     business_intent_categories: list[str] = Field(default_factory=lambda: ["read", "write"])
     ui_runtime: ApiQueryUIRuntime = Field(..., description="UI 运行时元数据")
     template_scenarios: list[dict[str, Any]] = Field(default_factory=list, description="模板场景说明")
+
+
+class ApiCatalogIndexJobStatus(str, Enum):
+    """API Catalog 重建任务状态。
+
+    功能：
+        管理端重建入口已经从“同步执行重活”改成“异步触发后台子进程”，因此必须把任务状态
+        提炼成正式枚举，避免前端或运维脚本继续通过字符串猜测当前任务是否还在运行。
+    """
+
+    RUNNING = "RUNNING"
+    SUCCESS = "SUCCESS"
+    FAILED = "FAILED"
+
+
+class ApiCatalogIndexJobResponse(BaseModel):
+    """API Catalog 重建任务响应。
+
+    功能：
+        统一承载“任务是否刚创建、是否复用了正在运行的任务、当前执行到哪一步、最后输出了什么”
+        这些管理端事实，让 HTTP 层不再暴露子进程实现细节。
+
+    返回值约束：
+        - `job_id` 必须稳定存在，便于后续轮询状态
+        - `status` 只表达任务生命周期，不表达索引业务语义
+        - `stdout_tail/stderr_tail` 只保留尾部片段，避免把完整离线日志塞回 API 响应
+
+    Edge Cases:
+        - 同一时刻只允许一个重建任务运行；复用已有任务时 `reused_existing_job=true`
+        - 子进程还未结束时 `finished_at`、`exit_code` 允许为空
+    """
+
+    job_id: str = Field(..., min_length=1, description="重建任务唯一标识")
+    status: ApiCatalogIndexJobStatus = Field(..., description="当前任务状态")
+    message: str = Field(..., description="面向管理端的任务说明")
+    reused_existing_job: bool = Field(False, description="是否复用了当前正在运行的任务")
+    requested_at: datetime = Field(..., description="任务被路由层受理的时间")
+    started_at: datetime | None = Field(None, description="子进程真正启动的时间")
+    finished_at: datetime | None = Field(None, description="任务结束时间")
+    pid: int | None = Field(None, description="后台索引子进程 PID")
+    exit_code: int | None = Field(None, description="子进程退出码")
+    command: list[str] = Field(default_factory=list, description="实际执行的命令")
+    stdout_tail: str = Field("", description="标准输出尾部日志")
+    stderr_tail: str = Field("", description="标准错误尾部日志")
 
 
 class ApiQueryResponse(BaseModel):
