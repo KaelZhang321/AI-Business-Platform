@@ -32,6 +32,7 @@ from app.services.api_catalog.schema import (
     ApiCatalogTemplateHint,
     ParamSchema,
 )
+from app.utils.json_utils import load_json_value
 
 logger = logging.getLogger(__name__)
 
@@ -433,23 +434,11 @@ def _build_entry_from_fields(fields: dict) -> ApiCatalogEntry:
     )
 
 
-def _safe_json_loads(value, default):
-    """安全反序列化 Milvus 中的 JSON 字段。"""
-    if isinstance(value, (dict, list)):
-        return value
-    if not value:
-        return default
-    try:
-        return json.loads(value)
-    except (json.JSONDecodeError, TypeError):
-        return default
-
-
 def _read_json_field(fields: dict, primary_name: str, legacy_name: str, default):
     """兼容读取新旧两代 schema 的 JSON 字段。"""
     if primary_name in fields:
-        return _safe_json_loads(fields.get(primary_name), default)
-    return _safe_json_loads(fields.get(legacy_name), default)
+        return load_json_value(fields.get(primary_name), default)
+    return load_json_value(fields.get(legacy_name), default)
 
 
 def _normalize_filters(

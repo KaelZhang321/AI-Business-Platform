@@ -40,6 +40,7 @@ from app.services.dynamic_ui_service import DynamicUIService, UISpecBuildResult
 from app.services.ui_catalog_service import UICatalogService
 from app.services.ui_snapshot_service import UISnapshotService
 from app.services.ui_spec_guard import UISpecValidationResult
+from app.utils.state_path_utils import read_state_value, write_state_value
 from app.services.api_catalog.business_intents import (
     NOOP_BUSINESS_INTENT,
     get_business_intent_catalog_service,
@@ -1646,7 +1647,7 @@ async def _extract_form_runtime_from_spec(
             source_kind = "context"
             writable = False
 
-        state_value = _read_state_value(state, state_path)
+        state_value = read_state_value(state, state_path)
         field_schema = property_schemas.get(submit_key, {})
         form_fields.append(
             ApiQueryFormFieldRuntime(
@@ -1795,39 +1796,6 @@ def _find_first_action_payload(ui_spec: dict[str, Any], *, target_action_code: s
     return walk(ui_spec)
 
 
-def _read_state_value(state: Any, state_path: str) -> Any:
-    """按 `/form/goal` 形式读取当前 state 中的值。"""
-
-    if not isinstance(state, dict) or not state_path.startswith("/"):
-        return None
-    current: Any = state
-    for segment in [item for item in state_path.split("/") if item]:
-        if not isinstance(current, dict) or segment not in current:
-            return None
-        current = current[segment]
-    return current
-
-
-def _write_state_value(state: dict[str, Any], state_path: str, value: Any) -> None:
-    """按 `/form/email` 形式把值写入嵌套 state。"""
-
-    if not isinstance(state, dict) or not state_path.startswith("/"):
-        return
-
-    current: dict[str, Any] = state
-    segments = [item for item in state_path.split("/") if item]
-    if not segments:
-        return
-
-    for segment in segments[:-1]:
-        child = current.get(segment)
-        if not isinstance(child, dict):
-            child = {}
-            current[segment] = child
-        current = child
-    current[segments[-1]] = value
-
-
 def _build_prefilled_form_state(
     *,
     fields: list[ApiQueryFormFieldRuntime],
@@ -1843,7 +1811,7 @@ def _build_prefilled_form_state(
 
     state: dict[str, Any] = {}
     for field in fields:
-        _write_state_value(
+        write_state_value(
             state,
             field.state_path,
             pre_fill_params.get(field.submit_key),

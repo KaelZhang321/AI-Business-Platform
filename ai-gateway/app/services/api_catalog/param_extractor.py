@@ -25,6 +25,7 @@ from app.services.api_catalog.business_intents import (
     normalize_business_intent_code,
 )
 from app.services.api_catalog.schema import ApiCatalogEntry, ApiCatalogSearchResult
+from app.utils.json_utils import parse_dirty_json_object, summarize_log_text
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +94,7 @@ class ApiParamExtractor:
                 "stage2 routing degraded trace_id=%s code=%s query=%s",
                 trace_id or "-",
                 "routing_parse_failed",
-                _summarize_log_text(query),
+                summarize_log_text(query),
             )
             return ApiQueryRoutingResult(
                 business_intents=[_NOOP_BUSINESS_INTENT],
@@ -345,7 +346,7 @@ class ApiParamExtractor:
                 )
                 continue
 
-            parsed = _parse_json(raw)
+            parsed = parse_dirty_json_object(raw)
             if parsed:
                 return parsed
 
@@ -355,7 +356,7 @@ class ApiParamExtractor:
                 trace_id or "-",
                 attempt + 1,
                 max_attempts,
-                _summarize_log_text(raw),
+                summarize_log_text(raw),
             )
 
         return {}
@@ -522,153 +523,6 @@ def _build_route_and_extract_prompt(
 {{"selected_api_id":"...","query_domains":["crm"],"business_intents":["none"],"is_multi_domain":false,"reasoning":"...","params":{{}}}}"""
 
 
-def _parse_json(raw: str) -> dict[str, Any]:
-    """从 LLM 输出中尽量抠出首个 JSON 对象。
-
-    功能：
-        第二阶段最怕的不是模型答错，而是输出了一段“半礼貌半 JSON”的混合文本。
-        这里先剥掉 markdown，再裁掉注释和尾逗号，最后截取首尾大括号，
-        尽量把脏文本还原成可解析对象。
-    """
-    text = raw.strip()
-    if text.startswith("```"):
-        lines = text.split("\n")
-        text = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
-
-    start = text.find("{")
-    end = text.rfind("}")
-    if start != -1 and end != -1 and start < end:
-        text = text[start : end + 1]
-
-    # 有些本地模型会把“解释性注释”直接写进 JSON；这里先做轻量词法清洗，避免把脏格式留给 json.loads。
-    text = _strip_json_comments(text)
-    text = _strip_trailing_commas(text)
-
-    try:
-        result = json.loads(text)
-        return result if isinstance(result, dict) else {}
-    except json.JSONDecodeError:
-        logger.debug("Failed to parse LLM JSON: %s", raw[:200])
-        return {}
-
-
-def _summarize_log_text(text: str | None, *, limit: int = 240) -> str:
-    """压缩日志文本长度，避免把整段脏输出原样写入日志。"""
-    normalized = " ".join((text or "").split())
-    if len(normalized) <= limit:
-        return normalized
-    return f"{normalized[:limit]}..."
-
-
-def _strip_json_comments(text: str) -> str:
-    """删除 JSON 里的行注释和块注释，同时保留字符串原文。
-
-    功能：
-        设计文档里已经明确提到 `// 这是一个客户 ID` 这类脏输出。
-        这里不用正则硬切，是为了避免误伤 URL、时间戳或普通字符串中的 `/`。
-
-    Args:
-        text: 已经裁剪到首尾大括号之间的原始 JSON 文本。
-
-    Returns:
-        去掉注释后的文本；字符串字面量保持原样。
-
-    Edge Cases:
-        - 支持 `// ...` 行注释
-        - 支持 `/* ... */` 块注释
-        - 字符串中的 `//`、`/*` 不会被误删
-    """
-    result: list[str] = []
-    index = 0
-    in_string = False
-    escaped = False
-    length = len(text)
-
-    while index < length:
-        char = text[index]
-        next_char = text[index + 1] if index + 1 < length else ""
-
-        if in_string:
-            result.append(char)
-            if escaped:
-                escaped = False
-            elif char == "\\":
-                escaped = True
-            elif char == '"':
-                in_string = False
-            index += 1
-            continue
-
-        if char == '"':
-            in_string = True
-            result.append(char)
-            index += 1
-            continue
-
-        if char == "/" and next_char == "/":
-            index += 2
-            while index < length and text[index] not in ("\n", "\r"):
-                index += 1
-            continue
-
-        if char == "/" and next_char == "*":
-            index += 2
-            while index + 1 < length and not (text[index] == "*" and text[index + 1] == "/"):
-                index += 1
-            index += 2
-            continue
-
-        result.append(char)
-        index += 1
-
-    return "".join(result)
-
-
-def _strip_trailing_commas(text: str) -> str:
-    """删除对象和数组闭合前的尾逗号，同时保留字符串中的原始内容。
-
-    功能：
-        部分模型会生成 JSON5 风格的尾逗号；这里在不引入第三方解析器的前提下，
-        先做一轮精确清洗，减少纯格式问题导致的整链路降级。
-    """
-    result: list[str] = []
-    index = 0
-    in_string = False
-    escaped = False
-    length = len(text)
-
-    while index < length:
-        char = text[index]
-
-        if in_string:
-            result.append(char)
-            if escaped:
-                escaped = False
-            elif char == "\\":
-                escaped = True
-            elif char == '"':
-                in_string = False
-            index += 1
-            continue
-
-        if char == '"':
-            in_string = True
-            result.append(char)
-            index += 1
-            continue
-
-        if char == ",":
-            lookahead = index + 1
-            while lookahead < length and text[lookahead].isspace():
-                lookahead += 1
-            if lookahead < length and text[lookahead] in ("]", "}"):
-                index += 1
-                continue
-
-        result.append(char)
-        index += 1
-
-    return "".join(result)
 
 
 def _validate_params(params: dict[str, Any], entry: ApiCatalogEntry) -> dict[str, Any]:

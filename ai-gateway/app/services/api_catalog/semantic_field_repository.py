@@ -7,19 +7,20 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any
 
 import aiomysql
 
 from app.core.config import settings
+from app.core.mysql import build_business_mysql_conn_params
 from app.services.api_catalog.graph_models import (
     SemanticFieldAliasRecord,
     SemanticFieldDictRecord,
     SemanticFieldValueMapRecord,
     SemanticGovernanceSnapshot,
 )
+from app.utils.json_utils import load_json_object_or_none
 
 logger = logging.getLogger(__name__)
 
@@ -141,7 +142,7 @@ class SemanticFieldRepository:
                 settings.business_mysql_database,
                 settings.api_catalog_mysql_connect_timeout_seconds,
             )
-            self._pool = await aiomysql.create_pool(minsize=1, maxsize=3, **_build_business_mysql_conn_params())
+            self._pool = await aiomysql.create_pool(minsize=1, maxsize=3, **build_business_mysql_conn_params())
         return self._pool
 
     async def close(self) -> None:
@@ -150,19 +151,6 @@ class SemanticFieldRepository:
             self._pool.close()
             await self._pool.wait_closed()
             self._pool = None
-
-
-def _build_business_mysql_conn_params() -> dict[str, str | int | float]:
-    """复用业务 MySQL 配置构造治理仓储连接参数。"""
-    return {
-        "host": settings.business_mysql_host,
-        "port": settings.business_mysql_port,
-        "user": settings.business_mysql_user,
-        "password": settings.business_mysql_password,
-        "db": settings.business_mysql_database,
-        "charset": "utf8mb4",
-        "connect_timeout": settings.api_catalog_mysql_connect_timeout_seconds,
-    }
 
 
 def _build_field_dict_record(row: dict[str, Any]) -> SemanticFieldDictRecord:
@@ -184,7 +172,7 @@ def _build_field_dict_record(row: dict[str, Any]) -> SemanticFieldDictRecord:
         graph_role=_as_optional_text(row.get("graph_role")) or "none",
         is_identifier=_as_bool(row.get("is_identifier")),
         is_graph_enabled=_as_bool(row.get("is_graph_enabled"), default=True),
-        value_schema=_safe_json_loads(row.get("valueSchema")),
+        value_schema=load_json_object_or_none(row.get("valueSchema")),
         description=_as_optional_text(row.get("description")),
         is_active=_as_bool(row.get("is_active"), default=True),
     )
@@ -247,16 +235,4 @@ def _as_bool(value: Any, *, default: bool = False) -> bool:
         return False
     return default
 
-
-def _safe_json_loads(value: Any) -> dict[str, Any] | None:
-    """安全解析治理表里的 JSON 字段。"""
-    if isinstance(value, dict):
-        return value
-    if isinstance(value, str) and value.strip():
-        try:
-            parsed = json.loads(value)
-        except json.JSONDecodeError:
-            return None
-        return parsed if isinstance(parsed, dict) else None
-    return None
 

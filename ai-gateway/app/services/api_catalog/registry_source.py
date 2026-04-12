@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 import aiomysql
-import json
 import logging
 import re
 from typing import Any
 
 from app.core.config import settings
+from app.core.mysql import build_business_mysql_conn_params
+from app.services.api_catalog.schema_utils import (
+    describe_schema_type,
+    extract_schema_description,
+    resolve_schema_at_data_path,
+    schema_is_array,
+)
 from app.services.api_catalog.schema import (
     ApiCatalogDetailHint,
     ApiCatalogEntry,
@@ -15,6 +21,7 @@ from app.services.api_catalog.schema import (
     ApiCatalogTemplateHint,
     ParamSchema,
 )
+from app.utils.json_utils import load_json_object
 
 logger = logging.getLogger(__name__)
 
@@ -158,7 +165,7 @@ class ApiCatalogRegistrySource:
                 settings.business_mysql_database,
                 settings.api_catalog_mysql_connect_timeout_seconds,
             )
-            self._pool = await aiomysql.create_pool(minsize=1, maxsize=5, **_build_business_mysql_conn_params())
+            self._pool = await aiomysql.create_pool(minsize=1, maxsize=5, **build_business_mysql_conn_params())
         return self._pool
 
     async def close(self) -> None:
@@ -167,24 +174,6 @@ class ApiCatalogRegistrySource:
             self._pool.close()
             await self._pool.wait_closed()
             self._pool = None
-
-
-def _build_business_mysql_conn_params() -> dict[str, str | int | float]:
-    """从 `BUSINESS_MYSQL_*` 生成 API Catalog 直连配置。
-
-    功能：
-        API Catalog 的治理元数据本质属于业务库，不应再维持一套 `AI_MYSQL_*` 私有环境变量。
-        这里统一改读业务库配置，同时让部署侧只维护一份 MySQL 连接来源。
-    """
-    return {
-        "host": settings.business_mysql_host,
-        "port": settings.business_mysql_port,
-        "user": settings.business_mysql_user,
-        "password": settings.business_mysql_password,
-        "db": settings.business_mysql_database,
-        "charset": "utf8mb4",
-        "connect_timeout": settings.api_catalog_mysql_connect_timeout_seconds,
-    }
 
 
 def _build_entry_from_mysql_row(row: dict[str, Any]) -> ApiCatalogEntry:
@@ -245,10 +234,10 @@ def _build_entry(
     name = str(endpoint.get("name") or "").strip()
     summary = str(endpoint.get("summary") or "").strip()
 
-    request_schema = _safe_json_loads(endpoint.get("requestSchema"))
-    response_schema = _safe_json_loads(endpoint.get("responseSchema"))
-    sample_request = _safe_json_loads(endpoint.get("sampleRequest"))
-    sample_response = _safe_json_loads(endpoint.get("sampleResponse"))
+    request_schema = load_json_object(endpoint.get("requestSchema"))
+    response_schema = load_json_object(endpoint.get("responseSchema"))
+    sample_request = load_json_object(endpoint.get("sampleRequest"))
+    sample_response = load_json_object(endpoint.get("sampleResponse"))
     operation_safety = _normalize_operation_safety(endpoint.get("operationSafety"))
 
     auth_type = str(source.get("authType") or "").strip()
@@ -284,8 +273,8 @@ def _build_entry(
             "base_url": source.get("baseUrl"),
             "doc_url": source.get("docUrl"),
             "auth_type": auth_type,
-            "auth_config": _safe_json_loads(source.get("authConfig")),
-            "default_headers": _safe_json_loads(source.get("defaultHeaders")),
+            "auth_config": load_json_object(source.get("authConfig")),
+            "default_headers": load_json_object(source.get("defaultHeaders")),
         },
         security_rules={
             "auth_required": auth_required,
@@ -596,10 +585,10 @@ def _extract_request_field_profiles(method: str, param_schema: ParamSchema) -> l
                 location=location,
                 field_name=field_name,
                 json_path=f"{location}.{field_name}",
-                raw_field_type=_describe_schema_type(field_schema),
-                raw_description=_extract_schema_description(field_schema),
+                raw_field_type=describe_schema_type(field_schema),
+                raw_description=extract_schema_description(field_schema),
                 required=field_name in required_fields,
-                array_mode=_schema_is_array(field_schema),
+                array_mode=schema_is_array(field_schema),
             )
         )
     return profiles
@@ -615,7 +604,7 @@ def _extract_response_field_profiles(
     功能：
         第一阶段不追求穷尽所有深层字段，只稳定提取主数据区的业务字段，供 GraphRAG 建图使用。
     """
-    data_schema, array_mode = _resolve_schema_at_data_path(response_schema, response_data_path)
+    data_schema, array_mode = resolve_schema_at_data_path(response_schema, response_data_path)
     if not isinstance(data_schema, dict):
         return []
 
@@ -634,70 +623,13 @@ def _extract_response_field_profiles(
                 location="response",
                 field_name=field_name,
                 json_path=json_path,
-                raw_field_type=_describe_schema_type(field_schema),
-                raw_description=_extract_schema_description(field_schema, fallback_label=field_labels.get(field_name)),
+                raw_field_type=describe_schema_type(field_schema),
+                raw_description=extract_schema_description(field_schema, fallback_label=field_labels.get(field_name)),
                 required=False,
-                array_mode=array_mode or _schema_is_array(field_schema),
+                array_mode=array_mode or schema_is_array(field_schema),
             )
         )
     return profiles
-
-
-def _resolve_schema_at_data_path(response_schema: dict[str, Any], response_data_path: str) -> tuple[dict[str, Any], bool]:
-    """按 `response_data_path` 定位响应 schema 节点。
-
-    功能：
-        `response_data_path` 是执行器和渲染层共享的主数据事实。这里复用同一锚点提取字段，
-        可以避免“执行时认 data.list，建图时却误从根节点抽字段”的结构漂移。
-    """
-    current = response_schema
-    array_mode = False
-    for segment in [part for part in response_data_path.split(".") if part]:
-        properties = current.get("properties") if isinstance(current, dict) else None
-        next_schema = properties.get(segment) if isinstance(properties, dict) else None
-        if not isinstance(next_schema, dict):
-            return {}, False
-        if next_schema.get("type") == "array":
-            items = next_schema.get("items")
-            if not isinstance(items, dict):
-                return {}, False
-            current = items
-            array_mode = True
-            continue
-        current = next_schema
-    return current if isinstance(current, dict) else {}, array_mode
-
-
-def _describe_schema_type(field_schema: dict[str, Any]) -> str | None:
-    """把 OpenAPI 风格 schema 类型压成稳定字符串。"""
-    schema_type = str(field_schema.get("type") or "").strip().lower()
-    schema_format = str(field_schema.get("format") or "").strip().lower()
-    if schema_type == "array":
-        items = field_schema.get("items")
-        if isinstance(items, dict):
-            item_type = str(items.get("type") or "object").strip().lower() or "object"
-            return f"list<{item_type}>"
-        return "list<object>"
-    if schema_type == "string" and schema_format:
-        return schema_format
-    if schema_type == "integer" and schema_format:
-        return schema_format
-    if schema_type:
-        return schema_type
-    return None
-
-
-def _extract_schema_description(field_schema: dict[str, Any], *, fallback_label: str | None = None) -> str | None:
-    """抽取字段原始描述。"""
-    label = field_schema.get("description") or field_schema.get("title") or fallback_label
-    if isinstance(label, str) and label.strip():
-        return label.strip()
-    return None
-
-
-def _schema_is_array(field_schema: dict[str, Any]) -> bool:
-    """判断字段是否数组。"""
-    return str(field_schema.get("type") or "").strip().lower() == "array"
 
 
 def _to_param_schema(value: dict[str, Any]) -> ParamSchema:
@@ -712,18 +644,6 @@ def _to_param_schema(value: dict[str, Any]) -> ParamSchema:
     if isinstance(properties, dict):
         return ParamSchema(type="object", properties=properties, required=value.get("required") or [])
     return ParamSchema()
-
-
-def _safe_json_loads(value: Any) -> dict[str, Any]:
-    if isinstance(value, dict):
-        return value
-    if isinstance(value, str) and value.strip():
-        try:
-            parsed = json.loads(value)
-        except json.JSONDecodeError:
-            return {}
-        return parsed if isinstance(parsed, dict) else {}
-    return {}
 
 
 def _compact_list(values: list[Any]) -> list[str]:

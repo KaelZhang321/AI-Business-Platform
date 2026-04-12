@@ -20,6 +20,12 @@ from app.services.api_catalog.graph_models import (
     SemanticGovernanceSnapshot,
 )
 from app.services.api_catalog.schema import ApiCatalogEntry, ApiCatalogFieldProfile, ParamSchema
+from app.services.api_catalog.schema_utils import (
+    describe_schema_type,
+    extract_schema_description,
+    resolve_schema_at_data_path,
+    schema_is_array,
+)
 from app.services.api_catalog.semantic_field_repository import SemanticFieldRepository
 
 logger = logging.getLogger(__name__)
@@ -460,10 +466,10 @@ def _fallback_request_profiles(method: str, param_schema: ParamSchema) -> list[A
                 location=location,
                 field_name=field_name,
                 json_path=f"{location}.{field_name}",
-                raw_field_type=_describe_schema_type(field_schema),
-                raw_description=_extract_schema_description(field_schema),
+                raw_field_type=describe_schema_type(field_schema),
+                raw_description=extract_schema_description(field_schema),
                 required=field_name in required_fields,
-                array_mode=_schema_is_array(field_schema),
+                array_mode=schema_is_array(field_schema),
             )
         )
     return profiles
@@ -475,7 +481,7 @@ def _fallback_response_profiles(
     field_labels: dict[str, str],
 ) -> list[ApiCatalogFieldProfile]:
     """在 entry 缺少 response profiles 时临时回退生成。"""
-    data_schema, array_mode = _resolve_schema_at_data_path(response_schema, response_data_path)
+    data_schema, array_mode = resolve_schema_at_data_path(response_schema, response_data_path)
     properties = data_schema.get("properties") if isinstance(data_schema, dict) else None
     if not isinstance(properties, dict):
         return []
@@ -490,65 +496,10 @@ def _fallback_response_profiles(
                 location="response",
                 field_name=field_name,
                 json_path=f"{response_data_path}[].{field_name}" if array_mode else f"{response_data_path}.{field_name}",
-                raw_field_type=_describe_schema_type(field_schema),
-                raw_description=_extract_schema_description(field_schema, fallback_label=field_labels.get(field_name)),
+                raw_field_type=describe_schema_type(field_schema),
+                raw_description=extract_schema_description(field_schema, fallback_label=field_labels.get(field_name)),
                 required=False,
-                array_mode=array_mode or _schema_is_array(field_schema),
+                array_mode=array_mode or schema_is_array(field_schema),
             )
         )
     return profiles
-
-
-def _resolve_schema_at_data_path(
-    response_schema: dict[str, object],
-    response_data_path: str,
-) -> tuple[dict[str, object], bool]:
-    """按 `response_data_path` 定位响应 schema。"""
-    current: dict[str, object] = response_schema
-    array_mode = False
-    for segment in [part for part in response_data_path.split(".") if part]:
-        properties = current.get("properties") if isinstance(current, dict) else None
-        next_schema = properties.get(segment) if isinstance(properties, dict) else None
-        if not isinstance(next_schema, dict):
-            return {}, False
-        if str(next_schema.get("type") or "").strip().lower() == "array":
-            items = next_schema.get("items")
-            if not isinstance(items, dict):
-                return {}, False
-            current = items
-            array_mode = True
-            continue
-        current = next_schema
-    return current, array_mode
-
-
-def _describe_schema_type(field_schema: dict[str, object]) -> str | None:
-    """把 schema 原始类型压成稳定字符串。"""
-    schema_type = str(field_schema.get("type") or "").strip().lower()
-    schema_format = str(field_schema.get("format") or "").strip().lower()
-    if schema_type == "array":
-        items = field_schema.get("items")
-        if isinstance(items, dict):
-            item_type = str(items.get("type") or "object").strip().lower() or "object"
-            return f"list<{item_type}>"
-        return "list<object>"
-    if schema_type == "string" and schema_format:
-        return schema_format
-    if schema_type == "integer" and schema_format:
-        return schema_format
-    if schema_type:
-        return schema_type
-    return None
-
-
-def _extract_schema_description(field_schema: dict[str, object], *, fallback_label: str | None = None) -> str | None:
-    """提取字段原始描述。"""
-    label = field_schema.get("description") or field_schema.get("title") or fallback_label
-    if isinstance(label, str) and label.strip():
-        return label.strip()
-    return None
-
-
-def _schema_is_array(field_schema: dict[str, object]) -> bool:
-    """判断 schema 是否数组。"""
-    return str(field_schema.get("type") or "").strip().lower() == "array"

@@ -19,6 +19,8 @@ from app.models.schemas import (
 from app.services.api_query_request_schema_gate import build_request_schema_gated_fields
 from app.services.ui_catalog_service import UICatalogService
 from app.services.ui_spec_guard import UISpecGuard, UISpecValidationResult
+from app.utils.json_utils import extract_first_json_object_text, load_json_object
+from app.utils.state_path_utils import read_state_value, write_state_value
 
 logger = logging.getLogger(__name__)
 
@@ -450,7 +452,7 @@ class DynamicUIService:
         if isinstance(root_state, dict):
             identifier_param = runtime.detail.request.identifier_param
             if isinstance(identifier_param, str):
-                state_value = self._read_state_value(root_state, f"/form/{identifier_param}")
+                state_value = read_state_value(root_state, f"/form/{identifier_param}")
                 if state_value is not None:
                     return state_value
 
@@ -473,7 +475,7 @@ class DynamicUIService:
 
         identifier_param = runtime.detail.request.identifier_param
         if isinstance(identifier_param, str):
-            state_value = self._read_state_value(state, f"/form/{identifier_param}")
+            state_value = read_state_value(state, f"/form/{identifier_param}")
             if state_value is not None:
                 return state_value
         return None
@@ -750,8 +752,8 @@ class DynamicUIService:
         state: dict[str, Any] = {}
         incoming_state = form_state if isinstance(form_state, dict) else {}
         for field in fields:
-            incoming_value = self._read_state_value(incoming_state, field.state_path)
-            self._write_state_value(state, field.state_path, incoming_value)
+            incoming_value = read_state_value(incoming_state, field.state_path)
+            write_state_value(state, field.state_path, incoming_value)
         return state
 
     def _select_visible_mutation_form_fields(
@@ -792,7 +794,7 @@ class DynamicUIService:
                 "type": "PlannerMetric",
                 "props": {
                     "label": field.name,
-                    "value": self._format_form_value(self._read_state_value(state, field.state_path)),
+                    "value": self._format_form_value(read_state_value(state, field.state_path)),
                     "required": field.required,
                 },
             }
@@ -826,37 +828,6 @@ class DynamicUIService:
                 "required": field.required,
             },
         }
-
-    @staticmethod
-    def _read_state_value(state: Any, state_path: str) -> Any:
-        """按 `/form/email` 形式读取 state 值。"""
-
-        if not isinstance(state, dict) or not state_path.startswith("/"):
-            return None
-        current: Any = state
-        for segment in [item for item in state_path.split("/") if item]:
-            if not isinstance(current, dict) or segment not in current:
-                return None
-            current = current[segment]
-        return current
-
-    @staticmethod
-    def _write_state_value(state: dict[str, Any], state_path: str, value: Any) -> None:
-        """按 JSON Pointer 风格路径写入 state。"""
-
-        if not state_path.startswith("/"):
-            return
-        current: dict[str, Any] = state
-        segments = [item for item in state_path.split("/") if item]
-        if not segments:
-            return
-        for segment in segments[:-1]:
-            next_value = current.get(segment)
-            if not isinstance(next_value, dict):
-                next_value = {}
-                current[segment] = next_value
-            current = next_value
-        current[segments[-1]] = value
 
     @staticmethod
     def _format_form_value(value: Any) -> str:
@@ -1266,147 +1237,16 @@ class DynamicUIService:
         if not raw_reply:
             return None
 
-        json_text = self._extract_json_object(raw_reply)
+        json_text = extract_first_json_object_text(raw_reply)
         if not json_text:
             return None
 
-        try:
-            parsed = json.loads(json_text)
-        except json.JSONDecodeError:
+        parsed = load_json_object(json_text)
+        if not parsed and json_text.strip() != "{}":
             logger.debug("Failed to parse renderer json: %s", raw_reply[:200])
             return None
 
-        return parsed if isinstance(parsed, dict) else None
-
-    def _extract_json_object(self, raw_reply: str) -> str:
-        """从模型输出中剥离首个 JSON 对象文本。
-
-        功能：
-            这里复用第二阶段的脏 JSON 清洗思路，但保持在第五阶段本地闭环，避免跨模块
-            直接依赖私有 helper。这样做虽然有少量重复代码，但能保持渲染链路独立可演进。
-        """
-        text = raw_reply.strip()
-        if text.startswith("```"):
-            lines = text.split("\n")
-            text = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
-
-        start = text.find("{")
-        end = text.rfind("}")
-        if start == -1 or end == -1 or start >= end:
-            return ""
-
-        json_text = text[start : end + 1]
-        json_text = self._strip_json_comments(json_text)
-        json_text = self._strip_trailing_commas(json_text)
-        return json_text
-
-    @staticmethod
-    def _strip_json_comments(text: str) -> str:
-        """删除 JSON 中的注释，同时保留字符串字面量原文。
-
-        功能：
-            某些模型会把 JSON 包上 `//` 或 `/* */` 注释。这里用字符级状态机清洗，是为了
-            精确避开字符串字面量里的 `//` 与 `/*`，避免把合法文本误删。
-
-        Edge Cases:
-            - 只有在字符串外部才识别注释起始符，保证 URL、代码片段等文本内容不受影响
-            - 未闭合块注释会被尽可能跳过到文本末尾，优先保证解析继续进行
-        """
-        result: list[str] = []
-        index = 0
-        in_string = False
-        escaped = False
-        length = len(text)
-
-        while index < length:
-            char = text[index]
-            next_char = text[index + 1] if index + 1 < length else ""
-
-            if in_string:
-                result.append(char)
-                if escaped:
-                    escaped = False
-                elif char == "\\":
-                    escaped = True
-                elif char == '"':
-                    in_string = False
-                index += 1
-                continue
-
-            if char == '"':
-                in_string = True
-                result.append(char)
-                index += 1
-                continue
-
-            if char == "/" and next_char == "/":
-                index += 2
-                while index < length and text[index] not in ("\n", "\r"):
-                    index += 1
-                continue
-
-            if char == "/" and next_char == "*":
-                index += 2
-                while index + 1 < length and not (text[index] == "*" and text[index + 1] == "/"):
-                    index += 1
-                index += 2
-                continue
-
-            result.append(char)
-            index += 1
-
-        return "".join(result)
-
-    @staticmethod
-    def _strip_trailing_commas(text: str) -> str:
-        """删除对象和数组闭合前的尾逗号。
-
-        功能：
-            模型常见脏输出之一是对象或数组尾逗号。这里继续沿用字符级扫描，避免正则在字符串
-            场景下误删合法逗号。
-
-        Edge Cases:
-            - 仅在字符串外部识别尾逗号，防止正文里的 `,]`/`,}` 片段被误处理
-            - 只跳过真正紧邻闭合符的逗号，不影响正常字段分隔
-        """
-        result: list[str] = []
-        index = 0
-        in_string = False
-        escaped = False
-        length = len(text)
-
-        while index < length:
-            char = text[index]
-
-            if in_string:
-                result.append(char)
-                if escaped:
-                    escaped = False
-                elif char == "\\":
-                    escaped = True
-                elif char == '"':
-                    in_string = False
-                index += 1
-                continue
-
-            if char == '"':
-                in_string = True
-                result.append(char)
-                index += 1
-                continue
-
-            if char == ",":
-                lookahead = index + 1
-                while lookahead < length and text[lookahead].isspace():
-                    lookahead += 1
-                if lookahead < length and text[lookahead] in ("]", "}"):
-                    index += 1
-                    continue
-
-            result.append(char)
-            index += 1
-
-        return "".join(result)
+        return parsed
 
     def _normalize_spec_shape(self, spec: dict[str, Any] | None) -> dict[str, Any] | None:
         """将第五阶段输出统一折叠为 flat spec。

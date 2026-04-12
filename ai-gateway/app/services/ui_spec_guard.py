@@ -6,6 +6,7 @@ from typing import Any
 from app.models.schemas import ApiQueryUIAction, ApiQueryUIRuntime
 from app.services.api_query_request_schema_gate import build_runtime_invoke_api
 from app.services.ui_catalog_service import UICatalogService
+from app.utils.state_path_utils import state_path_exists
 
 
 @dataclass(frozen=True, slots=True)
@@ -438,7 +439,7 @@ class UISpecGuard:
         errors: list[UISpecValidationError],
     ) -> None:
         """校验状态路径是否真实存在。"""
-        if not _state_path_exists(state, pointer):
+        if not state_path_exists(state, pointer):
             errors.append(
                 UISpecValidationError(
                     code="state_path_missing",
@@ -499,36 +500,3 @@ def _resolve_allowed_request_fields(
         return request_field_whitelist_by_api[api]
     return None
 
-
-def _state_path_exists(state: dict[str, Any], pointer: str) -> bool:
-    """判断 JSON Pointer 风格路径是否存在于 state 中。
-
-    功能：
-        `$bindState` 的正确性不是靠前端兜底，而是服务端先判定“这条路有没有通”。
-        这里只支持当前网关真实会产出的 `/a/b/c` 风格，避免引入过度复杂的表达式解析。
-    """
-    if pointer in {"", "/"}:
-        return True
-    if not pointer.startswith("/"):
-        return False
-
-    current: Any = state
-    for segment in [item for item in pointer.split("/") if item]:
-        if isinstance(current, dict):
-            if segment not in current:
-                return False
-            current = current[segment]
-            continue
-
-        if isinstance(current, list):
-            if not segment.isdigit():
-                return False
-            index = int(segment)
-            if index < 0 or index >= len(current):
-                return False
-            current = current[index]
-            continue
-
-        return False
-
-    return True
