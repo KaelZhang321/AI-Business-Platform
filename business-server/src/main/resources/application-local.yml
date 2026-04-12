@@ -114,9 +114,9 @@ forest:
     crm:
       services:
         oa:
-         url: http://172.23.15.59:9080/tapi/api/iam
+         url: https://beta-crm.ssss818.com/tapi/api/iam
     oa:
-      url: http://172.23.15.59:9080/api/iam/
+      url: https://beta-crm.ssss818.com/api/iam/
       appKey: AI-RND-WORKFLOW
       appSecret: a8b3949f289647148b073f88e19ee673
       appCode: AI-RND-WORKFLOW

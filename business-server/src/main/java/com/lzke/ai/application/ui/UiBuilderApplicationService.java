@@ -885,7 +885,7 @@ public class UiBuilderApplicationService {
      * @param request 运行时调用请求
      * @return 三方接口的原始响应体解析结果
      */
-    @Transactional
+    //@Transactional
     public Object invokeEndpoint(String endpointId, UiApiInvokeRequest request) {
         UiApiEndpoint endpoint = requireEndpoint(endpointId);
         UiApiSource source = requireSource(endpoint.getSourceId());
