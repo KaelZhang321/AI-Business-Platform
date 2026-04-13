@@ -10,6 +10,7 @@ import com.lzke.ai.application.exam.dto.PatientExamSessionRowResponse;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 
+import java.time.LocalDateTime;
 import java.util.List;
 
 /**
@@ -79,7 +80,10 @@ public interface PatientExamOdsMapper {
     /**
      * 按身份证号查询该患者全部体检主记录。
      */
-    List<PatientExamSessionRowResponse> selectPatientExamSessionsByIdCard(@Param("idCard") String idCard);
+    List<PatientExamSessionRowResponse> selectPatientExamSessionsByIdCard(
+            @Param("idCard") String idCard,
+            @Param("startTime") LocalDateTime startTime
+    );
 
     /**
      * 查询当前页体检主记录下的科室结果明细。

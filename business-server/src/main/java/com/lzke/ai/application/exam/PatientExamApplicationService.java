@@ -29,6 +29,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.time.LocalDateTime;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
@@ -52,6 +53,7 @@ public class PatientExamApplicationService {
 
     private static final Pattern DEPARTMENT_CODE_PATTERN = Pattern.compile("^[A-Za-z0-9_]+$");
     private static final int MAX_BATCH_REPORTS = 10;
+    private static final int DEFAULT_BATCH_QUERY_YEARS = 3;
 
     private final PatientExamOdsMapper patientExamOdsMapper;
 
@@ -144,7 +146,10 @@ public class PatientExamApplicationService {
         String normalizedIdCard = StringUtils.trimWhitespace(request.getIdCard());
         List<PatientExamSessionRowResponse> sessionRows;
         if (StringUtils.hasText(normalizedIdCard)) {
-            sessionRows = patientExamOdsMapper.selectPatientExamSessionsByIdCard(normalizedIdCard);
+            sessionRows = patientExamOdsMapper.selectPatientExamSessionsByIdCard(
+                    normalizedIdCard,
+                    LocalDateTime.now().minusYears(DEFAULT_BATCH_QUERY_YEARS)
+            );
         } else {
             List<String> normalizedStudyIds = request.getStudyIds().stream()
                     .filter(StringUtils::hasText)

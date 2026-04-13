@@ -251,12 +251,51 @@ function formatDebugOutput(value: unknown) {
   }
 }
 
+function openRuleErrorModal(title: string, description: string) {
+  Modal.error({
+    title,
+    content: description,
+    width: 520,
+  })
+}
+
+function applyRuleStatusLocally(
+  ruleId: string,
+  status: string | undefined,
+  setRules: React.Dispatch<React.SetStateAction<RuleRecord[]>>,
+  setSelectedRuleDetail: React.Dispatch<React.SetStateAction<RuleRecord | undefined>>,
+) {
+  setRules((prev) => prev.map((item) => (
+    item.id === ruleId ? { ...item, status } : item
+  )))
+  setSelectedRuleDetail((prev) => (
+    prev?.id === ruleId ? { ...prev, status } : prev
+  ))
+}
+
+function applyRuleLocally(
+  nextRule: RuleRecord,
+  setRules: React.Dispatch<React.SetStateAction<RuleRecord[]>>,
+  setSelectedRuleDetail: React.Dispatch<React.SetStateAction<RuleRecord | undefined>>,
+) {
+  if (!nextRule.id) {
+    return
+  }
+  setRules((prev) => prev.map((item) => (
+    item.id === nextRule.id ? { ...item, ...nextRule } : item
+  )))
+  setSelectedRuleDetail((prev) => (
+    prev?.id === nextRule.id ? { ...prev, ...nextRule } : prev
+  ))
+}
+
 export function RuleEngineTab() {
   const { message } = App.useApp()
   const [rules, setRules] = useState<RuleRecord[]>([])
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [debugging, setDebugging] = useState(false)
+  const [togglingRuleId, setTogglingRuleId] = useState<string>()
   const [selectedRuleId, setSelectedRuleId] = useState<string>()
   const [selectedRuleDetail, setSelectedRuleDetail] = useState<RuleRecord>()
   const [selectedNodeId, setSelectedNodeId] = useState<string>()
@@ -336,6 +375,7 @@ export function RuleEngineTab() {
           </Button>
           <Button
             size="small"
+            loading={togglingRuleId === record.id}
             onClick={(event) => {
               event.stopPropagation()
               void handleToggleStatus(record)
@@ -433,6 +473,10 @@ export function RuleEngineTab() {
 
   async function handleCreateRule() {
     const values = await createForm.validateFields()
+    if (editingRuleId && selectedRule?.status === '1') {
+      openRuleErrorModal('当前规则不可编辑', '激活状态的规则不允许修改，请先切换为草稿或停用后再编辑。')
+      return
+    }
     setSaving(true)
     try {
       const response = await ruleApi.saveOrUpdateRule({
@@ -447,6 +491,7 @@ export function RuleEngineTab() {
         description: values.description,
       })
       if (!response.success) {
+        openRuleErrorModal(editingRuleId ? '更新规则失败' : '创建规则失败', response.message || '规则保存失败')
         message.error(response.message || '创建规则失败')
         return
       }
@@ -540,11 +585,21 @@ export function RuleEngineTab() {
     if (!rule.id) {
       return
     }
+    const nextStatus = rule.status === '1' ? '0' : '1'
+    setTogglingRuleId(rule.id)
     try {
+      applyRuleStatusLocally(rule.id, nextStatus, setRules, setSelectedRuleDetail)
+
       const response = await ruleApi.enableRule(rule.id)
       if (!response.success) {
+        applyRuleStatusLocally(rule.id, rule.status, setRules, setSelectedRuleDetail)
         message.error(response.message || '切换状态失败')
         return
+      }
+      if (response.data?.id) {
+        applyRuleLocally(response.data, setRules, setSelectedRuleDetail)
+      } else {
+        applyRuleStatusLocally(rule.id, nextStatus, setRules, setSelectedRuleDetail)
       }
       message.success('规则状态已切换')
       await loadRules(pagination.current, pagination.pageSize)
@@ -552,7 +607,10 @@ export function RuleEngineTab() {
         await handleSelectRule(rule.id, true)
       }
     } catch (error) {
+      applyRuleStatusLocally(rule.id, rule.status, setRules, setSelectedRuleDetail)
       message.error(error instanceof Error ? error.message : '切换状态失败')
+    } finally {
+      setTogglingRuleId(undefined)
     }
   }
 
@@ -618,6 +676,10 @@ export function RuleEngineTab() {
       message.warning('请先选择一条规则')
       return
     }
+    if (selectedRule.status === '1') {
+      openRuleErrorModal('当前规则不可保存', '激活状态的规则不允许修改，请先切换为草稿或停用后再保存。')
+      return
+    }
     setSaving(true)
     try {
       const normalizedNodes = editorNodes.map((node, index) => ({
@@ -639,6 +701,7 @@ export function RuleEngineTab() {
         nodeDetail,
       })
       if (!response.success) {
+        openRuleErrorModal('保存规则失败', response.message || '规则保存失败')
         message.error(response.message || '保存规则失败')
         return
       }
@@ -774,7 +837,13 @@ export function RuleEngineTab() {
                   <Button icon={<EyeOutlined />} onClick={() => setPreviewOpen(true)} disabled={!selectedRule}>
                     预览 JSON
                   </Button>
-                  <Button type="primary" icon={<SaveOutlined />} onClick={() => void handleSaveRule()} disabled={!selectedRule} loading={saving}>
+                  <Button
+                    type="primary"
+                    icon={<SaveOutlined />}
+                    onClick={() => void handleSaveRule()}
+                    disabled={!selectedRule || selectedRule.status === '1'}
+                    loading={saving}
+                  >
                     保存规则
                   </Button>
                 </Space>
@@ -783,24 +852,31 @@ export function RuleEngineTab() {
               {!selectedRule ? (
                 <Empty description="左侧选择规则后，这里会显示规则详情和节点编辑器" />
               ) : (
-                <div className="flex flex-wrap items-center gap-x-10 gap-y-3 text-sm text-slate-600">
-                  <div>
-                    <span className="mr-2 text-slate-400">规则编码:</span>
-                    <span className="font-medium text-slate-900">{selectedRule.ruleCode || '-'}</span>
-                  </div>
-                  <div>
-                    <span className="mr-2 text-slate-400">版本:</span>
-                    <span className="font-medium text-slate-900">{selectedRule.version || '-'}</span>
-                  </div>
-                  <div className="flex items-center">
-                    <span className="mr-2 text-slate-400">状态:</span>
-                    <Tag color={STATUS_META[selectedRule.status ?? '0']?.color ?? 'default'}>
-                      {STATUS_META[selectedRule.status ?? '0']?.label ?? (selectedRule.status || '-')}
-                    </Tag>
-                  </div>
-                  <div>
-                    <span className="mr-2 text-slate-400">更新时间:</span>
-                    <span className="font-medium text-slate-900">{selectedRule.updatedTime ?? selectedRule.createdTime ?? '-'}</span>
+                <div className="space-y-4">
+                  {selectedRule.status === '1' ? (
+                    <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
+                      当前规则处于启用状态，后端禁止直接修改。请先点击“切换状态”改为草稿或停用，再保存节点编排。
+                    </div>
+                  ) : null}
+                  <div className="flex flex-wrap items-center gap-x-10 gap-y-3 text-sm text-slate-600">
+                    <div>
+                      <span className="mr-2 text-slate-400">规则编码:</span>
+                      <span className="font-medium text-slate-900">{selectedRule.ruleCode || '-'}</span>
+                    </div>
+                    <div>
+                      <span className="mr-2 text-slate-400">版本:</span>
+                      <span className="font-medium text-slate-900">{selectedRule.version || '-'}</span>
+                    </div>
+                    <div className="flex items-center">
+                      <span className="mr-2 text-slate-400">状态:</span>
+                      <Tag color={STATUS_META[selectedRule.status ?? '0']?.color ?? 'default'}>
+                        {STATUS_META[selectedRule.status ?? '0']?.label ?? (selectedRule.status || '-')}
+                      </Tag>
+                    </div>
+                    <div>
+                      <span className="mr-2 text-slate-400">更新时间:</span>
+                      <span className="font-medium text-slate-900">{selectedRule.updatedTime ?? selectedRule.createdTime ?? '-'}</span>
+                    </div>
                   </div>
                 </div>
               )}

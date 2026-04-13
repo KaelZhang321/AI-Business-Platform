@@ -23,7 +23,7 @@ export const ruleApi = {
     return unwrapRemote<void>(businessClient.delete(`/api/v1/rule/delete/${id}`))
   },
   enableRule(id: number | string) {
-    return unwrapRemote<void>(businessClient.get(`/api/v1/rule/enable/${id}`))
+    return unwrapRemote<RuleRecord>(businessClient.post(`/api/v1/rule/enable/${id}`))
   },
   executeRule(ruleCode: string, version: number | string, params: RuleExecuteParams) {
     return unwrapRemote<unknown>(businessClient.post(`/api/v1/rule/${ruleCode}/${version}`, params))
