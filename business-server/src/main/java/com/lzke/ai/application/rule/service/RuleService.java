@@ -165,8 +165,7 @@ public class RuleService extends ServiceImpl<RuleMapper, Rule> {
 		return ResponseDto.success();
 	}
 	
-	@SuppressWarnings("rawtypes")
-	public ResponseDto enable(Long id) {
+	public ResponseDto<Rule> enable(Long id) {
 		Rule rule = this.getById(id);
 		if("1".equals(rule.getStatus())) {
 			rule.setStatus("0");
@@ -174,7 +173,7 @@ public class RuleService extends ServiceImpl<RuleMapper, Rule> {
 			rule.setStatus("1");
 		}
 		this.updateById(rule);
-		return ResponseDto.success();
+		return this.getRuleById(id);
 	}
 
 }

@@ -80,7 +80,13 @@ public class RuleController {
      */
     @Operation(summary = "启用禁用")
     @GetMapping("/enable/{id}")
-    public ResponseDto enable(@PathVariable("id") Long id) {
+    public ResponseDto<Rule> enable(@PathVariable("id") Long id) {
+    	return ruleService.enable(id);
+    }
+
+    @Operation(summary = "启用禁用")
+    @PostMapping("/enable/{id}")
+    public ResponseDto<Rule> enableByPost(@PathVariable("id") Long id) {
     	return ruleService.enable(id);
     }
 
