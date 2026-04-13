@@ -36,6 +36,7 @@ import type {
   RuleCanvasEdge,
   RuleCanvasNode,
   RuleCanvasNodeType,
+  RuleDataSourceOption,
   RuleEditorNodeFormValues,
   RuleRecord,
   RuleValidationRule,
@@ -86,6 +87,7 @@ function createDefaultNodeFormValues(type: RuleCanvasNodeType, label?: string): 
     nodeGroup: 1,
     validationRules: type === 'input' ? [{ paramName: '', type: 'NOT_NULL', value: '' }] : [],
     nodeSql: '',
+    dataSourceKey: '',
     resultKey: '',
     resultType: '',
     sourceKey: '',
@@ -113,7 +115,11 @@ function createNodeConfig(type: RuleCanvasNodeType, values: RuleEditorNodeFormVa
     case 'input':
       return { validationRules: values.validationRules }
     case 'sql':
-      return { resultKey: values.resultKey, resultType: values.resultType }
+      return {
+        resultKey: values.resultKey,
+        resultType: values.resultType,
+        ...(values.dataSourceKey ? { dataSourceKey: values.dataSourceKey } : {}),
+      }
     case 'parse':
       return {
         sourceKey: values.sourceKey,
@@ -174,6 +180,7 @@ function extractNodeFormValues(node: RuleCanvasNode): RuleEditorNodeFormValues {
     nodeGroup: Number(params.nodeGroup ?? 1),
     validationRules: (config.validationRules as RuleValidationRule[] | undefined) ?? [],
     nodeSql: params.nodeSql,
+    dataSourceKey: (config.dataSourceKey as string | undefined) ?? '',
     resultKey: (config.resultKey as string | undefined) ?? '',
     resultType: (config.resultType as string | undefined) ?? '',
     sourceKey: (config.sourceKey as string | undefined) ?? '',
@@ -261,6 +268,7 @@ export function RuleEngineTab() {
   const [debugResult, setDebugResult] = useState('')
   const [previewOpen, setPreviewOpen] = useState(false)
   const [editorNodes, setEditorNodes] = useState<RuleCanvasNode[]>([])
+  const [dataSources, setDataSources] = useState<RuleDataSourceOption[]>([])
   const [nodeForm] = Form.useForm<RuleEditorNodeFormValues>()
   const [createForm] = Form.useForm<Pick<RuleRecord, 'ruleName' | 'ruleCode' | 'description'>>()
 
@@ -346,6 +354,10 @@ export function RuleEngineTab() {
   ]
 
   useEffect(() => {
+    void loadDataSources()
+  }, [])
+
+  useEffect(() => {
     void loadRules(pagination.current, pagination.pageSize)
   }, [pagination.current, pagination.pageSize])
 
@@ -403,6 +415,19 @@ export function RuleEngineTab() {
       message.error(error instanceof Error ? error.message : '加载规则列表失败')
     } finally {
       setLoading(false)
+    }
+  }
+
+  async function loadDataSources() {
+    try {
+      const response = await ruleApi.listDataSources()
+      if (!response.success) {
+        message.error(response.message || '加载数据源列表失败')
+        return
+      }
+      setDataSources(response.data ?? [])
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '加载数据源列表失败')
     }
   }
 
@@ -913,10 +938,24 @@ export function RuleEngineTab() {
                                   </Form.Item>
                                   <Row gutter={16}>
                                     <Col span={12}>
+                                      <Form.Item name="dataSourceKey" label="执行数据源">
+                                        <Select
+                                          allowClear
+                                          placeholder="不选则使用默认数据源"
+                                          options={dataSources.map((item) => ({
+                                            label: item.defaultSelected ? `${item.label}（默认）` : item.label,
+                                            value: item.key,
+                                          }))}
+                                        />
+                                      </Form.Item>
+                                    </Col>
+                                    <Col span={12}>
                                       <Form.Item name="resultKey" label="结果 Key">
                                         <Input />
                                       </Form.Item>
                                     </Col>
+                                  </Row>
+                                  <Row gutter={16}>
                                     <Col span={12}>
                                       <Form.Item name="resultType" label="结果类型" rules={[{ required: true, message: '请选择结果类型' }]}>
                                         <Select options={[

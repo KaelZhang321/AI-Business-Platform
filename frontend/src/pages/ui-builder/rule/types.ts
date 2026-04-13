@@ -35,6 +35,12 @@ export interface RuleRecord {
   ruleNodes?: RuleNodeRecord[]
 }
 
+export interface RuleDataSourceOption {
+  key: string
+  label: string
+  defaultSelected: boolean
+}
+
 export interface RuleNodeRecord {
   id?: string
   ruleId?: string
@@ -98,6 +104,7 @@ export interface RuleEditorNodeFormValues {
   nodeGroup: number
   validationRules: RuleValidationRule[]
   nodeSql?: string
+  dataSourceKey?: string
   resultKey?: string
   resultType?: string
   sourceKey?: string

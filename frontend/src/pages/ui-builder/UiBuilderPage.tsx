@@ -3,6 +3,7 @@ import { Alert, Spin, Tabs, Typography, message } from 'antd'
 
 import { uiBuilderApi } from './api'
 import { EndpointRoleTab } from './components/EndpointRoleTab'
+import { FlowLogTab } from './components/FlowLogTab'
 import { JsonRenderPlaygroundTab } from './components/JsonRenderPlaygroundTab'
 import { OverviewTab } from './components/OverviewTab'
 import { ReleaseTab } from './components/ReleaseTab'
@@ -23,6 +24,7 @@ import type {
   UiApiEndpointRequest,
   UiApiEndpointRole,
   UiApiEndpointRoleBindRequest,
+  UiApiFlowLog,
   UiApiSource,
   UiApiSourceRequest,
   UiApiTag,
@@ -110,6 +112,7 @@ export function UiBuilderPage() {
   const [roles, setRoles] = useState<UiRole[]>([])
   const [endpointRoleRelations, setEndpointRoleRelations] = useState<UiApiEndpointRole[]>([])
   const [testLogs, setTestLogs] = useState<UiApiTestLog[]>([])
+  const [flowLogs, setFlowLogs] = useState<UiApiFlowLog[]>([])
   const [testResult, setTestResult] = useState<UiApiTestResponse | null>(null)
   const [projects, setProjects] = useState<UiProject[]>([])
   const [pages, setPages] = useState<UiPage[]>([])
@@ -127,6 +130,10 @@ export function UiBuilderPage() {
   const [endpointKeyword, setEndpointKeyword] = useState('')
   const [endpointPathKeyword, setEndpointPathKeyword] = useState('')
   const [endpointStatusFilter, setEndpointStatusFilter] = useState('all')
+  const [flowLogFlowNum, setFlowLogFlowNum] = useState('')
+  const [flowLogRequestUrl, setFlowLogRequestUrl] = useState('')
+  const [flowLogCreatedBy, setFlowLogCreatedBy] = useState('')
+  const [flowLogInvokeStatus, setFlowLogInvokeStatus] = useState('')
 
   const [sourcePagination, setSourcePagination] = useState<PaginationState>(createPaginationState())
   const [semanticFieldPagination, setSemanticFieldPagination] = useState<PaginationState>(createPaginationState())
@@ -135,6 +142,7 @@ export function UiBuilderPage() {
   const [endpointPagination, setEndpointPagination] = useState<PaginationState>(createPaginationState())
   const [roleRelationPagination, setRoleRelationPagination] = useState<PaginationState>(createPaginationState())
   const [testLogPagination, setTestLogPagination] = useState<PaginationState>(createPaginationState())
+  const [flowLogPagination, setFlowLogPagination] = useState<PaginationState>(createPaginationState())
   const [projectPagination, setProjectPagination] = useState<PaginationState>(createPaginationState())
   const [pagePagination, setPagePagination] = useState<PaginationState>(createPaginationState())
   const [versionPagination, setVersionPagination] = useState<PaginationState>(createPaginationState())
@@ -145,6 +153,7 @@ export function UiBuilderPage() {
   const [roleLoading, setRoleLoading] = useState(false)
   const [studioLoading, setStudioLoading] = useState(false)
   const [releaseLoading, setReleaseLoading] = useState(false)
+  const [flowLogLoading, setFlowLogLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const selectedEndpoint = endpoints.find((item) => item.id === selectedEndpointId)
@@ -454,6 +463,54 @@ export function UiBuilderPage() {
       cancelled = true
     }
   }, [messageApi, selectedEndpointId, testLogPagination.page, testLogPagination.size])
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function loadFlowLogs() {
+      setFlowLogLoading(true)
+      try {
+        const result = await uiBuilderApi.listFlowLogs(
+          {
+            page: flowLogPagination.page,
+            size: flowLogPagination.size,
+          },
+          {
+            ...(flowLogFlowNum.trim() ? { flowNum: flowLogFlowNum.trim() } : {}),
+            ...(flowLogRequestUrl.trim() ? { requestUrl: flowLogRequestUrl.trim() } : {}),
+            ...(flowLogCreatedBy.trim() ? { createdBy: flowLogCreatedBy.trim() } : {}),
+            ...(flowLogInvokeStatus.trim() ? { invokeStatus: flowLogInvokeStatus.trim() } : {}),
+          },
+        )
+        if (!cancelled) {
+          setFlowLogs(result.data)
+          setFlowLogPagination(toPaginationState(result))
+        }
+      } catch (err) {
+        if (!cancelled) {
+          messageApi.error(getErrorMessage(err, '加载调用日志失败'))
+        }
+      } finally {
+        if (!cancelled) {
+          setFlowLogLoading(false)
+        }
+      }
+    }
+
+    void loadFlowLogs()
+
+    return () => {
+      cancelled = true
+    }
+  }, [
+    flowLogCreatedBy,
+    flowLogFlowNum,
+    flowLogInvokeStatus,
+    flowLogPagination.page,
+    flowLogPagination.size,
+    flowLogRequestUrl,
+    messageApi,
+  ])
 
   useEffect(() => {
     let cancelled = false
@@ -1396,6 +1453,46 @@ export function UiBuilderPage() {
                 onLoadEndpointsBySource={handleLoadEndpointsBySource}
                 onBindRelations={handleBindEndpointRoleRelations}
                 onDeleteRelation={handleDeleteEndpointRoleRelation}
+              />
+            ),
+          },
+          {
+            key: 'flow-logs',
+            label: '调用日志',
+            children: (
+              <FlowLogTab
+                logs={flowLogs}
+                loading={flowLogLoading}
+                filters={{
+                  flowNum: flowLogFlowNum,
+                  requestUrl: flowLogRequestUrl,
+                  createdBy: flowLogCreatedBy,
+                  invokeStatus: flowLogInvokeStatus,
+                }}
+                pagination={{
+                  current: flowLogPagination.page,
+                  pageSize: flowLogPagination.size,
+                  total: flowLogPagination.total,
+                }}
+                onFlowNumChange={(value) => {
+                  setFlowLogFlowNum(value)
+                  setFlowLogPagination((prev) => ({ ...prev, page: 1 }))
+                }}
+                onRequestUrlChange={(value) => {
+                  setFlowLogRequestUrl(value)
+                  setFlowLogPagination((prev) => ({ ...prev, page: 1 }))
+                }}
+                onCreatedByChange={(value) => {
+                  setFlowLogCreatedBy(value)
+                  setFlowLogPagination((prev) => ({ ...prev, page: 1 }))
+                }}
+                onInvokeStatusChange={(value) => {
+                  setFlowLogInvokeStatus(value)
+                  setFlowLogPagination((prev) => ({ ...prev, page: 1 }))
+                }}
+                onPageChange={(page, size) => {
+                  setFlowLogPagination((prev) => ({ ...prev, page, size }))
+                }}
               />
             ),
           },
