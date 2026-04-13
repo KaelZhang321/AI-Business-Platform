@@ -122,6 +122,29 @@
         limit 1
     </select>
 
+    <select id="selectPatientExamSessionsByStudyIds" resultType="com.lzke.ai.application.exam.dto.PatientExamSessionRowResponse">
+        select
+            <include refid="patientExamSelectColumns"/>
+        from ods_tj_jcxx p
+        left join ods_tj_jlb l on l.`StudyID` = p.`ID`
+        left join ods_tj_xmzh x on x.`XMDM` = p.`ZHXMDM`
+        where p.`ID` in
+        <foreach collection="studyIds" item="studyId" open="(" separator="," close=")">
+            #{studyId}
+        </foreach>
+        order by coalesce(p.`JCRQ`, p.`JDRQ`, l.`JLRQ`, p.`UpDateTime`) desc, p.`ID` desc
+    </select>
+
+    <select id="selectPatientExamSessionsByIdCard" resultType="com.lzke.ai.application.exam.dto.PatientExamSessionRowResponse">
+        select
+            <include refid="patientExamSelectColumns"/>
+        from ods_tj_jcxx p
+        left join ods_tj_jlb l on l.`StudyID` = p.`ID`
+        left join ods_tj_xmzh x on x.`XMDM` = p.`ZHXMDM`
+        where p.`SFZH` = #{idCard}
+        order by coalesce(p.`JCRQ`, p.`JDRQ`, l.`JLRQ`, p.`UpDateTime`) desc, p.`ID` desc
+    </select>
+
     <select id="selectPatientExamDepartmentItems" resultType="com.lzke.ai.application.exam.dto.PatientExamResultItemResponse">
         select *
         from (

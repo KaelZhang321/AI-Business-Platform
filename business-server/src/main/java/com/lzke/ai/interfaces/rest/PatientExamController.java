@@ -1,6 +1,7 @@
 package com.lzke.ai.interfaces.rest;
 
 import com.lzke.ai.application.exam.PatientExamApplicationService;
+import com.lzke.ai.application.exam.dto.PatientExamBatchResultQueryRequest;
 import com.lzke.ai.application.exam.dto.PatientExamDepartmentResponse;
 import com.lzke.ai.application.exam.dto.PatientExamPatientInfoResponse;
 import com.lzke.ai.application.exam.dto.PatientExamPatientQueryRequest;
@@ -91,5 +92,19 @@ public class PatientExamController {
             @Valid @RequestBody PatientExamResultQueryRequest request
     ) {
         return ApiResponse.ok(patientExamApplicationService.getExamResult(request));
+    }
+
+    /**
+     * 批量查询多次体检结果。
+     */
+    @Operation(
+            summary = "批量查询体检结果",
+            description = "根据studyId列表批量查询多次体检结果；可选传科室编码列表，不传则查询全部科室，单次最多支持10份报告"
+    )
+    @PostMapping("/results/batch-query")
+    public ApiResponse<List<PatientExamSessionResponse>> getBatchExamResults(
+            @Valid @RequestBody PatientExamBatchResultQueryRequest request
+    ) {
+        return ApiResponse.ok(patientExamApplicationService.getBatchExamResults(request));
     }
 }

@@ -1,5 +1,6 @@
 package com.lzke.ai.application.exam;
 
+import com.lzke.ai.application.exam.dto.PatientExamBatchResultQueryRequest;
 import com.lzke.ai.application.exam.dto.PatientExamDepartmentResponse;
 import com.lzke.ai.application.exam.dto.PatientExamDepartmentResultResponse;
 import com.lzke.ai.application.exam.dto.PatientExamDepartmentTable;
@@ -50,6 +51,7 @@ import java.util.stream.Collectors;
 public class PatientExamApplicationService {
 
     private static final Pattern DEPARTMENT_CODE_PATTERN = Pattern.compile("^[A-Za-z0-9_]+$");
+    private static final int MAX_BATCH_REPORTS = 10;
 
     private final PatientExamOdsMapper patientExamOdsMapper;
 
@@ -131,6 +133,60 @@ public class PatientExamApplicationService {
     }
 
     /**
+     * 批量查询多次体检结果。
+     *
+     * <p>前端通常会先从体检记录列表勾选若干次体检做对比，所以这里支持按 studyId 批量拉取；
+     * 为了控制动态科室分表的查询规模，单次最多支持 10 份体检报告。
+     */
+    public List<PatientExamSessionResponse> getBatchExamResults(PatientExamBatchResultQueryRequest request) {
+        validateBatchExamResultRequest(request);
+
+        String normalizedIdCard = StringUtils.trimWhitespace(request.getIdCard());
+        List<PatientExamSessionRowResponse> sessionRows;
+        if (StringUtils.hasText(normalizedIdCard)) {
+            sessionRows = patientExamOdsMapper.selectPatientExamSessionsByIdCard(normalizedIdCard);
+        } else {
+            List<String> normalizedStudyIds = request.getStudyIds().stream()
+                    .filter(StringUtils::hasText)
+                    .map(String::trim)
+                    .distinct()
+                    .toList();
+            sessionRows = patientExamOdsMapper.selectPatientExamSessionsByStudyIds(normalizedStudyIds);
+        }
+
+        if (sessionRows.isEmpty()) {
+            return Collections.emptyList();
+        }
+
+        List<String> normalizedDepartmentCodes = normalizeDepartmentCodes(request.getDepartmentCodes());
+        List<PatientExamDepartmentTable> tables = patientExamOdsMapper.selectDepartmentTables(normalizedDepartmentCodes);
+        if (tables.isEmpty()) {
+            return sessionRows.stream()
+                    .map(row -> buildSession(row, Collections.emptyList()))
+                    .toList();
+        }
+
+        List<PatientExamDepartmentTable> resolvedTables = resolveTables(tables);
+        if (resolvedTables.isEmpty()) {
+            return sessionRows.stream()
+                    .map(row -> buildSession(row, Collections.emptyList()))
+                    .toList();
+        }
+
+        List<PatientExamResultItemResponse> detailRows = patientExamOdsMapper.selectPatientExamDepartmentItems(
+                sessionRows.stream().map(PatientExamSessionRowResponse::getStudyId).distinct().toList(),
+                resolvedTables
+        );
+        Map<String, List<PatientExamResultItemResponse>> detailByStudyId = detailRows.stream()
+                .filter(row -> StringUtils.hasText(row.getStudyId()))
+                .collect(Collectors.groupingBy(PatientExamResultItemResponse::getStudyId, LinkedHashMap::new, Collectors.toList()));
+
+        return sessionRows.stream()
+                .map(row -> buildSession(row, detailByStudyId.getOrDefault(row.getStudyId(), Collections.emptyList())))
+                .toList();
+    }
+
+    /**
      * 校验患者筛选条件。
      */
     private void validatePatientFilters(PatientExamPatientQueryRequest request) {
@@ -168,6 +224,34 @@ public class PatientExamApplicationService {
     private void validateExamResultRequest(PatientExamResultQueryRequest request) {
         if (request == null || !StringUtils.hasText(request.getStudyId())) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "studyId不能为空");
+        }
+    }
+
+    /**
+     * 校验批量体检结果查询条件。
+     */
+    private void validateBatchExamResultRequest(PatientExamBatchResultQueryRequest request) {
+        if (request == null) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "批量体检查询请求不能为空");
+        }
+        String normalizedIdCard = StringUtils.trimWhitespace(request.getIdCard());
+        if (StringUtils.hasText(normalizedIdCard)) {
+            return;
+        }
+
+        if (request.getStudyIds() == null || request.getStudyIds().isEmpty()) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "studyIds不能为空");
+        }
+        long count = request.getStudyIds().stream()
+                .filter(StringUtils::hasText)
+                .map(String::trim)
+                .distinct()
+                .count();
+        if (count <= 0) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "studyIds不能为空");
+        }
+        if (count > MAX_BATCH_REPORTS) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "批量查询最多支持10份体检报告");
         }
     }
 
@@ -387,6 +471,11 @@ public class PatientExamApplicationService {
         response.setPackageName(sessionRow.getPackageName());
         response.setAbnormalSummary(sessionRow.getAbnormalSummary());
         response.setFinalConclusion(sessionRow.getFinalConclusion());
+        response.setAbnormalCount((int) detailRows.stream()
+                .map(PatientExamResultItemResponse::getAbnormalFlag)
+                .map(StringUtils::trimWhitespace)
+                .filter(flag -> "1".equals(flag) || "2".equals(flag))
+                .count());
         response.setDepartments(new ArrayList<>(departmentMap.values()));
         return response;
     }

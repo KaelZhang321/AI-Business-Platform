@@ -24,5 +24,12 @@ public class PatientExamSessionResponse {
 
     private String finalConclusion;
 
+    /**
+     * 异常检查项数量。
+     *
+     * <p>按细项 {@code abnormalFlag = 1} 统计。
+     */
+    private Integer abnormalCount;
+
     private List<PatientExamDepartmentResultResponse> departments;
 }

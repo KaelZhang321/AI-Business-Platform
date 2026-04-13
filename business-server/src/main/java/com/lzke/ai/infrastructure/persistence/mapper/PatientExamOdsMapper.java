@@ -72,6 +72,16 @@ public interface PatientExamOdsMapper {
     PatientExamSessionRowResponse selectPatientExamSessionByStudyId(@Param("studyId") String studyId);
 
     /**
+     * 批量按体检主单号查询体检主记录。
+     */
+    List<PatientExamSessionRowResponse> selectPatientExamSessionsByStudyIds(@Param("studyIds") List<String> studyIds);
+
+    /**
+     * 按身份证号查询该患者全部体检主记录。
+     */
+    List<PatientExamSessionRowResponse> selectPatientExamSessionsByIdCard(@Param("idCard") String idCard);
+
+    /**
      * 查询当前页体检主记录下的科室结果明细。
      *
      * <p>这里仅按当前页 {@code studyId} 集合查动态科室表，再由服务层组装成
