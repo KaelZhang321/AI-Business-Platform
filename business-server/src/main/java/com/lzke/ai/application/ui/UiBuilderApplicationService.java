@@ -620,6 +620,49 @@ public class UiBuilderApplicationService {
     }
 
     /**
+     * 分页查询运行时调用日志。
+     *
+     * <p>该列表主要服务 UI Builder 的“调用日志”页签，支持按流程号、请求地址、
+     * 创建人和调用状态做组合筛选，并统一按创建时间倒序返回。
+     *
+     * @param query 分页参数
+     * @param flowNum 流程号，可为空
+     * @param requestUrl 请求地址模糊匹配，可为空
+     * @param createdBy 创建人模糊匹配，可为空
+     * @param invokeStatus 调用状态精确匹配，可为空
+     * @return 分页运行时调用日志
+     */
+    public PageResult<UiApiFlowLog> listFlowLogs(
+            PageQuery query,
+            String flowNum,
+            String requestUrl,
+            String createdBy,
+            String invokeStatus
+    ) {
+        Page<UiApiFlowLog> pageParam = buildPage(query);
+        LambdaQueryWrapper<UiApiFlowLog> wrapper = new LambdaQueryWrapper<UiApiFlowLog>()
+                .orderByDesc(UiApiFlowLog::getCreatedAt)
+                .orderByDesc(UiApiFlowLog::getUpdatedAt);
+        if (StringUtils.hasText(flowNum)) {
+            wrapper.like(UiApiFlowLog::getFlowNum, flowNum.trim());
+        }
+        if (StringUtils.hasText(requestUrl)) {
+            wrapper.like(UiApiFlowLog::getRequestUrl, requestUrl.trim());
+        }
+        if (StringUtils.hasText(createdBy)) {
+            String normalizedCreatedBy = createdBy.trim();
+            wrapper.and(condition -> condition.like(UiApiFlowLog::getCreatedBy, normalizedCreatedBy)
+                    .or()
+                    .like(UiApiFlowLog::getCreatedByName, normalizedCreatedBy));
+        }
+        if (StringUtils.hasText(invokeStatus)) {
+            wrapper.eq(UiApiFlowLog::getInvokeStatus, invokeStatus.trim());
+        }
+        Page<UiApiFlowLog> result = uiApiFlowLogMapper.selectPage(pageParam, wrapper);
+        return PageResult.of(result.getRecords(), result.getTotal(), query.getPage(), query.getSize());
+    }
+
+    /**
      * 分页查询接口与角色的关联关系。
      *
      * <p>该接口主要服务前端“接口角色”页签。当前支持按 `roleId` 过滤，
