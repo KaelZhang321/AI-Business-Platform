@@ -187,7 +187,7 @@ class RuntimeInvokeExecutor:
         url = _build_runtime_invoke_url(entry)
         payload = _build_runtime_invoke_payload(entry, params, trace_id=trace_id, user_id=user_id)
         client = self._get_client()
-        headers = _build_gateway_headers(entry, user_token, always_forward_auth=True)
+        headers = _build_gateway_headers(entry, user_token, always_forward_auth=True, user_id=user_id)
 
         try:
             response = await client.post(url, json=payload, headers=headers)
@@ -204,6 +204,16 @@ class RuntimeInvokeExecutor:
                 error_code="RUNTIME_INVOKE_REQUEST_ERROR",
                 retryable=True,
             )
+
+        response = await self._fallback_retry_without_user_id_header(
+            client=client,
+            url=url,
+            payload=payload,
+            headers=headers,
+            primary_response=response,
+            trace_id=trace_id,
+            api_id=entry.id,
+        )
 
         if response.status_code == 401:
             return _error_result(
@@ -251,6 +261,68 @@ class RuntimeInvokeExecutor:
         """关闭底层 httpx 客户端。"""
         if self._client and not self._client.is_closed:
             await self._client.aclose()
+
+    async def _fallback_retry_without_user_id_header(
+        self,
+        *,
+        client: httpx.AsyncClient,
+        url: str,
+        payload: dict[str, Any],
+        headers: dict[str, str],
+        primary_response: httpx.Response,
+        trace_id: str | None,
+        api_id: str,
+    ) -> httpx.Response:
+        """在 runtime invoke 5xx 且携带 `X-User-Id` 时执行一次兼容重试。
+
+        功能：
+            `X-User-Id` 是网关给 runtime invoke 的主身份线索，但在本地直连调试或上游
+            身份头被错误注入时，下游可能因为该值无法映射而返回 5xx。为了避免把“身份头脏值”
+            直接放大成查询全链路失败，这里仅在 5xx 下做一次无损降级重试：
+            保留 Authorization，不携带 `X-User-Id` 再请求一次。
+
+        Args:
+            client: runtime invoke 的 HTTP 客户端。
+            url: 下游 runtime invoke 地址。
+            payload: 本次调用请求体。
+            headers: 首次调用请求头。
+            primary_response: 首次调用响应。
+            trace_id: 当前链路追踪 ID。
+            api_id: 当前目录接口 ID，用于日志定位。
+
+        Returns:
+            默认返回首次响应；若降级重试成功且状态码进入非 5xx，则返回重试响应。
+
+        Edge Cases:
+            - 只在“首调是 5xx 且存在 X-User-Id”时触发，避免污染正常链路时延
+            - 重试阶段网络异常不会覆盖首调结果，保证错误语义稳定可回放
+        """
+        if primary_response.status_code < 500:
+            return primary_response
+        if "X-User-Id" not in headers:
+            return primary_response
+
+        fallback_headers = dict(headers)
+        fallback_headers.pop("X-User-Id", None)
+        logger.warning(
+            "stage4 runtime invoke fallback retry without X-User-Id trace_id=%s api_id=%s primary_status=%s",
+            trace_id or "-",
+            api_id,
+            primary_response.status_code,
+        )
+        try:
+            fallback_response = await client.post(url, json=payload, headers=fallback_headers)
+        except httpx.RequestError as exc:
+            logger.warning(
+                "stage4 runtime invoke fallback retry failed trace_id=%s api_id=%s reason=%s",
+                trace_id or "-",
+                api_id,
+                exc,
+            )
+            return primary_response
+        if fallback_response.status_code < 500:
+            return fallback_response
+        return primary_response
 
 
 class ApiExecutor:
@@ -337,16 +409,23 @@ def _build_gateway_headers(
     user_token: str | None,
     *,
     always_forward_auth: bool = False,
+    user_id: str | None = None,
 ) -> dict[str, str]:
     """构造网关透传请求头。
 
     功能：
         ai-gateway 只做查询编排，不自行改写业务身份。这里统一在两个执行器里复用同一套
         头部拼装规则，确保 runtime invoke 和旧直连路径都遵守相同的鉴权边界。
+
+        当调用 runtime invoke 时，下游需要拿 `X-User-Id` 做审计与数据权限判定，因此把
+        已经在网关完成可信判定的 user_id 原样透传，避免下游再做一次身份推断。
     """
     headers = {"Content-Type": "application/json"}
     if user_token and (always_forward_auth or entry.auth_required):
         headers["Authorization"] = user_token
+    normalized_user_id = user_id.strip() if user_id else ""
+    if normalized_user_id:
+        headers["X-User-Id"] = normalized_user_id
     return headers
 
 

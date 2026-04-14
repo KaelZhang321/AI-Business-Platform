@@ -279,6 +279,8 @@ class TestRuntimeInvokeExecutor:
         async def handler(request: httpx.Request) -> httpx.Response:
             captured["url"] = str(request.url)
             captured["json"] = json.loads(request.content.decode())
+            captured["x_user_id"] = request.headers.get("X-User-Id")
+            captured["authorization"] = request.headers.get("Authorization")
             return httpx.Response(
                 200,
                 json={
@@ -321,6 +323,8 @@ class TestRuntimeInvokeExecutor:
             "createdBy": "header-user-001",
             "body": {},
         }
+        assert captured["x_user_id"] == "header-user-001"
+        assert captured["authorization"] == "Bearer token"
         assert result.status == ApiQueryExecutionStatus.SUCCESS
         assert result.data == [{"customerId": "C001"}]
         assert result.total == 1
@@ -333,6 +337,7 @@ class TestRuntimeInvokeExecutor:
 
         async def handler(request: httpx.Request) -> httpx.Response:
             captured["json"] = json.loads(request.content.decode())
+            captured["x_user_id"] = request.headers.get("X-User-Id")
             return httpx.Response(
                 200,
                 json={
@@ -374,8 +379,123 @@ class TestRuntimeInvokeExecutor:
             "createdBy": "header-user-002",
             "body": {"customerId": "C002", "filters": {"level": "A"}},
         }
+        assert captured["x_user_id"] == "header-user-002"
         assert result.status == ApiQueryExecutionStatus.SUCCESS
         assert result.data == [{"客户ID": "C002", "订单数": 3}]
+        assert result.total == 1
+
+        await executor.close()
+
+    @pytest.mark.asyncio
+    async def test_call_does_not_send_x_user_id_header_when_user_id_missing(self, monkeypatch):
+        captured: dict[str, object] = {}
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            captured["x_user_id"] = request.headers.get("X-User-Id")
+            captured["json"] = json.loads(request.content.decode())
+            return httpx.Response(
+                200,
+                json={
+                    "code": 200,
+                    "message": "success",
+                    "data": {"data": {"list": [{"customerId": "C003"}], "total": 1}},
+                },
+            )
+
+        monkeypatch.setattr(
+            settings,
+            "api_query_runtime_invoke_url_template",
+            "http://runtime.example/ui-builder/runtime/endpoints/{id}/invoke",
+        )
+        monkeypatch.setattr(settings, "api_query_runtime_created_by", "gateway")
+
+        executor = RuntimeInvokeExecutor()
+        executor._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+        entry = ApiCatalogEntry(
+            id="customer_detail",
+            description="查询客户详情",
+            operation_safety="query",
+            method="GET",
+            path="/api/customer/detail",
+            response_data_path="data.list",
+        )
+        result = await executor.call(
+            entry,
+            {"customerId": "C003"},
+            trace_id="trace-runtime-without-user-id",
+        )
+
+        assert captured["x_user_id"] is None
+        assert captured["json"] == {
+            "flowNum": "trace-runtime-without-user-id",
+            "queryParams": {"customerId": "C003"},
+            "createdBy": "gateway",
+            "body": {},
+        }
+        assert result.status == ApiQueryExecutionStatus.SUCCESS
+
+        await executor.close()
+
+    @pytest.mark.asyncio
+    async def test_call_retries_without_x_user_id_when_primary_response_is_5xx(self, monkeypatch):
+        captured_requests: list[dict[str, object]] = []
+        call_count = 0
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal call_count
+            call_count += 1
+            captured_requests.append(
+                {
+                    "x_user_id": request.headers.get("X-User-Id"),
+                    "authorization": request.headers.get("Authorization"),
+                    "json": json.loads(request.content.decode()),
+                }
+            )
+            if call_count == 1:
+                return httpx.Response(500, json={"code": 500, "message": "系统内部错误，请稍后重试"})
+            return httpx.Response(
+                200,
+                json={
+                    "code": 200,
+                    "message": "success",
+                    "data": {"data": {"list": [{"customerId": "C004"}], "total": 1}},
+                },
+            )
+
+        monkeypatch.setattr(
+            settings,
+            "api_query_runtime_invoke_url_template",
+            "http://runtime.example/ui-builder/runtime/endpoints/{id}/invoke",
+        )
+        monkeypatch.setattr(settings, "api_query_runtime_created_by", "gateway")
+
+        executor = RuntimeInvokeExecutor()
+        executor._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        entry = ApiCatalogEntry(
+            id="customer_retry",
+            description="查询客户详情",
+            operation_safety="query",
+            method="GET",
+            path="/api/customer/detail/{id}",
+            response_data_path="data.list",
+        )
+        result = await executor.call(
+            entry,
+            {"id": "C004"},
+            user_token="Bearer token",
+            user_id="hello",
+            trace_id="trace-runtime-fallback",
+        )
+
+        assert call_count == 2
+        assert captured_requests[0]["x_user_id"] == "hello"
+        assert captured_requests[0]["authorization"] == "Bearer token"
+        assert captured_requests[1]["x_user_id"] is None
+        assert captured_requests[1]["authorization"] == "Bearer token"
+        assert captured_requests[0]["json"] == captured_requests[1]["json"]
+        assert result.status == ApiQueryExecutionStatus.SUCCESS
+        assert result.data == [{"customerId": "C004"}]
         assert result.total == 1
 
         await executor.close()
@@ -930,4 +1050,3 @@ class TestRetrieverCompatibility:
 
         assert retriever._get_output_fields() == _LEGACY_OUTPUT_FIELDS
         assert retriever._get_search_param() == {"metric_type": "IP", "params": {"nprobe": 16}}
-
