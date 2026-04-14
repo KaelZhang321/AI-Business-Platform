@@ -14,15 +14,15 @@ class FakeCursor:
         self._query_rows = query_rows
         self._capture = capture
         self._current_rows: list[dict[str, object]] = []
-        self._execute_count = 0
 
     async def execute(self, sql: str, params=None) -> None:
         executed_sqls = self._capture.setdefault("sqls", [])
         assert isinstance(executed_sqls, list)
         executed_sqls.append(sql)
         self._capture["params"] = params
-        self._current_rows = self._query_rows[self._execute_count]
-        self._execute_count += 1
+        execute_count = int(self._capture.get("global_execute_count", 0))
+        self._current_rows = self._query_rows[execute_count]
+        self._capture["global_execute_count"] = execute_count + 1
 
     async def fetchall(self) -> list[dict[str, object]]:
         return list(self._current_rows)
@@ -107,6 +107,12 @@ def _field_dict_row() -> dict[str, object]:
         "valueSchema": '{"enum": ["C001"]}',
         "description": "客户主键",
         "is_active": 1,
+        "run_id": "R_20260413_100000_abc123",
+        "review_status": "approved",
+        "current_flag": 1,
+        "risk_level": "high",
+        "human_lock": 0,
+        "conflict_streak": 0,
     }
 
 
@@ -123,6 +129,11 @@ def _alias_row() -> dict[str, object]:
         "confidence": 0.93,
         "priority": 10,
         "is_active": 1,
+        "run_id": "R_20260413_100000_abc123",
+        "review_status": "approved",
+        "current_flag": 1,
+        "human_lock": 0,
+        "conflict_streak": 0,
     }
 
 
@@ -139,7 +150,16 @@ def _value_map_row() -> dict[str, object]:
         "source": "manual",
         "confidence": 0.88,
         "is_active": 1,
+        "run_id": "R_20260413_100000_abc123",
+        "review_status": "approved",
+        "current_flag": 1,
+        "human_lock": 0,
+        "conflict_streak": 0,
     }
+
+
+def _column_rows(*column_names: str) -> list[dict[str, object]]:
+    return [{"COLUMN_NAME": name} for name in column_names]
 
 
 @pytest.mark.asyncio
@@ -147,7 +167,77 @@ async def test_semantic_field_repository_loads_rules_from_mysql(monkeypatch) -> 
     """验证三张治理表会被依次读取，并转换成类型化快照。"""
 
     capture: dict[str, object] = {}
-    fake_pool = FakePool([[ _field_dict_row() ], [ _alias_row() ], [ _value_map_row() ]], capture)
+    fake_pool = FakePool(
+        [
+            _column_rows(
+                "semantic_key",
+                "standard_key",
+                "entity_code",
+                "canonical_name",
+                "label",
+                "field_type",
+                "value_type",
+                "category",
+                "business_domain",
+                "display_domain_code",
+                "display_domain_label",
+                "display_section_code",
+                "display_section_label",
+                "graph_role",
+                "is_identifier",
+                "is_graph_enabled",
+                "value_schema",
+                "description",
+                "is_active",
+                "run_id",
+                "review_status",
+                "current_flag",
+                "risk_level",
+                "human_lock",
+                "conflict_streak",
+            ),
+            _column_rows(
+                "semantic_key",
+                "alias",
+                "scope_type",
+                "scope_value",
+                "direction",
+                "location",
+                "json_path_pattern",
+                "source",
+                "confidence",
+                "priority",
+                "is_active",
+                "run_id",
+                "review_status",
+                "current_flag",
+                "human_lock",
+                "conflict_streak",
+            ),
+            _column_rows(
+                "semantic_key",
+                "scope_type",
+                "scope_value",
+                "standard_code",
+                "standard_label",
+                "raw_value",
+                "raw_label",
+                "sort_order",
+                "source",
+                "confidence",
+                "is_active",
+                "run_id",
+                "review_status",
+                "current_flag",
+                "human_lock",
+                "conflict_streak",
+            ),
+            [_field_dict_row()],
+            [_alias_row()],
+            [_value_map_row()],
+        ],
+        capture,
+    )
 
     async def fake_create_pool(**kwargs):
         capture["conn_kwargs"] = kwargs
@@ -177,10 +267,15 @@ async def test_semantic_field_repository_loads_rules_from_mysql(monkeypatch) -> 
         "maxsize": 3,
     }
     assert capture["cursor_cls"] is repository_module.aiomysql.DictCursor
-    assert len(capture["sqls"]) == 3
-    assert "FROM semantic_field_dict" in str(capture["sqls"][0])
-    assert "FROM semantic_field_alias" in str(capture["sqls"][1])
-    assert "FROM semantic_field_value_map" in str(capture["sqls"][2])
+    assert len(capture["sqls"]) == 6
+    assert "INFORMATION_SCHEMA.COLUMNS" in str(capture["sqls"][0])
+    assert "INFORMATION_SCHEMA.COLUMNS" in str(capture["sqls"][1])
+    assert "INFORMATION_SCHEMA.COLUMNS" in str(capture["sqls"][2])
+    assert "FROM semantic_field_dict" in str(capture["sqls"][3])
+    assert "FROM semantic_field_alias" in str(capture["sqls"][4])
+    assert "FROM semantic_field_value_map" in str(capture["sqls"][5])
+    assert "current_flag = 1" in str(capture["sqls"][3])
+    assert "review_status = 'approved'" in str(capture["sqls"][3])
     assert fake_pool.closed is True
     assert fake_pool.wait_closed_called is True
 
@@ -209,7 +304,20 @@ async def test_semantic_field_repository_reuses_connection_pool_between_loads(mo
     """同一个仓储实例重复读取时，不应反复新建连接池。"""
 
     capture: dict[str, object] = {"create_pool_calls": 0}
-    fake_pool = FakePool([[ _field_dict_row() ], [ _alias_row() ], [ _value_map_row() ]], capture)
+    fake_pool = FakePool(
+        [
+            _column_rows(*_field_dict_row().keys()),
+            _column_rows(*_alias_row().keys()),
+            _column_rows(*_value_map_row().keys()),
+            [_field_dict_row()],
+            [_alias_row()],
+            [_value_map_row()],
+            [_field_dict_row()],
+            [_alias_row()],
+            [_value_map_row()],
+        ],
+        capture,
+    )
 
     async def fake_create_pool(**kwargs):
         capture["create_pool_calls"] = int(capture["create_pool_calls"]) + 1

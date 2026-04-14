@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import aiomysql
+from datetime import UTC, datetime
 import logging
 import re
 from typing import Any
@@ -58,6 +59,14 @@ WHERE e.status = 'active'
 """
 
 _API_CATALOG_REGISTRY_SELECT_BY_ID_SQL = _API_CATALOG_REGISTRY_SELECT_SQL + "AND e.id = %s\n"
+_API_CATALOG_REGISTRY_SELECT_CHANGED_IDS_SQL = """
+SELECT e.id AS endpointId
+FROM ui_api_endpoints e
+WHERE e.status = 'active'
+  AND e.updated_at >= %s
+ORDER BY e.updated_at ASC
+LIMIT %s
+"""
 
 
 class ApiCatalogSourceError(RuntimeError):
@@ -120,6 +129,35 @@ class ApiCatalogRegistrySource:
         if not rows:
             return None
         return _build_entry_from_mysql_row(rows[0])
+
+    async def load_changed_api_ids(self, *, updated_since: datetime | None, limit: int = 500) -> list[str]:
+        """按 `updated_at` 探测增量接口 ID。
+
+        功能：
+            稳态阶段如果上游只发“发生过变更”的事件而未携带 API ID，可通过该方法做窗口探测。
+
+        Args:
+            updated_since: 增量窗口起点。为空时回退到 Unix Epoch，表示全量扫描。
+            limit: 最大返回数量，防止单次治理任务被历史积压拖成长事务。
+        """
+
+        lower_bound = updated_since or datetime(1970, 1, 1, tzinfo=UTC)
+        rows = await self._fetch_mysql_rows(
+            _API_CATALOG_REGISTRY_SELECT_CHANGED_IDS_SQL,
+            (
+                lower_bound.strftime("%Y-%m-%d %H:%M:%S"),
+                max(1, int(limit)),
+            ),
+        )
+        api_ids: list[str] = []
+        seen: set[str] = set()
+        for row in rows:
+            api_id = str(row.get("endpointId") or "").strip()
+            if not api_id or api_id in seen:
+                continue
+            seen.add(api_id)
+            api_ids.append(api_id)
+        return api_ids
 
     async def _load_mysql_entries(self) -> list[ApiCatalogEntry]:
         """从业务 MySQL 直连抽取接口目录元数据。

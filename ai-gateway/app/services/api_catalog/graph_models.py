@@ -56,6 +56,12 @@ class SemanticFieldDictRecord(BaseModel):
     value_schema: dict[str, Any] | None = None
     description: str | None = None
     is_active: bool = True
+    run_id: str | None = None
+    review_status: str | None = None
+    current_flag: bool | None = None
+    risk_level: str | None = None
+    human_lock: bool = False
+    conflict_streak: int = 0
 
     @computed_field(return_type=str | None)
     @property
@@ -84,6 +90,11 @@ class SemanticFieldAliasRecord(BaseModel):
     confidence: float = Field(1.0, ge=0.0, le=1.0)
     priority: int = 100
     is_active: bool = True
+    run_id: str | None = None
+    review_status: str | None = None
+    current_flag: bool | None = None
+    human_lock: bool = False
+    conflict_streak: int = 0
 
 
 class SemanticFieldValueMapRecord(BaseModel):
@@ -100,6 +111,11 @@ class SemanticFieldValueMapRecord(BaseModel):
     source: str = "manual"
     confidence: float = Field(1.0, ge=0.0, le=1.0)
     is_active: bool = True
+    run_id: str | None = None
+    review_status: str | None = None
+    current_flag: bool | None = None
+    human_lock: bool = False
+    conflict_streak: int = 0
 
 
 class SemanticGovernanceSnapshot(BaseModel):

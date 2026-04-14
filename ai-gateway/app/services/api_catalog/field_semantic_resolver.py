@@ -31,7 +31,7 @@ from app.services.api_catalog.semantic_field_repository import SemanticFieldRepo
 logger = logging.getLogger(__name__)
 
 _ALLOWED_GRAPH_ROLES = {"identifier", "locator", "bridge"}
-_SCOPE_PRIORITY = {"api": 0, "tag": 1, "domain": 2, "global": 3}
+_SCOPE_PRIORITY = {"alias": 0, "api": 1, "tag": 2, "domain": 3, "global": 4}
 _COMMON_EXCLUDED_FIELDS = {
     "status",
     "type",
@@ -162,7 +162,12 @@ def _resolve_field_profile(
     if _is_high_risk_type_conflict(profile.raw_field_type, normalized_value_type):
         confidence = min(confidence, 0.35)
 
-    value_mapping_rule = _summarize_value_mappings(entry, field_record.semantic_key, snapshot.value_maps)
+    value_mapping_rule = _summarize_value_mappings(
+        entry,
+        profile,
+        field_record.semantic_key,
+        snapshot.value_maps,
+    )
     return NormalizedFieldBinding(
         api_id=entry.id,
         direction=profile.direction,
@@ -318,6 +323,7 @@ def _build_name_source(alias_record: SemanticFieldAliasRecord | None) -> str:
 
 def _summarize_value_mappings(
     entry: ApiCatalogEntry,
+    profile: ApiCatalogFieldProfile,
     semantic_key: str,
     value_maps: list[SemanticFieldValueMapRecord],
 ) -> dict[str, object] | None:
@@ -325,7 +331,7 @@ def _summarize_value_mappings(
     matched = [
         record
         for record in value_maps
-        if record.is_active and record.semantic_key == semantic_key and _value_scope_matches(entry, record)
+        if record.is_active and record.semantic_key == semantic_key and _value_scope_matches(entry, profile, record)
     ]
     if not matched:
         return None
@@ -353,9 +359,16 @@ def _scope_matches(entry: ApiCatalogEntry, record: SemanticFieldAliasRecord) -> 
     return scope_value in {"", "*", "global"}
 
 
-def _value_scope_matches(entry: ApiCatalogEntry, record: SemanticFieldValueMapRecord) -> bool:
+def _value_scope_matches(
+    entry: ApiCatalogEntry,
+    profile: ApiCatalogFieldProfile,
+    record: SemanticFieldValueMapRecord,
+) -> bool:
     """判断值映射作用域是否命中当前接口。"""
     scope_value = (record.scope_value or "").strip()
+    if record.scope_type == "alias":
+        # `alias` 作用域只绑定字段名本身，目的是解决不同接口对同一枚举字段复用不同编码的问题。
+        return _normalize_name(scope_value) == _normalize_name(profile.field_name)
     if record.scope_type == "api":
         return scope_value == entry.id
     if record.scope_type == "tag":

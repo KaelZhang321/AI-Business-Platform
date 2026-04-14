@@ -353,6 +353,76 @@ class TestFieldSemanticResolver:
         assert binding.type_source == "semantic_field_dict"
         assert binding.description_source == "semantic_field_dict"
 
+    def test_resolver_supports_alias_scope_value_map(self):
+        """`scope_type=alias` 应按字段原名命中值域映射，避免跨字段污染枚举解释。"""
+
+        entry = _make_entry(
+            request_field_profiles=[
+                _request_profile(
+                    "sex_code",
+                    location="body",
+                    raw_field_type="string",
+                    raw_description="性别编码",
+                )
+            ]
+        )
+        snapshot = SemanticGovernanceSnapshot(
+            field_dicts=[
+                _field_dict(
+                    "Customer.gender",
+                    standard_key="gender",
+                    entity_code="Customer",
+                    canonical_name="gender",
+                    label="性别",
+                    field_type="select",
+                    value_type="string",
+                    graph_role="locator",
+                    is_identifier=False,
+                    is_graph_enabled=True,
+                )
+            ],
+            aliases=[
+                _alias(
+                    "Customer.gender",
+                    "sex_code",
+                    direction="request",
+                    location="body",
+                )
+            ],
+            value_maps=[
+                _value_map(
+                    "Customer.gender",
+                    "male",
+                    "1",
+                    scope_type="alias",
+                    scope_value="sex_code",
+                    standard_label="男",
+                ),
+                _value_map(
+                    "Customer.gender",
+                    "female",
+                    "2",
+                    scope_type="alias",
+                    scope_value="sex_code",
+                    standard_label="女",
+                    sort_order=1,
+                ),
+            ],
+        )
+
+        resolver = ApiFieldSemanticResolver()
+        bindings = resolver.resolve_entry_bindings(entry, governance_snapshot=snapshot)
+
+        assert len(bindings) == 1
+        binding = bindings[0]
+        assert binding.semantic_key == "Customer.gender"
+        assert binding.value_mapping_rule == {
+            "mapping_count": 2,
+            "standard_codes": ["male", "female"],
+            "top_scope_type": "alias",
+            "top_scope_value": "sex_code",
+        }
+
     def test_resolver_prefers_domain_scope_alias_over_global_alias(self):
         entry = _make_entry(
             domain="iam",
