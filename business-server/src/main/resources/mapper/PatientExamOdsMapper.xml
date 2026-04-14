@@ -141,6 +141,22 @@
         group by p.`SFZH`
     </select>
 
+    <select id="selectLatestExamDatesByEncryptedIdCards" resultType="com.lzke.ai.application.exam.dto.MyCustomerLatestExamDateResponse">
+        select
+            src.encrypted_id_card as encryptedIdCard,
+            date_format(max(coalesce(p.`JCRQ`, p.`JDRQ`, l.`JLRQ`, p.`UpDateTime`)), '%Y-%m-%d') as latestExamDate
+        from (
+            <foreach collection="encryptedIdCards" item="encryptedIdCard" separator=" union all ">
+                select
+                    convert(cast(#{encryptedIdCard} as char) using utf8mb4) collate utf8mb4_unicode_ci as encrypted_id_card,
+                    convert(cast(AES_DECRYPT_ECB(#{encryptedIdCard}, 'SecuR2`4LeCzCoRe') as char) using utf8mb4) collate utf8mb4_unicode_ci as plain_id_card
+            </foreach>
+        ) src
+        left join ods_tj_jcxx p on p.`SFZH` = src.plain_id_card
+        left join ods_tj_jlb l on l.`StudyID` = p.`ID`
+        group by src.encrypted_id_card
+    </select>
+
     <select id="countDistinctPatientsByExamTimeRange" resultType="long">
         select count(distinct p.`SFZH`)
         from ods_tj_jcxx p

@@ -1,6 +1,12 @@
 package com.lzke.ai.application.exam;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.lecz.service.tools.core.utils.AuthUtil;
+import com.lzke.ai.application.dto.UiApiInvokeRequest;
+import com.lzke.ai.application.exam.dto.MyCustomerLatestExamDateResponse;
+import com.lzke.ai.application.exam.dto.MyCustomerListItemResponse;
+import com.lzke.ai.application.exam.dto.MyCustomerListQueryRequest;
 import com.lzke.ai.application.exam.dto.MyPatientLatestExamDateResponse;
 import com.lzke.ai.application.exam.dto.MyPatientListItemResponse;
 import com.lzke.ai.application.exam.dto.MyPatientListQueryRequest;
@@ -20,6 +26,7 @@ import com.lzke.ai.application.exam.dto.PatientExamSessionRowResponse;
 import com.lzke.ai.application.exam.dto.PatientExamSessionSummaryResponse;
 import com.lzke.ai.exception.BusinessException;
 import com.lzke.ai.exception.ErrorCode;
+import com.lzke.ai.application.ui.UiBuilderApplicationService;
 import com.lzke.ai.infrastructure.persistence.mapper.PatientExamOdsMapper;
 import com.lzke.ai.interfaces.dto.PageResult;
 import lombok.RequiredArgsConstructor;
@@ -28,11 +35,13 @@ import org.springframework.util.StringUtils;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.time.DayOfWeek;
 import java.time.LocalDateTime;
@@ -60,8 +69,11 @@ public class PatientExamApplicationService {
     private static final Pattern DEPARTMENT_CODE_PATTERN = Pattern.compile("^[A-Za-z0-9_]+$");
     private static final int MAX_BATCH_REPORTS = 10;
     private static final int DEFAULT_BATCH_QUERY_YEARS = 3;
+    private static final String MY_CUSTOMER_ENDPOINT_ID = "6bbc18329c3dde651603182a651569ab";
 
     private final PatientExamOdsMapper patientExamOdsMapper;
+    private final UiBuilderApplicationService uiBuilderApplicationService;
+    private final ObjectMapper objectMapper;
 
     /**
      * 查询可选科室列表。
@@ -123,6 +135,36 @@ public class PatientExamApplicationService {
         fillLatestExamDates(data);
         data.sort((left, right) -> compareLatestExamDate(right.getLatestExamDate(), left.getLatestExamDate()));
         return PageResult.of(data, total, request.getPage(), request.getSize());
+    }
+
+    /**
+     * 查询我的客户列表。
+     *
+     * <p>该接口复用 UI Builder 已配置好的客户列表接口，避免在体检模块再次维护
+     * CRM 客户列表的鉴权、参数协议和字段细节。这里仅补齐最近一次体检日期。
+     */
+    public PageResult<MyCustomerListItemResponse> listMyCustomers(MyCustomerListQueryRequest request) {
+        if (request == null) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "我的客户查询请求不能为空");
+        }
+
+        UiApiInvokeRequest invokeRequest = new UiApiInvokeRequest();
+        invokeRequest.setQueryParams(request.getQueryParams());
+        invokeRequest.setBody(buildMyCustomerInvokeBody(request));
+        invokeRequest.setFlowNum("listMyCustomers");
+        invokeRequest.setCreatedBy(AuthUtil.getUserId() != null ? String.valueOf(AuthUtil.getUserId()) : null);
+        Object invokeResult = uiBuilderApplicationService.invokeEndpoint(MY_CUSTOMER_ENDPOINT_ID, invokeRequest);
+
+        Map<String, Object> root = objectMapper.convertValue(invokeResult, new TypeReference<LinkedHashMap<String, Object>>() {
+        });
+        Map<String, Object> result = toObjectMap(root.get("result"));
+        List<MyCustomerListItemResponse> records = toMyCustomerItems(result.get("records"));
+        fillLatestExamDatesByEncryptedIdCards(records);
+
+        long total = toLong(result.get("total"), records.size());
+        int current = toInt(result.get("current"), request.getPage());
+        int size = toInt(result.get("size"), request.getSize());
+        return PageResult.of(records, total, current, size);
     }
 
     /**
@@ -512,6 +554,50 @@ public class PatientExamApplicationService {
         }
     }
 
+    /**
+     * 为客户列表补齐最近一次体检时间。
+     *
+     * <p>上游返回的是加密身份证，因此这里在数据库侧解密后再匹配 ODS 体检主表。
+     */
+    private void fillLatestExamDatesByEncryptedIdCards(List<MyCustomerListItemResponse> customers) {
+        if (customers == null || customers.isEmpty()) {
+            return;
+        }
+
+        List<String> encryptedIdCards = customers.stream()
+                .map(MyCustomerListItemResponse::getEncryptedIdCard)
+                .filter(StringUtils::hasText)
+                .map(String::trim)
+                .distinct()
+                .toList();
+        if (encryptedIdCards.isEmpty()) {
+            return;
+        }
+
+        List<MyCustomerLatestExamDateResponse> latestExamDateRows = patientExamOdsMapper.selectLatestExamDatesByEncryptedIdCards(encryptedIdCards);
+        if (latestExamDateRows == null || latestExamDateRows.isEmpty()) {
+            return;
+        }
+
+        Map<String, String> latestExamDateMap = latestExamDateRows.stream()
+                .filter(Objects::nonNull)
+                .filter(item -> StringUtils.hasText(item.getEncryptedIdCard()))
+                .filter(item -> StringUtils.hasText(item.getLatestExamDate()))
+                .collect(Collectors.toMap(
+                        item -> item.getEncryptedIdCard().trim(),
+                        MyCustomerLatestExamDateResponse::getLatestExamDate,
+                        (left, right) -> left,
+                        LinkedHashMap::new
+                ));
+
+        for (MyCustomerListItemResponse customer : customers) {
+            if (!StringUtils.hasText(customer.getEncryptedIdCard())) {
+                continue;
+            }
+            customer.setLatestExamDate(latestExamDateMap.get(customer.getEncryptedIdCard().trim()));
+        }
+    }
+
     private int compareLatestExamDate(String left, String right) {
         if (!StringUtils.hasText(left) && !StringUtils.hasText(right)) {
             return 0;
@@ -523,6 +609,103 @@ public class PatientExamApplicationService {
             return 1;
         }
         return left.compareTo(right);
+    }
+
+    /**
+     * 组装“我的客户列表”上游请求体。
+     *
+     * <p>页面只关心分页时，默认补 current/size；如果前端 body 已显式传值，则优先尊重前端。
+     */
+    private Map<String, Object> buildMyCustomerInvokeBody(MyCustomerListQueryRequest request) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        if (request.getBody() != null) {
+            body.putAll(request.getBody());
+        }
+        body.putIfAbsent("pageNo", request.getPage());
+        body.putIfAbsent("pageSize", request.getSize());
+        return body;
+    }
+
+    /**
+     * 将上游 records 转成前端列表项。
+     */
+    private List<MyCustomerListItemResponse> toMyCustomerItems(Object recordsObject) {
+        if (!(recordsObject instanceof List<?> rawRecords) || rawRecords.isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<MyCustomerListItemResponse> items = new ArrayList<>(rawRecords.size());
+        for (Object rawRecord : rawRecords) {
+            Map<String, Object> record = toObjectMap(rawRecord);
+            MyCustomerListItemResponse item = new MyCustomerListItemResponse();
+            item.setCustomerId(asString(record.get("id")));
+            item.setPatientName(asString(record.get("name")));
+            item.setGender(asString(record.get("sex")));
+            item.setAge(toNullableInt(record.get("age")));
+            item.setEncryptedIdCard(asString(record.get("idCard")));
+            item.setIdCardObfuscated(asString(record.get("idCardObfuscated")));
+            item.setEncryptedPhone(asString(record.get("phone")));
+            item.setPhoneObfuscated(asString(record.get("phoneObfuscated")));
+            item.setTypeName(asString(record.get("typeName")));
+            item.setStoreName(asString(record.get("storeName")));
+            item.setMainTeacherName(asString(record.get("mainTeacherName")));
+            item.setSubTeacherName(asString(record.get("subTeacherName")));
+            items.add(item);
+        }
+        return items;
+    }
+
+    private Map<String, Object> toObjectMap(Object value) {
+        if (value == null) {
+            return Collections.emptyMap();
+        }
+        return objectMapper.convertValue(value, new TypeReference<LinkedHashMap<String, Object>>() {
+        });
+    }
+
+    private String asString(Object value) {
+        return value == null ? null : String.valueOf(value);
+    }
+
+    private int toInt(Object value, int defaultValue) {
+        if (value == null) {
+            return defaultValue;
+        }
+        if (value instanceof Number number) {
+            return number.intValue();
+        }
+        try {
+            return Integer.parseInt(String.valueOf(value));
+        } catch (NumberFormatException ex) {
+            return defaultValue;
+        }
+    }
+
+    private long toLong(Object value, long defaultValue) {
+        if (value == null) {
+            return defaultValue;
+        }
+        if (value instanceof Number number) {
+            return number.longValue();
+        }
+        try {
+            return Long.parseLong(String.valueOf(value));
+        } catch (NumberFormatException ex) {
+            return defaultValue;
+        }
+    }
+
+    private Integer toNullableInt(Object value) {
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof Number number) {
+            return number.intValue();
+        }
+        try {
+            return Integer.parseInt(String.valueOf(value));
+        } catch (NumberFormatException ex) {
+            return null;
+        }
     }
 
     /**

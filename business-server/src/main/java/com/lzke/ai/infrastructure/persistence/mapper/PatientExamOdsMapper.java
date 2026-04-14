@@ -2,6 +2,7 @@ package com.lzke.ai.infrastructure.persistence.mapper;
 
 import com.baomidou.dynamic.datasource.annotation.DS;
 import com.lzke.ai.application.exam.dto.MyPatientLatestExamDateResponse;
+import com.lzke.ai.application.exam.dto.MyCustomerLatestExamDateResponse;
 import com.lzke.ai.application.exam.dto.MyPatientListItemResponse;
 import com.lzke.ai.application.exam.dto.MyPatientListQueryRequest;
 import com.lzke.ai.application.exam.dto.PatientExamDepartmentTable;
@@ -72,6 +73,13 @@ public interface PatientExamOdsMapper {
      * 按身份证号列表批量查询最近一次体检日期。
      */
     List<MyPatientLatestExamDateResponse> selectLatestExamDatesByIdCards(@Param("idCards") List<String> idCards);
+
+    /**
+     * 按加密身份证号列表批量查询最近一次体检日期。
+     *
+     * <p>上游客户列表返回的是加密身份证，这里在数据库侧先解密，再关联体检主表聚合最近体检时间。
+     */
+    List<MyCustomerLatestExamDateResponse> selectLatestExamDatesByEncryptedIdCards(@Param("encryptedIdCards") List<String> encryptedIdCards);
 
     /**
      * 统计指定时间范围内有体检记录的客户数量。

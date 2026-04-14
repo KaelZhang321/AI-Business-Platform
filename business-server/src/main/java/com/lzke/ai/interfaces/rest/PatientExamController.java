@@ -3,6 +3,8 @@ package com.lzke.ai.interfaces.rest;
 import com.lzke.ai.application.exam.PatientExamApplicationService;
 import com.lzke.ai.application.exam.dto.MyPatientListItemResponse;
 import com.lzke.ai.application.exam.dto.MyPatientListQueryRequest;
+import com.lzke.ai.application.exam.dto.MyCustomerListItemResponse;
+import com.lzke.ai.application.exam.dto.MyCustomerListQueryRequest;
 import com.lzke.ai.application.exam.dto.PatientExamBatchResultQueryRequest;
 import com.lzke.ai.application.exam.dto.PatientExamDepartmentResponse;
 import com.lzke.ai.application.exam.dto.PatientExamPatientInfoResponse;
@@ -14,6 +16,8 @@ import com.lzke.ai.application.exam.dto.PatientExamSessionResponse;
 import com.lzke.ai.application.exam.dto.PatientExamSessionSummaryResponse;
 import com.lzke.ai.interfaces.dto.ApiResponse;
 import com.lzke.ai.interfaces.dto.PageResult;
+import com.lzke.ai.security.AesECBEncryptUtils;
+
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -40,7 +44,7 @@ import java.util.List;
  */
 @Tag(name = "患者体检查询", description = "面向 ODC/ODS 体检库的动态查询接口")
 @RestController
-@RequestMapping("/api/v1/patient-exams")
+@RequestMapping("/bs/api/v1/patient-exams")
 @RequiredArgsConstructor
 public class PatientExamController {
 
@@ -70,6 +74,20 @@ public class PatientExamController {
     }
 
     /**
+     * 查询我的客户列表。
+     */
+    @Operation(
+            summary = "查询我的客户列表",
+            description = "调用已配置的 UI Builder 客户列表接口，并补充每个客户最近一次体检日期"
+    )
+    @PostMapping("/my-customers/query")
+    public ApiResponse<PageResult<MyCustomerListItemResponse>> listMyCustomers(
+            @Valid @RequestBody MyCustomerListQueryRequest request
+    ) {
+        return ApiResponse.ok(patientExamApplicationService.listMyCustomers(request));
+    }
+
+    /**
      * 查询体检统计概览。
      */
     @Operation(
@@ -92,7 +110,12 @@ public class PatientExamController {
     public ApiResponse<PatientExamPatientInfoResponse> getPatientInfo(
             @Valid @RequestBody PatientExamPatientQueryRequest request
     ) {
-        return ApiResponse.ok(patientExamApplicationService.getPatientInfo(request));
+    	request.setIdCard(AesECBEncryptUtils.decrypt(request.getIdCard()));
+    	PatientExamPatientInfoResponse res = patientExamApplicationService.getPatientInfo(request);
+    	if (res != null) {
+    		res.setIdCard(request.getIdCard());
+    	}
+        return ApiResponse.ok(res);
     }
 
     /**
@@ -106,6 +129,7 @@ public class PatientExamController {
     public ApiResponse<PageResult<PatientExamSessionSummaryResponse>> listExamSessions(
             @Valid @RequestBody PatientExamSessionQueryRequest request
     ) {
+    	request.setIdCard(AesECBEncryptUtils.decrypt(request.getIdCard()));
         return ApiResponse.ok(patientExamApplicationService.listExamSessions(request));
     }
 
@@ -134,6 +158,7 @@ public class PatientExamController {
     public ApiResponse<List<PatientExamSessionResponse>> getBatchExamResults(
             @Valid @RequestBody PatientExamBatchResultQueryRequest request
     ) {
+    	request.setIdCard(AesECBEncryptUtils.decrypt(request.getIdCard()));
         return ApiResponse.ok(patientExamApplicationService.getBatchExamResults(request));
     }
 }

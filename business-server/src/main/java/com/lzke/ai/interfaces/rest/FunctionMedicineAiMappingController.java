@@ -23,7 +23,7 @@ import org.springframework.web.bind.annotation.RestController;
  */
 @Tag(name = "功能医学 AI 推荐方案映射", description = "维护功能医学推荐方案与指标之间的映射关系")
 @RestController
-@RequestMapping("/api/v1/function-medicine-ai-mappings")
+@RequestMapping("/bs/api/v1/function-medicine-ai-mappings")
 @RequiredArgsConstructor
 public class FunctionMedicineAiMappingController {
 
