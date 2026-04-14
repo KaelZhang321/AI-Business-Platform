@@ -413,6 +413,9 @@ def _build_route_only_prompt(
     allowed_business_intents: set[str] | None,
 ) -> str:
     """构建召回前的轻量路由提示词。"""
+    # 1.`CRM`
+    # - 核心职责：管理外部客户、联系人、潜在商机、销售线索等。
+    # - 映射词汇：客户、联系人、客户画像、商机、线索、买家、公海、档案。
     ctx_str = json.dumps(user_context or {}, ensure_ascii=False)
     allowed_intents = sorted(allowed_business_intents or {_NOOP_BUSINESS_INTENT})
     intents_str = json.dumps(allowed_intents, ensure_ascii=False)
@@ -423,9 +426,9 @@ def _build_route_only_prompt(
 用户上下文：{ctx_str}
 
 # Domain Mapping Rules
-1. `CRM`
-   - 核心职责：管理外部客户、联系人、潜在商机、销售线索等。
-   - 映射词汇：客户、联系人、客户画像、商机、线索、买家、公海、档案。
+1. `OMS`
+   - 核心职责：管理外部客户、联系人、订单、交付、规划、疗效等。
+   - 映射词汇：客户、联系人、客户画像、订单、交付、规划、疗效。
 2. `IAM`
    - 核心职责：管理企业内部组织架构、员工账号、角色、权限、部门等。
    - 映射词汇：权限、账号、角色、员工、部门、组织架构、销售部。
