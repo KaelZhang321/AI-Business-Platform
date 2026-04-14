@@ -12,6 +12,7 @@ services:
       - path: ../ai-gateway/.env
         required: false
     environment:
+      TZ: Asia/Shanghai
       PYTHONUNBUFFERED: "1"
       HF_HOME: /opt/model-cache/huggingface
       TRANSFORMERS_CACHE: /opt/model-cache/huggingface

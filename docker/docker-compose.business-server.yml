@@ -9,6 +9,8 @@ services:
       - path: ./.env
         required: false
     environment:
+      TZ: Asia/Shanghai
+      JAVA_TOOL_OPTIONS: "-Duser.timezone=Asia/Shanghai"
       SPRING_PROFILES_ACTIVE: docker
     ports:
       - "${BUSINESS_SERVER_HOST_PORT:-8080}:8080"
