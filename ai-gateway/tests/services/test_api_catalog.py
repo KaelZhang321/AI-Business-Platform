@@ -156,6 +156,34 @@ class TestExtractData:
         assert data == []
         assert total == 0
 
+    def test_unwraps_data_records_list_when_data_path_points_to_data(self):
+        body = {
+            "data": {
+                "records": [{"id": "C001"}, {"id": "C002"}],
+                "summaryCardDTO": {"activeCount": 2},
+                "total": 12,
+            }
+        }
+        data, total = _extract_data(body, "data")
+        assert isinstance(data, list)
+        assert len(data) == 2
+        assert total == 12
+
+    def test_unwraps_summary_card_inside_records_for_detail_shape(self):
+        body = {
+            "data": {
+                "records": {
+                    "summaryCardDTO": {"customerId": "1675218389653693282", "customerName": "恒泰集团"},
+                    "extra": {"source": "crm"},
+                }
+            }
+        }
+        data, total = _extract_data(body, "data")
+        assert isinstance(data, dict)
+        assert data["customerId"] == "1675218389653693282"
+        assert data["customerName"] == "恒泰集团"
+        assert total == 1
+
 
 class TestApplyFieldLabels:
     def test_renames_fields(self):

@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Collection
-from functools import reduce
 from typing import Any
 
 import httpx
@@ -785,39 +784,111 @@ def _extract_data(
         - `data_path` 不匹配时，会尝试 `data/result/list/records` 等常见兜底路径
         - `null`、空字符串等无业务意义的值会直接降级为空结果
     """
-    # 按 path 逐级取值
-    keys = data_path.split(".") if data_path else []
-    raw = body
-    try:
-        raw = reduce(lambda obj, key: obj[key], keys, raw)
-    except (KeyError, TypeError):
-        # path 不匹配，尝试常见回退路径
-        for fallback in ("data", "result", "list", "records"):
+    keys = [segment for segment in (data_path or "").split(".") if segment]
+    raw = _resolve_path_value(body, keys)
+    parent = _resolve_path_value(body, keys[:-1]) if len(keys) > 1 else body
+
+    if raw is None and keys:
+        # 目录里的 response_data_path 来自自动清洗，老数据存在口径偏差。
+        # 这里先做稳定回退，避免单个接口数据层级变动把整条查询链路打成空。
+        for fallback in ("data", "result", "payload", "list", "records"):
             if fallback in body:
                 raw = body[fallback]
+                parent = body
                 break
 
-    # 尝试提取 total（适配 data.total 或 data/total）
-    total = 0
-    parent = body
-    if len(keys) > 1:
-        try:
-            parent = reduce(lambda obj, key: obj[key], keys[:-1], body)
-        except (KeyError, TypeError):
-            pass
-    total = parent.get("total") or parent.get("totalCount") or parent.get("count") or body.get("total") or 0
+    # 业务系统常见分页结构是 `data -> records/list`，详情结构可能藏在 `records.summaryCardDTO`。
+    # 为了减少每个接口都手工改 response_data_path，这里做一次有限深度的语义拆箱。
+    normalized_raw, total_anchor = _unwrap_common_result_shape(raw)
+    total = _resolve_total_from_candidates(total_anchor, parent, body)
 
-    if isinstance(raw, list):
-        data = [row if isinstance(row, dict) else {"value": row} for row in raw]
+    if isinstance(normalized_raw, list):
+        data = [row if isinstance(row, dict) else {"value": row} for row in normalized_raw]
         return data, int(total) if total else len(data)
 
-    if isinstance(raw, dict):
-        return raw, 1
+    if isinstance(normalized_raw, dict):
+        return normalized_raw, 1
 
-    if raw in (None, "", []):
+    if normalized_raw in (None, "", []):
         return [], 0
 
-    return [{"value": raw}], 1
+    return [{"value": normalized_raw}], 1
+
+
+def _resolve_path_value(payload: Any, path_segments: list[str]) -> Any | None:
+    """按 dot-path 读取节点，读取失败返回 `None`。"""
+    current = payload
+    try:
+        for segment in path_segments:
+            if not isinstance(current, dict):
+                return None
+            current = current[segment]
+        return current
+    except KeyError:
+        return None
+
+
+def _unwrap_common_result_shape(raw: Any) -> tuple[Any, dict[str, Any] | None]:
+    """按常见业务返回结构拆箱，返回 `(normalized_raw, total_anchor)`。
+
+    功能：
+        `api-query` 对接多个业务系统后，列表数据经常被包在 `records/list/rows/items`，
+        详情摘要又常放在 `records.summaryCardDTO`。这里统一做有限规则拆箱，让 catalog 的
+        `response_data_path` 不用为每个系统写一套特例路径。
+
+    Returns:
+        - `normalized_raw`: 实际用于渲染的数据主体（列表/对象/标量）
+        - `total_anchor`: 若命中分页容器，返回该容器用于提取 total；否则返回 `None`
+    """
+    if not isinstance(raw, dict):
+        return raw, None
+
+    collection_keys = ("records", "list", "rows", "items")
+    for key in collection_keys:
+        value = raw.get(key)
+        if isinstance(value, list):
+            return value, raw
+
+    # 某些系统会多包一层 `records` 或 `payload`，这里再下探一层找列表容器。
+    for wrapper_key in ("records", "payload", "result", "data"):
+        wrapper = raw.get(wrapper_key)
+        if not isinstance(wrapper, dict):
+            continue
+        for key in collection_keys:
+            value = wrapper.get(key)
+            if isinstance(value, list):
+                return value, wrapper
+
+    # 详情接口常见结构：data.records.summaryCardDTO
+    records_block = raw.get("records")
+    if isinstance(records_block, dict):
+        summary_card = records_block.get("summaryCardDTO")
+        if isinstance(summary_card, dict):
+            return summary_card, records_block
+
+    summary_card = raw.get("summaryCardDTO")
+    if isinstance(summary_card, dict):
+        return summary_card, raw
+
+    return raw, None
+
+
+def _resolve_total_from_candidates(*candidates: Any) -> int:
+    """从多个候选容器中提取分页总数。"""
+    total_keys = ("total", "totalCount", "count", "recordsTotal", "rowTotal")
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        for key in total_keys:
+            value = candidate.get(key)
+            try:
+                if value is not None:
+                    normalized = int(value)
+                    if normalized >= 0:
+                        return normalized
+            except (TypeError, ValueError):
+                continue
+    return 0
 
 
 def _apply_field_labels(
