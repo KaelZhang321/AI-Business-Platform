@@ -1,5 +1,9 @@
 package com.lzke.ai.application.exam;
 
+import com.lecz.service.tools.core.utils.AuthUtil;
+import com.lzke.ai.application.exam.dto.MyPatientLatestExamDateResponse;
+import com.lzke.ai.application.exam.dto.MyPatientListItemResponse;
+import com.lzke.ai.application.exam.dto.MyPatientListQueryRequest;
 import com.lzke.ai.application.exam.dto.PatientExamBatchResultQueryRequest;
 import com.lzke.ai.application.exam.dto.PatientExamDepartmentResponse;
 import com.lzke.ai.application.exam.dto.PatientExamDepartmentResultResponse;
@@ -64,6 +68,33 @@ public class PatientExamApplicationService {
         return patientExamOdsMapper.selectDepartmentTables(null).stream()
                 .map(table -> new PatientExamDepartmentResponse(table.getDepartmentCode(), table.getDepartmentName()))
                 .toList();
+    }
+
+    /**
+     * 查询当前登录员工的患者列表。
+     *
+     * <p>列表基于医疗团队表与客户基础信息表关联，再补最近一次体检时间，
+     * 方便前端先展示“我的患者”入口页。
+     */
+    public PageResult<MyPatientListItemResponse> listMyPatients(MyPatientListQueryRequest request) {
+        if (request == null) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "我的患者查询请求不能为空");
+        }
+        Long currentUserId = AuthUtil.getUserId();
+        if (currentUserId == null) {
+            throw new BusinessException(ErrorCode.UNAUTHORIZED, "未获取到当前用户信息");
+        }
+
+        String staffId = String.valueOf(currentUserId);
+        long total = patientExamOdsMapper.countMyPatients(staffId, request);
+        if (total <= 0) {
+            return PageResult.empty(request.getPage(), request.getSize());
+        }
+
+        List<MyPatientListItemResponse> data = patientExamOdsMapper.selectMyPatients(staffId, request);
+        fillLatestExamDates(data);
+        data.sort((left, right) -> compareLatestExamDate(right.getLatestExamDate(), left.getLatestExamDate()));
+        return PageResult.of(data, total, request.getPage(), request.getSize());
     }
 
     /**
@@ -419,6 +450,51 @@ public class PatientExamApplicationService {
         if (StringUtils.hasText(expr)) {
             exprs.add(expr);
         }
+    }
+
+    private void fillLatestExamDates(List<MyPatientListItemResponse> patients) {
+        if (patients == null || patients.isEmpty()) {
+            return;
+        }
+
+        List<String> idCards = patients.stream()
+                .map(MyPatientListItemResponse::getIdCard)
+                .filter(StringUtils::hasText)
+                .map(String::trim)
+                .distinct()
+                .toList();
+        if (idCards.isEmpty()) {
+            return;
+        }
+
+        Map<String, String> latestExamDateMap = patientExamOdsMapper.selectLatestExamDatesByIdCards(idCards).stream()
+                .filter(item -> StringUtils.hasText(item.getIdCard()))
+                .collect(Collectors.toMap(
+                        item -> item.getIdCard().trim(),
+                        MyPatientLatestExamDateResponse::getLatestExamDate,
+                        (left, right) -> left,
+                        LinkedHashMap::new
+                ));
+
+        for (MyPatientListItemResponse patient : patients) {
+            if (!StringUtils.hasText(patient.getIdCard())) {
+                continue;
+            }
+            patient.setLatestExamDate(latestExamDateMap.get(patient.getIdCard().trim()));
+        }
+    }
+
+    private int compareLatestExamDate(String left, String right) {
+        if (!StringUtils.hasText(left) && !StringUtils.hasText(right)) {
+            return 0;
+        }
+        if (!StringUtils.hasText(left)) {
+            return -1;
+        }
+        if (!StringUtils.hasText(right)) {
+            return 1;
+        }
+        return left.compareTo(right);
     }
 
     /**

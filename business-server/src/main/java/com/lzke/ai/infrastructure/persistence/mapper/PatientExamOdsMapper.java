@@ -1,6 +1,9 @@
 package com.lzke.ai.infrastructure.persistence.mapper;
 
 import com.baomidou.dynamic.datasource.annotation.DS;
+import com.lzke.ai.application.exam.dto.MyPatientLatestExamDateResponse;
+import com.lzke.ai.application.exam.dto.MyPatientListItemResponse;
+import com.lzke.ai.application.exam.dto.MyPatientListQueryRequest;
 import com.lzke.ai.application.exam.dto.PatientExamDepartmentTable;
 import com.lzke.ai.application.exam.dto.PatientExamPatientInfoResponse;
 import com.lzke.ai.application.exam.dto.PatientExamPatientQueryRequest;
@@ -47,6 +50,27 @@ public interface PatientExamOdsMapper {
      * @return 列名列表
      */
     List<String> selectTableColumns(@Param("tableName") String tableName);
+
+    /**
+     * 查询当前员工名下患者总数。
+     */
+    long countMyPatients(
+            @Param("staffId") String staffId,
+            @Param("request") MyPatientListQueryRequest request
+    );
+
+    /**
+     * 分页查询当前员工名下患者列表。
+     */
+    List<MyPatientListItemResponse> selectMyPatients(
+            @Param("staffId") String staffId,
+            @Param("request") MyPatientListQueryRequest request
+    );
+
+    /**
+     * 按身份证号列表批量查询最近一次体检日期。
+     */
+    List<MyPatientLatestExamDateResponse> selectLatestExamDatesByIdCards(@Param("idCards") List<String> idCards);
 
     /**
      * 查询患者基础信息。
