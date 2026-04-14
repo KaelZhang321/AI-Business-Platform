@@ -436,7 +436,7 @@ public class UiHttpInvokeService {
      *
      * <p>这样既能减少 OMS 回源压力，也便于后续按 openId 反查当前系统员工。
      */
-    private String resolveOmsOpenId(UiApiSource source,String employeeId) {
+    public String resolveOmsOpenId(UiApiSource source,String employeeId) {
         String cachedOpenId = stringRedisTemplate.opsForValue().get(OMS_OPEN_ID_CACHE_KEY_PREFIX + employeeId);
         if (StringUtils.hasText(cachedOpenId)) {
             return cachedOpenId;
