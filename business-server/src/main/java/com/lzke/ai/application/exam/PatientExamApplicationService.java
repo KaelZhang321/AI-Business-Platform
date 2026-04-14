@@ -13,6 +13,7 @@ import com.lzke.ai.application.exam.dto.PatientExamPatientInfoResponse;
 import com.lzke.ai.application.exam.dto.PatientExamPatientQueryRequest;
 import com.lzke.ai.application.exam.dto.PatientExamResultItemResponse;
 import com.lzke.ai.application.exam.dto.PatientExamResultQueryRequest;
+import com.lzke.ai.application.exam.dto.PatientExamStatsResponse;
 import com.lzke.ai.application.exam.dto.PatientExamSessionQueryRequest;
 import com.lzke.ai.application.exam.dto.PatientExamSessionResponse;
 import com.lzke.ai.application.exam.dto.PatientExamSessionRowResponse;
@@ -33,6 +34,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.time.DayOfWeek;
 import java.time.LocalDateTime;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -68,6 +70,32 @@ public class PatientExamApplicationService {
         return patientExamOdsMapper.selectDepartmentTables(null).stream()
                 .map(table -> new PatientExamDepartmentResponse(table.getDepartmentCode(), table.getDepartmentName()))
                 .toList();
+    }
+
+    /**
+     * 查询体检客户统计概览。
+     *
+     * <p>当前返回三项指标：
+     * 最近三年有体检记录的客户数、本周体检客户数、上周体检客户数。
+     */
+    public PatientExamStatsResponse getExamStats() {
+        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime startOfThisWeek = now.toLocalDate().with(DayOfWeek.MONDAY).atStartOfDay();
+        LocalDateTime startOfLastWeek = startOfThisWeek.minusWeeks(1);
+        LocalDateTime startOfNextWeek = startOfThisWeek.plusWeeks(1);
+        LocalDateTime startOfRecentThreeYears = now.minusYears(3);
+
+        PatientExamStatsResponse response = new PatientExamStatsResponse();
+        response.setRecentThreeYearsPatientCount(
+                patientExamOdsMapper.countDistinctPatientsByExamTimeRange(startOfRecentThreeYears, now.plusSeconds(1))
+        );
+        response.setThisWeekPatientCount(
+                patientExamOdsMapper.countDistinctPatientsByExamTimeRange(startOfThisWeek, startOfNextWeek)
+        );
+        response.setLastWeekPatientCount(
+                patientExamOdsMapper.countDistinctPatientsByExamTimeRange(startOfLastWeek, startOfThisWeek)
+        );
+        return response;
     }
 
     /**

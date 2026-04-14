@@ -141,6 +141,16 @@
         group by p.`SFZH`
     </select>
 
+    <select id="countDistinctPatientsByExamTimeRange" resultType="long">
+        select count(distinct p.`SFZH`)
+        from ods_tj_jcxx p
+        left join ods_tj_jlb l on l.`StudyID` = p.`ID`
+        where p.`SFZH` is not null
+          and p.`SFZH` != ''
+          and coalesce(p.`JCRQ`, p.`JDRQ`, l.`JLRQ`, p.`UpDateTime`) &gt;= #{startTime}
+          and coalesce(p.`JCRQ`, p.`JDRQ`, l.`JLRQ`, p.`UpDateTime`) &lt; #{endTime}
+    </select>
+
     <select id="selectPatientInfo" resultType="com.lzke.ai.application.exam.dto.PatientExamPatientInfoResponse">
         select
             convert(cast(p.`ID` as char) using utf8mb4) collate utf8mb4_unicode_ci as studyId,

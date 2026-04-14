@@ -8,6 +8,7 @@ import com.lzke.ai.application.exam.dto.PatientExamDepartmentResponse;
 import com.lzke.ai.application.exam.dto.PatientExamPatientInfoResponse;
 import com.lzke.ai.application.exam.dto.PatientExamPatientQueryRequest;
 import com.lzke.ai.application.exam.dto.PatientExamResultQueryRequest;
+import com.lzke.ai.application.exam.dto.PatientExamStatsResponse;
 import com.lzke.ai.application.exam.dto.PatientExamSessionQueryRequest;
 import com.lzke.ai.application.exam.dto.PatientExamSessionResponse;
 import com.lzke.ai.application.exam.dto.PatientExamSessionSummaryResponse;
@@ -66,6 +67,18 @@ public class PatientExamController {
             @Valid @RequestBody MyPatientListQueryRequest request
     ) {
         return ApiResponse.ok(patientExamApplicationService.listMyPatients(request));
+    }
+
+    /**
+     * 查询体检统计概览。
+     */
+    @Operation(
+            summary = "查询体检统计概览",
+            description = "返回最近三年体检客户数、本周体检客户数、上周体检客户数"
+    )
+    @GetMapping("/stats")
+    public ApiResponse<PatientExamStatsResponse> getExamStats() {
+        return ApiResponse.ok(patientExamApplicationService.getExamStats());
     }
 
     /**

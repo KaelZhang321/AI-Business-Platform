@@ -8,6 +8,7 @@ import com.lzke.ai.application.exam.dto.PatientExamDepartmentTable;
 import com.lzke.ai.application.exam.dto.PatientExamPatientInfoResponse;
 import com.lzke.ai.application.exam.dto.PatientExamPatientQueryRequest;
 import com.lzke.ai.application.exam.dto.PatientExamResultItemResponse;
+import com.lzke.ai.application.exam.dto.PatientExamStatsResponse;
 import com.lzke.ai.application.exam.dto.PatientExamSessionQueryRequest;
 import com.lzke.ai.application.exam.dto.PatientExamSessionRowResponse;
 import org.apache.ibatis.annotations.Mapper;
@@ -71,6 +72,14 @@ public interface PatientExamOdsMapper {
      * 按身份证号列表批量查询最近一次体检日期。
      */
     List<MyPatientLatestExamDateResponse> selectLatestExamDatesByIdCards(@Param("idCards") List<String> idCards);
+
+    /**
+     * 统计指定时间范围内有体检记录的客户数量。
+     */
+    long countDistinctPatientsByExamTimeRange(
+            @Param("startTime") LocalDateTime startTime,
+            @Param("endTime") LocalDateTime endTime
+    );
 
     /**
      * 查询患者基础信息。
