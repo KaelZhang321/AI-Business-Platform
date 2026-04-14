@@ -1,6 +1,8 @@
 package com.lzke.ai.interfaces.rest;
 
 import com.lzke.ai.application.exam.PatientExamApplicationService;
+import com.lzke.ai.application.exam.dto.MyPatientListItemResponse;
+import com.lzke.ai.application.exam.dto.MyPatientListQueryRequest;
 import com.lzke.ai.application.exam.dto.PatientExamBatchResultQueryRequest;
 import com.lzke.ai.application.exam.dto.PatientExamDepartmentResponse;
 import com.lzke.ai.application.exam.dto.PatientExamPatientInfoResponse;
@@ -50,6 +52,20 @@ public class PatientExamController {
     @GetMapping("/departments")
     public ApiResponse<List<PatientExamDepartmentResponse>> listDepartments() {
         return ApiResponse.ok(patientExamApplicationService.listDepartments());
+    }
+
+    /**
+     * 查询我的患者列表。
+     */
+    @Operation(
+            summary = "查询我的患者列表",
+            description = "根据当前登录用户匹配医疗团队患者，按最近一次体检时间倒序返回患者列表"
+    )
+    @PostMapping("/my-patients/query")
+    public ApiResponse<PageResult<MyPatientListItemResponse>> listMyPatients(
+            @Valid @RequestBody MyPatientListQueryRequest request
+    ) {
+        return ApiResponse.ok(patientExamApplicationService.listMyPatients(request));
     }
 
     /**

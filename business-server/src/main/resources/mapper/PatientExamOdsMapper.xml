@@ -2,6 +2,32 @@
 <!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
 <mapper namespace="com.lzke.ai.infrastructure.persistence.mapper.PatientExamOdsMapper">
 
+    <sql id="decryptCustomerIdCardExpr">
+        convert(cast(AES_DECRYPT_ECB(c.`id_card`, 'SecuR24LeCzCoRe') as char) using utf8mb4) collate utf8mb4_unicode_ci
+    </sql>
+
+    <sql id="myPatientBaseWhere">
+        where t.`delete_flag` = b'0'
+          and c.`delete_flag` = b'0'
+          and t.`staff_id` = #{staffId}
+
+        <if test="request.patientName != null and request.patientName != ''">
+            and c.`name` like concat('%', #{request.patientName}, '%')
+        </if>
+
+        <if test="request.idCard != null and request.idCard != ''">
+            and <include refid="decryptCustomerIdCardExpr"/> like concat('%', #{request.idCard}, '%')
+        </if>
+
+        <if test="request.mobile != null and request.mobile != ''">
+            and (
+                ifnull(c.`phone`, '') like concat('%', #{request.mobile}, '%')
+                or ifnull(c.`use_phone`, '') like concat('%', #{request.mobile}, '%')
+                or ifnull(c.`register_phone`, '') like concat('%', #{request.mobile}, '%')
+            )
+        </if>
+    </sql>
+
     <sql id="patientExamBaseWhere">
         where 1 = 1
 
@@ -77,6 +103,42 @@
         where TABLE_SCHEMA = database()
           and TABLE_NAME = #{tableName}
         order by ORDINAL_POSITION asc
+    </select>
+
+    <select id="countMyPatients" resultType="long">
+        select count(1)
+        from dw_customer_medical_team t
+        inner join dw_customer_info c on c.`customer_master_id` = t.`customer_master_id`
+        <include refid="myPatientBaseWhere"/>
+    </select>
+
+    <select id="selectMyPatients" resultType="com.lzke.ai.application.exam.dto.MyPatientListItemResponse">
+        select
+            convert(cast(c.`customer_master_id` as char) using utf8mb4) collate utf8mb4_unicode_ci as customerMasterId,
+            convert(cast(c.`name` as char) using utf8mb4) collate utf8mb4_unicode_ci as patientName,
+            convert(cast(c.`sex` as char) using utf8mb4) collate utf8mb4_unicode_ci as gender,
+            c.`age` as age,
+            <include refid="decryptCustomerIdCardExpr"/> as idCard,
+            convert(cast(coalesce(nullif(c.`phone`, ''), nullif(c.`use_phone`, ''), nullif(c.`register_phone`, '')) as char) using utf8mb4) collate utf8mb4_unicode_ci as mobile,
+            cast(null as char character set utf8mb4) collate utf8mb4_unicode_ci as latestExamDate
+        from dw_customer_medical_team t
+        inner join dw_customer_info c on c.`customer_master_id` = t.`customer_master_id`
+        <include refid="myPatientBaseWhere"/>
+        order by c.`updated_time` desc, c.`customer_master_id` desc
+        limit #{request.offset}, #{request.size}
+    </select>
+
+    <select id="selectLatestExamDatesByIdCards" resultType="com.lzke.ai.application.exam.dto.MyPatientLatestExamDateResponse">
+        select
+            convert(cast(p.`SFZH` as char) using utf8mb4) collate utf8mb4_unicode_ci as idCard,
+            date_format(max(coalesce(p.`JCRQ`, p.`JDRQ`, l.`JLRQ`, p.`UpDateTime`)), '%Y-%m-%d') as latestExamDate
+        from ods_tj_jcxx p
+        left join ods_tj_jlb l on l.`StudyID` = p.`ID`
+        where p.`SFZH` in
+        <foreach collection="idCards" item="idCard" open="(" separator="," close=")">
+            #{idCard}
+        </foreach>
+        group by p.`SFZH`
     </select>
 
     <select id="selectPatientInfo" resultType="com.lzke.ai.application.exam.dto.PatientExamPatientInfoResponse">
