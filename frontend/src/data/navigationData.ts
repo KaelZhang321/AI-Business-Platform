@@ -5,6 +5,7 @@ export type AppPage =
   | 'function-square'
   | 'ai-report-comparison'
   | 'ai-four-quadrant'
+  | 'ai-component-management'
   | 'ui-builder'
   | 'meeting-bi'
   | 'consultant-ai'
@@ -60,6 +61,11 @@ export const PAGE_DEFINITIONS: Record<AppPage, PageDefinition> = {
   'ai-four-quadrant': {
     path: '/ai-four-quadrant',
     title: 'AI四象限健康评估',
+    implemented: true,
+  },
+  'ai-component-management': {
+    path: '/ai-component-management',
+    title: 'AI组件管理',
     implemented: true,
   },
   'ui-builder': { path: '/ui-builder', title: 'JSON Render Builder', implemented: true },
@@ -167,6 +173,11 @@ export const NAVIGATION_ITEMS: NavigationItemDefinition[] = [
       'data-portal',
       'meeting-management',
     ],
+  },
+  {
+    page: 'ai-component-management',
+    label: 'AI组件管理',
+    icon: 'sparkles',
   },
   {
     page: 'ai-diagnosis',

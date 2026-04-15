@@ -1,0 +1,806 @@
+{
+    "trace_id": "efb2d2eaf7d246f886105c0655fa3840",
+    "execution_status": "SUCCESS",
+    "execution_plan": {
+        "plan_id": "dag_query_employee_list",
+        "steps": [
+            {
+                "step_id": "step_query_employee_list",
+                "api_id": "2d9d0aeb1d94268eaf537db1b34783c9",
+                "api_path": "/system/employee/sys-employee/list",
+                "params": {
+                    "pageNo": 1,
+                    "pageSize": 10
+                },
+                "depends_on": []
+            }
+        ]
+    },
+    "ui_spec": {
+        "root": "root",
+        "state": {
+            "filters": {
+                "email": null,
+                "deptId": null,
+                "mobile": null,
+                "pageNo": 1,
+                "status": null,
+                "endTime": null,
+                "keyword": null,
+                "realName": null,
+                "updateBy": null,
+                "username": null,
+                "deptNames": null,
+                "sortField": null,
+                "sortOrder": null,
+                "startTime": null,
+                "dingUserId": null,
+                "employeeNo": null,
+                "superiorName": null,
+                "postSecondType": null,
+                "includeChildDeptEmployees": null
+            }
+        },
+        "elements": {
+            "root": {
+                "type": "PlannerCard",
+                "props": {
+                    "title": "查询员工列表",
+                    "subtitle": "共 2905 条，当前展示 5 条"
+                },
+                "children": [
+                    "card-init",
+                    "query-filters",
+                    "report-table",
+                    "report-pagination",
+                    "metric-1",
+                    "metric-2"
+                ]
+            },
+            "card-init": {
+                "type": "PlannerMetric",
+                "props": {
+                    "label": "改善指数",
+                    "value": "15%"
+                }
+            },
+            "metric-1": {
+                "type": "PlannerMetric",
+                "props": {
+                    "label": "改善指数",
+                    "value": "15%"
+                },
+                "children": []
+            },
+            "metric-2": {
+                "type": "PlannerMetric",
+                "props": {
+                    "label": "下次复查",
+                    "value": "2026-04-15"
+                },
+                "children": []
+            },
+            "query-filters": {
+                "type": "PlannerForm",
+                "props": {
+                    "formCode": "query_filters",
+                    "api": "/api/v1/ui-builder/runtime/endpoints/2d9d0aeb1d94268eaf537db1b34783c9/invoke",
+                    "queryParams": {},
+                    "body": {
+                        "pageNo": 1,
+                        "pageSize": 10
+                    },
+                    "flowNum": "efb2d2eaf7d246f886105c0655fa3840",
+                    "createdBy": "hello"
+                },
+                "children": [
+                    "filter_field_1",
+                    "filter_field_2",
+                    "filter_field_3",
+                    "filter_field_4",
+                    "filter_field_5",
+                    "filter_field_6",
+                    "filter_field_7",
+                    "filter_field_8",
+                    "filter_field_9",
+                    "filter_field_10",
+                    "filter_field_11",
+                    "filter_field_12",
+                    "filter_field_13",
+                    "filter_field_14",
+                    "filter_field_15",
+                    "filter_field_16",
+                    "filter_field_17",
+                    "filter_field_18",
+                    "filter_field_19",
+                    "filter_reset",
+                    "filter_submit"
+                ]
+            },
+            "filter_field_1": {
+                "type": "PlannerInput",
+                "props": {
+                    "label": "email",
+                    "value": {
+                        "$bindState": "/filters/email"
+                    },
+                    "placeholder": "请输入email",
+                    "required": false
+                }
+            },
+            "filter_field_2": {
+                "type": "PlannerInput",
+                "props": {
+                    "label": "deptId",
+                    "value": {
+                        "$bindState": "/filters/deptId"
+                    },
+                    "placeholder": "请输入deptId",
+                    "required": false
+                }
+            },
+            "filter_field_3": {
+                "type": "PlannerInput",
+                "props": {
+                    "label": "mobile",
+                    "value": {
+                        "$bindState": "/filters/mobile"
+                    },
+                    "placeholder": "请输入mobile",
+                    "required": false
+                }
+            },
+            "filter_field_4": {
+                "type": "PlannerInput",
+                "props": {
+                    "label": "pageNo",
+                    "value": {
+                        "$bindState": "/filters/pageNo"
+                    },
+                    "placeholder": "请输入pageNo",
+                    "required": true
+                }
+            },
+            "filter_field_5": {
+                "type": "PlannerInput",
+                "props": {
+                    "label": "status",
+                    "value": {
+                        "$bindState": "/filters/status"
+                    },
+                    "placeholder": "请输入status",
+                    "required": false
+                }
+            },
+            "filter_field_6": {
+                "type": "PlannerInput",
+                "props": {
+                    "label": "endTime",
+                    "value": {
+                        "$bindState": "/filters/endTime"
+                    },
+                    "placeholder": "请输入endTime",
+                    "required": false
+                }
+            },
+            "filter_field_7": {
+                "type": "PlannerInput",
+                "props": {
+                    "label": "keyword",
+                    "value": {
+                        "$bindState": "/filters/keyword"
+                    },
+                    "placeholder": "请输入keyword",
+                    "required": false
+                }
+            },
+            "filter_field_8": {
+                "type": "PlannerInput",
+                "props": {
+                    "label": "realName",
+                    "value": {
+                        "$bindState": "/filters/realName"
+                    },
+                    "placeholder": "请输入realName",
+                    "required": false
+                }
+            },
+            "filter_field_9": {
+                "type": "PlannerInput",
+                "props": {
+                    "label": "updateBy",
+                    "value": {
+                        "$bindState": "/filters/updateBy"
+                    },
+                    "placeholder": "请输入updateBy",
+                    "required": false
+                }
+            },
+            "filter_field_10": {
+                "type": "PlannerInput",
+                "props": {
+                    "label": "username",
+                    "value": {
+                        "$bindState": "/filters/username"
+                    },
+                    "placeholder": "请输入username",
+                    "required": false
+                }
+            },
+            "filter_field_11": {
+                "type": "PlannerInput",
+                "props": {
+                    "label": "deptNames",
+                    "value": {
+                        "$bindState": "/filters/deptNames"
+                    },
+                    "placeholder": "请输入deptNames",
+                    "required": false
+                }
+            },
+            "filter_field_12": {
+                "type": "PlannerInput",
+                "props": {
+                    "label": "sortField",
+                    "value": {
+                        "$bindState": "/filters/sortField"
+                    },
+                    "placeholder": "请输入sortField",
+                    "required": false
+                }
+            },
+            "filter_field_13": {
+                "type": "PlannerInput",
+                "props": {
+                    "label": "sortOrder",
+                    "value": {
+                        "$bindState": "/filters/sortOrder"
+                    },
+                    "placeholder": "请输入sortOrder",
+                    "required": false
+                }
+            },
+            "filter_field_14": {
+                "type": "PlannerInput",
+                "props": {
+                    "label": "startTime",
+                    "value": {
+                        "$bindState": "/filters/startTime"
+                    },
+                    "placeholder": "请输入startTime",
+                    "required": false
+                }
+            },
+            "filter_field_15": {
+                "type": "PlannerInput",
+                "props": {
+                    "label": "dingUserId",
+                    "value": {
+                        "$bindState": "/filters/dingUserId"
+                    },
+                    "placeholder": "请输入dingUserId",
+                    "required": false
+                }
+            },
+            "filter_field_16": {
+                "type": "PlannerInput",
+                "props": {
+                    "label": "employeeNo",
+                    "value": {
+                        "$bindState": "/filters/employeeNo"
+                    },
+                    "placeholder": "请输入employeeNo",
+                    "required": false
+                }
+            },
+            "filter_field_17": {
+                "type": "PlannerInput",
+                "props": {
+                    "label": "superiorName",
+                    "value": {
+                        "$bindState": "/filters/superiorName"
+                    },
+                    "placeholder": "请输入superiorName",
+                    "required": false
+                }
+            },
+            "filter_field_18": {
+                "type": "PlannerInput",
+                "props": {
+                    "label": "postSecondType",
+                    "value": {
+                        "$bindState": "/filters/postSecondType"
+                    },
+                    "placeholder": "请输入postSecondType",
+                    "required": false
+                }
+            },
+            "filter_field_19": {
+                "type": "PlannerInput",
+                "props": {
+                    "label": "includeChildDeptEmployees",
+                    "value": {
+                        "$bindState": "/filters/includeChildDeptEmployees"
+                    },
+                    "placeholder": "请输入includeChildDeptEmployees",
+                    "required": false
+                }
+            },
+            "filter_reset": {
+                "type": "PlannerButton",
+                "props": {
+                    "label": "重置"
+                },
+                "on": {
+                    "press": {
+                        "action": "saveToServer",
+                        "params": {
+                            "api_id": "2d9d0aeb1d94268eaf537db1b34783c9",
+                            "api": "/api/v1/ui-builder/runtime/endpoints/2d9d0aeb1d94268eaf537db1b34783c9/invoke",
+                            "queryParams": {},
+                            "body": {
+                                "pageNo": 1,
+                                "pageSize": 10
+                            },
+                            "flowNum": "efb2d2eaf7d246f886105c0655fa3840",
+                            "createdBy": "hello"
+                        }
+                    }
+                }
+            },
+            "filter_submit": {
+                "type": "PlannerButton",
+                "props": {
+                    "label": "查询"
+                },
+                "on": {
+                    "press": {
+                        "action": "saveToServer",
+                        "params": {
+                            "api_id": "2d9d0aeb1d94268eaf537db1b34783c9",
+                            "api": "/api/v1/ui-builder/runtime/endpoints/2d9d0aeb1d94268eaf537db1b34783c9/invoke",
+                            "queryParams": {},
+                            "body": {
+                                "pageNo": {
+                                    "$bindState": "/filters/pageNo"
+                                },
+                                "pageSize": 10,
+                                "email": {
+                                    "$bindState": "/filters/email"
+                                },
+                                "deptId": {
+                                    "$bindState": "/filters/deptId"
+                                },
+                                "mobile": {
+                                    "$bindState": "/filters/mobile"
+                                },
+                                "status": {
+                                    "$bindState": "/filters/status"
+                                },
+                                "endTime": {
+                                    "$bindState": "/filters/endTime"
+                                },
+                                "keyword": {
+                                    "$bindState": "/filters/keyword"
+                                },
+                                "realName": {
+                                    "$bindState": "/filters/realName"
+                                },
+                                "updateBy": {
+                                    "$bindState": "/filters/updateBy"
+                                },
+                                "username": {
+                                    "$bindState": "/filters/username"
+                                },
+                                "deptNames": {
+                                    "$bindState": "/filters/deptNames"
+                                },
+                                "sortField": {
+                                    "$bindState": "/filters/sortField"
+                                },
+                                "sortOrder": {
+                                    "$bindState": "/filters/sortOrder"
+                                },
+                                "startTime": {
+                                    "$bindState": "/filters/startTime"
+                                },
+                                "dingUserId": {
+                                    "$bindState": "/filters/dingUserId"
+                                },
+                                "employeeNo": {
+                                    "$bindState": "/filters/employeeNo"
+                                },
+                                "superiorName": {
+                                    "$bindState": "/filters/superiorName"
+                                },
+                                "postSecondType": {
+                                    "$bindState": "/filters/postSecondType"
+                                },
+                                "includeChildDeptEmployees": {
+                                    "$bindState": "/filters/includeChildDeptEmployees"
+                                }
+                            },
+                            "flowNum": "efb2d2eaf7d246f886105c0655fa3840",
+                            "createdBy": "hello"
+                        }
+                    }
+                }
+            },
+            "report-table": {
+                "type": "PlannerTable",
+                "props": {
+                    "columns": [
+                        {
+                            "key": "id",
+                            "title": "id",
+                            "dataIndex": "id"
+                        },
+                        {
+                            "key": "username",
+                            "title": "username",
+                            "dataIndex": "username"
+                        },
+                        {
+                            "key": "employeeNo",
+                            "title": "employeeNo",
+                            "dataIndex": "employeeNo"
+                        },
+                        {
+                            "key": "realName",
+                            "title": "realName",
+                            "dataIndex": "realName"
+                        },
+                        {
+                            "key": "gender",
+                            "title": "gender",
+                            "dataIndex": "gender"
+                        },
+                        {
+                            "key": "mobile",
+                            "title": "mobile",
+                            "dataIndex": "mobile"
+                        },
+                        {
+                            "key": "idCard",
+                            "title": "idCard",
+                            "dataIndex": "idCard"
+                        },
+                        {
+                            "key": "email",
+                            "title": "email",
+                            "dataIndex": "email"
+                        },
+                        {
+                            "key": "avatar",
+                            "title": "avatar",
+                            "dataIndex": "avatar"
+                        },
+                        {
+                            "key": "deptNames",
+                            "title": "deptNames",
+                            "dataIndex": "deptNames"
+                        },
+                        {
+                            "key": "superiorId",
+                            "title": "superiorId",
+                            "dataIndex": "superiorId"
+                        },
+                        {
+                            "key": "superiorName",
+                            "title": "superiorName",
+                            "dataIndex": "superiorName"
+                        },
+                        {
+                            "key": "postNames",
+                            "title": "postNames",
+                            "dataIndex": "postNames"
+                        },
+                        {
+                            "key": "postIds",
+                            "title": "postIds",
+                            "dataIndex": "postIds"
+                        },
+                        {
+                            "key": "postList",
+                            "title": "postList",
+                            "dataIndex": "postList"
+                        },
+                        {
+                            "key": "marketEmployee",
+                            "title": "marketEmployee",
+                            "dataIndex": "marketEmployee"
+                        },
+                        {
+                            "key": "regionalPresidentId",
+                            "title": "regionalPresidentId",
+                            "dataIndex": "regionalPresidentId"
+                        },
+                        {
+                            "key": "regionalPresidentName",
+                            "title": "regionalPresidentName",
+                            "dataIndex": "regionalPresidentName"
+                        },
+                        {
+                            "key": "regionalVicePresidentId",
+                            "title": "regionalVicePresidentId",
+                            "dataIndex": "regionalVicePresidentId"
+                        },
+                        {
+                            "key": "regionalVicePresidentName",
+                            "title": "regionalVicePresidentName",
+                            "dataIndex": "regionalVicePresidentName"
+                        },
+                        {
+                            "key": "salesCompanyName",
+                            "title": "salesCompanyName",
+                            "dataIndex": "salesCompanyName"
+                        },
+                        {
+                            "key": "salesCompanyCode",
+                            "title": "salesCompanyCode",
+                            "dataIndex": "salesCompanyCode"
+                        },
+                        {
+                            "key": "salesCompanyQualificationCode",
+                            "title": "salesCompanyQualificationCode",
+                            "dataIndex": "salesCompanyQualificationCode"
+                        },
+                        {
+                            "key": "salesCompanyQualificationName",
+                            "title": "salesCompanyQualificationName",
+                            "dataIndex": "salesCompanyQualificationName"
+                        },
+                        {
+                            "key": "deptIds",
+                            "title": "deptIds",
+                            "dataIndex": "deptIds"
+                        },
+                        {
+                            "key": "status",
+                            "title": "status",
+                            "dataIndex": "status"
+                        },
+                        {
+                            "key": "roleIds",
+                            "title": "roleIds",
+                            "dataIndex": "roleIds"
+                        },
+                        {
+                            "key": "createTime",
+                            "title": "createTime",
+                            "dataIndex": "createTime"
+                        },
+                        {
+                            "key": "updateBy",
+                            "title": "updateBy",
+                            "dataIndex": "updateBy"
+                        },
+                        {
+                            "key": "updateTime",
+                            "title": "updateTime",
+                            "dataIndex": "updateTime"
+                        }
+                    ],
+                    "dataSource": [
+                        {
+                            "id": "27891",
+                            "username": "ID005034",
+                            "employeeNo": "ID005034",
+                            "realName": "谢雪龙",
+                            "gender": 1,
+                            "mobile": "182****8501",
+                            "idCard": "371329********3015",
+                            "email": null,
+                            "avatar": null,
+                            "deptNames": "业务核算_业务供应商_一般区域_樊明花大区_六十九分公司-谢清",
+                            "superiorId": null,
+                            "superiorName": null,
+                            "postNames": "文员",
+                            "postIds": [
+                                "2042776068205109249"
+                            ],
+                            "postList": null,
+                            "marketEmployee": null,
+                            "regionalPresidentId": null,
+                            "regionalPresidentName": null,
+                            "regionalVicePresidentId": null,
+                            "regionalVicePresidentName": null,
+                            "salesCompanyName": null,
+                            "salesCompanyCode": null,
+                            "salesCompanyQualificationCode": null,
+                            "salesCompanyQualificationName": null,
+                            "deptIds": null,
+                            "status": 1,
+                            "roleIds": null,
+                            "createTime": "2026-04-11 09:33:05",
+                            "updateBy": "系统",
+                            "updateTime": "2026-04-11 11:08:57"
+                        },
+                        {
+                            "id": "27889",
+                            "username": "ID004469",
+                            "employeeNo": "ID004469",
+                            "realName": "廖星月",
+                            "gender": 2,
+                            "mobile": "185****5582",
+                            "idCard": "500230********6325",
+                            "email": null,
+                            "avatar": null,
+                            "deptNames": "业务核算_业务供应商_一般区域_蹇东明大区",
+                            "superiorId": null,
+                            "superiorName": null,
+                            "postNames": "文员",
+                            "postIds": [
+                                "2042776068205109249"
+                            ],
+                            "postList": null,
+                            "marketEmployee": null,
+                            "regionalPresidentId": null,
+                            "regionalPresidentName": null,
+                            "regionalVicePresidentId": null,
+                            "regionalVicePresidentName": null,
+                            "salesCompanyName": null,
+                            "salesCompanyCode": null,
+                            "salesCompanyQualificationCode": null,
+                            "salesCompanyQualificationName": null,
+                            "deptIds": null,
+                            "status": 1,
+                            "roleIds": null,
+                            "createTime": "2026-04-11 09:33:04",
+                            "updateBy": "系统",
+                            "updateTime": "2026-04-11 11:08:56"
+                        },
+                        {
+                            "id": "27890",
+                            "username": "ID004678",
+                            "employeeNo": "ID004678",
+                            "realName": "邱文军",
+                            "gender": 1,
+                            "mobile": "176****8887",
+                            "idCard": "630103********1219",
+                            "email": null,
+                            "avatar": null,
+                            "deptNames": "业务核算_业务供应商_一般区域_李红霞大区_二十一分公司-马颖颖",
+                            "superiorId": null,
+                            "superiorName": null,
+                            "postNames": "文员",
+                            "postIds": [
+                                "2042776068205109249"
+                            ],
+                            "postList": null,
+                            "marketEmployee": null,
+                            "regionalPresidentId": null,
+                            "regionalPresidentName": null,
+                            "regionalVicePresidentId": null,
+                            "regionalVicePresidentName": null,
+                            "salesCompanyName": null,
+                            "salesCompanyCode": null,
+                            "salesCompanyQualificationCode": null,
+                            "salesCompanyQualificationName": null,
+                            "deptIds": null,
+                            "status": 1,
+                            "roleIds": null,
+                            "createTime": "2026-04-11 09:33:04",
+                            "updateBy": "系统",
+                            "updateTime": "2026-04-11 11:08:57"
+                        },
+                        {
+                            "id": "27888",
+                            "username": "ID004292",
+                            "employeeNo": "ID004292",
+                            "realName": "齐怀智",
+                            "gender": 1,
+                            "mobile": "189****2313",
+                            "idCard": "120110********1535",
+                            "email": null,
+                            "avatar": null,
+                            "deptNames": "业务核算_业务供应商_一般区域_黄刚大区_三十分公司-刘芳",
+                            "superiorId": null,
+                            "superiorName": null,
+                            "postNames": "文员",
+                            "postIds": [
+                                "2042776068205109249"
+                            ],
+                            "postList": null,
+                            "marketEmployee": null,
+                            "regionalPresidentId": null,
+                            "regionalPresidentName": null,
+                            "regionalVicePresidentId": null,
+                            "regionalVicePresidentName": null,
+                            "salesCompanyName": null,
+                            "salesCompanyCode": null,
+                            "salesCompanyQualificationCode": null,
+                            "salesCompanyQualificationName": null,
+                            "deptIds": null,
+                            "status": 1,
+                            "roleIds": null,
+                            "createTime": "2026-04-11 09:33:03",
+                            "updateBy": "系统",
+                            "updateTime": "2026-04-11 11:08:56"
+                        },
+                        {
+                            "id": "27887",
+                            "username": "ID004154",
+                            "employeeNo": "ID004154",
+                            "realName": "曹燕",
+                            "gender": 2,
+                            "mobile": "176****0708",
+                            "idCard": "340711********002X",
+                            "email": null,
+                            "avatar": null,
+                            "deptNames": "业务核算_业务供应商_一般区域_王红丽大区_一百二十四分公司-林瑶",
+                            "superiorId": null,
+                            "superiorName": null,
+                            "postNames": "文员",
+                            "postIds": [
+                                "2042776068205109249"
+                            ],
+                            "postList": null,
+                            "marketEmployee": null,
+                            "regionalPresidentId": null,
+                            "regionalPresidentName": null,
+                            "regionalVicePresidentId": null,
+                            "regionalVicePresidentName": null,
+                            "salesCompanyName": null,
+                            "salesCompanyCode": null,
+                            "salesCompanyQualificationCode": null,
+                            "salesCompanyQualificationName": null,
+                            "deptIds": null,
+                            "status": 1,
+                            "roleIds": null,
+                            "createTime": "2026-04-11 09:33:02",
+                            "updateBy": "系统",
+                            "updateTime": "2026-04-11 11:08:55"
+                        }
+                    ],
+                    "api": "/api/v1/ui-builder/runtime/endpoints/2d9d0aeb1d94268eaf537db1b34783c9/invoke",
+                    "queryParams": {},
+                    "body": {
+                        "pageNo": 1,
+                        "pageSize": 10
+                    },
+                    "flowNum": "efb2d2eaf7d246f886105c0655fa3840",
+                    "createdBy": "hello",
+                    "rowActions": [
+                        {
+                            "type": "remoteQuery",
+                            "label": "查看详情",
+                            "params": {
+                                "api_id": "2d9d0aeb1d94268eaf537db1b34783c9",
+                                "api": "/api/v1/ui-builder/runtime/endpoints/2d9d0aeb1d94268eaf537db1b34783c9/invoke",
+                                "queryParams": {},
+                                "body": {
+                                    "id": {
+                                        "$bindRow": "id"
+                                    }
+                                },
+                                "flowNum": "efb2d2eaf7d246f886105c0655fa3840",
+                                "createdBy": "hello"
+                            }
+                        }
+                    ]
+                }
+            },
+            "report-pagination": {
+                "type": "PlannerPagination",
+                "props": {
+                    "enabled": true,
+                    "total": 2905,
+                    "currentPage": 1,
+                    "pageSize": 10,
+                    "pageParam": "pageNum",
+                    "pageSizeParam": "pageSize",
+                    "api": "/api/v1/ui-builder/runtime/endpoints/2d9d0aeb1d94268eaf537db1b34783c9/invoke",
+                    "queryParams": {},
+                    "body": {
+                        "pageNo": 1,
+                        "pageSize": 10
+                    },
+                    "flowNum": "efb2d2eaf7d246f886105c0655fa3840",
+                    "createdBy": "hello"
+                }
+            }
+        }
+    },
+    "error": null
+}

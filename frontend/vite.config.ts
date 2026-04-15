@@ -7,7 +7,7 @@ import { defineConfig, loadEnv } from 'vite';
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, '.', '');
   console.log(env)
-  const apiUrl = env.VITE_API_BASE_URL?.trim() || 'http://172.23.15.59:9080/ai-platform';
+  const apiUrl = env.VITE_API_BASE_URL?.trim() || 'http://172.23.15.61:9080/ai-platform';
 
   return {
     base: env.NODE_ENV === 'development' ? '/' : '/ai-platform/',
@@ -30,6 +30,10 @@ export default defineConfig(({ mode }) => {
         },
         // 业务编排层接口 (auth, tasks, knowledge, audit...)
         '/api/v1': {
+          target: apiUrl,
+          changeOrigin: true,
+        },
+        '/bs': {
           target: apiUrl,
           changeOrigin: true,
         },

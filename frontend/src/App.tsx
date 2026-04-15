@@ -102,6 +102,11 @@ export function App() {
   }, [logout]);
 
   useEffect(() => {
+    // 会话恢复期间不做跳转，避免刷新时先被重定向导致丢失当前路由。
+    if (isAuthBootstrapping) {
+      return;
+    }
+
     // 未登录时统一落到登录页；已登录访问登录页或未知路径时回到首页。
     if (!isAuthenticated && location.pathname !== PAGE_PATHS.login) {
       navigate(PAGE_PATHS.login, { replace: true });
@@ -111,7 +116,7 @@ export function App() {
     if (isAuthenticated && (location.pathname === PAGE_PATHS.login || !isKnownRoute)) {
       navigate(PAGE_PATHS.dashboard, { replace: true });
     }
-  }, [isAuthenticated, isKnownRoute, location.pathname, navigate]);
+  }, [isAuthBootstrapping, isAuthenticated, isKnownRoute, location.pathname, navigate]);
 
   const handleSendMessage = (overrideText?: string) => {
     const query = typeof overrideText === 'string' ? overrideText : chatInput;

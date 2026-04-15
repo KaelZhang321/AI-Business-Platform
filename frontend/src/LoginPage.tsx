@@ -31,6 +31,7 @@ export function LoginPage({ onIamLogin }: LoginPageProps) {
     // 明确告诉 IAM 授权后回调到当前组件挂载的路由
     // 本地开发模式去根目录，线上带上 /ai-platform 子路径配置
     const basePath = import.meta.env.DEV ? '' : '/ai-platform';
+    console.log('basePathbasePath', basePath)
     const REDIRECT_URI = window.location.origin + basePath + '/login';
     const targetUrl = `${IAM_AUTH_URL}?appCode=${CLIENT_ID}&redirectUrl=${encodeURIComponent(REDIRECT_URI)}&response_type=code`;
     window.location.href = targetUrl;

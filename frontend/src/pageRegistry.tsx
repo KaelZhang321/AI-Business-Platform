@@ -79,6 +79,11 @@ const ConsultantAIWorkbench = lazy(async () => {
   return { default: module.ConsultantAIWorkbench };
 });
 
+const AIComponentManagementView = lazy(async () => {
+  const module = await import('./components/AIComponentManagementView');
+  return { default: module.AIComponentManagementView };
+});
+
 const AIReportComparisonDetailView = lazy(async () => {
   const module = await import('./components/ai-report/AIReportInterpretationDetailView');
   return { default: module.AIReportComparisonDetailView };
@@ -131,6 +136,13 @@ const PAGE_RENDERERS: Partial<Record<AppPage, PageRenderer>> = {
   'medical-ai': () => <MedicalAIWorkbench />,
   'nurse-ai': () => <NurseAIWorkbench />,
   'consultant-ai': () => <ConsultantAIWorkbench />,
+  'ai-component-management': ({ navigateToPage, isDarkMode, setIsDarkMode }) => (
+    <AIComponentManagementView
+      setCurrentPage={navigateToPage}
+      isDarkMode={isDarkMode}
+      setIsDarkMode={setIsDarkMode}
+    />
+  ),
 };
 
 function renderFallbackPage(page: AppPage): React.ReactNode {

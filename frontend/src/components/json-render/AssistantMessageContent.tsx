@@ -17,7 +17,7 @@
  */
 import { useJsonRenderMessage } from '@json-render/react';
 import { useMemo } from 'react';
-import { apiClient } from '../../../services/api';
+import { apiClient } from '../../services/api';
 import { AssistantRenderer } from './registry';
 import { buildJsonRenderParts } from './spec';
 
@@ -64,6 +64,7 @@ export function AssistantMessageContent({ content }: AssistantMessageContentProp
     actionName: string,
     params?: Record<string, unknown>,
   ) => {
+    console.log(123213)
     switch (actionName) {
       /**
        * saveToServer — 将规划目标写入服务端。
@@ -79,10 +80,25 @@ export function AssistantMessageContent({ content }: AssistantMessageContentProp
        */
       case 'saveToServer': {
         const goal = typeof params?.goal === 'string' ? params.goal : '';
+        const apiPath = typeof params?.api === 'string' ? params.api : '';
+        const body = typeof params?.body === 'object' ? params.body : {};
+        console.log('Action params API:', params);
         try {
-          await apiClient.post('/api/v1/consultant/plan/save', { goal });
-          // 接口成功后的处理：可通知外部状态管理（如 Zustand store）
-          console.info('[AssistantMessageContent] 规划已保存:', goal);
+          let res;
+          if (apiPath) {
+            res = await apiClient.post(apiPath, { ...params });
+          } else {
+            res = await apiClient.post('/api/v1/consultant/plan/save', { goal });
+          }
+
+          // 通知 PlannerTable 数据更新（如果页面有 PlannerTable）
+          if (res) {
+            window.dispatchEvent(new CustomEvent('planner:table-data-update', {
+              detail: { resData: res.data }
+            }));
+          }
+
+          console.info('[AssistantMessageContent] 交互保存/查询完成', { apiPath, goal });
         } catch (err) {
           console.error('[AssistantMessageContent] saveToServer 失败:', err);
         }

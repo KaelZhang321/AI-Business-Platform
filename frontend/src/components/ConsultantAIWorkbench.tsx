@@ -1,145 +1,436 @@
-import { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { KeyboardSensor, PointerSensor, type DragEndEvent, useSensor, useSensors } from '@dnd-kit/core';
+import { arrayMove, sortableKeyboardCoordinates } from '@dnd-kit/sortable';
+import { CUSTOMERS } from '../data/mockData';
 import { apiClient } from '../services/api';
-import { useJsonRenderMessage } from '@json-render/react';
-import type { Spec } from '@json-render/react';
-import { AssistantSidebar } from './consultant-ai-workbench/AssistantSidebar';
-import { CustomerInfoBar } from './consultant-ai-workbench/CustomerInfoBar';
-import { MainReportsPanel } from './consultant-ai-workbench/MainReportsPanel';
-import { InsightsSidebar } from './consultant-ai-workbench/InsightsSidebar';
-import { WorkbenchHeader } from './consultant-ai-workbench/WorkbenchHeader';
-import { getAiResponse, createPlanningMessage } from './consultant-ai-workbench/chat';
-import { historyItems, suggestionItems } from './consultant-ai-workbench/data';
-import { buildJsonRenderParts, buildStructuredSpec } from './consultant-ai-workbench/json-render/spec';
-import type { PlanningMessage, WorkbenchViewMode } from './consultant-ai-workbench/types';
+import { AssistantSidebarPanel } from './consultant-ai-workbench/modules/AssistantSidebarPanel';
+import { CustomerSelectionModal } from './consultant-ai-workbench/modules/CustomerSelectionModal';
+import { ExpandedCardModal } from './consultant-ai-workbench/modules/ExpandedCardModal';
+import { FloatingAssistantBubble } from './consultant-ai-workbench/modules/FloatingAssistantBubble';
+import { InsightsArea } from './consultant-ai-workbench/modules/InsightsArea';
+import { MainContentPanel } from './consultant-ai-workbench/modules/MainContentPanel';
+import { WorkbenchHeaderSection } from './consultant-ai-workbench/modules/WorkbenchHeaderSection';
+import resjson from './json-render/res.json'
 
-/**
- * AiSpecExtractor — 内部工具组件，用于从 AI 回复内容中提取 Spec 对象。
- *
- * 为什么需要这个组件：
- *   useJsonRenderMessage 是 React Hook，只能在组件内调用。
- *   父组件需要把最新 AI 消息的 Spec 提升到父级 state，
- *   所以用一个专用子组件来解析，并通过 onSpec 回调上报。
- */
-function AiSpecExtractor({ content, onSpec }: { content: string; onSpec: (spec: Spec | null) => void }) {
-  const parts = useMemo(() => buildJsonRenderParts(content), [content]);
-  const { spec } = useJsonRenderMessage(parts);
+import type {
+  AIResultItem,
+  ChatHistoryItem,
+  ConsultantAIWorkbenchProps,
+  CustomerRecord,
+  SavedLayout,
+} from './consultant-ai-workbench/modules/types';
 
-  // 每次 spec 变化时上报（只在变化时执行，通过 useMemo 缓存比较）
-  useMemo(() => {
-    onSpec(spec ?? null);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [spec]);
+const CUSTOMER_POOL = CUSTOMERS as CustomerRecord[];
 
-  return null; // 纯逻辑组件，不渲染任何 DOM
+function normalizeAiMessageObject(messageObj: Record<string, unknown>): Record<string, unknown> {
+  const normalized = { ...messageObj };
+  if (!normalized.spec && normalized.ui_spec && typeof normalized.ui_spec === 'object') {
+    normalized.spec = normalized.ui_spec;
+  }
+  return normalized;
 }
 
-export function ConsultantAIWorkbench() {
-  const [planningChatMessage, setPlanningChatMessage] = useState('');
-  const [isGeneratingPlan, setIsGeneratingPlan] = useState(false);
-  const [showNewPlan, setShowNewPlan] = useState(false);
-  const [aiName, setAiName] = useState('小智');
-  const [isNaming, setIsNaming] = useState(false);
-  const [viewMode, setViewMode] = useState<WorkbenchViewMode>('PLAN');
-  const [planningMessages, setPlanningMessages] = useState<PlanningMessage[]>([]);
+function parseAiMessageObject(content: unknown): Record<string, unknown> | null {
+  if (typeof content !== 'string') {
+    return null;
+  }
 
-  /**
-   * latestAiSpec — 最新 AI 回复中解析出的 Spec 对象。
-   *
-   * 设计思路：
-   *   - 每次收到新 AI 消息且存在 Spec 时，父组件更新此 state
-   *   - 同时切换 viewMode 到 'AI_PANEL'，让 MainReportsPanel 展示卡片
-   *   - Sidebar 气泡中只保留纯文本，卡片渲染移至中央主面板
-   */
-  const [latestAiSpec, setLatestAiSpec] = useState<Spec | null>(null);
+  const trimmed = content.trim();
+  if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) {
+    return null;
+  }
 
-  // 取最新一条 AI 消息，用于 AiSpecExtractor 解析
-  const latestAiMessage = useMemo(
-    () => [...planningMessages].reverse().find((m) => m.role === 'ai'),
-    [planningMessages],
-  );
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    return null;
+  }
 
-  const handleSendPlanningMessage = async (text?: string) => {
-    const input = text || planningChatMessage;
-    if (!input.trim()) return;
+  return null;
+}
 
-    setPlanningMessages((prev) => [...prev, createPlanningMessage('user', input)]);
-    setPlanningChatMessage('');
-    setIsGeneratingPlan(true);
+function pickAiSummary(messageObj: Record<string, unknown>): string {
+  const candidates = [messageObj.text, messageObj.message, messageObj.summary, messageObj.reply, messageObj.result];
+  for (const item of candidates) {
+    if (typeof item === 'string' && item.trim()) {
+      return item.trim();
+    }
+  }
+  return '';
+}
+
+function normalizeAiResponseContent(content: unknown): string {
+  if (typeof content === 'string') {
+    const parsedObject = parseAiMessageObject(content);
+    if (parsedObject) {
+      return JSON.stringify(normalizeAiMessageObject(parsedObject));
+    }
+    return content.trim();
+  }
+
+  if (content && typeof content === 'object') {
+    return JSON.stringify(normalizeAiMessageObject(content as Record<string, unknown>));
+  }
+
+  return '';
+}
+
+function extractAiResultSummary(content: unknown, customerName: string): string {
+  if (typeof content === 'string' && content.trim()) {
+    const parsedObject = parseAiMessageObject(content);
+    if (parsedObject) {
+      const parsedSummary = pickAiSummary(normalizeAiMessageObject(parsedObject));
+      if (parsedSummary) {
+        return parsedSummary;
+      }
+      return `已为您生成 ${customerName} 的对话结果，请在 AI结果显示区查看。`;
+    }
+    return content.trim();
+  }
+
+  if (content && typeof content === 'object') {
+    const summary = pickAiSummary(normalizeAiMessageObject(content as Record<string, unknown>));
+    if (summary) {
+      return summary;
+    }
+  }
+
+  return `已为您生成 ${customerName} 的对话结果，请在 AI结果显示区查看。`;
+}
+
+export const ConsultantAIWorkbench: React.FC<ConsultantAIWorkbenchProps> = ({
+  setCurrentPage = (_page) => { },
+  setNavigationParams,
+}) => {
+  const [selectedCustomer, setSelectedCustomer] = useState<CustomerRecord | null>(null);
+  const [chatMessage, setChatMessage] = useState('');
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [searchTerm, setSearchTerm] = useState('');
+
+  const [isRightPanelOpen, setIsRightPanelOpen] = useState(false);
+  const [isAssistantShrunk, setIsAssistantShrunk] = useState(false);
+  const [aiResults, setAiResults] = useState<AIResultItem[]>([]);
+  const [aiFloatingTip, setAiFloatingTip] = useState('');
+  const constraintsRef = useRef<HTMLDivElement | null>(null);
+
+  const [dashboardCards, setDashboardCards] = useState<string[]>([]);
+  const [isLayoutViewEnabled, setIsLayoutViewEnabled] = useState(false);
+  const [isLayoutSaved, setIsLayoutSaved] = useState(false);
+  const [expandedCardId, setExpandedCardId] = useState<string | null>(null);
+  const [savedLayouts, setSavedLayouts] = useState<SavedLayout[]>([]);
+
+  const [chatHistory, setChatHistory] = useState<ChatHistoryItem[]>([]);
+  const chatRequestPendingRef = useRef(false);
+
+  useEffect(() => {
+    const savedLayoutsData = localStorage.getItem('aiWorkbenchLayouts');
+    if (!savedLayoutsData) {
+      return;
+    }
 
     try {
-      const res = await apiClient.post('/api/v1/api-query', {
-        query: input
-      });
-      // 优先取 res.data.data（后端标准响应体），其次取 res.data
-      const aiResponseContent = res.data?.data ?? res.data ?? '';
-      aiResponseContent.spec = aiResponseContent.ui_spec
-      // 如果后端返回的是对象（可能包含 { spec, text } 结构），
-      // 保持 JSON 字符串格式，让 buildJsonRenderParts 能正确解析出 Spec 并渲染交互卡片；
-      // 如果是纯字符串则直接使用。
-      const finalAIContent = typeof aiResponseContent === 'string'
-        ? aiResponseContent
-        : JSON.stringify(aiResponseContent);
+      const parsedLayouts = JSON.parse(savedLayoutsData) as SavedLayout[];
+      setSavedLayouts(Array.isArray(parsedLayouts) ? parsedLayouts : []);
+    } catch {
+      setSavedLayouts([]);
+    }
+  }, []);
 
-      setPlanningMessages((prev) => [...prev, createPlanningMessage('ai', finalAIContent)]);
-    } catch (err) {
-      console.error('API Query error:', err);
-      setPlanningMessages((prev) => [...prev, createPlanningMessage('ai', '服务暂不可用，请稍后重试。')]);
+  const loadCustomerLayout = (customer: CustomerRecord, currentLayouts: SavedLayout[]) => {
+    const customerLayouts = currentLayouts.filter((layout) => layout.customerId === customer.id);
+    if (customerLayouts.length > 0) {
+      setDashboardCards(customerLayouts[customerLayouts.length - 1].cards);
+      return;
+    }
+
+    setDashboardCards(['panorama', 'risk', 'objection', 'renewal', 'upsell', 'consumption', 'insight', 'action']);
+  };
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: {
+        distance: 5,
+      },
+    }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    })
+  );
+
+  const handleDragEnd = (event: DragEndEvent) => {
+    const { active, over } = event;
+    if (!over || active.id === over.id) {
+      return;
+    }
+
+    setDashboardCards((items) => {
+      const oldIndex = items.indexOf(active.id as string);
+      const newIndex = items.indexOf(over.id as string);
+      return arrayMove(items, oldIndex, newIndex);
+    });
+    setIsLayoutSaved(false);
+  };
+
+  const handleSaveLayout = () => {
+    if (!selectedCustomer) {
+      return;
+    }
+
+    const customerLayoutsCount = savedLayouts.filter((layout) => layout.customerId === selectedCustomer.id).length;
+    const newLayout: SavedLayout = {
+      id: Date.now().toString(),
+      name: `AI结果显示区-默认布局${customerLayoutsCount + 1}`,
+      cards: [...dashboardCards],
+      customerId: selectedCustomer.id,
+    };
+
+    const newLayouts = [...savedLayouts, newLayout];
+    setSavedLayouts(newLayouts);
+    localStorage.setItem('aiWorkbenchLayouts', JSON.stringify(newLayouts));
+
+    setIsLayoutSaved(true);
+    setTimeout(() => setIsLayoutSaved(false), 2000);
+  };
+
+  const handleRenameLayout = (id: string, newName: string) => {
+    const newLayouts = savedLayouts.map((layout) => (layout.id === id ? { ...layout, name: newName } : layout));
+    setSavedLayouts(newLayouts);
+    localStorage.setItem('aiWorkbenchLayouts', JSON.stringify(newLayouts));
+  };
+
+  const handleApplyLayout = (id: string) => {
+    const layout = savedLayouts.find((item) => item.id === id);
+    if (layout) {
+      setDashboardCards(layout.cards);
+      setIsLayoutViewEnabled(true);
+    }
+  };
+
+  const handleDeleteLayout = (id: string) => {
+    const newLayouts = savedLayouts.filter((layout) => layout.id !== id);
+    setSavedLayouts(newLayouts);
+    localStorage.setItem('aiWorkbenchLayouts', JSON.stringify(newLayouts));
+  };
+
+  const handleDeleteCard = (id: string) => {
+    setDashboardCards((prev) => prev.filter((cardId) => cardId !== id));
+  };
+
+  const currentCustomerLayouts = useMemo(() => {
+    if (!selectedCustomer) {
+      return [];
+    }
+    return savedLayouts.filter((layout) => layout.customerId === selectedCustomer.id);
+  }, [savedLayouts, selectedCustomer]);
+
+  const filteredCustomers = useMemo(() => {
+    return CUSTOMER_POOL.filter((customer) =>
+      customer.name.includes(searchTerm) ||
+      (typeof customer.phone === 'string' && customer.phone.includes(searchTerm)) ||
+      (typeof customer.idCard === 'string' && customer.idCard.includes(searchTerm))
+    );
+  }, [searchTerm]);
+
+  const [latestAssistantMessage, setLatestAssistantMessage] = useState<string | null>(null);
+
+  const handleSelectCustomer = (customer: CustomerRecord) => {
+    setSelectedCustomer(customer);
+    setIsModalOpen(false);
+    setIsLayoutViewEnabled(true);
+    setChatHistory([
+      {
+        role: 'assistant',
+        content: `已为您定位到客户 ${customer.name}，已同步客户档案。您可以让我整理客户全景、判断续费概率等。`,
+      },
+    ]);
+    loadCustomerLayout(customer, savedLayouts);
+  };
+
+  const handleChatSubmit = async (text?: string) => {
+    if (chatRequestPendingRef.current) {
+      return;
+    }
+
+    const input = typeof text === 'string' ? text : chatMessage;
+    if (!input.trim()) {
+      return;
+    }
+
+    const query = input.trim();
+    setChatHistory((prev) => [...prev, { role: 'user', content: query }]);
+    setChatMessage('');
+
+    if (!selectedCustomer) {
+      const foundCustomer = CUSTOMER_POOL.find(
+        (customer) => customer.name === query || customer.phone === query || customer.idCard === query
+      );
+
+      if (foundCustomer) {
+        setSelectedCustomer(foundCustomer);
+        setIsLayoutViewEnabled(true);
+        setChatHistory((prev) => [
+          ...prev,
+          {
+            role: 'assistant',
+            content: `已为您定位到客户 ${foundCustomer.name}，已同步客户档案。您可以让我整理客户全景、判断续费概率等。`,
+          },
+        ]);
+        loadCustomerLayout(foundCustomer, savedLayouts);
+        return;
+      }
+
+      setChatHistory((prev) => [...prev, { role: 'assistant', content: '未找到匹配的客户，请重新输入姓名、手机号或身份证号。' }]);
+      return;
+    }
+
+    setIsRightPanelOpen(false);
+    setAiFloatingTip('正在生成对话结果...');
+    chatRequestPendingRef.current = true;
+
+    try {
+      const response = await apiClient.post('/api/v1/api-query', { query });
+      const aiResponseContent = response.data?.data ?? response.data ?? '';
+      // const aiResponseContent = resjson;
+      const assistantContent = normalizeAiResponseContent(aiResponseContent);
+      const resultSummary = extractAiResultSummary(aiResponseContent, selectedCustomer.name);
+      const finalAssistantContent = assistantContent || resultSummary;
+
+      setIsLayoutViewEnabled(false);
+      setLatestAssistantMessage(finalAssistantContent);
+
+      setAiResults((prev) => [
+        {
+          id: Date.now(),
+          type: 'AI对话结果',
+          title: 'AI对话结果',
+          content: resultSummary,
+        },
+        ...prev,
+      ]);
+
+      setChatHistory((prev) => [
+        ...prev,
+        { role: 'assistant', content: '已根据指令生成结构化卡片方案，请在旁侧查阅。' },
+      ]);
+    } catch (error) {
+      console.error('[ConsultantAIWorkbench] API Query error:', error);
+      const fallbackMessage = '服务暂不可用，已切换为本地结构化示例。';
+
+      setIsLayoutViewEnabled(false);
+      setLatestAssistantMessage(fallbackMessage);
+
+      setAiResults((prev) => [
+        {
+          id: Date.now(),
+          type: 'AI对话结果',
+          title: 'AI对话结果',
+          content: fallbackMessage,
+        },
+        ...prev,
+      ]);
+
+      setChatHistory((prev) => [
+        ...prev,
+        { role: 'assistant', content: '服务暂不可用，生成结构化方案失败。' },
+      ]);
     } finally {
-      setIsGeneratingPlan(false);
+      chatRequestPendingRef.current = false;
+      setAiFloatingTip('已为您生成对话结果');
+      setTimeout(() => setAiFloatingTip(''), 3000);
     }
   };
 
-  /**
-   * handleSpecExtracted — AiSpecExtractor 解析完成后的回调。
-   *
-   * spec 不为 null 时：自动切换主面板到 AI_PANEL 模式展示交互卡片。
-   * spec 为 null 时：说明最新 AI 消息是纯文本，主面板保留当前 viewMode。
-   */
-  const handleSpecExtracted = (spec: Spec | null) => {
-    if (spec) {
-      setLatestAiSpec(spec);
-      setViewMode('AI_PANEL');
-    }
-  };
+  const middleColClass =
+    !isAssistantShrunk && isRightPanelOpen
+      ? '2xl:col-span-6'
+      : !isAssistantShrunk && !isRightPanelOpen
+        ? '2xl:col-span-9'
+        : isAssistantShrunk && isRightPanelOpen
+          ? '2xl:col-span-9'
+          : '2xl:col-span-12';
 
   return (
-    <div className="h-full flex flex-col space-y-6">
-      {/* 纯逻辑组件：监听最新 AI 消息，提取 Spec 并上报给父组件 */}
-      {latestAiMessage && (
-        <AiSpecExtractor
-          content={latestAiMessage.content}
-          onSpec={handleSpecExtracted}
-        />
-      )}
+    <div className="relative flex h-full min-h-0 flex-col gap-6">
+      <WorkbenchHeaderSection
+        hasCards={dashboardCards.length > 0}
+        isLayoutSaved={isLayoutSaved}
+        onSaveLayout={handleSaveLayout}
+        onOpenCustomerModal={() => setIsModalOpen(true)}
+      />
 
-      <WorkbenchHeader />
-      <CustomerInfoBar />
-
-      <div className="flex-1 grid grid-cols-12 gap-6 overflow-hidden">
-        {/* 左侧：AI 对话栏 — 气泡内只显示纯文本，卡片已移至主面板 */}
-        <AssistantSidebar
-          aiName={aiName}
-          isNaming={isNaming}
-          planningChatMessage={planningChatMessage}
-          planningMessages={planningMessages}
-          isGeneratingPlan={isGeneratingPlan}
-          onAiNameChange={setAiName}
-          onNamingToggle={setIsNaming}
-          onPlanningMessageChange={setPlanningChatMessage}
-          onSendMessage={handleSendPlanningMessage}
+      <div className="relative grid flex-1 min-h-0 grid-cols-1 gap-6 2xl:grid-cols-12">
+        <AssistantSidebarPanel
+          isAssistantShrunk={isAssistantShrunk}
+          selectedCustomer={selectedCustomer}
+          chatHistory={chatHistory}
+          chatMessage={chatMessage}
+          onChatMessageChange={setChatMessage}
+          onChatSubmit={handleChatSubmit}
+          onQuickPrompt={(prompt) => {
+            void handleChatSubmit(prompt);
+          }}
+          onShrink={() => setIsAssistantShrunk(true)}
         />
 
-        {/* 中央：主报告面板 — AI_PANEL 模式时渲染 JSON-Render 交互卡片 */}
-        <MainReportsPanel
-          viewMode={viewMode}
-          showNewPlan={showNewPlan}
-          historyItems={historyItems}
-          suggestionItems={suggestionItems}
-          aiSpec={latestAiSpec}
+        <MainContentPanel
+          middleColClass={middleColClass}
+          isRightPanelOpen={isRightPanelOpen}
+          selectedCustomer={selectedCustomer}
+          currentCustomerLayouts={currentCustomerLayouts}
+          constraintsRef={constraintsRef}
+          onRenameLayout={handleRenameLayout}
+          onApplyLayout={handleApplyLayout}
+          onDeleteLayout={handleDeleteLayout}
+          onOpenCustomerModal={() => setIsModalOpen(true)}
+          onNavigateToComparison={() => {
+            if (setNavigationParams && selectedCustomer) {
+              setNavigationParams({ customerId: selectedCustomer.id });
+            }
+            setCurrentPage('ai-report-comparison');
+          }}
+          onNavigateToFourQuadrant={() => {
+            if (setNavigationParams && selectedCustomer) {
+              setNavigationParams({ customerId: selectedCustomer.id });
+            }
+            setCurrentPage('ai-four-quadrant');
+          }}
+          dashboardCards={dashboardCards}
+          dndSensors={sensors}
+          onDragEnd={handleDragEnd}
+          onExpandCard={setExpandedCardId}
+          onDeleteCard={handleDeleteCard}
+          aiResults={aiResults}
+          latestAssistantMessage={latestAssistantMessage}
+          isLayoutViewEnabled={isLayoutViewEnabled}
         />
 
-        <InsightsSidebar />
+        <InsightsArea
+          isRightPanelOpen={isRightPanelOpen}
+          selectedCustomer={selectedCustomer}
+          onOpenPanel={() => setIsRightPanelOpen(true)}
+          onClosePanel={() => setIsRightPanelOpen(false)}
+        />
       </div>
+
+      <CustomerSelectionModal
+        isOpen={isModalOpen}
+        searchTerm={searchTerm}
+        filteredCustomers={filteredCustomers}
+        onSearchTermChange={setSearchTerm}
+        onSelectCustomer={handleSelectCustomer}
+        onClose={() => setIsModalOpen(false)}
+      />
+
+      <FloatingAssistantBubble
+        isAssistantShrunk={isAssistantShrunk}
+        aiFloatingTip={aiFloatingTip}
+        onExpand={() => setIsAssistantShrunk(false)}
+      />
+
+      <ExpandedCardModal expandedCardId={expandedCardId} onClose={() => setExpandedCardId(null)} />
     </div>
   );
-}
+};
