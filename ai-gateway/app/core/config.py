@@ -15,6 +15,21 @@ class Settings(BaseSettings):
     business_mysql_password: str = Field(default="ai_platform_dev")
     business_mysql_database: str = Field(default="ai_platform_business")
 
+    # Health Quadrant ODS MySQL
+    health_quadrant_ods_mysql_host: str = Field(default="rm-2ze7k76808sos442l.mysql.rds.aliyuncs.com")
+    health_quadrant_ods_mysql_port: int = Field(default=3306)
+    health_quadrant_ods_mysql_user: str = Field(default="pro_platform")
+    health_quadrant_ods_mysql_password: str = Field(default="xxxxxxxxx")
+    health_quadrant_ods_mysql_database: str = Field(default="dc_ods")
+
+    # Health Quadrant DW MySQL
+    health_quadrant_dw_mysql_host: str = Field(default="rm-2ze1r48g54eg09z53.mysql.rds.aliyuncs.com")
+    health_quadrant_dw_mysql_port: int = Field(default=3306)
+    health_quadrant_dw_mysql_user: str = Field(default="dw_prd_251008")
+    health_quadrant_dw_mysql_password: str = Field(default="xxxxxx")
+    health_quadrant_dw_mysql_database: str = Field(default="data_warehouse")
+    health_quadrant_mysql_connect_timeout_seconds: float = Field(5.0, ge=0.1, le=60.0)
+
     # Redis
     redis_url: str = "redis://:redis_dev@localhost:6379/0"
 
