@@ -6,6 +6,7 @@ ARG PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    TZ=Asia/Shanghai \
     PIP_INDEX_URL=${PIP_INDEX_URL} \
     PIP_TRUSTED_HOST=mirrors.aliyun.com \
     VIRTUAL_ENV=/opt/venv \
@@ -36,6 +37,7 @@ FROM ${BASE_IMAGE} AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    TZ=Asia/Shanghai \
     VIRTUAL_ENV=/opt/venv \
     PATH="/opt/venv/bin:${PATH}" \
     HOME=/opt/model-cache \
@@ -44,6 +46,17 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     XDG_CACHE_HOME=/opt/model-cache
 
 WORKDIR /app
+
+# 统一容器时区为 Asia/Shanghai，避免与宿主机日志时间轴错位。
+RUN if command -v dnf >/dev/null 2>&1; then \
+      dnf install -y tzdata && dnf clean all; \
+    elif command -v yum >/dev/null 2>&1; then \
+      yum install -y tzdata && yum clean all; \
+    else \
+      echo "No package manager found for tzdata install" >&2; exit 1; \
+    fi && \
+    ln -snf /usr/share/zoneinfo/${TZ} /etc/localtime && \
+    echo "${TZ}" >/etc/timezone
 
 COPY --from=builder /opt/venv /opt/venv
 COPY pyproject.toml ./

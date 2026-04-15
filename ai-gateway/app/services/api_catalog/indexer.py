@@ -17,8 +17,10 @@ API Catalog — Milvus 向量入库器
 from __future__ import annotations
 
 import asyncio
+import inspect
 import importlib
 import logging
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
 from pymilvus import (
@@ -31,7 +33,11 @@ from pymilvus import (
 )
 
 from app.core.config import settings
+from app.services.api_catalog.constants import API_CATALOG_COLLECTION, EMBEDDING_DIM
 from app.core.model_source import resolve_model_source
+from app.services.api_catalog.field_semantic_resolver import ApiFieldSemanticResolver
+from app.services.api_catalog.graph_models import GraphSyncImpactResult, SemanticGovernanceSnapshot
+from app.services.api_catalog.graph_sync import ApiCatalogGraphSyncService
 from app.services.api_catalog.registry_source import ApiCatalogRegistrySource
 from app.services.api_catalog.schema import ApiCatalogEntry
 
@@ -39,12 +45,6 @@ if TYPE_CHECKING:
     from FlagEmbedding import BGEM3FlagModel
 
 logger = logging.getLogger(__name__)
-
-# Milvus collection 名称（独立于知识库 collection，避免污染）
-API_CATALOG_COLLECTION = "api_catalog"
-
-# BGE-M3 dense vector 维度
-EMBEDDING_DIM = 1024
 
 # 这里故意使用一个极短的稳定文本做 warmup，而不是空字符串。
 # 原因不是“求语义准确”，而是强制触发底层 embedding runtime 的首次真实 encode，
@@ -102,6 +102,11 @@ def _get_collection_schema() -> CollectionSchema:
             dtype=DataType.VARCHAR,
             max_length=16,
             description="接口安全语义。用于在候选后校验、Planner 和执行器阶段硬拦截 mutation 接口。",
+        ),
+        FieldSchema(
+            name="requires_confirmation",
+            dtype=DataType.BOOL,
+            description="高风险 mutation 的确认护栏。后续 GraphRAG 会据此决定是否转入 WAIT_CONFIRM。",
         ),
         FieldSchema(
             name="method",
@@ -214,12 +219,32 @@ def _matches_expected_schema(collection: Collection) -> bool:
 
 
 class ApiCatalogIndexer:
-    """将 API 目录写入 Milvus 向量库。"""
+    """将 API 目录写入 Milvus，并在启用时同步 GraphRAG 派生事实。
 
-    def __init__(self) -> None:
+    功能：
+        Milvus 仍然是锚点召回入口，但 Phase 04 之后离线索引不再只有“向量入库”一件事。
+        同一次 index 还需要把字段归一结果同步到 Neo4j，并在图事务提交后把受影响的缓存
+        精准失效掉，避免在线检索读到 stale subgraph。
+
+    Args:
+        field_resolver: 字段归一解析器。测试可注入假实现，生产默认使用治理三表仓储。
+        graph_sync_service: 图同步服务。为空时按默认配置惰性创建。
+        graph_sync_hook: 可选的提交后 hook，用于把 `impacted_api_ids` 向上游暴露出去。
+    """
+
+    def __init__(
+        self,
+        *,
+        field_resolver: ApiFieldSemanticResolver | None = None,
+        graph_sync_service: ApiCatalogGraphSyncService | None = None,
+        graph_sync_hook: Callable[[GraphSyncImpactResult], Awaitable[None] | None] | None = None,
+    ) -> None:
         self._embedder: BGEM3FlagModel | None = None
         self._collection: Collection | None = None
         self._embedder_warmed_up = False
+        self._field_resolver = field_resolver
+        self._graph_sync_service = graph_sync_service
+        self._graph_sync_hook = graph_sync_hook
 
     # ── 懒加载 ──────────────────────────────────────────────────
 
@@ -312,6 +337,20 @@ class ApiCatalogIndexer:
             logger.info("Milvus collection ready: %s", API_CATALOG_COLLECTION)
         return self._collection
 
+    def _get_field_resolver(self) -> ApiFieldSemanticResolver:
+        """懒加载字段归一解析器。"""
+
+        if self._field_resolver is None:
+            self._field_resolver = ApiFieldSemanticResolver()
+        return self._field_resolver
+
+    def _get_graph_sync_service(self) -> ApiCatalogGraphSyncService:
+        """懒加载图同步服务。"""
+
+        if self._graph_sync_service is None:
+            self._graph_sync_service = ApiCatalogGraphSyncService()
+        return self._graph_sync_service
+
     # ── 公共 API ────────────────────────────────────────────────
 
     async def index_all(self) -> dict[str, int]:
@@ -335,7 +374,11 @@ class ApiCatalogIndexer:
         self._get_collection()
         logger.info("Indexer dependencies ready, processing %d API entries", len(entries))
 
-        results = await asyncio.gather(*[self.index_entry(e) for e in entries], return_exceptions=True)
+        governance_snapshot = await self._load_governance_snapshot_if_needed()
+        results = await asyncio.gather(
+            *[self.index_entry(e, governance_snapshot=governance_snapshot) for e in entries],
+            return_exceptions=True,
+        )
         indexed = sum(1 for r in results if r is True)
         skipped = sum(1 for r in results if isinstance(r, Exception))
         if skipped:
@@ -346,8 +389,24 @@ class ApiCatalogIndexer:
         logger.info("API Catalog indexed: %d OK, %d failed", indexed, skipped)
         return {"indexed": indexed, "skipped": skipped}
 
-    async def index_entry(self, entry: ApiCatalogEntry) -> bool:
-        """对单条 API 目录记录做 embedding 并写入 Milvus。"""
+    async def index_entry(
+        self,
+        entry: ApiCatalogEntry,
+        *,
+        governance_snapshot: SemanticGovernanceSnapshot | None = None,
+    ) -> bool:
+        """对单条 API 目录记录做 embedding，并在启用时同步图事实。
+
+        Args:
+            entry: 当前需要入库的 API 目录记录。
+            governance_snapshot: 可选的治理快照。批量索引时复用它，可以避免对三张治理表重复查库。
+
+        Returns:
+            `True` 表示该接口的 Milvus 入库与可选图同步都成功完成。
+
+        Raises:
+            透传 embedding / Milvus / GraphRAG 相关异常，供调用方把失败条目标记为 skipped。
+        """
         logger.debug("Indexing API entry started: id=%s method=%s path=%s", entry.id, entry.method, entry.path)
         # 单条入库也必须遵守同一初始化顺序，否则 direct 调用 index_entry() 时仍会把首次 encode
         # 拖到 Milvus 建连之后，warmup 的治理价值就被绕开了。
@@ -372,6 +431,7 @@ class ApiCatalogIndexer:
             [entry.status],
             [entry.tag_name or ""],
             [entry.operation_safety],
+            [entry.requires_confirmation],
             [entry.method],
             [entry.path],
             [entry.auth_required],
@@ -391,8 +451,48 @@ class ApiCatalogIndexer:
         ]
         collection.insert(data)
         collection.flush()
+        await self._sync_graph_if_needed(entry, governance_snapshot=governance_snapshot)
         logger.debug("Indexing API entry finished: id=%s method=%s path=%s", entry.id, entry.method, entry.path)
         return True
+
+    async def _load_governance_snapshot_if_needed(self) -> SemanticGovernanceSnapshot | None:
+        """按需加载字段治理快照。
+
+        功能：
+            只有图能力启用时，索引器才需要解析字段画像。这里提前装载快照，是为了让全量任务
+            在并发处理条目时复用同一份治理事实，而不是把 MySQL 压成热点瓶颈。
+        """
+
+        if not settings.api_catalog_graph_enabled:
+            return None
+        return await self._get_field_resolver().load_governance_snapshot()
+
+    async def _sync_graph_if_needed(
+        self,
+        entry: ApiCatalogEntry,
+        *,
+        governance_snapshot: SemanticGovernanceSnapshot | None,
+    ) -> GraphSyncImpactResult | None:
+        """在 Milvus 写入成功后同步单个 API 的图事实。"""
+
+        if not settings.api_catalog_graph_enabled:
+            return None
+
+        resolver = self._get_field_resolver()
+        snapshot = governance_snapshot or await resolver.load_governance_snapshot()
+        bindings = resolver.resolve_entry_bindings(entry, governance_snapshot=snapshot)
+        sync_result = await self._get_graph_sync_service().sync_entry(entry, bindings)
+        await self._run_graph_sync_hook(sync_result)
+        return sync_result
+
+    async def _run_graph_sync_hook(self, sync_result: GraphSyncImpactResult) -> None:
+        """执行图同步完成后的观测 hook。"""
+
+        if self._graph_sync_hook is None:
+            return
+        maybe_awaitable = self._graph_sync_hook(sync_result)
+        if inspect.isawaitable(maybe_awaitable):
+            await maybe_awaitable
 
 def _create_collection() -> Collection:
     """创建并加载 `api_catalog` collection。"""

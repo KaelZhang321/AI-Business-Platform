@@ -81,6 +81,9 @@ class TestApiCatalogEntry:
         assert entry.status == "active"
         assert entry.business_intents == ["query_business_data"]
         assert entry.operation_safety == "mutation"
+        assert entry.requires_confirmation is False
+        assert entry.request_field_profiles == []
+        assert entry.response_field_profiles == []
 
     def test_embed_text_includes_registry_fields(self):
         entry = self._make_entry(domain="crm", tag_name="customer_management", business_intents=["query_business_data"])
@@ -152,6 +155,34 @@ class TestExtractData:
         data, total = _extract_data(body, "data")
         assert data == []
         assert total == 0
+
+    def test_unwraps_data_records_list_when_data_path_points_to_data(self):
+        body = {
+            "data": {
+                "records": [{"id": "C001"}, {"id": "C002"}],
+                "summaryCardDTO": {"activeCount": 2},
+                "total": 12,
+            }
+        }
+        data, total = _extract_data(body, "data")
+        assert isinstance(data, list)
+        assert len(data) == 2
+        assert total == 12
+
+    def test_unwraps_summary_card_inside_records_for_detail_shape(self):
+        body = {
+            "data": {
+                "records": {
+                    "summaryCardDTO": {"customerId": "1675218389653693282", "customerName": "恒泰集团"},
+                    "extra": {"source": "crm"},
+                }
+            }
+        }
+        data, total = _extract_data(body, "data")
+        assert isinstance(data, dict)
+        assert data["customerId"] == "1675218389653693282"
+        assert data["customerName"] == "恒泰集团"
+        assert total == 1
 
 
 class TestApplyFieldLabels:
@@ -276,6 +307,8 @@ class TestRuntimeInvokeExecutor:
         async def handler(request: httpx.Request) -> httpx.Response:
             captured["url"] = str(request.url)
             captured["json"] = json.loads(request.content.decode())
+            captured["x_user_id"] = request.headers.get("X-User-Id")
+            captured["authorization"] = request.headers.get("Authorization")
             return httpx.Response(
                 200,
                 json={
@@ -290,8 +323,6 @@ class TestRuntimeInvokeExecutor:
             "api_query_runtime_invoke_url_template",
             "http://runtime.example/ui-builder/runtime/endpoints/{id}/invoke",
         )
-        monkeypatch.setattr(settings, "api_query_runtime_flow_num", 1212)
-        monkeypatch.setattr(settings, "api_query_runtime_reserved_id", "71592")
         monkeypatch.setattr(settings, "api_query_runtime_created_by", "gateway")
 
         executor = RuntimeInvokeExecutor()
@@ -309,17 +340,19 @@ class TestRuntimeInvokeExecutor:
             entry,
             {"id": "business-side-value", "pageNum": 1},
             user_token="Bearer token",
+            user_id="header-user-001",
             trace_id="trace-runtime-get",
         )
 
         assert captured["url"] == "http://runtime.example/ui-builder/runtime/endpoints/customer_list/invoke"
         assert captured["json"] == {
-            "flowNum": "1212",
-            "queryParams": {"id": "27", "pageNum": 1},
-            "createdBy": "gateway",
-            "useSampleWhenEmpty": False,
+            "flowNum": "trace-runtime-get",
+            "queryParams": {"id": "business-side-value", "pageNum": 1},
+            "createdBy": "header-user-001",
             "body": {},
         }
+        assert captured["x_user_id"] == "header-user-001"
+        assert captured["authorization"] == "Bearer token"
         assert result.status == ApiQueryExecutionStatus.SUCCESS
         assert result.data == [{"customerId": "C001"}]
         assert result.total == 1
@@ -332,6 +365,7 @@ class TestRuntimeInvokeExecutor:
 
         async def handler(request: httpx.Request) -> httpx.Response:
             captured["json"] = json.loads(request.content.decode())
+            captured["x_user_id"] = request.headers.get("X-User-Id")
             return httpx.Response(
                 200,
                 json={
@@ -346,8 +380,6 @@ class TestRuntimeInvokeExecutor:
             "api_query_runtime_invoke_url_template",
             "http://runtime.example/ui-builder/runtime/endpoints/{id}/invoke",
         )
-        monkeypatch.setattr(settings, "api_query_runtime_reserved_id", "99")
-        monkeypatch.setattr(settings, "api_query_runtime_flow_num", "9001")
         monkeypatch.setattr(settings, "api_query_runtime_created_by", "")
 
         executor = RuntimeInvokeExecutor()
@@ -365,18 +397,133 @@ class TestRuntimeInvokeExecutor:
         result = await executor.call(
             entry,
             {"customerId": "C002", "filters": {"level": "A"}},
+            user_id="header-user-002",
             trace_id="trace-runtime-post",
         )
 
         assert captured["json"] == {
-            "flowNum": "9001",
-            "queryParams": {"id": "99"},
-            "createdBy": "",
-            "useSampleWhenEmpty": False,
+            "flowNum": "trace-runtime-post",
+            "queryParams": {},
+            "createdBy": "header-user-002",
             "body": {"customerId": "C002", "filters": {"level": "A"}},
         }
+        assert captured["x_user_id"] == "header-user-002"
         assert result.status == ApiQueryExecutionStatus.SUCCESS
         assert result.data == [{"客户ID": "C002", "订单数": 3}]
+        assert result.total == 1
+
+        await executor.close()
+
+    @pytest.mark.asyncio
+    async def test_call_does_not_send_x_user_id_header_when_user_id_missing(self, monkeypatch):
+        captured: dict[str, object] = {}
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            captured["x_user_id"] = request.headers.get("X-User-Id")
+            captured["json"] = json.loads(request.content.decode())
+            return httpx.Response(
+                200,
+                json={
+                    "code": 200,
+                    "message": "success",
+                    "data": {"data": {"list": [{"customerId": "C003"}], "total": 1}},
+                },
+            )
+
+        monkeypatch.setattr(
+            settings,
+            "api_query_runtime_invoke_url_template",
+            "http://runtime.example/ui-builder/runtime/endpoints/{id}/invoke",
+        )
+        monkeypatch.setattr(settings, "api_query_runtime_created_by", "gateway")
+
+        executor = RuntimeInvokeExecutor()
+        executor._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+        entry = ApiCatalogEntry(
+            id="customer_detail",
+            description="查询客户详情",
+            operation_safety="query",
+            method="GET",
+            path="/api/customer/detail",
+            response_data_path="data.list",
+        )
+        result = await executor.call(
+            entry,
+            {"customerId": "C003"},
+            trace_id="trace-runtime-without-user-id",
+        )
+
+        assert captured["x_user_id"] is None
+        assert captured["json"] == {
+            "flowNum": "trace-runtime-without-user-id",
+            "queryParams": {"customerId": "C003"},
+            "createdBy": "gateway",
+            "body": {},
+        }
+        assert result.status == ApiQueryExecutionStatus.SUCCESS
+
+        await executor.close()
+
+    @pytest.mark.asyncio
+    async def test_call_retries_without_x_user_id_when_primary_response_is_5xx(self, monkeypatch):
+        captured_requests: list[dict[str, object]] = []
+        call_count = 0
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal call_count
+            call_count += 1
+            captured_requests.append(
+                {
+                    "x_user_id": request.headers.get("X-User-Id"),
+                    "authorization": request.headers.get("Authorization"),
+                    "json": json.loads(request.content.decode()),
+                }
+            )
+            if call_count == 1:
+                return httpx.Response(500, json={"code": 500, "message": "系统内部错误，请稍后重试"})
+            return httpx.Response(
+                200,
+                json={
+                    "code": 200,
+                    "message": "success",
+                    "data": {"data": {"list": [{"customerId": "C004"}], "total": 1}},
+                },
+            )
+
+        monkeypatch.setattr(
+            settings,
+            "api_query_runtime_invoke_url_template",
+            "http://runtime.example/ui-builder/runtime/endpoints/{id}/invoke",
+        )
+        monkeypatch.setattr(settings, "api_query_runtime_created_by", "gateway")
+
+        executor = RuntimeInvokeExecutor()
+        executor._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        entry = ApiCatalogEntry(
+            id="customer_retry",
+            description="查询客户详情",
+            operation_safety="query",
+            method="GET",
+            path="/api/customer/detail/{id}",
+            response_data_path="data.list",
+        )
+        result = await executor.call(
+            entry,
+            {"id": "C004"},
+            user_token="Bearer token",
+            user_id="hello",
+            trace_id="trace-runtime-fallback",
+        )
+
+        assert call_count == 2
+        assert captured_requests[0]["x_user_id"] == "hello"
+        assert captured_requests[0]["authorization"] == "Bearer token"
+        assert captured_requests[1]["x_user_id"] is None
+        assert captured_requests[1]["authorization"] == "Bearer token"
+        assert captured_requests[0]["json"] == captured_requests[1]["json"]
+        assert result.status == ApiQueryExecutionStatus.SUCCESS
+        assert result.data == [{"customerId": "C004"}]
         assert result.total == 1
 
         await executor.close()
@@ -873,6 +1020,7 @@ class TestRetrieverCompatibility:
                 "field_labels": {"customerId": "客户ID"},
                 "executor_config": {"base_url": "http://business-server"},
                 "security_rules": {"read_only": True},
+                "requires_confirmation": False,
                 "detail_hint": {"enabled": False},
                 "pagination_hint": {"enabled": True, "page_param": "pageNum"},
                 "template_hint": {"enabled": False},
@@ -884,6 +1032,30 @@ class TestRetrieverCompatibility:
         assert entry.sample_request == {"pageNum": 1}
         assert entry.field_labels["customerId"] == "客户ID"
         assert entry.operation_safety == "query"
+        assert entry.requires_confirmation is False
+
+    def test_build_entry_from_fields_infers_requires_confirmation_for_legacy_mutation_record(self):
+        entry = _build_entry_from_fields(
+            {
+                "id": "role_delete",
+                "description": "删除角色",
+                "domain": "iam",
+                "env": "prod",
+                "status": "active",
+                "operation_safety": "mutation",
+                "method": "POST",
+                "path": "/system/employee/sys-role/delete",
+                "auth_required": True,
+                "ui_hint": "table",
+                "example_queries": [],
+                "tags": [],
+                "business_intents": ["query_business_data"],
+                "api_schema": {"request": {"type": "object", "properties": {}}, "response_schema": {}},
+                "security_rules": {"operation_safety": "mutation"},
+            }
+        )
+
+        assert entry.requires_confirmation is True
 
     def test_retriever_uses_legacy_output_fields_before_reindex(self):
         retriever = ApiCatalogRetriever()

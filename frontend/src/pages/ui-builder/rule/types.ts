@@ -4,6 +4,8 @@ export interface RuleRemoteResponse<T> {
   data: T
 }
 
+export type RuleExecuteParams = Record<string, unknown>
+
 export interface RuleRemotePage<T> {
   records: T[]
   total: number
@@ -31,6 +33,12 @@ export interface RuleRecord {
   updatedBy?: string
   updatedTime?: string
   ruleNodes?: RuleNodeRecord[]
+}
+
+export interface RuleDataSourceOption {
+  key: string
+  label: string
+  defaultSelected: boolean
 }
 
 export interface RuleNodeRecord {
@@ -96,6 +104,7 @@ export interface RuleEditorNodeFormValues {
   nodeGroup: number
   validationRules: RuleValidationRule[]
   nodeSql?: string
+  dataSourceKey?: string
   resultKey?: string
   resultType?: string
   sourceKey?: string

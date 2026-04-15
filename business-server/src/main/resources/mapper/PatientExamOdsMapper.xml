@@ -1,0 +1,355 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.lzke.ai.infrastructure.persistence.mapper.PatientExamOdsMapper">
+
+    <sql id="decryptCustomerIdCardExpr">
+        convert(cast(AES_DECRYPT_ECB(c.`id_card`, 'SecuR24LeCzCoRe') as char) using utf8mb4) collate utf8mb4_unicode_ci
+    </sql>
+
+    <sql id="myPatientBaseWhere">
+        where t.`delete_flag` = b'0'
+          and c.`delete_flag` = b'0'
+          and t.`staff_id` = #{staffId}
+
+        <if test="request.patientName != null and request.patientName != ''">
+            and c.`name` like concat('%', #{request.patientName}, '%')
+        </if>
+
+        <if test="request.idCard != null and request.idCard != ''">
+            and <include refid="decryptCustomerIdCardExpr"/> like concat('%', #{request.idCard}, '%')
+        </if>
+
+        <if test="request.mobile != null and request.mobile != ''">
+            and (
+                ifnull(c.`phone`, '') like concat('%', #{request.mobile}, '%')
+                or ifnull(c.`use_phone`, '') like concat('%', #{request.mobile}, '%')
+                or ifnull(c.`register_phone`, '') like concat('%', #{request.mobile}, '%')
+            )
+        </if>
+    </sql>
+
+    <sql id="patientExamBaseWhere">
+        where 1 = 1
+
+        <if test="request.orderCode != null and request.orderCode != ''">
+            and (p.`ID` = #{request.orderCode} or p.`ORDERID` = #{request.orderCode})
+        </if>
+
+        <if test="request.patientName != null and request.patientName != ''">
+            and p.`XM` like concat('%', #{request.patientName}, '%')
+        </if>
+
+        <if test="request.idCard != null and request.idCard != ''">
+            and p.`SFZH` like concat('%', #{request.idCard}, '%')
+        </if>
+
+        <if test="request.mobile != null and request.mobile != ''">
+            and p.`LXDH` like concat('%', #{request.mobile}, '%')
+        </if>
+
+        <if test="request.patientNo != null and request.patientNo != ''">
+            and (
+                p.`ID` like concat('%', #{request.patientNo}, '%')
+                or ifnull(p.`VIPID`, '') like concat('%', #{request.patientNo}, '%')
+                or ifnull(p.`Medical_No`, '') like concat('%', #{request.patientNo}, '%')
+                or ifnull(p.`Hosptial_No`, '') like concat('%', #{request.patientNo}, '%')
+                or ifnull(p.`Clinic_No`, '') like concat('%', #{request.patientNo}, '%')
+            )
+        </if>
+
+        <if test="request.startTime != null and request.startTime != ''">
+            and coalesce(p.`JCRQ`, p.`JDRQ`, l.`JLRQ`, p.`UpDateTime`) &gt;= #{request.startTime}
+        </if>
+
+        <if test="request.endTime != null and request.endTime != ''">
+            and coalesce(p.`JCRQ`, p.`JDRQ`, l.`JLRQ`, p.`UpDateTime`) &lt;= #{request.endTime}
+        </if>
+    </sql>
+
+    <sql id="patientExamSelectColumns">
+        convert(cast(p.`ID` as char) using utf8mb4) collate utf8mb4_unicode_ci as studyId,
+        convert(cast(p.`ORDERID` as char) using utf8mb4) collate utf8mb4_unicode_ci as orderCode,
+        convert(cast(p.`XM` as char) using utf8mb4) collate utf8mb4_unicode_ci as patientName,
+        convert(cast(p.`XB` as char) using utf8mb4) collate utf8mb4_unicode_ci as gender,
+        convert(cast(p.`SFZH` as char) using utf8mb4) collate utf8mb4_unicode_ci as idCard,
+        convert(cast(p.`LXDH` as char) using utf8mb4) collate utf8mb4_unicode_ci as mobile,
+        convert(cast(coalesce(nullif(p.`VIPID`, ''), nullif(p.`Medical_No`, ''), nullif(p.`Hosptial_No`, ''), nullif(p.`Clinic_No`, ''), p.`ID`) as char) using utf8mb4) collate utf8mb4_unicode_ci as patientNo,
+        convert(cast(p.`ZHXMDM` as char) using utf8mb4) collate utf8mb4_unicode_ci as packageCode,
+        convert(cast(x.`XMMC` as char) using utf8mb4) collate utf8mb4_unicode_ci as packageName,
+        convert(cast(coalesce(p.`JCRQ`, p.`JDRQ`, l.`JLRQ`, p.`UpDateTime`) as char) using utf8mb4) collate utf8mb4_unicode_ci as examTime,
+        convert(cast(l.`JCJG` as char) using utf8mb4) collate utf8mb4_unicode_ci as abnormalSummary,
+        convert(cast(l.`ZJJL` as char) using utf8mb4) collate utf8mb4_unicode_ci as finalConclusion
+    </sql>
+
+    <select id="selectDepartmentTables" resultType="com.lzke.ai.application.exam.dto.PatientExamDepartmentTable">
+        select
+            KSBM as departmentCode,
+            KSMC as departmentName
+        from ods_tj_ksbm
+        where KSBM is not null
+          and KSBM != ''
+        <if test="departmentCodes != null and departmentCodes.size() > 0">
+            and KSBM in
+            <foreach collection="departmentCodes" item="code" open="(" separator="," close=")">
+                #{code}
+            </foreach>
+        </if>
+        order by OrderCode asc, KSBM asc
+    </select>
+
+    <select id="selectTableColumns" resultType="java.lang.String">
+        select COLUMN_NAME
+        from information_schema.COLUMNS
+        where TABLE_SCHEMA = database()
+          and TABLE_NAME = #{tableName}
+        order by ORDINAL_POSITION asc
+    </select>
+
+    <select id="countMyPatients" resultType="long">
+        select count(1)
+        from dw_customer_medical_team t
+        inner join dw_customer_info c on c.`customer_master_id` = t.`customer_master_id`
+        <include refid="myPatientBaseWhere"/>
+    </select>
+
+    <select id="selectMyPatients" resultType="com.lzke.ai.application.exam.dto.MyPatientListItemResponse">
+        select
+            convert(cast(c.`customer_master_id` as char) using utf8mb4) collate utf8mb4_unicode_ci as customerMasterId,
+            convert(cast(c.`name` as char) using utf8mb4) collate utf8mb4_unicode_ci as patientName,
+            convert(cast(c.`sex` as char) using utf8mb4) collate utf8mb4_unicode_ci as gender,
+            c.`age` as age,
+            <include refid="decryptCustomerIdCardExpr"/> as idCard,
+            convert(cast(coalesce(nullif(c.`phone`, ''), nullif(c.`use_phone`, ''), nullif(c.`register_phone`, '')) as char) using utf8mb4) collate utf8mb4_unicode_ci as mobile,
+            cast(null as char character set utf8mb4) collate utf8mb4_unicode_ci as latestExamDate
+        from dw_customer_medical_team t
+        inner join dw_customer_info c on c.`customer_master_id` = t.`customer_master_id`
+        <include refid="myPatientBaseWhere"/>
+        order by c.`updated_time` desc, c.`customer_master_id` desc
+        limit #{request.offset}, #{request.size}
+    </select>
+
+    <select id="selectLatestExamDatesByIdCards" resultType="com.lzke.ai.application.exam.dto.MyPatientLatestExamDateResponse">
+        select
+            convert(cast(p.`SFZH` as char) using utf8mb4) collate utf8mb4_unicode_ci as idCard,
+            date_format(max(coalesce(p.`JCRQ`, p.`JDRQ`, l.`JLRQ`, p.`UpDateTime`)), '%Y-%m-%d') as latestExamDate
+        from ods_tj_jcxx p
+        left join ods_tj_jlb l on l.`StudyID` = p.`ID`
+        where p.`SFZH` in
+        <foreach collection="idCards" item="idCard" open="(" separator="," close=")">
+            #{idCard}
+        </foreach>
+        group by p.`SFZH`
+    </select>
+
+    <select id="selectLatestExamDatesByEncryptedIdCards" resultType="com.lzke.ai.application.exam.dto.MyCustomerLatestExamDateResponse">
+        select
+            src.encrypted_id_card as encryptedIdCard,
+            date_format(max(coalesce(p.`JCRQ`, p.`JDRQ`, l.`JLRQ`, p.`UpDateTime`)), '%Y-%m-%d') as latestExamDate
+        from (
+            <foreach collection="encryptedIdCards" item="encryptedIdCard" separator=" union all ">
+                select
+                    convert(cast(#{encryptedIdCard} as char) using utf8mb4) collate utf8mb4_unicode_ci as encrypted_id_card,
+                    convert(cast(AES_DECRYPT_ECB(#{encryptedIdCard}, 'SecuR2`4LeCzCoRe') as char) using utf8mb4) collate utf8mb4_unicode_ci as plain_id_card
+            </foreach>
+        ) src
+        left join ods_tj_jcxx p on p.`SFZH` = src.plain_id_card
+        left join ods_tj_jlb l on l.`StudyID` = p.`ID`
+        group by src.encrypted_id_card
+    </select>
+
+    <select id="countDistinctPatientsByExamTimeRange" resultType="long">
+        select count(distinct p.`SFZH`)
+        from ods_tj_jcxx p
+        left join ods_tj_jlb l on l.`StudyID` = p.`ID`
+        where p.`SFZH` is not null
+          and p.`SFZH` != ''
+          and coalesce(p.`JCRQ`, p.`JDRQ`, l.`JLRQ`, p.`UpDateTime`) &gt;= #{startTime}
+          and coalesce(p.`JCRQ`, p.`JDRQ`, l.`JLRQ`, p.`UpDateTime`) &lt; #{endTime}
+    </select>
+
+    <select id="selectPatientInfo" resultType="com.lzke.ai.application.exam.dto.PatientExamPatientInfoResponse">
+        select
+            convert(cast(p.`ID` as char) using utf8mb4) collate utf8mb4_unicode_ci as studyId,
+            convert(cast(p.`XM` as char) using utf8mb4) collate utf8mb4_unicode_ci as patientName,
+            convert(cast(p.`XB` as char) using utf8mb4) collate utf8mb4_unicode_ci as gender,
+            convert(cast(p.`SFZH` as char) using utf8mb4) collate utf8mb4_unicode_ci as idCard,
+            convert(cast(p.`LXDH` as char) using utf8mb4) collate utf8mb4_unicode_ci as mobile,
+            convert(cast(coalesce(nullif(p.`VIPID`, ''), nullif(p.`Medical_No`, ''), nullif(p.`Hosptial_No`, ''), nullif(p.`Clinic_No`, ''), p.`ID`) as char) using utf8mb4) collate utf8mb4_unicode_ci as patientNo
+        from ods_tj_jcxx p
+        left join ods_tj_jlb l on l.`StudyID` = p.`ID`
+        <include refid="patientExamBaseWhere"/>
+        order by coalesce(p.`JCRQ`, p.`JDRQ`, l.`JLRQ`, p.`UpDateTime`) desc, p.`ID` desc
+        limit 1
+    </select>
+
+    <select id="countPatientExamSessions" resultType="long">
+        select count(1)
+        from ods_tj_jcxx p
+        left join ods_tj_jlb l on l.`StudyID` = p.`ID`
+        <include refid="patientExamBaseWhere"/>
+    </select>
+
+    <select id="selectPatientExamSessions" resultType="com.lzke.ai.application.exam.dto.PatientExamSessionRowResponse">
+        select
+            <include refid="patientExamSelectColumns"/>
+        from ods_tj_jcxx p
+        left join ods_tj_jlb l on l.`StudyID` = p.`ID`
+        left join ods_tj_xmzh x on x.`XMDM` = p.`ZHXMDM`
+        <include refid="patientExamBaseWhere"/>
+        order by coalesce(p.`JCRQ`, p.`JDRQ`, l.`JLRQ`, p.`UpDateTime`) desc, p.`ID` desc
+        limit #{request.offset}, #{request.size}
+    </select>
+
+    <select id="selectPatientExamSessionByStudyId" resultType="com.lzke.ai.application.exam.dto.PatientExamSessionRowResponse">
+        select
+            <include refid="patientExamSelectColumns"/>
+        from ods_tj_jcxx p
+        left join ods_tj_jlb l on l.`StudyID` = p.`ID`
+        left join ods_tj_xmzh x on x.`XMDM` = p.`ZHXMDM`
+        where p.`ID` = #{studyId}
+        limit 1
+    </select>
+
+    <select id="selectPatientExamSessionsByStudyIds" resultType="com.lzke.ai.application.exam.dto.PatientExamSessionRowResponse">
+        select
+            <include refid="patientExamSelectColumns"/>
+        from ods_tj_jcxx p
+        left join ods_tj_jlb l on l.`StudyID` = p.`ID`
+        left join ods_tj_xmzh x on x.`XMDM` = p.`ZHXMDM`
+        where p.`ID` in
+        <foreach collection="studyIds" item="studyId" open="(" separator="," close=")">
+            #{studyId}
+        </foreach>
+        order by coalesce(p.`JCRQ`, p.`JDRQ`, l.`JLRQ`, p.`UpDateTime`) desc, p.`ID` desc
+    </select>
+
+    <select id="selectPatientExamSessionsByIdCard" resultType="com.lzke.ai.application.exam.dto.PatientExamSessionRowResponse">
+        select
+            <include refid="patientExamSelectColumns"/>
+        from ods_tj_jcxx p
+        left join ods_tj_jlb l on l.`StudyID` = p.`ID`
+        left join ods_tj_xmzh x on x.`XMDM` = p.`ZHXMDM`
+        where p.`SFZH` = #{idCard}
+          and coalesce(p.`JCRQ`, p.`JDRQ`, l.`JLRQ`, p.`UpDateTime`) &gt;= #{startTime}
+        order by coalesce(p.`JCRQ`, p.`JDRQ`, l.`JLRQ`, p.`UpDateTime`) desc, p.`ID` desc
+    </select>
+
+    <select id="selectPatientExamDepartmentItems" resultType="com.lzke.ai.application.exam.dto.PatientExamResultItemResponse">
+        select *
+        from (
+            <foreach collection="tables" item="table" separator=" union all ">
+                select
+                    convert(cast(t.`StudyID` as char) using utf8mb4) collate utf8mb4_unicode_ci as studyId,
+                    cast(#{table.departmentCode} as char character set utf8mb4) collate utf8mb4_unicode_ci as departmentCode,
+                    cast(#{table.departmentName} as char character set utf8mb4) collate utf8mb4_unicode_ci as departmentName,
+                    cast(#{table.tableName} as char character set utf8mb4) collate utf8mb4_unicode_ci as sourceTable,
+
+                    convert(cast(
+                    <choose>
+                        <when test="table.majorItemCodeExpr != null and table.majorItemCodeExpr != ''">${table.majorItemCodeExpr}</when>
+                        <otherwise>s.`SFXMDM`</otherwise>
+                    </choose>
+                    as char) using utf8mb4) collate utf8mb4_unicode_ci as majorItemCode,
+
+                    convert(cast(s.`SFXMMC` as char) using utf8mb4) collate utf8mb4_unicode_ci as majorItemName,
+
+                    <choose>
+                        <when test="table.itemCodeExpr != null and table.itemCodeExpr != ''">
+                            convert(cast(${table.itemCodeExpr} as char) using utf8mb4) collate utf8mb4_unicode_ci
+                        </when>
+                        <otherwise>
+                            cast(null as char character set utf8mb4) collate utf8mb4_unicode_ci
+                        </otherwise>
+                    </choose> as itemCode,
+
+                    convert(cast(
+                    <choose>
+                        <when test="table.itemNameExpr != null and table.itemNameExpr != ''">${table.itemNameExpr}</when>
+                        <otherwise>j.`XXMC`</otherwise>
+                    </choose>
+                    as char) using utf8mb4) collate utf8mb4_unicode_ci as itemName,
+
+                    convert(cast(
+                    <choose>
+                        <when test="table.itemNameEnExpr != null and table.itemNameEnExpr != ''">${table.itemNameEnExpr}</when>
+                        <otherwise>j.`EXXMC`</otherwise>
+                    </choose>
+                    as char) using utf8mb4) collate utf8mb4_unicode_ci as itemNameEn,
+
+                    <choose>
+                        <when test="table.resultValueExpr != null and table.resultValueExpr != ''">
+                            convert(cast(${table.resultValueExpr} as char) using utf8mb4) collate utf8mb4_unicode_ci
+                        </when>
+                        <otherwise>
+                            cast(null as char character set utf8mb4) collate utf8mb4_unicode_ci
+                        </otherwise>
+                    </choose> as resultValue,
+
+                    convert(cast(
+                    <choose>
+                        <when test="table.unitExpr != null and table.unitExpr != ''">${table.unitExpr}</when>
+                        <otherwise>j.`Unit`</otherwise>
+                    </choose>
+                    as char) using utf8mb4) collate utf8mb4_unicode_ci as unit,
+
+                    convert(cast(
+                    <choose>
+                        <when test="table.referenceRangeExpr != null and table.referenceRangeExpr != ''">${table.referenceRangeExpr}</when>
+                        <otherwise>concat_ws(' ~ ', j.`MDefValueDown`, j.`MDefValueUp`)</otherwise>
+                    </choose>
+                    as char) using utf8mb4) collate utf8mb4_unicode_ci as referenceRange,
+
+                    <choose>
+                        <when test="table.abnormalFlagExpr != null and table.abnormalFlagExpr != ''">
+                            convert(cast(${table.abnormalFlagExpr} as char) using utf8mb4) collate utf8mb4_unicode_ci
+                        </when>
+                        <otherwise>
+                            cast(null as char character set utf8mb4) collate utf8mb4_unicode_ci
+                        </otherwise>
+                    </choose> as abnormalFlag,
+
+                    <choose>
+                        <when test="table.examTimeExpr != null and table.examTimeExpr != ''">
+                            convert(cast(${table.examTimeExpr} as char) using utf8mb4) collate utf8mb4_unicode_ci
+                        </when>
+                        <otherwise>
+                            cast(null as char character set utf8mb4) collate utf8mb4_unicode_ci
+                        </otherwise>
+                    </choose> as examTime,
+
+                    cast(null as char character set utf8mb4) collate utf8mb4_unicode_ci as orderCode,
+                    cast(null as char character set utf8mb4) collate utf8mb4_unicode_ci as patientName,
+                    cast(null as char character set utf8mb4) collate utf8mb4_unicode_ci as gender,
+                    cast(null as char character set utf8mb4) collate utf8mb4_unicode_ci as idCard,
+                    cast(null as char character set utf8mb4) collate utf8mb4_unicode_ci as mobile,
+                    cast(null as char character set utf8mb4) collate utf8mb4_unicode_ci as patientNo,
+                    cast(null as char character set utf8mb4) collate utf8mb4_unicode_ci as packageCode,
+                    cast(null as char character set utf8mb4) collate utf8mb4_unicode_ci as packageName,
+                    cast(null as char character set utf8mb4) collate utf8mb4_unicode_ci as abnormalSummary,
+                    cast(null as char character set utf8mb4) collate utf8mb4_unicode_ci as finalConclusion
+                from ${table.tableName} t
+                <choose>
+                    <when test="table.itemCodeExpr != null and table.itemCodeExpr != ''">
+                        left join ods_tj_jcmxx j on j.`XXDM` = ${table.itemCodeExpr}
+                    </when>
+                    <otherwise>
+                        left join ods_tj_jcmxx j on 1 = 0
+                    </otherwise>
+                </choose>
+                <choose>
+                    <when test="table.majorItemCodeExpr != null and table.majorItemCodeExpr != ''">
+                        left join ods_tj_sfxm s on s.`SFXMDM` = ${table.majorItemCodeExpr}
+                    </when>
+                    <otherwise>
+                        left join ods_tj_sfxm s on 1 = 0
+                    </otherwise>
+                </choose>
+                where t.`StudyID` in
+                <foreach collection="studyIds" item="studyId" open="(" separator="," close=")">
+                    #{studyId}
+                </foreach>
+            </foreach>
+        ) department_item_list
+        order by studyId desc, departmentCode asc, majorItemCode asc, itemCode asc
+    </select>
+</mapper>

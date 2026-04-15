@@ -185,6 +185,25 @@ export interface UiApiTestLog {
   createdAt?: string | null
 }
 
+export interface UiApiFlowLog {
+  id: string
+  flowNum?: string | null
+  endpointId?: string | null
+  requestUrl?: string | null
+  requestHeaders?: string | null
+  requestQuery?: string | null
+  requestBody?: string | null
+  responseStatus?: number | null
+  responseHeaders?: string | null
+  responseBody?: string | null
+  invokeStatus?: string | null
+  errorMessage?: string | null
+  createdBy?: string | null
+  createdByName?: string | null
+  createdAt?: string | null
+  updatedAt?: string | null
+}
+
 export interface UiApiTag {
   id: string
   sourceId: string

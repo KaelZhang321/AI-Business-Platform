@@ -1,16 +1,26 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import json
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field as dataclass_field
 from statistics import mean
 from typing import Any
 
 from app.core.config import settings
-from app.models.schemas import ApiQueryExecutionStatus, ApiQueryFormFieldRuntime, ApiQueryUIRuntime, KnowledgeResult
+from app.models.schemas import (
+    ApiQueryExecutionStatus,
+    ApiQueryFormFieldRuntime,
+    ApiQueryListFilterFieldRuntime,
+    ApiQueryUIRuntime,
+    KnowledgeResult,
+)
+from app.services.api_query_request_schema_gate import build_request_schema_gated_fields
 from app.services.ui_catalog_service import UICatalogService
 from app.services.ui_spec_guard import UISpecGuard, UISpecValidationResult
+from app.utils.json_utils import extract_first_json_object_text, load_json_object
+from app.utils.state_path_utils import read_state_value, write_state_value
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +45,7 @@ class UISpecBuildResult:
     """
 
     spec: dict[str, Any] | None = None
-    validation: UISpecValidationResult = field(default_factory=UISpecValidationResult)
+    validation: UISpecValidationResult = dataclass_field(default_factory=UISpecValidationResult)
     frozen: bool = False
 
 
@@ -157,6 +167,13 @@ class DynamicUIService:
         if candidate_spec is None:
             return UISpecBuildResult()
 
+        candidate_spec = self._sanitize_runtime_request_metadata(
+            candidate_spec,
+            intent=intent,
+            context=context,
+            runtime=runtime,
+        )
+
         validation = self._get_guard().validate(candidate_spec, intent=intent, runtime=runtime)
         if validation.is_valid:
             return UISpecBuildResult(spec=candidate_spec, validation=validation, frozen=False)
@@ -173,6 +190,311 @@ class DynamicUIService:
             validation=validation,
             frozen=True,
         )
+
+    def _sanitize_runtime_request_metadata(
+        self,
+        spec: dict[str, Any],
+        *,
+        intent: str,
+        context: dict[str, Any] | None,
+        runtime: ApiQueryUIRuntime | None,
+    ) -> dict[str, Any]:
+        """在 Guard 校验前统一回写稳定的 runtime 请求元数据。
+
+        功能：
+            LLM 生成的详情卡片和动作对象可能会把展示 label 混进 `body/queryParams`，
+            导致请求键名漂移。这里基于 runtime 契约重新回写已知节点的请求元数据，
+            保证前端真正执行时只看到 request_schema 允许的键。
+        """
+
+        if runtime is None or not self._is_flat_spec(spec):
+            return spec
+
+        sanitized_spec = deepcopy(spec)
+        elements = sanitized_spec.get("elements")
+        if not isinstance(elements, dict):
+            return spec
+
+        normalized_context = context if isinstance(context, dict) else {}
+        state = sanitized_spec.get("state")
+        normalized_state = state if isinstance(state, dict) else {}
+
+        if intent == "query":
+            self._sanitize_query_runtime_metadata(
+                elements=elements,
+                state=normalized_state,
+                context=normalized_context,
+                runtime=runtime,
+            )
+        elif intent == "mutation_form":
+            self._sanitize_mutation_runtime_metadata(
+                elements=elements,
+                context=normalized_context,
+                runtime=runtime,
+            )
+        return sanitized_spec
+
+    def _sanitize_query_runtime_metadata(
+        self,
+        *,
+        elements: dict[str, Any],
+        state: dict[str, Any],
+        context: dict[str, Any],
+        runtime: ApiQueryUIRuntime,
+    ) -> None:
+        """修正查询页中列表、详情和行级动作的请求元数据。"""
+
+        if runtime.list.enabled:
+            list_request_fields = _build_runtime_request_fields(
+                runtime.list.api_id,
+                param_source=runtime.list.param_source,
+                params=dict(runtime.list.query_context.current_params),
+                flow_num=context.get("flow_num"),
+                created_by=context.get("created_by"),
+                request_schema_fields=runtime.list.request_schema_fields,
+            )
+            filter_fields = list(runtime.list.filters.fields)
+            filter_submit_request_fields = _build_runtime_request_fields(
+                runtime.list.api_id,
+                param_source=runtime.list.param_source,
+                params=_build_filter_submit_params(runtime, filter_fields),
+                flow_num=context.get("flow_num"),
+                created_by=context.get("created_by"),
+                request_schema_fields=runtime.list.request_schema_fields,
+            )
+            filter_reset_request_fields = _build_runtime_request_fields(
+                runtime.list.api_id,
+                param_source=runtime.list.param_source,
+                params=_build_filter_reset_params(runtime, filter_fields),
+                flow_num=context.get("flow_num"),
+                created_by=context.get("created_by"),
+                request_schema_fields=runtime.list.request_schema_fields,
+            )
+            for element in elements.values():
+                if not isinstance(element, dict):
+                    continue
+                props = element.get("props")
+                if not isinstance(props, dict):
+                    continue
+                element_type = element.get("type")
+                if element_type == "PlannerForm" and props.get("formCode") == "query_filters":
+                    props.update(list_request_fields)
+                elif element_type == "PlannerTable":
+                    props.update(list_request_fields)
+                    context_row_actions = context.get("row_actions")
+                    if isinstance(context_row_actions, list) and context_row_actions:
+                        props["rowActions"] = deepcopy(context_row_actions)
+                    elif runtime.detail.enabled and runtime.detail.api_id:
+                        props["rowActions"] = [
+                            {
+                                "type": runtime.detail.ui_action or "remoteQuery",
+                                "label": "查看详情",
+                                "params": {
+                                    "api_id": runtime.detail.api_id,
+                                    **_build_runtime_request_fields(
+                                        runtime.detail.api_id,
+                                        param_source=runtime.detail.request.param_source,
+                                        params={
+                                            (
+                                                runtime.detail.request.identifier_param
+                                                or runtime.detail.source.identifier_field
+                                            ): {"$bindRow": runtime.detail.source.identifier_field}
+                                        },
+                                        flow_num=context.get("flow_num"),
+                                        created_by=context.get("created_by"),
+                                        request_schema_fields=(
+                                            runtime.detail.request.request_schema_fields
+                                            or [runtime.detail.request.identifier_param]
+                                        ),
+                                    ),
+                                },
+                            }
+                        ]
+                elif element_type == "PlannerPagination":
+                    props.update(
+                        {
+                            "enabled": runtime.list.pagination.enabled,
+                            "total": runtime.list.pagination.total,
+                            "currentPage": runtime.list.pagination.current_page,
+                            "pageSize": runtime.list.pagination.page_size,
+                            "pageParam": runtime.list.pagination.page_param,
+                            "pageSizeParam": runtime.list.pagination.page_size_param,
+                            **list_request_fields,
+                        }
+                    )
+                elif element_type == "PlannerButton":
+                    label = props.get("label")
+                    if label == "查询":
+                        self._overwrite_button_action_params(
+                            element=element,
+                            expected_action=runtime.list.ui_action or "remoteQuery",
+                            api_id=runtime.list.api_id,
+                            request_fields=filter_submit_request_fields,
+                        )
+                    elif label == "重置":
+                        self._overwrite_button_action_params(
+                            element=element,
+                            expected_action=runtime.list.ui_action or "remoteQuery",
+                            api_id=runtime.list.api_id,
+                            request_fields=filter_reset_request_fields,
+                        )
+
+        if not runtime.detail.enabled or not runtime.detail.api_id:
+            return
+
+        detail_identifier_param = runtime.detail.request.identifier_param or runtime.detail.source.identifier_field
+        if not isinstance(detail_identifier_param, str) or not detail_identifier_param:
+            return
+        detail_identifier_value = self._resolve_detail_identifier_value(
+            elements=elements,
+            context=context,
+            state=state,
+            runtime=runtime,
+        )
+        detail_request_fields = _build_runtime_request_fields(
+            runtime.detail.api_id,
+            param_source=runtime.detail.request.param_source,
+            params={detail_identifier_param: detail_identifier_value} if detail_identifier_value is not None else {},
+            flow_num=context.get("flow_num"),
+            created_by=context.get("created_by"),
+            request_schema_fields=runtime.detail.request.request_schema_fields or [detail_identifier_param],
+        )
+        for element in elements.values():
+            if not isinstance(element, dict) or element.get("type") != "PlannerDetailCard":
+                continue
+            props = element.get("props")
+            if isinstance(props, dict):
+                props.update(detail_request_fields)
+
+    def _sanitize_mutation_runtime_metadata(
+        self,
+        *,
+        elements: dict[str, Any],
+        context: dict[str, Any],
+        runtime: ApiQueryUIRuntime,
+    ) -> None:
+        """修正 mutation 表单页的表单和提交按钮请求元数据。"""
+
+        if not runtime.form.enabled or not runtime.form.api_id:
+            return
+
+        submit_payload = self._resolve_mutation_submit_payload(context=context, runtime=runtime)
+        request_fields = _build_runtime_request_fields(
+            runtime.form.api_id,
+            param_source="body",
+            params=submit_payload,
+            flow_num=context.get("flow_num"),
+            created_by=context.get("created_by"),
+            request_schema_fields=runtime.form.request_schema_fields
+            or [field.submit_key for field in runtime.form.fields],
+        )
+        for element in elements.values():
+            if not isinstance(element, dict):
+                continue
+            props = element.get("props")
+            if element.get("type") == "PlannerForm" and isinstance(props, dict):
+                if runtime.form.form_code:
+                    props["formCode"] = runtime.form.form_code
+                props.update(request_fields)
+                continue
+            if element.get("type") == "PlannerButton":
+                self._overwrite_button_action_params(
+                    element=element,
+                    expected_action=runtime.form.ui_action or "remoteMutation",
+                    api_id=runtime.form.api_id,
+                    request_fields=request_fields,
+                )
+
+    @staticmethod
+    def _overwrite_button_action_params(
+        *,
+        element: dict[str, Any],
+        expected_action: str,
+        api_id: str | None,
+        request_fields: dict[str, Any],
+    ) -> None:
+        """按给定 runtime 契约覆写按钮动作参数。"""
+
+        on = element.get("on")
+        if not isinstance(on, dict):
+            return
+        press = on.get("press")
+        if not isinstance(press, dict):
+            return
+        action = press.get("action")
+        if action != expected_action:
+            return
+        press["params"] = {
+            "api_id": api_id,
+            **request_fields,
+        }
+
+    def _resolve_detail_identifier_value(
+        self,
+        *,
+        elements: dict[str, Any],
+        context: dict[str, Any],
+        state: dict[str, Any],
+        runtime: ApiQueryUIRuntime,
+    ) -> Any:
+        """尽量从稳定来源恢复详情主键值，而不是依赖展示 label。"""
+
+        request_params = context.get("request_params")
+        if isinstance(request_params, dict):
+            identifier_param = runtime.detail.request.identifier_param
+            if isinstance(identifier_param, str) and identifier_param in request_params:
+                return request_params.get(identifier_param)
+            source_identifier_field = runtime.detail.source.identifier_field
+            if isinstance(source_identifier_field, str) and source_identifier_field in request_params:
+                return request_params.get(source_identifier_field)
+
+        root_state = context.get("form_state")
+        if isinstance(root_state, dict):
+            identifier_param = runtime.detail.request.identifier_param
+            if isinstance(identifier_param, str):
+                state_value = read_state_value(root_state, f"/form/{identifier_param}")
+                if state_value is not None:
+                    return state_value
+
+        source_identifier_field = runtime.detail.source.identifier_field
+        if isinstance(source_identifier_field, str):
+            for element in elements.values():
+                if not isinstance(element, dict) or element.get("type") != "PlannerDetailCard":
+                    continue
+                props = element.get("props")
+                if not isinstance(props, dict):
+                    continue
+                items = props.get("items")
+                if not isinstance(items, list):
+                    continue
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    if item.get("label") == source_identifier_field:
+                        return item.get("value")
+
+        identifier_param = runtime.detail.request.identifier_param
+        if isinstance(identifier_param, str):
+            state_value = read_state_value(state, f"/form/{identifier_param}")
+            if state_value is not None:
+                return state_value
+        return None
+
+    @staticmethod
+    def _resolve_mutation_submit_payload(
+        *,
+        context: dict[str, Any],
+        runtime: ApiQueryUIRuntime,
+    ) -> dict[str, Any]:
+        """解析 mutation 表单提交模板。"""
+
+        custom_submit_payload = context.get("submit_payload")
+        if isinstance(custom_submit_payload, dict):
+            return custom_submit_payload
+        return {
+            field.submit_key: {"$bindState": field.state_path}
+            for field in runtime.form.fields
+        }
 
     def _get_llm_service(self):
         """懒加载 LLMService 单例，避免规则模式也承担额外初始化成本。"""
@@ -214,7 +536,17 @@ class DynamicUIService:
         runtime: ApiQueryUIRuntime | None,
         trace_id: str | None,
     ) -> dict[str, Any] | None:
-        """生成待 Guard 校验的候选 Spec。"""
+        """生成待 Guard 校验的候选 Spec。
+
+        功能：
+            Guard 只负责验证结构合法性，不负责决定“当前该渲染什么”。这里先按执行状态、
+            渲染意图和数据形态挑选候选 Spec，再交给 Guard 做最后安全兜底。
+
+        Edge Cases:
+            - mutation_form 必须优先于通用 `SKIPPED -> Notice` 规则，否则确认页会被误短路
+            - 没有主数据时返回 `None`，让上层明确感知“无需渲染”，而不是造空壳页面
+            - LLM 渲染失败会自动回退规则模式，不影响主链可用性
+        """
         execution_status = ApiQueryExecutionStatus(status) if status else None
 
         if intent == "mutation_form":
@@ -295,8 +627,15 @@ class DynamicUIService:
 
         Returns:
             合法的 flat form spec；当运行时缺少表单契约时返回 `None`，交回上层兜底。
+
+        Edge Cases:
+            - `runtime.form` 未启用或缺少 `api_id` 时，必须返回 `None`，避免生成一个前端可见但无法提交的假表单
+            - `context.submit_payload` 缺失时，回退到基于 `$bindState` 的延迟取值模板，保证用户修改后的最新输入能进入最终 `body`
+            - runtime 元数据会同时挂到表单容器和提交按钮，兼容前端从“表单级上下文”或“动作级参数”两种入口取值
         """
 
+        # 1. mutation confirm 是“可确认后提交”的业务页；如果运行时契约本身不完整，
+        # 就不要向前端暴露半成品表单，交给上层退回安全兜底视图。
         if runtime is None or not runtime.form.enabled or not runtime.form.api_id:
             return None
 
@@ -304,6 +643,8 @@ class DynamicUIService:
         if not form_fields:
             return None
 
+        # 2. 先补全完整 state，再决定展示字段。这样做的目的不是美观，而是确保
+        # Guard 校验 `$bindState` 时每条路径都真实存在，提交按钮也能稳定复用同一份状态树。
         initial_state = self._build_mutation_form_state(
             fields=form_fields,
             form_state=(context or {}).get("form_state"),
@@ -317,7 +658,7 @@ class DynamicUIService:
                 "type": "PlannerCard",
                 "props": {
                     "title": (context or {}).get("title", "确认提交"),
-                    "subtitle": "请确认本次变更后再提交",
+                    "subtitle": (context or {}).get("subtitle", "请确认本次变更后再提交"),
                 },
                 "children": ["form"],
             },
@@ -330,28 +671,59 @@ class DynamicUIService:
             },
         }
 
-        submit_payload: dict[str, Any] = {}
+        default_submit_payload: dict[str, Any] = {}
         for index, field in enumerate(visible_fields, start=1):
             element_id = f"form_field_{index}"
             elements["form"]["children"].append(element_id)
             elements[element_id] = self._build_mutation_field_element(field=field, state=initial_state)
-            submit_payload[field.submit_key] = {"$bindState": field.state_path}
+            # 默认提交模板使用 `$bindState`，是为了让最终请求读取“用户确认后的当前值”，
+            # 而不是把服务端首屏预填值写死在 action params 中。
+            default_submit_payload[field.submit_key] = {"$bindState": field.state_path}
+
+        custom_submit_payload = (context or {}).get("submit_payload")
+        # 删除确认等特殊写场景会覆盖 submit_payload；普通 mutation confirm 继续走
+        # 字段级绑定模板，保证所有可编辑字段天然参与提交。
+        submit_payload = custom_submit_payload if isinstance(custom_submit_payload, dict) else default_submit_payload
+        submit_request_fields = _build_runtime_request_fields(
+            runtime.form.api_id,
+            param_source="body",
+            params=submit_payload,
+            flow_num=(context or {}).get("flow_num"),
+            created_by=(context or {}).get("created_by"),
+            request_schema_fields=runtime.form.request_schema_fields,
+        )
 
         submit_element_id = "form_submit"
         elements["form"]["children"].append(submit_element_id)
+        # 表单容器和按钮同时携带 runtime 元数据，是为了兼容两类前端实现：
+        # 一类从表单节点读取提交上下文，另一类只消费按钮 action params。
+        elements["form"]["props"].update(
+            _build_runtime_request_fields(
+                runtime.form.api_id,
+                param_source="body",
+                params=submit_payload,
+                flow_num=(context or {}).get("flow_num"),
+                created_by=(context or {}).get("created_by"),
+                request_schema_fields=runtime.form.request_schema_fields,
+            )
+        )
         elements[submit_element_id] = {
             "type": "PlannerButton",
             "props": {
-                "label": "确认提交" if runtime.form.submit.confirm_required else "提交",
+                # 文案优先尊重上游上下文覆盖，其次才根据 confirm_required 区分“确认提交”和普通“提交”，
+                # 这样删除/审核等高风险动作可以复用同一套表单结构但给出更准确的用户提示。
+                "label": (
+                    (context or {}).get("submit_label")
+                    if isinstance((context or {}).get("submit_label"), str) and (context or {}).get("submit_label")
+                    else ("确认提交" if runtime.form.submit.confirm_required else "提交")
+                ),
             },
             "on": {
                 "press": {
                     "action": runtime.form.ui_action or "remoteMutation",
                     "params": {
                         "api_id": runtime.form.api_id,
-                        "payload": submit_payload,
-                        # 为前端动作适配器补齐直接可用的提交地址，避免只能额外回外层 runtime 取值。
-                        "route_url": runtime.form.route_url,
+                        **submit_request_fields,
                     },
                 }
             },
@@ -374,14 +746,14 @@ class DynamicUIService:
         功能：
             Guard 会校验每一条 `$bindState` 路径是否真实存在，因此 mutation form 不能
             只把有值字段塞进 state。这里会按 `runtime.form.fields` 补全整棵 `/form` 状态树，
-            保证按钮 payload 和输入组件都能稳定绑定。
+            保证按钮请求元数据和输入组件都能稳定绑定。
         """
 
         state: dict[str, Any] = {}
         incoming_state = form_state if isinstance(form_state, dict) else {}
         for field in fields:
-            incoming_value = self._read_state_value(incoming_state, field.state_path)
-            self._write_state_value(state, field.state_path, incoming_value)
+            incoming_value = read_state_value(incoming_state, field.state_path)
+            write_state_value(state, field.state_path, incoming_value)
         return state
 
     def _select_visible_mutation_form_fields(
@@ -406,14 +778,23 @@ class DynamicUIService:
         field: ApiQueryFormFieldRuntime,
         state: dict[str, Any],
     ) -> dict[str, Any]:
-        """将单个 mutation 字段折叠为对应的 json-render 元素。"""
+        """将单个 mutation 字段折叠为对应的 json-render 元素。
+
+        功能：
+            mutation confirm 的字段组件类型必须和运行时契约严格对齐，避免前端看到的控件形态
+            与最终提交 `body/queryParams` 语义不一致。
+
+        Edge Cases:
+            - 不可写字段统一降为 `PlannerMetric`，防止用户误以为这些值可编辑
+            - 字典字段优先转 `PlannerSelect`，确保前端走约束选项而不是自由文本
+        """
 
         if not field.writable:
             return {
                 "type": "PlannerMetric",
                 "props": {
                     "label": field.name,
-                    "value": self._format_form_value(self._read_state_value(state, field.state_path)),
+                    "value": self._format_form_value(read_state_value(state, field.state_path)),
                     "required": field.required,
                 },
             }
@@ -447,37 +828,6 @@ class DynamicUIService:
                 "required": field.required,
             },
         }
-
-    @staticmethod
-    def _read_state_value(state: Any, state_path: str) -> Any:
-        """按 `/form/email` 形式读取 state 值。"""
-
-        if not isinstance(state, dict) or not state_path.startswith("/"):
-            return None
-        current: Any = state
-        for segment in [item for item in state_path.split("/") if item]:
-            if not isinstance(current, dict) or segment not in current:
-                return None
-            current = current[segment]
-        return current
-
-    @staticmethod
-    def _write_state_value(state: dict[str, Any], state_path: str, value: Any) -> None:
-        """按 JSON Pointer 风格路径写入 state。"""
-
-        if not state_path.startswith("/"):
-            return
-        current: dict[str, Any] = state
-        segments = [item for item in state_path.split("/") if item]
-        if not segments:
-            return
-        for segment in segments[:-1]:
-            next_value = current.get(segment)
-            if not isinstance(next_value, dict):
-                next_value = {}
-                current[segment] = next_value
-            current = next_value
-        current[segments[-1]] = value
 
     @staticmethod
     def _format_form_value(value: Any) -> str:
@@ -594,6 +944,10 @@ class DynamicUIService:
         功能：
             Prompt 的重点不是追求文采，而是建立稳定的“组件白名单 + 数据使用规则”。
             这里按 `query` 与其他旧链路区分，确保 `api_query` 优先收敛到 `Planner*` 原语。
+
+        Edge Cases:
+            - `query` 意图会显式强调 `Planner*` 组件和读态规则，防止模型回退到旧组件命名
+            - runtime 为空时仍会输出目录占位，避免模型误以为可以自由造动作
         """
         component_catalog = self._format_component_catalog(intent, runtime)
         action_catalog = self._format_action_catalog(runtime)
@@ -646,6 +1000,10 @@ class DynamicUIService:
             网关返回给前端的 `ui_spec` 可以包含完整展示数据，但喂给 LLM 的输入必须更克制。
             这里单独做 prompt 级裁剪，避免一次请求把整个 `context_pool`、所有分页结果和
             冗长 runtime schema 一起塞进模型窗口。
+
+        Edge Cases:
+            - `user_query` 同时兼容 `user_query/question` 两种上下文字段，避免上游旧调用点失效
+            - 主数据、context_pool、runtime 都会被二次裁剪，防止 prompt 体积失控
         """
         renderer_context = context or {}
         return {
@@ -690,6 +1048,10 @@ class DynamicUIService:
         功能：
             `context_pool` 是第五阶段最重要的事实输入，但也是最容易导致 token 爆炸的部分。
             这里保留状态机决策所必需的字段，把执行细节、原始参数和大结果集缩减为摘要。
+
+        Edge Cases:
+            - 非字典步骤结果会被直接忽略，避免模型看到不可解释的运行时对象
+            - meta 只保留渲染决策相关字段，故意不透传完整原始参数，防止 prompt 泄漏实现细节
         """
         if not isinstance(context_pool, dict):
             return {}
@@ -733,6 +1095,10 @@ class DynamicUIService:
         功能：
             Renderer 需要知道“能用什么”，但不需要把每个动作的完整 Schema 全量记住。
             这里保留组件名、启用动作和关键读态能力，既能做约束，也不会把 prompt 撑大。
+
+        Edge Cases:
+            - runtime 为空时回退最小只读能力，避免模型误生成交互动作
+            - 列表/详情/表单都会保留 enabled 与关键元数据，兼容不同渲染模式的判定
         """
         if runtime is None:
             return {"mode": "read_only", "components": []}
@@ -809,6 +1175,10 @@ class DynamicUIService:
             规则渲染可以消费完整裁剪结果，LLM Renderer 则更怕无关噪音。
             这里按深度、字段数和行数做二次收缩，把“足够理解业务”与“避免 token 爆炸”
             两件事同时兼顾。
+
+        Edge Cases:
+            - 深层非标量对象会被折叠成字符串摘要，防止递归结构把 prompt 撑爆
+            - 超长字符串、超长数组和超大对象都会按固定阈值截断，保证 prompt 规模可预测
         """
         if value is None:
             return None
@@ -867,129 +1237,16 @@ class DynamicUIService:
         if not raw_reply:
             return None
 
-        json_text = self._extract_json_object(raw_reply)
+        json_text = extract_first_json_object_text(raw_reply)
         if not json_text:
             return None
 
-        try:
-            parsed = json.loads(json_text)
-        except json.JSONDecodeError:
+        parsed = load_json_object(json_text)
+        if not parsed and json_text.strip() != "{}":
             logger.debug("Failed to parse renderer json: %s", raw_reply[:200])
             return None
 
-        return parsed if isinstance(parsed, dict) else None
-
-    def _extract_json_object(self, raw_reply: str) -> str:
-        """从模型输出中剥离首个 JSON 对象文本。
-
-        功能：
-            这里复用第二阶段的脏 JSON 清洗思路，但保持在第五阶段本地闭环，避免跨模块
-            直接依赖私有 helper。这样做虽然有少量重复代码，但能保持渲染链路独立可演进。
-        """
-        text = raw_reply.strip()
-        if text.startswith("```"):
-            lines = text.split("\n")
-            text = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
-
-        start = text.find("{")
-        end = text.rfind("}")
-        if start == -1 or end == -1 or start >= end:
-            return ""
-
-        json_text = text[start : end + 1]
-        json_text = self._strip_json_comments(json_text)
-        json_text = self._strip_trailing_commas(json_text)
-        return json_text
-
-    @staticmethod
-    def _strip_json_comments(text: str) -> str:
-        """删除 JSON 中的注释，同时保留字符串字面量原文。"""
-        result: list[str] = []
-        index = 0
-        in_string = False
-        escaped = False
-        length = len(text)
-
-        while index < length:
-            char = text[index]
-            next_char = text[index + 1] if index + 1 < length else ""
-
-            if in_string:
-                result.append(char)
-                if escaped:
-                    escaped = False
-                elif char == "\\":
-                    escaped = True
-                elif char == '"':
-                    in_string = False
-                index += 1
-                continue
-
-            if char == '"':
-                in_string = True
-                result.append(char)
-                index += 1
-                continue
-
-            if char == "/" and next_char == "/":
-                index += 2
-                while index < length and text[index] not in ("\n", "\r"):
-                    index += 1
-                continue
-
-            if char == "/" and next_char == "*":
-                index += 2
-                while index + 1 < length and not (text[index] == "*" and text[index + 1] == "/"):
-                    index += 1
-                index += 2
-                continue
-
-            result.append(char)
-            index += 1
-
-        return "".join(result)
-
-    @staticmethod
-    def _strip_trailing_commas(text: str) -> str:
-        """删除对象和数组闭合前的尾逗号。"""
-        result: list[str] = []
-        index = 0
-        in_string = False
-        escaped = False
-        length = len(text)
-
-        while index < length:
-            char = text[index]
-
-            if in_string:
-                result.append(char)
-                if escaped:
-                    escaped = False
-                elif char == "\\":
-                    escaped = True
-                elif char == '"':
-                    in_string = False
-                index += 1
-                continue
-
-            if char == '"':
-                in_string = True
-                result.append(char)
-                index += 1
-                continue
-
-            if char == ",":
-                lookahead = index + 1
-                while lookahead < length and text[lookahead].isspace():
-                    lookahead += 1
-                if lookahead < length and text[lookahead] in ("]", "}"):
-                    index += 1
-                    continue
-
-            result.append(char)
-            index += 1
-
-        return "".join(result)
+        return parsed
 
     def _normalize_spec_shape(self, spec: dict[str, Any] | None) -> dict[str, Any] | None:
         """将第五阶段输出统一折叠为 flat spec。
@@ -1093,7 +1350,16 @@ class DynamicUIService:
         return normalized or "element"
 
     def _knowledge_spec(self, results: list[KnowledgeResult], context: dict | None) -> dict[str, Any]:
-        """把知识检索结果渲染成列表卡片。"""
+        """把知识检索结果渲染成列表卡片。
+
+        功能：
+            知识检索链路仍沿用旧组件，但这里保留稳定的卡片/列表组织方式，确保未来迁移
+            `Planner*` 组件前，前端也能消费统一结构。
+
+        Edge Cases:
+            - metadata 缺失时会回退默认来源与空标签，避免页面出现 `None`
+            - 内容摘要只截取前 160 字，防止知识正文撑爆列表视图
+        """
         items = [
             {
                 "id": result.doc_id,
@@ -1172,36 +1438,135 @@ class DynamicUIService:
             "title": (context or {}).get("question", "数据查询结果"),
             "subtitle": self._build_query_subtitle(rows, context, render_mode),
         }
-        children: list[dict[str, Any]] = []
-
         if include_partial_notice:
-            children.append(
-                {
-                    "type": "PlannerNotice",
-                    "props": {
-                        "text": (context or {}).get("partial_message", "部分步骤执行失败，当前仅展示成功返回的数据。"),
-                        "tone": "info",
-                    },
-                }
-            )
+            partial_message = (context or {}).get("partial_message", "部分步骤执行失败，当前仅展示成功返回的数据。")
+            subtitle = root_props.get("subtitle")
+            root_props["subtitle"] = f"{subtitle} · {partial_message}" if subtitle else partial_message
 
         if render_mode == "detail":
-            children.append(
-                {
-                    "type": "PlannerDetailCard",
-                    "props": {
-                        "title": (context or {}).get("detail_title", "详情信息"),
-                        "items": self._build_detail_items(rows[0]),
-                    },
-                }
+            detail_props = {
+                "title": (context or {}).get("detail_title", "详情信息"),
+                "items": self._build_detail_items(rows[0]),
+            }
+            if runtime and runtime.detail.enabled and runtime.detail.api_id:
+                detail_identifier_field = runtime.detail.source.identifier_field
+                detail_identifier_param = runtime.detail.request.identifier_param or detail_identifier_field
+                if detail_identifier_field and detail_identifier_param:
+                    detail_props.update(
+                        _build_runtime_request_fields(
+                            runtime.detail.api_id,
+                            param_source=runtime.detail.request.param_source,
+                            params={detail_identifier_param: rows[0].get(detail_identifier_field)},
+                            flow_num=(context or {}).get("flow_num"),
+                            created_by=(context or {}).get("created_by"),
+                            request_schema_fields=runtime.detail.request.request_schema_fields,
+                        )
+                    )
+            return self._build_flat_card_spec(
+                root_props=root_props,
+                children=[
+                    {
+                        "type": "PlannerDetailCard",
+                        "props": detail_props,
+                    }
+                ],
             )
-            return self._build_flat_card_spec(root_props=root_props, children=children)
+
+        filters_state = _build_query_filter_state(runtime)
+        filter_fields = list(runtime.list.filters.fields) if runtime else []
+        current_params = dict(runtime.list.query_context.current_params) if runtime else {}
+        list_request_fields = _build_runtime_request_fields(
+            runtime.list.api_id if runtime else None,
+            param_source=runtime.list.param_source if runtime else None,
+            params=current_params,
+            flow_num=(context or {}).get("flow_num"),
+            created_by=(context or {}).get("created_by"),
+            request_schema_fields=runtime.list.request_schema_fields if runtime else None,
+        )
+        filter_submit_request_fields = _build_runtime_request_fields(
+            runtime.list.api_id if runtime else None,
+            param_source=runtime.list.param_source if runtime else None,
+            params=_build_filter_submit_params(runtime, filter_fields),
+            flow_num=(context or {}).get("flow_num"),
+            created_by=(context or {}).get("created_by"),
+            request_schema_fields=runtime.list.request_schema_fields if runtime else None,
+        )
+        filter_reset_request_fields = _build_runtime_request_fields(
+            runtime.list.api_id if runtime else None,
+            param_source=runtime.list.param_source if runtime else None,
+            params=_build_filter_reset_params(runtime, filter_fields),
+            flow_num=(context or {}).get("flow_num"),
+            created_by=(context or {}).get("created_by"),
+            request_schema_fields=runtime.list.request_schema_fields if runtime else None,
+        )
+
+        elements: dict[str, Any] = {
+            "root": {
+                "type": "PlannerCard",
+                "props": root_props,
+                "children": ["query-filters", "report-table", "report-pagination"],
+            },
+            "query-filters": {
+                "type": "PlannerForm",
+                "props": {
+                    "formCode": "query_filters",
+                    **list_request_fields,
+                },
+                "children": [],
+            },
+        }
+
+        for index, field in enumerate(filter_fields, start=1):
+            element_id = f"filter_field_{index}"
+            elements["query-filters"]["children"].append(element_id)
+            elements[element_id] = {
+                "type": "PlannerInput",
+                "props": {
+                    "label": field.label,
+                    "value": {"$bindState": f"/filters/{field.name}"},
+                    "placeholder": f"请输入{field.label}",
+                    "required": field.required,
+                },
+            }
+
+        if runtime and runtime.list.enabled:
+            elements["filter_reset"] = {
+                "type": "PlannerButton",
+                "props": {"label": "重置"},
+                "on": {
+                    "press": {
+                        "action": runtime.list.ui_action or "remoteQuery",
+                        "params": {
+                            "api_id": runtime.list.api_id,
+                            **filter_reset_request_fields,
+                        },
+                    }
+                },
+            }
+            elements["filter_submit"] = {
+                "type": "PlannerButton",
+                "props": {"label": "查询"},
+                "on": {
+                    "press": {
+                        "action": runtime.list.ui_action or "remoteQuery",
+                        "params": {
+                            "api_id": runtime.list.api_id,
+                            **filter_submit_request_fields,
+                        },
+                    }
+                },
+            }
+            elements["query-filters"]["children"].extend(["filter_reset", "filter_submit"])
 
         table_props: dict[str, Any] = {
             "columns": self._build_table_columns(rows[0]),
             "dataSource": rows,
+            **list_request_fields,
         }
-        if runtime and runtime.detail.enabled:
+        context_row_actions = (context or {}).get("row_actions")
+        if isinstance(context_row_actions, list) and context_row_actions:
+            table_props["rowActions"] = context_row_actions
+        elif runtime and runtime.detail.enabled:
             # 详情动作只下发运行时契约，不在网关 UI 层硬编码具体业务参数。
             table_props["rowActions"] = [
                 {
@@ -1209,41 +1574,40 @@ class DynamicUIService:
                     "label": "查看详情",
                     "params": {
                         "api_id": runtime.detail.api_id,
-                        "route_url": runtime.detail.route_url,
-                        "request": runtime.detail.request.model_dump(exclude_none=True),
-                        "source": runtime.detail.source.model_dump(exclude_none=True),
+                        **_build_runtime_request_fields(
+                            runtime.detail.api_id,
+                            param_source=runtime.detail.request.param_source,
+                            params={
+                                (runtime.detail.request.identifier_param or runtime.detail.source.identifier_field): {
+                                    "$bindRow": runtime.detail.source.identifier_field
+                                }
+                            },
+                            flow_num=(context or {}).get("flow_num"),
+                            created_by=(context or {}).get("created_by"),
+                            request_schema_fields=runtime.detail.request.request_schema_fields,
+                        ),
                     },
                 }
             ]
-        if runtime and runtime.list.pagination.enabled:
-            # 分页后续走 remoteQuery + mutation_target 做局部补丁，不重新生成整页 UI。
-            table_props["pagination"] = {
-                "enabled": True,
-                "total": runtime.list.pagination.total,
-                "currentPage": runtime.list.pagination.current_page,
-                "pageSize": runtime.list.pagination.page_size,
-                "action": {
-                    "type": runtime.list.ui_action or "remoteQuery",
-                    "params": {
-                        "api_id": runtime.list.api_id,
-                        "route_url": runtime.list.route_url,
-                        "response_mode": "patch",
-                        "param_source": runtime.list.param_source,
-                        "pagination": runtime.list.pagination.model_dump(exclude_none=True),
-                        "filters": runtime.list.filters.model_dump(exclude_none=True),
-                        "query_context": runtime.list.query_context.model_dump(exclude_none=True),
-                        "patch_context": {
-                            "patch_type": "list_query",
-                            "trigger": "pagination",
-                            "mutation_target": runtime.list.pagination.mutation_target,
-                        },
-                        "mutation_target": runtime.list.pagination.mutation_target,
-                    },
-                },
-            }
+        elements["report-table"] = {"type": "PlannerTable", "props": table_props}
+        elements["report-pagination"] = {
+            "type": "PlannerPagination",
+            "props": {
+                "enabled": runtime.list.pagination.enabled if runtime else False,
+                "total": runtime.list.pagination.total if runtime else len(rows),
+                "currentPage": runtime.list.pagination.current_page if runtime else None,
+                "pageSize": runtime.list.pagination.page_size if runtime else None,
+                "pageParam": runtime.list.pagination.page_param if runtime else None,
+                "pageSizeParam": runtime.list.pagination.page_size_param if runtime else None,
+                **list_request_fields,
+            },
+        }
 
-        children.append({"type": "PlannerTable", "props": table_props})
-        return self._build_flat_card_spec(root_props=root_props, children=children)
+        return {
+            "root": "root",
+            "state": {"filters": filters_state},
+            "elements": elements,
+        }
 
     def _notice_spec(self, title: str, message: str, tone: str) -> dict[str, Any]:
         """构造统一 `PlannerNotice` 读态卡片。
@@ -1288,7 +1652,16 @@ class DynamicUIService:
         )
 
     def _task_spec(self, tasks: list[dict[str, Any]]) -> dict[str, Any]:
-        """将待办列表渲染成带筛选器的工作台视图。"""
+        """将待办列表渲染成带筛选器的工作台视图。
+
+        功能：
+            task 视图仍是旧链路遗留能力，这里保持“筛选器 + 列表”结构稳定，避免旧页面在
+            新渲染器接入后突然失去工作台语义。
+
+        Edge Cases:
+            - 缺失 `id/title/status` 时会回退默认值，保证任务卡片最小可展示
+            - 来源系统标签是可选信息，缺失时不会生成空 tag
+        """
         items = [
             {
                 "id": task.get("id", task.get("sourceId", str(index))),
@@ -1375,6 +1748,10 @@ class DynamicUIService:
 
         Returns:
             合法的 `root/state/elements` flat spec。
+
+        Edge Cases:
+            - `state=None` 时统一回退空对象，避免前端处理两套状态空值语义
+            - 子元素 ID 按顺序编号，保证快照和测试断言稳定
         """
         elements: dict[str, Any] = {
             "root": {
@@ -1493,7 +1870,16 @@ class DynamicUIService:
 
     @staticmethod
     def _build_metrics(numeric_fields: dict[str, list[float]]) -> list[dict[str, Any]]:
-        """为数值字段生成多种聚合指标（sum/avg/count）。"""
+        """为数值字段生成多种聚合指标（sum/avg/count）。
+
+        功能：
+            指标卡的目标是快速暴露数据概貌，而不是把所有数值列都塞进页面。这里按分布特征
+            选取更有解释价值的合计/均值组合，并控制指标数量上限。
+
+        Edge Cases:
+            - 单值列不会重复生成“合计+均值”两张卡，避免信息冗余
+            - 指标数量最多保留 4 个，防止摘要区喧宾夺主
+        """
         metrics: list[dict[str, Any]] = []
         for column, values in numeric_fields.items():
             if not values:
@@ -1537,7 +1923,16 @@ class DynamicUIService:
         rows: list[dict[str, Any]],
         numeric_fields: dict[str, list[float]],
     ) -> dict[str, Any] | None:
-        """从查询结果中推导一个最小可用图表。"""
+        """从查询结果中推导一个最小可用图表。
+
+        功能：
+            图表只作为补充洞察，因此这里坚持“能稳定解释再画”。只有在存在明确分类轴和数值轴时，
+            才会生成最小可用图表，避免为了画图而画图。
+
+        Edge Cases:
+            - 缺少数值列或分类列时直接返回 `None`，不强行生成误导性图表
+            - 数值列里没有任何真实数值时，说明这批数据不适合画图，直接放弃
+        """
         if not rows or not numeric_fields:
             return None
 
@@ -1592,7 +1987,16 @@ class DynamicUIService:
         values: list[Any],
         series_name: str,
     ) -> dict[str, Any]:
-        """根据图表类型生成 ECharts option。"""
+        """根据图表类型生成 ECharts option。
+
+        功能：
+            这里统一输出最小可用的 ECharts 配置，保证不同图表类型都沿用同一套标题、图例
+            与数据映射口径，方便前端直接透传。
+
+        Edge Cases:
+            - 饼图会主动过滤非数值点，避免 ECharts 因脏数据报错
+            - 未识别类型时默认回退柱状图，保证始终有稳定配置输出
+        """
         if kind == "pie":
             return {
                 "tooltip": {"trigger": "item"},
@@ -1653,3 +2057,105 @@ class DynamicUIService:
         if priority_value in ("low", "低"):
             return "blue"
         return "orange"
+
+
+def _build_runtime_request_fields(
+    api_id: str | None,
+    *,
+    param_source: str | None,
+    params: Any,
+    flow_num: str | None,
+    created_by: str | None,
+    request_schema_fields: list[str] | None = None,
+) -> dict[str, Any]:
+    """构造前端二跳请求所需的统一元数据。
+
+    功能：
+        `/api-query` 对外已经不再暴露 `ui_runtime`，因此列表、详情、表单组件必须在
+        `ui_spec` 自身携带运行时调用元数据。这里统一输出一套稳定字段，避免不同组件
+        自己拼 `api/queryParams/body/flowNum/createdBy` 导致前端读取口径分裂。
+
+    Args:
+        api_id: 当前业务接口或 runtime endpoint 的逻辑 ID。
+        param_source: 当前接口参数承载位置，`body` 代表非 GET，其他值按 query 处理。
+        params: 当前请求参数模板；允许普通对象，也允许包含 `$bindState/$bindRow` 绑定。
+        flow_num: 当前链路唯一码；响应层要求与 `trace_id` 保持一致。
+        created_by: 已可信任的最终用户标识，来自 `X-User-Id` 解析结果。
+
+    Returns:
+        统一元数据字典，始终包含 `api/queryParams/body/flowNum/createdBy` 五个字段。
+
+    Edge Cases:
+        - `param_source=body` 时会强制把 queryParams 置空，避免前端二跳出现双通道传参
+        - api_id 缺失时 `api` 会回退空串，但其余元数据字段仍保持稳定形状
+    """
+
+    return build_request_schema_gated_fields(
+        api_id,
+        param_source=param_source,
+        params=params,
+        flow_num=flow_num,
+        created_by=created_by,
+        allowed_fields=request_schema_fields,
+    )
+
+
+def _build_query_filter_state(runtime: ApiQueryUIRuntime | None) -> dict[str, Any]:
+    """构造列表筛选区的初始 state。
+
+    功能：
+        筛选表单的输入组件全部依赖 `$bindState`，因此即使某些字段当前为空，也必须在
+        `state.filters` 下预留出稳定键位，避免 Guard 把合法输入组件误判为断链。
+    """
+
+    if runtime is None:
+        return {}
+
+    current_params = dict(runtime.list.query_context.current_params)
+    filter_state: dict[str, Any] = {}
+    for field in runtime.list.filters.fields:
+        filter_state[field.name] = current_params.get(field.name)
+    return filter_state
+
+
+def _build_filter_submit_params(
+    runtime: ApiQueryUIRuntime | None,
+    filter_fields: list[ApiQueryListFilterFieldRuntime],
+) -> dict[str, Any]:
+    """构造查询按钮提交参数。
+
+    功能：
+        查询按钮的目标不是“只发当前输入框”，而是复用当前列表上下文并覆盖筛选字段。
+        这样既能保留分页大小等隐含参数，也能在筛选变化时把页码安全归零到第一页。
+    """
+
+    if runtime is None:
+        return {}
+
+    next_params = dict(runtime.list.query_context.current_params)
+    for field in filter_fields:
+        next_params[field.name] = {"$bindState": f"/filters/{field.name}"}
+
+    if runtime.list.query_context.reset_page_on_filter_change:
+        page_param = runtime.list.query_context.page_param
+        if page_param:
+            # 筛选条件变化后回到第一页，避免保留旧页码导致“有条件却无结果”的假空列表。
+            next_params[page_param] = 1
+    return next_params
+
+
+def _build_filter_reset_params(
+    runtime: ApiQueryUIRuntime | None,
+    filter_fields: list[ApiQueryListFilterFieldRuntime],
+) -> dict[str, Any]:
+    """构造重置按钮提交参数。
+
+    功能：
+        重置操作应回到“本页首次渲染时的基线参数”，而不是把所有字段强行清空成 `null`。
+        这样能保留上游已经判定为必需的默认值，也避免把 query 参数重置成非法请求。
+    """
+
+    del filter_fields
+    if runtime is None:
+        return {}
+    return dict(runtime.list.query_context.current_params)

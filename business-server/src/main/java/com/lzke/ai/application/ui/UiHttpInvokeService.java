@@ -16,10 +16,14 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestTemplate;
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.context.request.ServletRequestAttributes;
 import org.springframework.web.util.UriComponentsBuilder;
 import org.springframework.web.util.UriUtils;
 
@@ -28,8 +32,12 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.lecz.service.tools.core.dto.ResponseDto;
 import com.lzke.ai.domain.entity.UiApiEndpoint;
 import com.lzke.ai.domain.entity.UiApiSource;
+import com.lzke.ai.security.UserPrincipal;
+
+import jakarta.servlet.http.HttpServletRequest;
 
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 
 /**
  * UI Builder HTTP 调用工具服务。
@@ -51,18 +59,25 @@ import lombok.RequiredArgsConstructor;
  *     <li>把执行结果写入联调日志或运行时日志</li>
  * </ul>
  */
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class UiHttpInvokeService {
 	
-	private static final String IAM_OPENAPI = "iam_openapi";
-	private static final String CRM_OPENAPI = "crm_openapi";
+	private static final String OMS_OPENAPI_ = "oms_openapi";
+    private static final String OMS_OPENAPI = "OMS";
     private static final Pattern PATH_VARIABLE_PATTERN = Pattern.compile("\\{([^/{}]+)}");
     private static final String OA_ACCESS_TOKEN_CACHE_KEY = "httpToken:oa:access_token:";
     private static final long OA_ACCESS_TOKEN_TTL_SECONDS = 3500L;
+    private static final String OMS_OPEN_ID_CACHE_KEY_PREFIX = "httpToken:oms:open_id:employee:";
+    private static final long OMS_OPEN_ID_TTL_SECONDS = 12 * 60 * 60L;
+    private static final String OMS_OPEN_ID_URL = "/system/employee/sys-employee-bind/getOpenId";
     
     @Value("${forest.variables.oa.appCode}")
     private String appCode;
+
+    @Value("${forest.variables.crm.services.oa.url}")
+    private String iamUrl;
 
     private final ObjectMapper objectMapper;
     private final RestTemplate restTemplate;
@@ -261,6 +276,7 @@ public class UiHttpInvokeService {
                      if (StringUtils.hasText(accessToken)) {
                          headers.setBearerAuth(accessToken);
                      }
+                     applyOmsGatewayHeadersIfNecessary(source, headers);
 //				}
             }
             default -> {
@@ -346,6 +362,119 @@ public class UiHttpInvokeService {
             );
             return accessToken;
         } catch (RestClientException ex) {
+            return null;
+        }
+    }
+
+    /**
+     * 对接 OMS 网关时补充固定头。
+     *
+     * <p>当前约定：
+     *
+     * <ul>
+     *     <li>`from=apigateway`</li>
+     *     <li>`appcode=OMS`</li>
+     *     <li>`userid=<当前登录员工在 OMS 中绑定的 openId>`</li>
+     * </ul>
+     *
+     * <p>`userid` 并不是当前系统里的员工 ID，而是需要通过 IAM 接口
+     * `getOpenId?appCode=OMS&employeeId=<当前用户ID>` 转换出来的 openId。
+     * 该映射会写入 Redis，避免每次转发都回源查询。
+     */
+    private void applyOmsGatewayHeadersIfNecessary(UiApiSource source, HttpHeaders headers) {
+        if (!OMS_OPENAPI_.equalsIgnoreCase(defaultIfBlank(source.getCode(), ""))) {
+            return;
+        }
+        headers.set("from", "apigateway");
+        headers.set("appcode", OMS_OPENAPI);
+
+        String employeeId = resolveCurrentEmployeeId();
+        if (!StringUtils.hasText(employeeId)) {
+            return;
+        }
+
+        String openId = resolveOmsOpenId(source,employeeId);
+        if (StringUtils.hasText(openId)) {
+            headers.set("userid", openId);
+        }
+    }
+
+    /**
+     * 获取当前调用上下文里的员工 ID。
+     *
+     * <p>优先从 Spring Security 登录态中读取；如果当前接口没有走登录态，
+     * 再退化到请求头 `X-User-Id` / `userid` 中查找。
+     */
+    private String resolveCurrentEmployeeId() {
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        if (authentication != null && authentication.getPrincipal() instanceof UserPrincipal principal) {
+            return principal.getId();
+        }
+
+        ServletRequestAttributes attributes = (ServletRequestAttributes) RequestContextHolder.getRequestAttributes();
+        if (attributes == null) {
+            return null;
+        }
+        HttpServletRequest request = attributes.getRequest();
+        String headerUserId = request.getHeader("X-User-Id");
+        if (StringUtils.hasText(headerUserId)) {
+            return headerUserId;
+        }
+        String userId = request.getHeader("userid");
+        return StringUtils.hasText(userId) ? userId : null;
+    }
+
+    /**
+     * 根据当前员工 ID 获取其在 OMS 中绑定的 openId。
+     *
+     * <p>缓存策略：
+     *
+     * <ul>
+     *     <li>`employeeId -> openId`</li>
+     *     <li>`openId -> employeeId`</li>
+     * </ul>
+     *
+     * <p>这样既能减少 OMS 回源压力，也便于后续按 openId 反查当前系统员工。
+     */
+    public String resolveOmsOpenId(UiApiSource source,String employeeId) {
+        String cachedOpenId = stringRedisTemplate.opsForValue().get(OMS_OPEN_ID_CACHE_KEY_PREFIX + employeeId);
+        if (StringUtils.hasText(cachedOpenId)) {
+            return cachedOpenId;
+        }
+
+        String requestUrl = UriComponentsBuilder.fromUriString(iamUrl+OMS_OPEN_ID_URL)
+                .queryParam("appCode", OMS_OPENAPI)
+                .queryParam("employeeId", employeeId)
+                .build(true)
+                .toUriString();
+        try {
+        	HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.APPLICATION_JSON);
+            Map<String, Object> authConfig = readMap(source.getAuthConfig());
+        	String accessToken = resolveOauth2ClientAccessToken(authConfig);
+            if (StringUtils.hasText(accessToken)) {
+                headers.setBearerAuth(accessToken);
+            }
+            ResponseEntity<ResponseDto> responseEntity = restTemplate.exchange(
+                    requestUrl,
+                    HttpMethod.GET,
+                    new HttpEntity<>(headers),
+                    ResponseDto.class
+            );
+            ResponseDto<?> response = responseEntity.getBody();
+            if (response == null || !StringUtils.hasText(response.getMessage())) {
+                return null;
+            }
+            String openId = response.getMessage();
+            stringRedisTemplate.opsForValue().set(
+                    OMS_OPEN_ID_CACHE_KEY_PREFIX + employeeId,
+                    openId,
+                    OMS_OPEN_ID_TTL_SECONDS,
+                    TimeUnit.SECONDS
+            );
+            return openId;
+        } catch (RestClientException ex) {
+        	log.error("Failed to resolve OMS openId for employeeId={}", employeeId, ex);
             return null;
         }
     }

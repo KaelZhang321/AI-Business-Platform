@@ -14,6 +14,7 @@ from pathlib import Path
 import aiomysql
 
 from app.core.config import settings
+from app.core.mysql import build_business_mysql_conn_params
 from app.models.schemas import QueryDomain, Text2SQLResponse
 from app.services.dynamic_ui_service import DynamicUIService
 
@@ -23,23 +24,6 @@ _SQL_WRITE_OPERATORS = re.compile(
     r"\b(insert|update|delete|drop|alter|create|grant|revoke|truncate|call|merge)\b",
     re.IGNORECASE,
 )
-
-
-def _parse_mysql_url() -> dict[str, str | int]:
-    """直接从 `BUSINESS_MYSQL_*` 生成连接参数。
-
-    功能：
-        避免再解析 `DATABASE_URL` 这类拼装串，减少环境变量来源不一致带来的隐式错误。
-    """
-    return {
-        "host": settings.business_mysql_host,
-        "port": settings.business_mysql_port,
-        "user": settings.business_mysql_user,
-        "password": settings.business_mysql_password,
-        "db": settings.business_mysql_database,
-        "charset": "utf8mb4",
-    }
-
 
 class GenericQueryExecutor:
     """平台通用问数执行器。
@@ -165,7 +149,7 @@ class GenericQueryExecutor:
     async def _get_pool(self) -> aiomysql.Pool:
         """懒加载通用问数连接池。"""
         if self._pool is None:
-            conn_params = _parse_mysql_url()
+            conn_params = build_business_mysql_conn_params(include_connect_timeout=False)
             self._pool = await aiomysql.create_pool(minsize=1, maxsize=5, **conn_params)
         return self._pool
 

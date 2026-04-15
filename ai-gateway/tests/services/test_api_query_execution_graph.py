@@ -84,7 +84,7 @@ async def test_execution_graph_keeps_dependency_order_and_param_binding() -> Non
         def __init__(self) -> None:
             self.calls: list[tuple[str, dict[str, object]]] = []
 
-        async def call(self, entry, params, user_token=None, trace_id=None):
+        async def call(self, entry, params, user_token=None, trace_id=None, user_id=None):
             self.calls.append((entry.id, dict(params)))
             if entry.id == "customers":
                 await asyncio.sleep(0.01)
@@ -163,7 +163,7 @@ async def test_execution_graph_skips_downstream_when_upstream_binding_is_empty()
         def __init__(self) -> None:
             self.calls: list[str] = []
 
-        async def call(self, entry, params, user_token=None, trace_id=None):
+        async def call(self, entry, params, user_token=None, trace_id=None, user_id=None):
             self.calls.append(entry.id)
             return ApiQueryExecutionResult(
                 status=ApiQueryExecutionStatus.EMPTY,
@@ -217,7 +217,7 @@ async def test_execution_graph_returns_partial_success_when_some_steps_fail() ->
     )
 
     class StubExecutor:
-        async def call(self, entry, params, user_token=None, trace_id=None):
+        async def call(self, entry, params, user_token=None, trace_id=None, user_id=None):
             if entry.id == "customers":
                 return ApiQueryExecutionResult(
                     status=ApiQueryExecutionStatus.SUCCESS,
@@ -267,7 +267,7 @@ async def test_execution_graph_folds_step_timeout_into_error_result() -> None:
     )
 
     class SlowExecutor:
-        async def call(self, entry, params, user_token=None, trace_id=None):
+        async def call(self, entry, params, user_token=None, trace_id=None, user_id=None):
             await asyncio.sleep(0.05)
             return ApiQueryExecutionResult(
                 status=ApiQueryExecutionStatus.SUCCESS,
@@ -316,7 +316,7 @@ async def test_execution_graph_folds_runtime_exception_into_synthetic_report() -
     )
 
     class BrokenExecutor:
-        async def call(self, entry, params, user_token=None, trace_id=None):
+        async def call(self, entry, params, user_token=None, trace_id=None, user_id=None):
             raise RuntimeError("executor exploded")
 
     graph = ApiQueryExecutionGraph(BrokenExecutor())

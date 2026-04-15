@@ -119,6 +119,22 @@ class Settings(BaseSettings):
     api_catalog_mysql_connect_timeout_seconds: float = Field(5.0, ge=0.1, le=60.0)
     api_catalog_milvus_connect_timeout_seconds: float = Field(5.0, ge=0.1, le=60.0)
 
+    # API Catalog GraphRAG
+    # 这一组配置集中承载 GraphRAG 的运行时护栏，避免后续 graph sync / retriever / validator
+    # 在各自 service 里继续散落 ad-hoc 常量，导致灰度和降级行为难以统一。
+    api_catalog_graph_enabled: bool = False
+    api_catalog_graph_expand_hops: int = Field(1, ge=1, le=3)
+    api_catalog_graph_anchor_top_k: int = Field(3, ge=1, le=10)
+    api_catalog_graph_support_limit: int = Field(12, ge=1, le=100)
+    api_catalog_graph_validation_enabled: bool = False
+    api_catalog_graph_strict_for_mutation: bool = True
+    api_catalog_graph_cache_enabled: bool = False
+    api_catalog_graph_cache_ttl_seconds: int = Field(21600, ge=1, le=86400)
+    api_catalog_graph_field_degree_cutoff: int = Field(50, ge=1, le=10000)
+    api_catalog_graph_related_domain_enabled: bool = True
+    api_catalog_interaction_snapshot_ttl_seconds: int = Field(1800, ge=30, le=86400)
+    api_catalog_graph_cache_singleflight_ttl_seconds: int = Field(15, ge=1, le=300)
+
     # 身份金库
     identity_vault_enabled: bool = True
     gateway_jwt_secret: str = ""

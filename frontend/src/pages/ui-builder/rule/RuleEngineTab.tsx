@@ -4,7 +4,6 @@ import {
   App,
   Button,
   Col,
-  Descriptions,
   Drawer,
   Empty,
   Form,
@@ -37,6 +36,7 @@ import type {
   RuleCanvasEdge,
   RuleCanvasNode,
   RuleCanvasNodeType,
+  RuleDataSourceOption,
   RuleEditorNodeFormValues,
   RuleRecord,
   RuleValidationRule,
@@ -87,6 +87,7 @@ function createDefaultNodeFormValues(type: RuleCanvasNodeType, label?: string): 
     nodeGroup: 1,
     validationRules: type === 'input' ? [{ paramName: '', type: 'NOT_NULL', value: '' }] : [],
     nodeSql: '',
+    dataSourceKey: '',
     resultKey: '',
     resultType: '',
     sourceKey: '',
@@ -114,7 +115,11 @@ function createNodeConfig(type: RuleCanvasNodeType, values: RuleEditorNodeFormVa
     case 'input':
       return { validationRules: values.validationRules }
     case 'sql':
-      return { resultKey: values.resultKey, resultType: values.resultType }
+      return {
+        resultKey: values.resultKey,
+        resultType: values.resultType,
+        ...(values.dataSourceKey ? { dataSourceKey: values.dataSourceKey } : {}),
+      }
     case 'parse':
       return {
         sourceKey: values.sourceKey,
@@ -175,6 +180,7 @@ function extractNodeFormValues(node: RuleCanvasNode): RuleEditorNodeFormValues {
     nodeGroup: Number(params.nodeGroup ?? 1),
     validationRules: (config.validationRules as RuleValidationRule[] | undefined) ?? [],
     nodeSql: params.nodeSql,
+    dataSourceKey: (config.dataSourceKey as string | undefined) ?? '',
     resultKey: (config.resultKey as string | undefined) ?? '',
     resultType: (config.resultType as string | undefined) ?? '',
     sourceKey: (config.sourceKey as string | undefined) ?? '',
@@ -230,31 +236,96 @@ function parseJsonString(value?: string) {
   }
 }
 
+function formatDebugOutput(value: unknown) {
+  if (value === undefined) {
+    return 'undefined'
+  }
+  if (typeof value === 'string') {
+    return value
+  }
+  try {
+    const serialized = JSON.stringify(value, null, 2)
+    return serialized ?? String(value)
+  } catch {
+    return String(value)
+  }
+}
+
+function openRuleErrorModal(title: string, description: string) {
+  Modal.error({
+    title,
+    content: description,
+    width: 520,
+  })
+}
+
+function applyRuleStatusLocally(
+  ruleId: string,
+  status: string | undefined,
+  setRules: React.Dispatch<React.SetStateAction<RuleRecord[]>>,
+  setSelectedRuleDetail: React.Dispatch<React.SetStateAction<RuleRecord | undefined>>,
+) {
+  setRules((prev) => prev.map((item) => (
+    item.id === ruleId ? { ...item, status } : item
+  )))
+  setSelectedRuleDetail((prev) => (
+    prev?.id === ruleId ? { ...prev, status } : prev
+  ))
+}
+
+function applyRuleLocally(
+  nextRule: RuleRecord,
+  setRules: React.Dispatch<React.SetStateAction<RuleRecord[]>>,
+  setSelectedRuleDetail: React.Dispatch<React.SetStateAction<RuleRecord | undefined>>,
+) {
+  if (!nextRule.id) {
+    return
+  }
+  setRules((prev) => prev.map((item) => (
+    item.id === nextRule.id ? { ...item, ...nextRule } : item
+  )))
+  setSelectedRuleDetail((prev) => (
+    prev?.id === nextRule.id ? { ...prev, ...nextRule } : prev
+  ))
+}
+
 export function RuleEngineTab() {
   const { message } = App.useApp()
   const [rules, setRules] = useState<RuleRecord[]>([])
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [debugging, setDebugging] = useState(false)
+  const [togglingRuleId, setTogglingRuleId] = useState<string>()
   const [selectedRuleId, setSelectedRuleId] = useState<string>()
+  const [selectedRuleDetail, setSelectedRuleDetail] = useState<RuleRecord>()
   const [selectedNodeId, setSelectedNodeId] = useState<string>()
   const [pagination, setPagination] = useState({ current: 1, pageSize: DEFAULT_PAGE_SIZE, total: 0 })
   const [createOpen, setCreateOpen] = useState(false)
+  const [editingRuleId, setEditingRuleId] = useState<string>()
+  const [debugOpen, setDebugOpen] = useState(false)
+  const [debugPayload, setDebugPayload] = useState('{\n  \n}')
+  const [debugResult, setDebugResult] = useState('')
   const [previewOpen, setPreviewOpen] = useState(false)
   const [editorNodes, setEditorNodes] = useState<RuleCanvasNode[]>([])
-  const [ruleMetaForm] = Form.useForm<RuleRecord>()
+  const [dataSources, setDataSources] = useState<RuleDataSourceOption[]>([])
   const [nodeForm] = Form.useForm<RuleEditorNodeFormValues>()
   const [createForm] = Form.useForm<Pick<RuleRecord, 'ruleName' | 'ruleCode' | 'description'>>()
 
   const selectedRule = useMemo(
-    () => rules.find((item) => item.id === selectedRuleId),
-    [rules, selectedRuleId],
+    () => {
+      if (selectedRuleDetail?.id === selectedRuleId) {
+        return selectedRuleDetail
+      }
+      return rules.find((item) => item.id === selectedRuleId)
+    },
+    [rules, selectedRuleDetail, selectedRuleId],
   )
   const selectedNode = useMemo(
     () => editorNodes.find((item) => item.id === selectedNodeId),
     [editorNodes, selectedNodeId],
   )
 
-  const ruleColumns = useMemo<ColumnsType<RuleRecord>>(() => [
+  const ruleColumns: ColumnsType<RuleRecord> = [
     {
       title: '规则名称',
       dataIndex: 'ruleName',
@@ -263,7 +334,10 @@ export function RuleEngineTab() {
         <button
           type="button"
           className="text-left font-medium text-sky-700 hover:text-sky-900"
-          onClick={() => void handleEditRule(record.id)}
+          onClick={(event) => {
+            event.stopPropagation()
+            void handleSelectRule(record.id)
+          }}
         >
           {record.ruleName}
         </button>
@@ -289,10 +363,24 @@ export function RuleEngineTab() {
       width: 220,
       render: (_, record) => (
         <Space>
-          <Button size="small" icon={<EditOutlined />} onClick={() => void handleEditRule(record.id)}>
+          <Button
+            size="small"
+            icon={<EditOutlined />}
+            onClick={(event) => {
+              event.stopPropagation()
+              void openEditRuleModal(record.id)
+            }}
+          >
             编辑
           </Button>
-          <Button size="small" onClick={() => void handleToggleStatus(record)}>
+          <Button
+            size="small"
+            loading={togglingRuleId === record.id}
+            onClick={(event) => {
+              event.stopPropagation()
+              void handleToggleStatus(record)
+            }}
+          >
             切换状态
           </Button>
           <Popconfirm title="确认删除当前规则？" onConfirm={() => void handleDeleteRule(record.id)}>
@@ -303,7 +391,11 @@ export function RuleEngineTab() {
         </Space>
       ),
     },
-  ], [rules])
+  ]
+
+  useEffect(() => {
+    void loadDataSources()
+  }, [])
 
   useEffect(() => {
     void loadRules(pagination.current, pagination.pageSize)
@@ -311,16 +403,14 @@ export function RuleEngineTab() {
 
   useEffect(() => {
     if (!selectedRule) {
-      ruleMetaForm.resetFields()
       setEditorNodes([])
       setSelectedNodeId(undefined)
       return
     }
-    ruleMetaForm.setFieldsValue(selectedRule)
     const normalizedNodes = normalizeLoadedNodes(selectedRule)
     setEditorNodes(normalizedNodes)
     setSelectedNodeId(normalizedNodes[0]?.id)
-  }, [selectedRule, ruleMetaForm])
+  }, [selectedRule])
 
   useEffect(() => {
     if (!selectedNode) {
@@ -335,15 +425,28 @@ export function RuleEngineTab() {
     try {
       const response = await ruleApi.listRules({ pageNo, pageSize })
       if (response.success) {
-        setRules(response.data.records ?? [])
+        const records = response.data.records ?? []
+        setRules(records)
         setPagination((prev) => ({
           ...prev,
           current: Number(response.data.current) || 1,
           pageSize: Number(response.data.size) || DEFAULT_PAGE_SIZE,
           total: Number(response.data.total) || 0,
         }))
-        if (!selectedRuleId && response.data.records?.length) {
-          setSelectedRuleId(response.data.records[0].id)
+        if (!records.length) {
+          setSelectedRuleId(undefined)
+          setSelectedRuleDetail(undefined)
+          return
+        }
+        const nextSelectedRuleId = records.some((item) => item.id === selectedRuleId)
+          ? selectedRuleId
+          : records[0]?.id
+        if (nextSelectedRuleId !== selectedRuleId) {
+          setSelectedRuleId(nextSelectedRuleId)
+        }
+        const matchedRule = records.find((item) => item.id === nextSelectedRuleId)
+        if (matchedRule) {
+          setSelectedRuleDetail((prev) => (prev?.id === matchedRule.id ? { ...prev, ...matchedRule } : prev))
         }
       } else {
         message.error(response.message || '加载规则列表失败')
@@ -355,34 +458,82 @@ export function RuleEngineTab() {
     }
   }
 
+  async function loadDataSources() {
+    try {
+      const response = await ruleApi.listDataSources()
+      if (!response.success) {
+        message.error(response.message || '加载数据源列表失败')
+        return
+      }
+      setDataSources(response.data ?? [])
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '加载数据源列表失败')
+    }
+  }
+
   async function handleCreateRule() {
     const values = await createForm.validateFields()
+    if (editingRuleId && selectedRule?.status === '1') {
+      openRuleErrorModal('当前规则不可编辑', '激活状态的规则不允许修改，请先切换为草稿或停用后再编辑。')
+      return
+    }
     setSaving(true)
     try {
       const response = await ruleApi.saveOrUpdateRule({
+        ...(editingRuleId ? {
+          id: editingRuleId,
+          nodeDetail: selectedRule?.nodeDetail,
+          version: selectedRule?.version,
+          status: selectedRule?.status,
+        } : {}),
         ruleName: values.ruleName,
         ruleCode: values.ruleCode,
         description: values.description,
       })
       if (!response.success) {
+        openRuleErrorModal(editingRuleId ? '更新规则失败' : '创建规则失败', response.message || '规则保存失败')
         message.error(response.message || '创建规则失败')
         return
       }
       setCreateOpen(false)
+      setEditingRuleId(undefined)
       createForm.resetFields()
-      message.success('规则创建成功')
+      message.success(editingRuleId ? '规则已更新' : '规则创建成功')
       await loadRules(1, pagination.pageSize)
       if (response.data?.id) {
-        setSelectedRuleId(response.data.id)
+        await handleSelectRule(response.data.id, true)
       }
     } catch (error) {
-      message.error(error instanceof Error ? error.message : '创建规则失败')
+      message.error(error instanceof Error ? error.message : (editingRuleId ? '更新规则失败' : '创建规则失败'))
     } finally {
       setSaving(false)
     }
   }
 
-  async function handleEditRule(ruleId?: string) {
+  async function handleSelectRule(ruleId?: string, silent = false) {
+    if (!ruleId) {
+      return
+    }
+    try {
+      const response = await ruleApi.getRuleById(ruleId)
+      if (!response.success) {
+        if (!silent) {
+          message.error(response.message || '加载规则详情失败')
+        }
+        return
+      }
+      const nextRuleId = response.data.id ?? ruleId
+      setSelectedRuleId(nextRuleId)
+      setSelectedRuleDetail(response.data)
+      setRules((prev) => prev.map((item) => (item.id === nextRuleId ? { ...item, ...response.data } : item)))
+    } catch (error) {
+      if (!silent) {
+        message.error(error instanceof Error ? error.message : '加载规则详情失败')
+      }
+    }
+  }
+
+  async function openEditRuleModal(ruleId?: string) {
     if (!ruleId) {
       return
     }
@@ -392,8 +543,18 @@ export function RuleEngineTab() {
         message.error(response.message || '加载规则详情失败')
         return
       }
-      setSelectedRuleId(response.data.id)
-      setRules((prev) => prev.map((item) => (item.id === response.data.id ? response.data : item)))
+      const detail = response.data
+      const nextRuleId = detail.id ?? ruleId
+      setSelectedRuleId(nextRuleId)
+      setSelectedRuleDetail(detail)
+      setRules((prev) => prev.map((item) => (item.id === nextRuleId ? { ...item, ...detail } : item)))
+      createForm.setFieldsValue({
+        ruleName: detail.ruleName,
+        ruleCode: detail.ruleCode,
+        description: detail.description,
+      })
+      setEditingRuleId(nextRuleId)
+      setCreateOpen(true)
     } catch (error) {
       message.error(error instanceof Error ? error.message : '加载规则详情失败')
     }
@@ -412,6 +573,7 @@ export function RuleEngineTab() {
       message.success('规则已删除')
       if (selectedRuleId === ruleId) {
         setSelectedRuleId(undefined)
+        setSelectedRuleDetail(undefined)
       }
       await loadRules(pagination.current, pagination.pageSize)
     } catch (error) {
@@ -423,19 +585,32 @@ export function RuleEngineTab() {
     if (!rule.id) {
       return
     }
+    const nextStatus = rule.status === '1' ? '0' : '1'
+    setTogglingRuleId(rule.id)
     try {
+      applyRuleStatusLocally(rule.id, nextStatus, setRules, setSelectedRuleDetail)
+
       const response = await ruleApi.enableRule(rule.id)
       if (!response.success) {
+        applyRuleStatusLocally(rule.id, rule.status, setRules, setSelectedRuleDetail)
         message.error(response.message || '切换状态失败')
         return
+      }
+      if (response.data?.id) {
+        applyRuleLocally(response.data, setRules, setSelectedRuleDetail)
+      } else {
+        applyRuleStatusLocally(rule.id, nextStatus, setRules, setSelectedRuleDetail)
       }
       message.success('规则状态已切换')
       await loadRules(pagination.current, pagination.pageSize)
       if (selectedRuleId === rule.id) {
-        await handleEditRule(rule.id)
+        await handleSelectRule(rule.id, true)
       }
     } catch (error) {
+      applyRuleStatusLocally(rule.id, rule.status, setRules, setSelectedRuleDetail)
       message.error(error instanceof Error ? error.message : '切换状态失败')
+    } finally {
+      setTogglingRuleId(undefined)
     }
   }
 
@@ -501,7 +676,10 @@ export function RuleEngineTab() {
       message.warning('请先选择一条规则')
       return
     }
-    const values = await ruleMetaForm.validateFields()
+    if (selectedRule.status === '1') {
+      openRuleErrorModal('当前规则不可保存', '激活状态的规则不允许修改，请先切换为草稿或停用后再保存。')
+      return
+    }
     setSaving(true)
     try {
       const normalizedNodes = editorNodes.map((node, index) => ({
@@ -515,26 +693,71 @@ export function RuleEngineTab() {
       })
       const response = await ruleApi.saveOrUpdateRule({
         id: selectedRule.id,
-        ruleName: values.ruleName,
-        ruleCode: values.ruleCode,
+        ruleName: selectedRule.ruleName,
+        ruleCode: selectedRule.ruleCode,
         version: selectedRule.version,
         status: selectedRule.status,
-        description: values.description,
+        description: selectedRule.description,
         nodeDetail,
       })
       if (!response.success) {
+        openRuleErrorModal('保存规则失败', response.message || '规则保存失败')
         message.error(response.message || '保存规则失败')
         return
       }
       message.success('规则已保存')
       await loadRules(pagination.current, pagination.pageSize)
       if (response.data?.id) {
-        await handleEditRule(response.data.id)
+        await handleSelectRule(response.data.id, true)
       }
     } catch (error) {
       message.error(error instanceof Error ? error.message : '保存规则失败')
     } finally {
       setSaving(false)
+    }
+  }
+
+  function openDebugModal() {
+    setDebugPayload('{\n  \n}')
+    setDebugResult('')
+    setDebugOpen(true)
+  }
+
+  async function handleExecuteRule() {
+    if (!selectedRule?.ruleCode) {
+      message.warning('当前规则缺少规则编码，暂时无法调试')
+      return
+    }
+    const version = Number(selectedRule.version || 1)
+    if (!Number.isFinite(version)) {
+      message.warning('当前规则版本不合法，暂时无法调试')
+      return
+    }
+
+    let parsedPayload: Record<string, unknown>
+    try {
+      const raw = debugPayload.trim()
+      parsedPayload = raw ? JSON.parse(raw) as Record<string, unknown> : {}
+    } catch (error) {
+      message.error(error instanceof Error ? `调试参数不是合法 JSON: ${error.message}` : '调试参数不是合法 JSON')
+      return
+    }
+
+    setDebugging(true)
+    try {
+      const response = await ruleApi.executeRule(selectedRule.ruleCode, version, parsedPayload)
+      setDebugResult(formatDebugOutput(response))
+      if (!response.success) {
+        message.error(response.message || '规则调试失败')
+        return
+      }
+      message.success('规则调试完成')
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : '规则调试失败'
+      setDebugResult(formatDebugOutput({ success: false, message: errorMessage }))
+      message.error(errorMessage)
+    } finally {
+      setDebugging(false)
     }
   }
 
@@ -564,7 +787,15 @@ export function RuleEngineTab() {
             className=""
             title="规则列表"
             extra={(
-              <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
+              <Button
+                type="primary"
+                icon={<PlusOutlined />}
+                onClick={() => {
+                  setEditingRuleId(undefined)
+                  createForm.resetFields()
+                  setCreateOpen(true)
+                }}
+              >
                 新建规则
               </Button>
             )}
@@ -582,13 +813,13 @@ export function RuleEngineTab() {
                 pageSize: pagination.pageSize,
                 total: pagination.total,
                 showSizeChanger: true,
-                onChange: (page, pageSize) => setPagination((prev) => ({ ...prev, current: page, pageSize })),
+                onChange: (page, pageSize) => setPagination((prev) => ({ ...prev, current: page, pageSize: pageSize ?? prev.pageSize })),
               }}
               rowClassName={(record) => (
                 record.id === selectedRuleId ? 'bg-sky-50' : ''
               )}
               onRow={(record) => ({
-                onClick: () => void handleEditRule(record.id),
+                onClick: () => void handleSelectRule(record.id),
               })}
             />
           </Panel>
@@ -597,13 +828,22 @@ export function RuleEngineTab() {
         <Col xs={24} xl={15} className="min-w-0">
           <div className="space-y-4">
             <Panel
-              title="规则信息"
+              title={selectedRule ? `当前规则 · ${selectedRule.ruleName}` : '规则信息'}
               extra={(
                 <Space>
+                  <Button onClick={openDebugModal} disabled={!selectedRule}>
+                    调试规则
+                  </Button>
                   <Button icon={<EyeOutlined />} onClick={() => setPreviewOpen(true)} disabled={!selectedRule}>
                     预览 JSON
                   </Button>
-                  <Button type="primary" icon={<SaveOutlined />} onClick={() => void handleSaveRule()} disabled={!selectedRule} loading={saving}>
+                  <Button
+                    type="primary"
+                    icon={<SaveOutlined />}
+                    onClick={() => void handleSaveRule()}
+                    disabled={!selectedRule || selectedRule.status === '1'}
+                    loading={saving}
+                  >
                     保存规则
                   </Button>
                 </Space>
@@ -612,32 +852,33 @@ export function RuleEngineTab() {
               {!selectedRule ? (
                 <Empty description="左侧选择规则后，这里会显示规则详情和节点编辑器" />
               ) : (
-                <Form form={ruleMetaForm} layout="vertical">
-                  <Row gutter={16}>
-                    <Col xs={24} md={12}>
-                      <Form.Item name="ruleName" label="规则名称" rules={[{ required: true, message: '请输入规则名称' }]}>
-                        <Input placeholder="请输入规则名称" />
-                      </Form.Item>
-                    </Col>
-                    <Col xs={24} md={12}>
-                      <Form.Item name="ruleCode" label="规则编码" rules={[{ required: true, message: '请输入规则编码' }]}>
-                        <Input placeholder="请输入规则编码" />
-                      </Form.Item>
-                    </Col>
-                  </Row>
-                  <Form.Item name="description" label="规则描述">
-                    <Input.TextArea rows={3} placeholder="请输入规则描述" />
-                  </Form.Item>
-                  <Descriptions
-                    size="small"
-                    column={{ xs: 1, md: 3 }}
-                    items={[
-                      { key: 'version', label: '版本', children: selectedRule.version ?? '-' },
-                      { key: 'status', label: '状态', children: STATUS_META[selectedRule.status ?? '0']?.label ?? (selectedRule.status || '-') },
-                      { key: 'updatedTime', label: '更新时间', children: selectedRule.updatedTime ?? selectedRule.createdTime ?? '-' },
-                    ]}
-                  />
-                </Form>
+                <div className="space-y-4">
+                  {selectedRule.status === '1' ? (
+                    <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
+                      当前规则处于启用状态，后端禁止直接修改。请先点击“切换状态”改为草稿或停用，再保存节点编排。
+                    </div>
+                  ) : null}
+                  <div className="flex flex-wrap items-center gap-x-10 gap-y-3 text-sm text-slate-600">
+                    <div>
+                      <span className="mr-2 text-slate-400">规则编码:</span>
+                      <span className="font-medium text-slate-900">{selectedRule.ruleCode || '-'}</span>
+                    </div>
+                    <div>
+                      <span className="mr-2 text-slate-400">版本:</span>
+                      <span className="font-medium text-slate-900">{selectedRule.version || '-'}</span>
+                    </div>
+                    <div className="flex items-center">
+                      <span className="mr-2 text-slate-400">状态:</span>
+                      <Tag color={STATUS_META[selectedRule.status ?? '0']?.color ?? 'default'}>
+                        {STATUS_META[selectedRule.status ?? '0']?.label ?? (selectedRule.status || '-')}
+                      </Tag>
+                    </div>
+                    <div>
+                      <span className="mr-2 text-slate-400">更新时间:</span>
+                      <span className="font-medium text-slate-900">{selectedRule.updatedTime ?? selectedRule.createdTime ?? '-'}</span>
+                    </div>
+                  </div>
+                </div>
               )}
             </Panel>
 
@@ -773,10 +1014,24 @@ export function RuleEngineTab() {
                                   </Form.Item>
                                   <Row gutter={16}>
                                     <Col span={12}>
+                                      <Form.Item name="dataSourceKey" label="执行数据源">
+                                        <Select
+                                          allowClear
+                                          placeholder="不选则使用默认数据源"
+                                          options={dataSources.map((item) => ({
+                                            label: item.defaultSelected ? `${item.label}（默认）` : item.label,
+                                            value: item.key,
+                                          }))}
+                                        />
+                                      </Form.Item>
+                                    </Col>
+                                    <Col span={12}>
                                       <Form.Item name="resultKey" label="结果 Key">
                                         <Input />
                                       </Form.Item>
                                     </Col>
+                                  </Row>
+                                  <Row gutter={16}>
                                     <Col span={12}>
                                       <Form.Item name="resultType" label="结果类型" rules={[{ required: true, message: '请选择结果类型' }]}>
                                         <Select options={[
@@ -1014,10 +1269,11 @@ export function RuleEngineTab() {
       </Row>
 
       <Modal
-        title="新建规则"
+        title={editingRuleId ? '编辑规则' : '新建规则'}
         open={createOpen}
         onCancel={() => {
           setCreateOpen(false)
+          setEditingRuleId(undefined)
           createForm.resetFields()
         }}
         onOk={() => void handleCreateRule()}
@@ -1068,6 +1324,46 @@ export function RuleEngineTab() {
           ]}
         />
       </Drawer>
+
+      <Modal
+        title={selectedRule ? `调试规则 · ${selectedRule.ruleName}` : '调试规则'}
+        open={debugOpen}
+        onCancel={() => {
+          if (!debugging) {
+            setDebugOpen(false)
+          }
+        }}
+        onOk={() => void handleExecuteRule()}
+        confirmLoading={debugging}
+        okText="执行调试"
+        width={860}
+      >
+        <div className="space-y-4">
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+            <div>
+              <span className="mr-2 text-slate-400">规则编码:</span>
+              <span className="font-medium text-slate-900">{selectedRule?.ruleCode || '-'}</span>
+            </div>
+            <div className="mt-2">
+              <span className="mr-2 text-slate-400">版本:</span>
+              <span className="font-medium text-slate-900">{selectedRule?.version || '1'}</span>
+            </div>
+          </div>
+          <div>
+            <div className="mb-2 text-sm font-medium text-slate-900">调试入参(JSON)</div>
+            <Input.TextArea
+              rows={10}
+              value={debugPayload}
+              onChange={(event) => setDebugPayload(event.target.value)}
+              placeholder="请输入 executeRule 所需的 JSON 参数"
+            />
+          </div>
+          <div>
+            <div className="mb-2 text-sm font-medium text-slate-900">执行结果</div>
+            <Input.TextArea rows={14} value={debugResult} readOnly placeholder="点击“执行调试”后，这里会展示返回结果" />
+          </div>
+        </div>
+      </Modal>
     </div>
   )
 }

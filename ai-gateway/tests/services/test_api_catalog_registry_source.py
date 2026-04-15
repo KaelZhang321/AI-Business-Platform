@@ -154,6 +154,7 @@ async def test_registry_source_loads_entries_from_mysql_and_appends_builtin_dict
     assert customer_entry.env == "prod"
     assert customer_entry.tag_name == "客户管理"
     assert customer_entry.operation_safety == "query"
+    assert customer_entry.requires_confirmation is False
     assert customer_entry.executor_config["base_url"] == "http://business-server"
     assert customer_entry.executor_config["executor_type"] == "runtime_invoke"
     assert customer_entry.security_rules["read_only"] is True
@@ -163,6 +164,12 @@ async def test_registry_source_loads_entries_from_mysql_and_appends_builtin_dict
     assert customer_entry.sample_request == {"page": 1}
     assert customer_entry.api_schema["response_schema"]["type"] == "object"
     assert customer_entry.api_schema["sample_request"] == {"page": 1}
+    assert [profile.field_name for profile in customer_entry.request_field_profiles] == ["page"]
+    assert customer_entry.request_field_profiles[0].json_path == "queryParams.page"
+    assert customer_entry.request_field_profiles[0].raw_field_type == "integer"
+    assert [profile.field_name for profile in customer_entry.response_field_profiles] == ["customerId"]
+    assert customer_entry.response_field_profiles[0].json_path == "data.list[].customerId"
+    assert customer_entry.response_field_profiles[0].raw_description == "客户ID"
 
     dict_entry = entry_by_path["/api/system/dicts"]
     assert dict_entry.id == "system_dicts_v1"
@@ -231,3 +238,40 @@ async def test_registry_source_get_entry_by_id_returns_builtin_dict_without_mysq
     assert entry is not None
     assert entry.id == "system_dicts_v1"
     assert mysql_called is False
+
+
+@pytest.mark.asyncio
+async def test_registry_source_marks_mutation_entry_for_confirmation(monkeypatch) -> None:
+    """mutation 接口进入 catalog 层时就要带上确认语义，避免后续 workflow 再做场景特判。"""
+    capture: dict[str, object] = {}
+    row = _mysql_row()
+    row.update(
+        {
+            "endpointId": "ep_delete_role",
+            "endpointName": "删除角色",
+            "path": "/system/employee/sys-role/delete",
+            "method": "POST",
+            "summary": "删除指定角色",
+            "requestSchema": '{"type":"object","properties":{"roleId":{"type":"string","description":"角色ID"}},"required":["roleId"]}',
+            "responseSchema": '{"type":"object","properties":{"data":{"type":"object","properties":{"success":{"type":"boolean","description":"是否成功"}}}}}',
+            "sampleRequest": '{"roleId":"R001"}',
+            "sampleResponse": '{"data":{"success":true}}',
+            "operationSafety": "mutation",
+        }
+    )
+    fake_pool = FakePool([row], capture)
+
+    async def fake_create_pool(**kwargs):
+        return fake_pool
+
+    monkeypatch.setattr(registry_source_module.aiomysql, "create_pool", fake_create_pool)
+
+    source = ApiCatalogRegistrySource()
+    entries = await source.load_entries()
+    await source.close()
+
+    mutation_entry = next(entry for entry in entries if entry.id == "ep_delete_role")
+    assert mutation_entry.requires_confirmation is True
+    assert mutation_entry.request_field_profiles[0].field_name == "roleId"
+    assert mutation_entry.request_field_profiles[0].required is True
+    assert mutation_entry.request_field_profiles[0].json_path == "body.roleId"

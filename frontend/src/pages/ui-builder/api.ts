@@ -15,6 +15,7 @@ import type {
   UiApiEndpointRequest,
   UiApiEndpointRole,
   UiApiEndpointRoleBindRequest,
+  UiApiFlowLog,
   UiApiInvokeRequest,
   UiJsonRenderInvokeRequest,
   UiJsonRenderInvokeResponse,
@@ -132,12 +133,19 @@ export const uiBuilderApi = {
   deleteSource(sourceId: string) {
     return unwrap<void>(businessClient.delete(`/api/v1/ui-builder/sources/${sourceId}`))
   },
-  listEndpoints(sourceId: string, query?: PageQuery, filters?: { tagId?: string; untagged?: boolean }) {
+  listEndpoints(
+    sourceId: string,
+    query?: PageQuery,
+    filters?: { tagId?: string; untagged?: boolean; name?: string; path?: string; status?: string },
+  ) {
     return unwrap<PageResult<UiApiEndpoint>>(businessClient.get(`/api/v1/ui-builder/sources/${sourceId}/endpoints`, {
       params: {
         ...buildPageParams(query),
         ...(filters?.tagId ? { tagId: filters.tagId } : {}),
         ...(filters?.untagged ? { untagged: true } : {}),
+        ...(filters?.name ? { name: filters.name } : {}),
+        ...(filters?.path ? { path: filters.path } : {}),
+        ...(filters?.status ? { status: filters.status } : {}),
       },
     }))
   },
@@ -172,6 +180,20 @@ export const uiBuilderApi = {
   listTestLogs(endpointId: string, query?: PageQuery) {
     return unwrap<PageResult<UiApiTestLog>>(businessClient.get(`/api/v1/ui-builder/endpoints/${endpointId}/test-logs`, {
       params: buildPageParams(query),
+    }))
+  },
+  listFlowLogs(
+    query?: PageQuery,
+    filters?: { flowNum?: string; requestUrl?: string; createdBy?: string; invokeStatus?: string },
+  ) {
+    return unwrap<PageResult<UiApiFlowLog>>(businessClient.get('/api/v1/ui-builder/flow-logs', {
+      params: {
+        ...buildPageParams(query),
+        ...(filters?.flowNum ? { flowNum: filters.flowNum } : {}),
+        ...(filters?.requestUrl ? { requestUrl: filters.requestUrl } : {}),
+        ...(filters?.createdBy ? { createdBy: filters.createdBy } : {}),
+        ...(filters?.invokeStatus ? { invokeStatus: filters.invokeStatus } : {}),
+      },
     }))
   },
   listEndpointRoleRelations(roleId?: string, query?: PageQuery) {

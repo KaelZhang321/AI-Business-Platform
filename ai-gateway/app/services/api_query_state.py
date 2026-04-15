@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, TypedDict
+from typing import Any, Literal, TypedDict
 
 from pydantic import BaseModel, Field
 
@@ -16,6 +16,7 @@ from app.models.schemas import (
     ApiQueryUIRuntime,
 )
 from app.services.api_catalog.dag_executor import DagStepExecutionRecord
+from app.services.api_catalog.graph_models import ApiCatalogSubgraphResult
 from app.services.api_catalog.schema import ApiCatalogEntry, ApiCatalogSearchFilters
 
 
@@ -120,6 +121,31 @@ class ApiQueryMutationFormContext:
 
 
 @dataclass(slots=True)
+class ApiQueryDeletePreviewContext:
+    """删除类 mutation 的预检运行时事实。
+
+    功能：
+        删除操作不能直接把空表单丢给前端；它必须先用只读查询确认候选，再决定输出：
+
+        1. 不存在：提示用户未命中目标
+        2. 单条：给出确认删除表单
+        3. 多条：展示候选列表，并为每条候选挂删除动作
+        4. 无法预检：显式提示当前无法安全确认删除对象
+    """
+
+    delete_entry: ApiCatalogEntry
+    status: Literal["missing", "confirm", "candidates", "unresolved"]
+    business_intent_code: str = "deleteCustomer"
+    target_name: str | None = None
+    identifier_field: str = "id"
+    matched_rows: list[dict[str, Any]] = field(default_factory=list)
+    submit_payload: dict[str, Any] = field(default_factory=dict)
+    lookup_entry: ApiCatalogEntry | None = None
+    lookup_params: dict[str, Any] = field(default_factory=dict)
+    message: str | None = None
+
+
+@dataclass(slots=True)
 class ApiQueryRuntimeContext:
     """`/api-query` 运行时上下文。
 
@@ -132,12 +158,14 @@ class ApiQueryRuntimeContext:
         - `user_token`：透传给业务系统的授权头
         - `retrieval_filters`：自然语言链路下的检索过滤条件，供响应快照复盘
         - `candidates`：原始候选对象，仅请求期内使用
+        - `subgraph_result`：Stage 2 图扩散摘要，只保留给 Stage 3/4 做确定性判断
         - `step_entries`：`step_id -> ApiCatalogEntry` 的执行白名单
         - `route_hint`：第二阶段原始路由结果，仅供后续规划节点消费
         - `request_body`：原始请求对象，只在节点内部拆字段，不进入 graph state
         - `degrade_context`：待统一收口的降级事实
         - `execution_state`：执行节点生成的内层状态快照
         - `mutation_form_context`：mutation 表单快路的预填数据，不经过执行图
+        - `delete_preview_context`：删除类 mutation 的候选预检结果
         - `log_prefix`：当前请求统一日志前缀
     """
 
@@ -145,12 +173,14 @@ class ApiQueryRuntimeContext:
     user_token: str | None = None
     retrieval_filters: ApiCatalogSearchFilters | None = None
     candidates: list[Any] = field(default_factory=list)
+    subgraph_result: ApiCatalogSubgraphResult | None = None
     step_entries: dict[str, ApiCatalogEntry] = field(default_factory=dict)
     route_hint: ApiQueryRoutingResult | None = None
     request_body: ApiQueryRequest | None = None
     degrade_context: ApiQueryDegradeContext | None = None
     execution_state: ApiQueryExecutionState | None = None
     mutation_form_context: ApiQueryMutationFormContext | None = None
+    delete_preview_context: ApiQueryDeletePreviewContext | None = None
     log_prefix: str = ""
 
 

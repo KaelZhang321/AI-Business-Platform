@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Collection
-from functools import reduce
 from typing import Any
 
 import httpx
@@ -65,6 +64,7 @@ class LegacyApiExecutor:
         user_token: str | None = None,
         trace_id: str | None = None,
         allow_methods: Collection[str] | None = None,
+        user_id: str | None = None,
     ) -> ApiQueryExecutionResult:
         """按历史模式调用 business-server 并规范化响应。"""
         allowed_methods = _normalize_allowed_methods(allow_methods)
@@ -142,8 +142,30 @@ class RuntimeInvokeExecutor:
         user_token: str | None = None,
         trace_id: str | None = None,
         allow_methods: Collection[str] | None = None,
+        user_id: str | None = None,
     ) -> ApiQueryExecutionResult:
-        """通过 runtime invoke 调用查询接口。"""
+        """通过 runtime invoke 调用查询接口。
+
+        功能：
+            当目录项被切到 runtime invoke 模式后，这里负责把“查询参数、认证凭证、请求级身份、
+            追踪 ID”压平成 business-server 期望的统一请求壳。把身份映射集中在执行器层，
+            是为了让 workflow 只表达业务计划，而不感知不同执行后端的协议差异。
+
+        Args:
+            entry: 当前命中的目录接口定义。
+            params: 已完成参数绑定的业务入参。
+            user_token: 需要透传给下游的用户认证头。
+            trace_id: 当前 `/api-query` 请求链路的唯一追踪键。
+            allow_methods: 执行器级方法白名单，默认只允许 GET / POST 查询。
+            user_id: 当前请求最终认定的用户主键，会写入 runtime invoke 的 `createdBy`。
+
+        Returns:
+            标准化后的 `ApiQueryExecutionResult`，屏蔽 runtime invoke 的协议细节。
+
+        Edge Cases:
+            - mutation 接口会在真正发请求前被硬阻断，避免网关误放行写操作
+            - 非 HTTP 上下文缺少 `trace_id` / `user_id` 时，会在 payload 构造阶段自动回退配置
+        """
         if entry.operation_safety == "mutation":
             logger.warning(
                 "stage4 runtime invoke blocked unsafe entry trace_id=%s api_id=%s safety=%s",
@@ -162,9 +184,9 @@ class RuntimeInvokeExecutor:
             return _build_method_blocked_result(entry, allowed_methods, trace_id=trace_id)
 
         url = _build_runtime_invoke_url(entry)
-        payload = _build_runtime_invoke_payload(entry, params, trace_id=trace_id)
+        payload = _build_runtime_invoke_payload(entry, params, trace_id=trace_id, user_id=user_id)
         client = self._get_client()
-        headers = _build_gateway_headers(entry, user_token, always_forward_auth=True)
+        headers = _build_gateway_headers(entry, user_token, always_forward_auth=True, user_id=user_id)
 
         try:
             response = await client.post(url, json=payload, headers=headers)
@@ -181,6 +203,16 @@ class RuntimeInvokeExecutor:
                 error_code="RUNTIME_INVOKE_REQUEST_ERROR",
                 retryable=True,
             )
+
+        response = await self._fallback_retry_without_user_id_header(
+            client=client,
+            url=url,
+            payload=payload,
+            headers=headers,
+            primary_response=response,
+            trace_id=trace_id,
+            api_id=entry.id,
+        )
 
         if response.status_code == 401:
             return _error_result(
@@ -229,6 +261,68 @@ class RuntimeInvokeExecutor:
         if self._client and not self._client.is_closed:
             await self._client.aclose()
 
+    async def _fallback_retry_without_user_id_header(
+        self,
+        *,
+        client: httpx.AsyncClient,
+        url: str,
+        payload: dict[str, Any],
+        headers: dict[str, str],
+        primary_response: httpx.Response,
+        trace_id: str | None,
+        api_id: str,
+    ) -> httpx.Response:
+        """在 runtime invoke 5xx 且携带 `X-User-Id` 时执行一次兼容重试。
+
+        功能：
+            `X-User-Id` 是网关给 runtime invoke 的主身份线索，但在本地直连调试或上游
+            身份头被错误注入时，下游可能因为该值无法映射而返回 5xx。为了避免把“身份头脏值”
+            直接放大成查询全链路失败，这里仅在 5xx 下做一次无损降级重试：
+            保留 Authorization，不携带 `X-User-Id` 再请求一次。
+
+        Args:
+            client: runtime invoke 的 HTTP 客户端。
+            url: 下游 runtime invoke 地址。
+            payload: 本次调用请求体。
+            headers: 首次调用请求头。
+            primary_response: 首次调用响应。
+            trace_id: 当前链路追踪 ID。
+            api_id: 当前目录接口 ID，用于日志定位。
+
+        Returns:
+            默认返回首次响应；若降级重试成功且状态码进入非 5xx，则返回重试响应。
+
+        Edge Cases:
+            - 只在“首调是 5xx 且存在 X-User-Id”时触发，避免污染正常链路时延
+            - 重试阶段网络异常不会覆盖首调结果，保证错误语义稳定可回放
+        """
+        if primary_response.status_code < 500:
+            return primary_response
+        if "X-User-Id" not in headers:
+            return primary_response
+
+        fallback_headers = dict(headers)
+        fallback_headers.pop("X-User-Id", None)
+        logger.warning(
+            "stage4 runtime invoke fallback retry without X-User-Id trace_id=%s api_id=%s primary_status=%s",
+            trace_id or "-",
+            api_id,
+            primary_response.status_code,
+        )
+        try:
+            fallback_response = await client.post(url, json=payload, headers=fallback_headers)
+        except httpx.RequestError as exc:
+            logger.warning(
+                "stage4 runtime invoke fallback retry failed trace_id=%s api_id=%s reason=%s",
+                trace_id or "-",
+                api_id,
+                exc,
+            )
+            return primary_response
+        if fallback_response.status_code < 500:
+            return fallback_response
+        return primary_response
+
 
 class ApiExecutor:
     """执行器路由层。
@@ -254,8 +348,15 @@ class ApiExecutor:
         user_token: str | None = None,
         trace_id: str | None = None,
         allow_methods: Collection[str] | None = None,
+        user_id: str | None = None,
     ) -> ApiQueryExecutionResult:
-        """路由到实际执行器并透传统一调用契约。"""
+        """路由到实际执行器并透传统一调用契约。
+
+        功能：
+            `user_id` 对 legacy 直连路径没有意义，但 runtime invoke 需要把“本次查询最终归属
+            于谁”写入请求壳。统一把该字段挂在门面层，是为了让 workflow / LangGraph 只维护
+            一份执行接口，而不用感知底层执行模式差异。
+        """
         executor, executor_type = self._resolve_executor(entry)
         effective_allow_methods = allow_methods or _derive_default_allow_methods(entry, executor_type)
         return await executor.call(
@@ -264,6 +365,7 @@ class ApiExecutor:
             user_token=user_token,
             trace_id=trace_id,
             allow_methods=effective_allow_methods,
+            user_id=user_id,
         )
 
     async def close(self) -> None:
@@ -306,16 +408,23 @@ def _build_gateway_headers(
     user_token: str | None,
     *,
     always_forward_auth: bool = False,
+    user_id: str | None = None,
 ) -> dict[str, str]:
     """构造网关透传请求头。
 
     功能：
         ai-gateway 只做查询编排，不自行改写业务身份。这里统一在两个执行器里复用同一套
         头部拼装规则，确保 runtime invoke 和旧直连路径都遵守相同的鉴权边界。
+
+        当调用 runtime invoke 时，下游需要拿 `X-User-Id` 做审计与数据权限判定，因此把
+        已经在网关完成可信判定的 user_id 原样透传，避免下游再做一次身份推断。
     """
     headers = {"Content-Type": "application/json"}
     if user_token and (always_forward_auth or entry.auth_required):
         headers["Authorization"] = user_token
+    normalized_user_id = user_id.strip() if user_id else ""
+    if normalized_user_id:
+        headers["X-User-Id"] = normalized_user_id
     return headers
 
 
@@ -524,17 +633,77 @@ def _build_runtime_invoke_url(entry: ApiCatalogEntry) -> str:
         raise RuntimeError("API_QUERY_RUNTIME_INVOKE_URL_TEMPLATE 缺少 {id} 占位符") from exc
 
 
+def _resolve_runtime_flow_num(trace_id: str | None) -> str:
+    """为 runtime invoke 决定最终 `flowNum`。
+
+    功能：
+        `flowNum` 现在承担的是跨 `ai-gateway` 与 `business-server runtime invoke` 的统一追踪键，
+        因此主路径必须直接复用当前请求 `trace_id`。同时保留配置回退，是为了兼容 CLI、单测
+        或运维脚本可能直接调用执行器而没有 HTTP Trace 上下文的场景。
+
+    Args:
+        trace_id: 当前请求链路 Trace ID。
+
+    Returns:
+        优先返回当前请求 `trace_id`；缺失时回退到历史配置值。
+
+    Edge Cases:
+        - 空白 `trace_id` 会被视为缺失，避免把无效追踪键写入下游日志
+    """
+    normalized_trace_id = trace_id.strip() if trace_id else ""
+    if normalized_trace_id:
+        return normalized_trace_id
+    return str(settings.api_query_runtime_flow_num)
+
+
+def _resolve_runtime_created_by(user_id: str | None) -> str:
+    """为 runtime invoke 决定最终 `createdBy`。
+
+    功能：
+        查询链路的 `createdBy` 不再是部署配置，而是本次请求最终认定的用户主键。只有在
+        非 HTTP 场景没有请求级 `user_id` 时，才回退到旧配置，保证历史脚本不因为新增
+        请求级身份依赖而直接失效。
+
+    Args:
+        user_id: 当前请求最终认定的用户主键。
+
+    Returns:
+        优先返回请求级 `user_id`；缺失时回退到历史配置值。
+
+    Edge Cases:
+        - 仅包含空白字符的 `user_id` 会被视为缺失，避免污染审计字段
+    """
+    normalized_user_id = user_id.strip() if user_id else ""
+    if normalized_user_id:
+        return normalized_user_id
+    return settings.api_query_runtime_created_by
+
+
 def _build_runtime_invoke_payload(
     entry: ApiCatalogEntry,
     params: dict[str, Any],
     *,
     trace_id: str | None,
+    user_id: str | None,
 ) -> dict[str, Any]:
     """构造 runtime invoke 请求壳。
 
     功能：
-        GET 查询接口把业务参数落到 `queryParams`，POST 查询接口落到 `body`，从而保持
-        ai-gateway 不理解业务 URL 细节，只负责把规划结果装配成 runtime invoke 的稳定契约。
+        GET 查询接口把业务参数落到 `queryParams`，POST 查询接口落到 `body`，同时把
+        请求级 `trace_id` / `user_id` 映射成 `flowNum` / `createdBy`。这样下游 runtime invoke
+        日志就能直接串回当前 `/api-query` 链路，而不需要再维护一套独立流水号。
+
+    Args:
+        entry: 当前命中的目录接口实体。
+        params: 已完成参数提取与绑定的业务参数。
+        trace_id: 当前请求 Trace ID，用作 runtime invoke 的统一追踪键。
+        user_id: 当前请求最终认定的用户主键，用作 runtime invoke 的调用人标识。
+
+    Returns:
+        符合 `ui-builder/runtime/endpoints/{id}/invoke` 契约的请求体。
+
+    Edge Cases:
+        - 非 HTTP 触发场景缺少 `trace_id` / `user_id` 时，会回退到历史配置，避免运维脚本断裂
     """
     runtime_query_params: dict[str, Any] = {}
     business_params = dict(params)
@@ -546,9 +715,9 @@ def _build_runtime_invoke_payload(
         runtime_body = business_params
 
     return {
-        "flowNum": settings.api_query_runtime_flow_num,
+        "flowNum": _resolve_runtime_flow_num(trace_id),
         "queryParams": runtime_query_params,
-        "createdBy": settings.api_query_runtime_created_by,
+        "createdBy": _resolve_runtime_created_by(user_id),
         # "useSampleWhenEmpty": False,
         "body": runtime_body,
     }
@@ -615,39 +784,111 @@ def _extract_data(
         - `data_path` 不匹配时，会尝试 `data/result/list/records` 等常见兜底路径
         - `null`、空字符串等无业务意义的值会直接降级为空结果
     """
-    # 按 path 逐级取值
-    keys = data_path.split(".") if data_path else []
-    raw = body
-    try:
-        raw = reduce(lambda obj, key: obj[key], keys, raw)
-    except (KeyError, TypeError):
-        # path 不匹配，尝试常见回退路径
-        for fallback in ("data", "result", "list", "records"):
+    keys = [segment for segment in (data_path or "").split(".") if segment]
+    raw = _resolve_path_value(body, keys)
+    parent = _resolve_path_value(body, keys[:-1]) if len(keys) > 1 else body
+
+    if raw is None and keys:
+        # 目录里的 response_data_path 来自自动清洗，老数据存在口径偏差。
+        # 这里先做稳定回退，避免单个接口数据层级变动把整条查询链路打成空。
+        for fallback in ("data", "result", "payload", "list", "records"):
             if fallback in body:
                 raw = body[fallback]
+                parent = body
                 break
 
-    # 尝试提取 total（适配 data.total 或 data/total）
-    total = 0
-    parent = body
-    if len(keys) > 1:
-        try:
-            parent = reduce(lambda obj, key: obj[key], keys[:-1], body)
-        except (KeyError, TypeError):
-            pass
-    total = parent.get("total") or parent.get("totalCount") or parent.get("count") or body.get("total") or 0
+    # 业务系统常见分页结构是 `data -> records/list`，详情结构可能藏在 `records.summaryCardDTO`。
+    # 为了减少每个接口都手工改 response_data_path，这里做一次有限深度的语义拆箱。
+    normalized_raw, total_anchor = _unwrap_common_result_shape(raw)
+    total = _resolve_total_from_candidates(total_anchor, parent, body)
 
-    if isinstance(raw, list):
-        data = [row if isinstance(row, dict) else {"value": row} for row in raw]
+    if isinstance(normalized_raw, list):
+        data = [row if isinstance(row, dict) else {"value": row} for row in normalized_raw]
         return data, int(total) if total else len(data)
 
-    if isinstance(raw, dict):
-        return raw, 1
+    if isinstance(normalized_raw, dict):
+        return normalized_raw, 1
 
-    if raw in (None, "", []):
+    if normalized_raw in (None, "", []):
         return [], 0
 
-    return [{"value": raw}], 1
+    return [{"value": normalized_raw}], 1
+
+
+def _resolve_path_value(payload: Any, path_segments: list[str]) -> Any | None:
+    """按 dot-path 读取节点，读取失败返回 `None`。"""
+    current = payload
+    try:
+        for segment in path_segments:
+            if not isinstance(current, dict):
+                return None
+            current = current[segment]
+        return current
+    except KeyError:
+        return None
+
+
+def _unwrap_common_result_shape(raw: Any) -> tuple[Any, dict[str, Any] | None]:
+    """按常见业务返回结构拆箱，返回 `(normalized_raw, total_anchor)`。
+
+    功能：
+        `api-query` 对接多个业务系统后，列表数据经常被包在 `records/list/rows/items`，
+        详情摘要又常放在 `records.summaryCardDTO`。这里统一做有限规则拆箱，让 catalog 的
+        `response_data_path` 不用为每个系统写一套特例路径。
+
+    Returns:
+        - `normalized_raw`: 实际用于渲染的数据主体（列表/对象/标量）
+        - `total_anchor`: 若命中分页容器，返回该容器用于提取 total；否则返回 `None`
+    """
+    if not isinstance(raw, dict):
+        return raw, None
+
+    collection_keys = ("records", "list", "rows", "items")
+    for key in collection_keys:
+        value = raw.get(key)
+        if isinstance(value, list):
+            return value, raw
+
+    # 某些系统会多包一层 `records` 或 `payload`，这里再下探一层找列表容器。
+    for wrapper_key in ("records", "payload", "result", "data"):
+        wrapper = raw.get(wrapper_key)
+        if not isinstance(wrapper, dict):
+            continue
+        for key in collection_keys:
+            value = wrapper.get(key)
+            if isinstance(value, list):
+                return value, wrapper
+
+    # 详情接口常见结构：data.records.summaryCardDTO
+    records_block = raw.get("records")
+    if isinstance(records_block, dict):
+        summary_card = records_block.get("summaryCardDTO")
+        if isinstance(summary_card, dict):
+            return summary_card, records_block
+
+    summary_card = raw.get("summaryCardDTO")
+    if isinstance(summary_card, dict):
+        return summary_card, raw
+
+    return raw, None
+
+
+def _resolve_total_from_candidates(*candidates: Any) -> int:
+    """从多个候选容器中提取分页总数。"""
+    total_keys = ("total", "totalCount", "count", "recordsTotal", "rowTotal")
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        for key in total_keys:
+            value = candidate.get(key)
+            try:
+                if value is not None:
+                    normalized = int(value)
+                    if normalized >= 0:
+                        return normalized
+            except (TypeError, ValueError):
+                continue
+    return 0
 
 
 def _apply_field_labels(

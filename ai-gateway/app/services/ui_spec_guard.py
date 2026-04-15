@@ -4,7 +4,9 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.models.schemas import ApiQueryUIAction, ApiQueryUIRuntime
+from app.services.api_query_request_schema_gate import build_runtime_invoke_api
 from app.services.ui_catalog_service import UICatalogService
+from app.utils.state_path_utils import state_path_exists
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,6 +131,7 @@ class UISpecGuard:
         runtime_actions = {action.code: action for action in (runtime.ui_actions if runtime else []) if action.enabled}
         all_action_codes = self._catalog_service.get_all_action_codes()
         allowed_action_codes = set(runtime_actions) if runtime_actions else set(all_action_codes)
+        request_field_whitelist_by_api_id, request_field_whitelist_by_api = _build_request_field_whitelist(runtime)
 
         for element_id, element in elements.items():
             element_path = f"$.elements.{element_id}"
@@ -197,6 +200,8 @@ class UISpecGuard:
             all_action_codes=all_action_codes,
             allowed_action_codes=allowed_action_codes,
             runtime_actions=runtime_actions,
+            request_field_whitelist_by_api_id=request_field_whitelist_by_api_id,
+            request_field_whitelist_by_api=request_field_whitelist_by_api,
             errors=errors,
         )
         return UISpecValidationResult(errors=errors)
@@ -211,6 +216,8 @@ class UISpecGuard:
         all_action_codes: set[str],
         allowed_action_codes: set[str],
         runtime_actions: dict[str, ApiQueryUIAction],
+        request_field_whitelist_by_api_id: dict[str, set[str]],
+        request_field_whitelist_by_api: dict[str, set[str]],
         errors: list[UISpecValidationError],
     ) -> None:
         """递归扫描绑定和动作定义。"""
@@ -244,6 +251,13 @@ class UISpecGuard:
                 runtime_actions=runtime_actions,
                 errors=errors,
             )
+            self._validate_request_metadata_candidate(
+                current=current,
+                path=path,
+                request_field_whitelist_by_api_id=request_field_whitelist_by_api_id,
+                request_field_whitelist_by_api=request_field_whitelist_by_api,
+                errors=errors,
+            )
 
             for key, value in current.items():
                 next_path = f"{path}.{key}"
@@ -255,6 +269,8 @@ class UISpecGuard:
                     all_action_codes=all_action_codes,
                     allowed_action_codes=allowed_action_codes,
                     runtime_actions=runtime_actions,
+                    request_field_whitelist_by_api_id=request_field_whitelist_by_api_id,
+                    request_field_whitelist_by_api=request_field_whitelist_by_api,
                     errors=errors,
                 )
             return
@@ -269,6 +285,8 @@ class UISpecGuard:
                     all_action_codes=all_action_codes,
                     allowed_action_codes=allowed_action_codes,
                     runtime_actions=runtime_actions,
+                    request_field_whitelist_by_api_id=request_field_whitelist_by_api_id,
+                    request_field_whitelist_by_api=request_field_whitelist_by_api,
                     errors=errors,
                 )
 
@@ -377,6 +395,41 @@ class UISpecGuard:
         return path.endswith(".action")
 
     @staticmethod
+    def _validate_request_metadata_candidate(
+        *,
+        current: dict[str, Any],
+        path: str,
+        request_field_whitelist_by_api_id: dict[str, set[str]],
+        request_field_whitelist_by_api: dict[str, set[str]],
+        errors: list[UISpecValidationError],
+    ) -> None:
+        """校验 `body/queryParams` 顶层键是否落在 request_schema 白名单内。"""
+
+        allowed_fields = _resolve_allowed_request_fields(
+            current=current,
+            request_field_whitelist_by_api_id=request_field_whitelist_by_api_id,
+            request_field_whitelist_by_api=request_field_whitelist_by_api,
+        )
+        if allowed_fields is None:
+            return
+
+        for request_key in ("queryParams", "body"):
+            request_payload = current.get(request_key)
+            if not isinstance(request_payload, dict):
+                continue
+            for field_name in request_payload:
+                if not isinstance(field_name, str):
+                    continue
+                if field_name not in allowed_fields:
+                    errors.append(
+                        UISpecValidationError(
+                            code="request_field_not_allowed",
+                            path=f"{path}.{request_key}.{field_name}",
+                            message=f"请求字段 `{field_name}` 不在当前接口 request_schema 白名单内。",
+                        )
+                    )
+
+    @staticmethod
     def _validate_state_pointer(
         *,
         pointer: str,
@@ -386,7 +439,7 @@ class UISpecGuard:
         errors: list[UISpecValidationError],
     ) -> None:
         """校验状态路径是否真实存在。"""
-        if not _state_path_exists(state, pointer):
+        if not state_path_exists(state, pointer):
             errors.append(
                 UISpecValidationError(
                     code="state_path_missing",
@@ -404,35 +457,46 @@ def _extract_required_fields(schema: dict[str, Any]) -> list[str]:
     return [str(item) for item in required if isinstance(item, str) and item]
 
 
-def _state_path_exists(state: dict[str, Any], pointer: str) -> bool:
-    """判断 JSON Pointer 风格路径是否存在于 state 中。
+def _build_request_field_whitelist(runtime: ApiQueryUIRuntime | None) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+    """从 runtime 中提取按接口聚合的 request_schema 字段白名单。"""
 
-    功能：
-        `$bindState` 的正确性不是靠前端兜底，而是服务端先判定“这条路有没有通”。
-        这里只支持当前网关真实会产出的 `/a/b/c` 风格，避免引入过度复杂的表达式解析。
-    """
-    if pointer in {"", "/"}:
-        return True
-    if not pointer.startswith("/"):
-        return False
+    whitelist_by_api_id: dict[str, set[str]] = {}
+    whitelist_by_api: dict[str, set[str]] = {}
 
-    current: Any = state
-    for segment in [item for item in pointer.split("/") if item]:
-        if isinstance(current, dict):
-            if segment not in current:
-                return False
-            current = current[segment]
-            continue
+    def register(api_id: str | None, fields: list[str] | None) -> None:
+        if not isinstance(api_id, str) or not api_id.strip() or fields is None:
+            return
+        normalized_fields = {
+            field_name
+            for field_name in fields
+            if isinstance(field_name, str) and field_name.strip()
+        }
+        whitelist_by_api_id[api_id] = normalized_fields
+        whitelist_by_api[build_runtime_invoke_api(api_id)] = normalized_fields
 
-        if isinstance(current, list):
-            if not segment.isdigit():
-                return False
-            index = int(segment)
-            if index < 0 or index >= len(current):
-                return False
-            current = current[index]
-            continue
+    if runtime is None:
+        return whitelist_by_api_id, whitelist_by_api
 
-        return False
+    register(runtime.list.api_id, runtime.list.request_schema_fields)
+    register(runtime.detail.api_id, runtime.detail.request.request_schema_fields)
+    register(runtime.form.api_id, runtime.form.request_schema_fields)
+    return whitelist_by_api_id, whitelist_by_api
 
-    return True
+
+def _resolve_allowed_request_fields(
+    *,
+    current: dict[str, Any],
+    request_field_whitelist_by_api_id: dict[str, set[str]],
+    request_field_whitelist_by_api: dict[str, set[str]],
+) -> set[str] | None:
+    """根据当前节点携带的接口标识解析允许的 request_schema 字段。"""
+
+    api_id = current.get("api_id")
+    if isinstance(api_id, str) and api_id in request_field_whitelist_by_api_id:
+        return request_field_whitelist_by_api_id[api_id]
+
+    api = current.get("api")
+    if isinstance(api, str) and api in request_field_whitelist_by_api:
+        return request_field_whitelist_by_api[api]
+    return None
+

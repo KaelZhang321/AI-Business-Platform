@@ -18,10 +18,11 @@ import logging
 from typing import Annotated, Any
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.models.schemas import (
+    ApiCatalogIndexJobResponse,
     ApiQueryDetailRequestRuntime,
     ApiQueryDetailRuntime,
     ApiQueryDetailSourceRuntime,
@@ -38,6 +39,11 @@ from app.models.schemas import (
 from app.services.api_catalog.business_intents import get_business_intent_catalog_service
 from app.services.api_catalog.dag_planner import ApiDagPlanner
 from app.services.api_catalog.executor import ApiExecutor
+from app.services.api_catalog.hybrid_retriever import ApiCatalogHybridRetriever
+from app.services.api_catalog.index_job_service import (
+    ApiCatalogIndexJobService,
+    ApiCatalogIndexJobStartError,
+)
 from app.services.api_catalog.param_extractor import ApiParamExtractor
 from app.services.api_catalog.registry_source import ApiCatalogRegistrySource
 from app.services.api_catalog.retriever import ApiCatalogRetriever
@@ -63,6 +69,7 @@ _snapshot_service: UISnapshotService | None = None
 _registry_source: ApiCatalogRegistrySource | None = None
 _api_query_llm: ApiQueryLLMService | None = None
 _workflow: ApiQueryWorkflow | None = None
+_catalog_index_job_service: ApiCatalogIndexJobService | None = None
 _bearer = HTTPBearer(auto_error=False)
 
 
@@ -71,7 +78,7 @@ def _get_services() -> tuple[ApiCatalogRetriever, ApiParamExtractor, ApiExecutor
 
     global _retriever, _extractor, _executor, _dynamic_ui, _snapshot_service
     if _retriever is None:
-        _retriever = ApiCatalogRetriever()
+        _retriever = ApiCatalogHybridRetriever()
     if _extractor is None:
         _extractor = ApiParamExtractor(llm_service=_get_api_query_llm_service())
     if _executor is None:
@@ -154,20 +161,56 @@ def _get_workflow() -> ApiQueryWorkflow:
     return _workflow
 
 
+def _get_catalog_index_job_service() -> ApiCatalogIndexJobService:
+    """获取 API Catalog 重建任务服务单例。
+
+    功能：
+        该服务维护的是“当前 API 进程视角下的重建任务句柄”。把它做成进程级单例，
+        是为了让 `/catalog/index` 的触发接口和状态查询接口共享同一份任务表，而不是
+        每次请求都重新实例化后把任务状态丢掉。
+    """
+
+    global _catalog_index_job_service
+    if _catalog_index_job_service is None:
+        _catalog_index_job_service = ApiCatalogIndexJobService()
+    return _catalog_index_job_service
+
+
 @router.post("", response_model=ApiQueryResponse, summary="业务接口查询（支持自然语言与直达模式）")
 async def api_query(
     request_body: ApiQueryRequest,
     request: Request,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
 ) -> ApiQueryResponse:
-    """调用 `/api-query` 外层工作流。"""
+    """调用 `/api-query` 外层工作流。
 
+    功能：
+        route 层只负责收敛一次请求的链路身份与观测字段，然后把真正的业务推进委托给
+        `ApiQueryWorkflow`。这样可以避免后续有人在 HTTP 入口继续堆编排逻辑，破坏
+        “路由只做适配、工作流负责决策”的边界。
+
+    Args:
+        request_body: `/api-query` 标准请求体，包含自然语言或 direct 快路参数。
+        request: FastAPI 原始请求对象，用于读取 trace/header 和 request-scoped 用户事实。
+        credentials: 透过 `HTTPBearer` 解析出的 Authorization 凭证；缺失时允许匿名读链继续。
+
+    Returns:
+        由外层工作流统一折叠后的 `ApiQueryResponse`。
+
+    Edge Cases:
+        - `X-User-Id`、`Authorization`、trace 头的最终口径都必须在 route 层一次性确定，避免后续节点各自再猜
+        - 即使请求最终会走降级分支，route 也必须先补齐观测字段，保证链路日志可串联
+        - route 不直接吞掉 workflow 异常，避免把真正的契约错误伪装成成功响应
+    """
+
+    # 身份与链路字段必须在入口处冻结，后续 workflow 和执行图只消费这份标准事实。
     trace_id = _resolve_trace_id(request)
     interaction_id = _resolve_interaction_id(request)
     conversation_id = _resolve_conversation_id(request_body)
     user_context = _extract_user_context(request)
     user_token = f"Bearer {credentials.credentials}" if credentials else None
 
+    # route 只记录“收到请求并准备分发”的统一事件；真正的阶段推进由 workflow 内部继续细分。
     logger.info(
         "%s",
         format_workflow_observability_log(
@@ -200,7 +243,20 @@ async def api_query(
 
 @router.get("/runtime-metadata", response_model=ApiQueryRuntimeMetadataResponse, summary="获取 api_query 运行时元数据")
 async def get_runtime_metadata() -> ApiQueryRuntimeMetadataResponse:
-    """返回前端运行时所需的 UI 目录与模板场景。"""
+    """返回前端运行时所需的 UI 目录与模板场景。
+
+    功能：
+        该接口只暴露“平台级固定元数据”，例如组件目录、动作目录与模板场景；它故意不携带
+        任何请求级上下文，避免前端误把这里返回的数据当成某次查询的真实执行契约。
+
+    Returns:
+        固定的 `ApiQueryRuntimeMetadataResponse`，用于前端初始化组件能力认知。
+
+    Edge Cases:
+        - 运行时元数据中的 route 只是静态能力声明，不能替代真实查询响应里的动态调用元数据
+        - mutation form 在这里不暴露占位 URL，避免前端把无上下文地址误当成可直接提交入口
+        - 目录服务会先 warmup，确保首个前端请求不会因为惰性加载拿到不完整动作集
+    """
 
     catalog_service = _get_ui_catalog_service()
     await catalog_service.warmup()
@@ -243,14 +299,65 @@ async def get_runtime_metadata() -> ApiQueryRuntimeMetadataResponse:
     )
 
 
-@router.post("/catalog/index", summary="重建 API Catalog 向量索引（管理端）")
-async def rebuild_catalog_index() -> dict[str, Any]:
-    """从治理元数据重建 API Catalog 索引。"""
+@router.post(
+    "/catalog/index",
+    response_model=ApiCatalogIndexJobResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="异步触发 API Catalog 重建（管理端）",
+)
+async def rebuild_catalog_index() -> ApiCatalogIndexJobResponse:
+    """异步触发 API Catalog 重建任务。
 
-    from app.services.api_catalog.indexer import ApiCatalogIndexer
+    功能：
+        管理端需要的是“发起一次重建并拿到任务句柄”，而不是把整个索引过程塞进一次 HTTP
+        请求里同步等待。这里改成后台子进程触发后，route 立刻返回 202，避免重建索引阻塞
+        在线 API worker。
 
-    indexer = ApiCatalogIndexer()
-    return await indexer.index_all()
+    Returns:
+        当前重建任务快照；若已经存在运行中的任务，则返回同一任务并标记复用。
+
+    Raises:
+        HTTPException: 当后台子进程无法启动时抛出 500。
+    """
+
+    try:
+        return await _get_catalog_index_job_service().start_rebuild()
+    except ApiCatalogIndexJobStartError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(exc),
+        ) from exc
+
+
+@router.get(
+    "/catalog/index/{job_id}",
+    response_model=ApiCatalogIndexJobResponse,
+    summary="查询 API Catalog 重建任务状态（管理端）",
+)
+async def get_catalog_index_job(job_id: str) -> ApiCatalogIndexJobResponse:
+    """读取指定重建任务的状态快照。
+
+    功能：
+        非阻塞重建意味着前端或运维脚本必须有一条正式的状态查询链路，否则 POST 触发之后
+        就无法知道任务是否真正完成。这里返回的是任务事实快照，而不是重新触发任何索引逻辑。
+
+    Args:
+        job_id: 触发重建时返回的任务 ID。
+
+    Returns:
+        当前任务状态快照。
+
+    Raises:
+        HTTPException: 当任务不存在时返回 404。
+    """
+
+    job_snapshot = _get_catalog_index_job_service().get_job(job_id)
+    if job_snapshot is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"未找到 API Catalog 重建任务: {job_id}",
+        )
+    return job_snapshot
 
 
 def _extract_user_context(request: Request) -> dict[str, Any]:

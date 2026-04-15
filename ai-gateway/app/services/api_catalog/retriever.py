@@ -22,7 +22,7 @@ from pymilvus import Collection, connections
 
 from app.core.config import settings
 from app.core.model_source import resolve_model_source
-from app.services.api_catalog.indexer import API_CATALOG_COLLECTION
+from app.services.api_catalog.constants import API_CATALOG_COLLECTION
 from app.services.api_catalog.schema import (
     ApiCatalogDetailHint,
     ApiCatalogEntry,
@@ -32,6 +32,7 @@ from app.services.api_catalog.schema import (
     ApiCatalogTemplateHint,
     ParamSchema,
 )
+from app.utils.json_utils import load_json_value
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,7 @@ _OUTPUT_FIELDS = [
     "status",
     "tag_name",
     "operation_safety",
+    "requires_confirmation",
     "method",
     "path",
     "auth_required",
@@ -250,6 +252,37 @@ class ApiCatalogRetriever:
             return None
         return _build_entry_from_fields(results[0])
 
+    async def get_many_by_ids(self, api_ids: list[str]) -> list[ApiCatalogEntry]:
+        """按 ID 批量读取接口记录。
+
+        功能：
+            Hybrid Retriever 在拿到 support API 列表后，需要把它们重新补成完整 `ApiCatalogEntry`。
+            这里提供批量读取入口，避免对同一批 support API 做串行查询，把 Stage 2 延迟浪费在
+            Milvus 元数据回填上。
+        """
+
+        normalized_ids = [api_id for api_id in api_ids if api_id]
+        if not normalized_ids:
+            return []
+
+        collection = self._get_collection()
+        quoted_ids = ",".join(json.dumps(api_id, ensure_ascii=False) for api_id in normalized_ids)
+        try:
+            rows = collection.query(
+                expr=f"id in [{quoted_ids}]",
+                output_fields=self._get_output_fields(),
+                limit=len(normalized_ids),
+            )
+        except Exception as exc:
+            logger.warning("api_catalog query by ids failed: ids=%s error=%s", normalized_ids, exc)
+            return []
+
+        entry_map = {
+            entry.id: entry
+            for entry in (_build_entry_from_fields(row) for row in rows)
+        }
+        return [entry_map[api_id] for api_id in normalized_ids if api_id in entry_map]
+
     async def _encode_query(self, query: str) -> list[float]:
         """统一管理 query embedding，避免多域召回时重复编码。"""
         embedder = self._get_embedder()
@@ -370,6 +403,15 @@ def _build_entry_from_fields(fields: dict) -> ApiCatalogEntry:
             "security_rules_json",
             {},
         ).get("operation_safety", "mutation"),
+        requires_confirmation=bool(
+            fields.get("requires_confirmation")
+            if fields.get("requires_confirmation") is not None
+            else (
+                fields.get("operation_safety")
+                or _read_json_field(fields, "security_rules", "security_rules_json", {}).get("operation_safety", "mutation")
+            )
+            == "mutation"
+        ),
         method=fields.get("method", "GET"),
         path=fields.get("path", ""),
         auth_required=fields.get("auth_required", True),
@@ -392,23 +434,11 @@ def _build_entry_from_fields(fields: dict) -> ApiCatalogEntry:
     )
 
 
-def _safe_json_loads(value, default):
-    """安全反序列化 Milvus 中的 JSON 字段。"""
-    if isinstance(value, (dict, list)):
-        return value
-    if not value:
-        return default
-    try:
-        return json.loads(value)
-    except (json.JSONDecodeError, TypeError):
-        return default
-
-
 def _read_json_field(fields: dict, primary_name: str, legacy_name: str, default):
     """兼容读取新旧两代 schema 的 JSON 字段。"""
     if primary_name in fields:
-        return _safe_json_loads(fields.get(primary_name), default)
-    return _safe_json_loads(fields.get(legacy_name), default)
+        return load_json_value(fields.get(primary_name), default)
+    return load_json_value(fields.get(legacy_name), default)
 
 
 def _normalize_filters(

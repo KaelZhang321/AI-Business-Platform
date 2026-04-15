@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 
 import aiomysql
 
-from app.core.config import settings
+from app.core.mysql import build_business_mysql_conn_params
 
 logger = logging.getLogger(__name__)
 
@@ -254,12 +254,7 @@ class BusinessIntentCatalogService:
             self._pool = await aiomysql.create_pool(
                 minsize=1,
                 maxsize=2,
-                host=settings.business_mysql_host,
-                port=settings.business_mysql_port,
-                user=settings.business_mysql_user,
-                password=settings.business_mysql_password,
-                db=settings.business_mysql_database,
-                charset="utf8mb4",
+                **build_business_mysql_conn_params(include_connect_timeout=False),
             )
         return self._pool
 

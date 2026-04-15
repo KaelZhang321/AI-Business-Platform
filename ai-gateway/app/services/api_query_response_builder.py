@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+import re
+from typing import Any, Literal
 
 from app.core.config import settings
 from app.models.schemas import (
@@ -32,11 +33,14 @@ from app.models.schemas import (
 from app.services.api_catalog.dag_executor import DagExecutionReport, DagStepExecutionRecord
 from app.services.api_catalog.registry_source import ApiCatalogRegistrySource
 from app.services.api_catalog.schema import ApiCatalogEntry
+from app.services.api_query_request_schema_gate import build_request_schema_gated_fields
 from app.services.api_query_state import ApiQueryExecutionState, ApiQueryRuntimeContext, ApiQueryState
+from app.services.api_query_state import ApiQueryDeletePreviewContext
 from app.services.dynamic_ui_service import DynamicUIService, UISpecBuildResult
 from app.services.ui_catalog_service import UICatalogService
 from app.services.ui_snapshot_service import UISnapshotService
 from app.services.ui_spec_guard import UISpecValidationResult
+from app.utils.state_path_utils import read_state_value, write_state_value
 from app.services.api_catalog.business_intents import (
     NOOP_BUSINESS_INTENT,
     get_business_intent_catalog_service,
@@ -64,6 +68,24 @@ _MUTATION_FORM_HIDDEN_FIELD_NAMES = {
     "deletedat",
 }
 _MUTATION_FORM_HIDDEN_FIELD_TITLES = {"创建时间", "更新时间", "删除时间"}
+_CREATE_MUTATION_QUERY_KEYWORDS = ("新增", "新建", "创建", "添加", "录入", "创建一个", "新增一个", "添加一个")
+_CREATE_MUTATION_ENTRY_KEYWORDS = ("create", "add", "insert", "新增", "新建", "创建", "添加")
+_CREATE_MUTATION_NAME_PATTERNS = (
+    re.compile(
+        r"(?:新增|新建|创建|添加|录入)(?:一个|一名|一条|一个新的|新的)?(?P<name>.+?)(?:角色|账号|部门|岗位|员工|用户)\s*$"
+    ),
+    re.compile(
+        r"(?:新增|新建|创建|添加|录入).*(?:角色|账号|部门|岗位|员工|用户)[：: ]+(?P<name>[^，。；;]+)\s*$"
+    ),
+)
+_NAME_LIKE_FIELD_TITLE_KEYWORDS = ("名称", "名字", "姓名")
+_DELETE_DISPLAY_FIELD_PRIORITY = (
+    "roleName",
+    "roleCode",
+    "appCode",
+    "status",
+    "id",
+)
 # 这里固定保留 5 条是为了给 Renderer 足够上下文，又避免把大结果集整包塞进生成链路导致注意力失焦。
 _CONTEXT_ROW_LIMIT = 5
 
@@ -111,6 +133,11 @@ class ApiQueryResponseBuilder:
             2. 选择响应锚点
             3. 生成或冻结 UI Spec
             4. 在必要时附加快照审计元数据
+
+        Edge Cases:
+            - patch 模式不会走完整第五阶段渲染，而是直接压成局部更新协议
+            - 多步骤执行即使没有 anchor，也必须返回可解释的聚合状态和错误摘要
+            - 高风险写意图只有在页面未冻结时才附加快照，避免给无效视图生成审计垃圾
         """
 
         execution_report = DagExecutionReport(
@@ -129,7 +156,9 @@ class ApiQueryResponseBuilder:
         business_intents = _build_business_intents(business_intent_codes)
         response_plan = _build_response_execution_plan(execution_report.plan, runtime_context.step_entries)
         state["plan"] = response_plan
+        created_by = _normalize_response_created_by(runtime_context.user_context)
 
+        # 运行时契约与 UI 主数据必须从同一份执行报告派生，避免前端看到的元数据与表格内容错位。
         data_for_ui = _build_ui_data_from_execution_report(execution_report, anchor_record)
         runtime = _build_runtime_from_execution_report(
             execution_report,
@@ -137,7 +166,12 @@ class ApiQueryResponseBuilder:
             business_intents=business_intents,
             ui_catalog_service=self._ui_catalog_service,
         )
+        runtime = await _enrich_detail_runtime_request_schema(
+            runtime,
+            registry_source=self._registry_source,
+        )
 
+        # patch 响应只服务列表局部刷新，不再额外生成完整页面结构。
         if response_mode == ApiQueryResponseMode.PATCH:
             response = _build_patch_mode_response(
                 trace_id=state["trace_id"],
@@ -169,6 +203,9 @@ class ApiQueryResponseBuilder:
                 "skip_message": _build_execution_skip_message(execution_report),
                 "partial_message": "部分步骤执行失败或被短路，当前仅展示可安全返回的数据。",
                 "query_render_mode": _infer_query_render_mode(execution_report, anchor_record),
+                "flow_num": state["trace_id"],
+                "created_by": created_by,
+                "request_params": dict(anchor_record.resolved_params) if anchor_record is not None else {},
                 "context_pool": {step_id: step.model_dump(exclude_none=True) for step_id, step in context_pool.items()},
                 "business_intents": [intent.model_dump() for intent in business_intents],
             },
@@ -251,7 +288,12 @@ class ApiQueryResponseBuilder:
         business_intent_codes: list[str],
         reasoning: str | None = None,
     ) -> ApiQueryResponse:
-        """把第二阶段失败折叠为冻结只读 Notice。"""
+        """把第二阶段失败折叠为冻结只读 Notice。
+
+        Edge Cases:
+            - stage2 降级也会保留 query_domains 与 reasoning 摘要，方便解释为什么没继续执行
+            - 这里固定返回只读 Notice，防止前端把“未识别路由”误渲染成空列表
+        """
 
         response_query_domains = _format_query_domains_for_response(query_domains)
         execution_result = ApiQueryExecutionResult(
@@ -329,7 +371,12 @@ class ApiQueryResponseBuilder:
         business_intent_codes: list[str],
         reasoning: str | None = None,
     ) -> ApiQueryResponse:
-        """把第三阶段规划失败折叠为冻结只读 Notice。"""
+        """把第三阶段规划失败折叠为冻结只读 Notice。
+
+        Edge Cases:
+            - stage3 降级强调的是“计划不可安全执行”，因此不会继续保留任何可交互查询动作
+            - 虽然是降级页面，仍会把 stage3 原因写入 context_pool，方便渲染器生成解释文案
+        """
 
         response_query_domains = _format_query_domains_for_response(query_domains)
         execution_result = ApiQueryExecutionResult(
@@ -404,6 +451,7 @@ class ApiQueryResponseBuilder:
         pre_fill_params: dict[str, Any],
         business_intent_code: str,
         query_domains_hint: list[str],
+        created_by: str | None = None,
     ) -> ApiQueryResponse:
         """把 mutation 表单快路折叠为预填表单 UI。
 
@@ -419,15 +467,26 @@ class ApiQueryResponseBuilder:
             前端拿到响应后，展示预填表单让用户核对。用户点击"确认"后，直接调用
             `ui_runtime.form.route_url` 指向的 runtime invoke 入口提交变更；`/api-query`
             只负责生成待确认表单，不参与最终写入。
+
+        Edge Cases:
+            - mutation 响应对外固定表现为 `SKIPPED`，明确表达“未真正执行写操作”
+            - 创建类 mutation 会在预填阶段补名称兜底，避免确认页出现空标题字段
+            - execution_plan 仍会保留 mutation 步骤，供前端确认后发起二跳调用
         """
 
-        query_domains = _format_query_domains_for_response(
-            list(entry.domain and [entry.domain] or query_domains_hint)
-        )
         business_intents = _build_business_intents([business_intent_code])
+        normalized_pre_fill_params = _enrich_mutation_prefill_params(
+            entry=entry,
+            pre_fill_params=pre_fill_params,
+            query_text=state.get("query_text", ""),
+        )
 
-        # 从接口参数 Schema 与预填值构建表单字段列表
-        form_fields = _build_mutation_form_fields(entry, pre_fill_params)
+        # 表单字段必须严格基于 request_schema 生成，避免 UI 展示字段和最终提交契约脱节。
+        form_fields = _build_mutation_form_fields(
+            entry,
+            normalized_pre_fill_params,
+            query_text=state.get("query_text", ""),
+        )
 
         # 构造带 form 的运行时契约
         form_code = f"{entry.id}_form"
@@ -455,6 +514,7 @@ class ApiQueryResponseBuilder:
                 # 不到 flowNum/queryParams/body 这层运行时壳。
                 route_url=_build_runtime_invoke_url(entry.id),
                 ui_action="remoteMutation",
+                request_schema_fields=list(entry.param_schema.properties),
                 state_path="/form",
                 fields=form_fields,
                 submit=ApiQueryFormSubmitRuntime(
@@ -464,24 +524,26 @@ class ApiQueryResponseBuilder:
             ),
         )
 
-        # 生成预填表单 UI Spec
+        # 生成预填表单 UI Spec 时同步注入 flow_num/created_by，保证前端确认后无需再拼装身份壳。
         form_state = _build_prefilled_form_state(
             fields=form_fields,
-            pre_fill_params=pre_fill_params,
+            pre_fill_params=normalized_pre_fill_params,
         )
         ui_build_result = await _generate_ui_spec_result(
             self._dynamic_ui,
             intent="mutation_form",
-            data=pre_fill_params,
+            data=normalized_pre_fill_params,
             context={
                 "title": f"确认修改：{entry.description}",
                 "user_query": state.get("query_text", ""),
                 "api_id": entry.id,
                 "form_code": form_code,
                 "business_intent": business_intent_code,
-                "pre_fill_params": pre_fill_params,
+                "pre_fill_params": normalized_pre_fill_params,
                 "form_fields": [f.model_dump(exclude_none=True) for f in form_fields],
                 "form_state": form_state,
+                "flow_num": state["trace_id"],
+                "created_by": created_by or "",
                 "business_intents": [intent.model_dump() for intent in business_intents],
             },
             status=ApiQueryExecutionStatus.SKIPPED,
@@ -505,7 +567,7 @@ class ApiQueryResponseBuilder:
                     step_id=f"step_{entry.id}",
                     api_id=entry.id,
                     api_path=entry.path,
-                    params=pre_fill_params,
+                    params=normalized_pre_fill_params,
                     depends_on=[],
                 )
             ],
@@ -532,11 +594,306 @@ class ApiQueryResponseBuilder:
         state["response"] = response
         return response
 
+    async def build_delete_preview_response(
+        self,
+        *,
+        state: ApiQueryState,
+        delete_preview_context: ApiQueryDeletePreviewContext,
+        created_by: str | None = None,
+    ) -> ApiQueryResponse:
+        """把删除预检结果折叠成 notice / 确认表单 / 候选列表。
+
+        功能：
+            删除类 mutation 不能直接下发表单。这里根据 workflow 预检出的 0/1/N 候选：
+
+            1. `missing` / `unresolved`：只读提示
+            2. `confirm`：带确认删除按钮的只读表单
+            3. `candidates`：候选列表，每行直接挂删除动作
+
+        Edge Cases:
+            - 删除预检状态决定最终 UI 形态，响应层不再重新猜测候选数量
+            - 所有删除预检结果都保持 `SKIPPED`，明确表明尚未实际删除数据
+        """
+
+        if delete_preview_context.status in {"missing", "unresolved"}:
+            return await self._build_delete_notice_response(
+                state=state,
+                delete_preview_context=delete_preview_context,
+            )
+        if delete_preview_context.status == "confirm":
+            return await self._build_delete_confirm_response(
+                state=state,
+                delete_preview_context=delete_preview_context,
+                created_by=created_by,
+            )
+        return await self._build_delete_candidates_response(
+            state=state,
+            delete_preview_context=delete_preview_context,
+            created_by=created_by,
+        )
+
+    async def _build_delete_notice_response(
+        self,
+        *,
+        state: ApiQueryState,
+        delete_preview_context: ApiQueryDeletePreviewContext,
+    ) -> ApiQueryResponse:
+        """为删除预检的未命中或无法确认场景构造只读提示。
+
+        Edge Cases:
+            - `missing` 不视为系统错误，因此对外 `error` 为空；`unresolved` 才透出错误文案
+            - 删除无法确认时只保留刷新动作，防止前端继续误触发写链
+        """
+
+        message = delete_preview_context.message or "当前无法确认待删除角色，请稍后重试。"
+        title = "未找到待删除角色" if delete_preview_context.status == "missing" else "无法确认删除对象"
+        base_runtime = ApiQueryUIRuntime(
+            components=["PlannerCard", "PlannerNotice"],
+            ui_actions=_build_runtime_actions({"refresh"}, ui_catalog_service=self._ui_catalog_service),
+        )
+        ui_build_result = await _generate_ui_spec_result(
+            self._dynamic_ui,
+            intent="query",
+            data=[],
+            context={
+                "title": title,
+                "user_query": state.get("query_text", ""),
+                "skip_message": message,
+                "error": message,
+            },
+            status=ApiQueryExecutionStatus.SKIPPED,
+            runtime=base_runtime,
+            trace_id=state["trace_id"],
+        )
+        ui_runtime = _finalize_render_runtime(
+            base_runtime,
+            ui_build_result.spec,
+            ui_build_result,
+            ui_catalog_service=self._ui_catalog_service,
+        )
+        response = ApiQueryResponse(
+            trace_id=state["trace_id"],
+            execution_status=ApiQueryExecutionStatus.SKIPPED,
+            execution_plan=None,
+            ui_runtime=ui_runtime,
+            ui_spec=ui_build_result.spec,
+            error=message if delete_preview_context.status == "unresolved" else None,
+        )
+        state["execution_status"] = ApiQueryExecutionStatus.SKIPPED
+        state["ui_runtime"] = ui_runtime
+        state["ui_spec"] = ui_build_result.spec
+        state["plan"] = None
+        state["response"] = response
+        return response
+
+    async def _build_delete_confirm_response(
+        self,
+        *,
+        state: ApiQueryState,
+        delete_preview_context: ApiQueryDeletePreviewContext,
+        created_by: str | None = None,
+    ) -> ApiQueryResponse:
+        """单候选删除预检：输出确认删除表单。
+
+        Edge Cases:
+            - 删除确认页字段全部只读，避免把“确认删除”变成“现场编辑后再删”
+            - submit_payload 优先尊重预检阶段已解析出的结果，确保真正删除目标与候选一致
+        """
+
+        row = delete_preview_context.matched_rows[0]
+        form_fields = _build_delete_confirm_form_fields(
+            row=row,
+            identifier_field=delete_preview_context.identifier_field,
+            lookup_entry=delete_preview_context.lookup_entry,
+        )
+        submit_payload = delete_preview_context.submit_payload or _build_delete_submit_payload(
+            delete_entry=delete_preview_context.delete_entry,
+            row=row,
+            identifier_field=delete_preview_context.identifier_field,
+        )
+        form_state = {
+            "form": {
+                field.submit_key: row.get(field.submit_key)
+                for field in form_fields
+            }
+        }
+
+        form_code = f"{delete_preview_context.delete_entry.id}_confirm"
+        base_runtime = ApiQueryUIRuntime(
+            components=["PlannerButton", "PlannerCard", "PlannerForm", "PlannerMetric"],
+            ui_actions=_build_runtime_actions({"remoteMutation", "refresh"}, ui_catalog_service=self._ui_catalog_service),
+            form=ApiQueryFormRuntime(
+                enabled=True,
+                form_code=form_code,
+                mode="confirm",
+                api_id=delete_preview_context.delete_entry.id,
+                route_url=_build_runtime_invoke_url(delete_preview_context.delete_entry.id),
+                ui_action="remoteMutation",
+                request_schema_fields=list(delete_preview_context.delete_entry.param_schema.properties),
+                state_path="/form",
+                fields=form_fields,
+                submit=ApiQueryFormSubmitRuntime(
+                    business_intent=delete_preview_context.business_intent_code,
+                    confirm_required=True,
+                ),
+            ),
+        )
+        entity_name = delete_preview_context.target_name or row.get("roleName") or row.get("name") or "目标角色"
+        # 删除确认页本质上仍是 mutation_form，只是通过只读字段和危险文案收紧交互范围。
+        ui_build_result = await _generate_ui_spec_result(
+            self._dynamic_ui,
+            intent="mutation_form",
+            data=row,
+            context={
+                "title": f"确认删除：{entity_name}",
+                "subtitle": "请确认后执行删除操作，删除后不可恢复",
+                "submit_label": "确认删除",
+                "submit_payload": submit_payload,
+                "form_fields": [field.model_dump(exclude_none=True) for field in form_fields],
+                "form_state": form_state,
+                "flow_num": state["trace_id"],
+                "created_by": created_by or "",
+            },
+            status=ApiQueryExecutionStatus.SKIPPED,
+            runtime=base_runtime,
+            trace_id=state["trace_id"],
+        )
+        ui_runtime = _finalize_render_runtime(
+            base_runtime,
+            ui_build_result.spec,
+            ui_build_result,
+            ui_catalog_service=self._ui_catalog_service,
+        )
+        execution_plan = ApiQueryExecutionPlan(
+            plan_id=f"mutation_{state['trace_id'][:8]}",
+            steps=[
+                {
+                    "step_id": f"step_{delete_preview_context.delete_entry.id}",
+                    "api_id": delete_preview_context.delete_entry.id,
+                    "api_path": delete_preview_context.delete_entry.path,
+                    "params": submit_payload,
+                    "depends_on": [],
+                }
+            ],
+        )
+        response = ApiQueryResponse(
+            trace_id=state["trace_id"],
+            execution_status=ApiQueryExecutionStatus.SKIPPED,
+            execution_plan=execution_plan,
+            ui_runtime=ui_runtime,
+            ui_spec=ui_build_result.spec,
+            error=None,
+        )
+        state["execution_status"] = ApiQueryExecutionStatus.SKIPPED
+        state["ui_runtime"] = ui_runtime
+        state["ui_spec"] = ui_build_result.spec
+        state["plan"] = execution_plan
+        state["response"] = response
+        return response
+
+    async def _build_delete_candidates_response(
+        self,
+        *,
+        state: ApiQueryState,
+        delete_preview_context: ApiQueryDeletePreviewContext,
+        created_by: str | None = None,
+    ) -> ApiQueryResponse:
+        """多候选删除预检：输出候选列表，并为每行挂删除动作。
+
+        Edge Cases:
+            - 页面展示候选列表时，渲染阶段临时按 `SUCCESS` 处理，否则规则渲染会被 `SKIPPED` Notice 短路
+            - 每行动作模板只绑定标识字段，不把整行数据整包塞进删除请求体，避免误删字段漂移
+        """
+
+        candidate_rows = _build_delete_candidate_rows(
+            rows=delete_preview_context.matched_rows,
+            identifier_field=delete_preview_context.identifier_field,
+        )
+        row_actions = [
+            {
+                "type": "remoteMutation",
+                "label": "删除该角色",
+                "params": {
+                    "api_id": delete_preview_context.delete_entry.id,
+                    **build_request_schema_gated_fields(
+                        api_id=delete_preview_context.delete_entry.id,
+                        param_source="body",
+                        params=_build_delete_row_payload_template(
+                            delete_entry=delete_preview_context.delete_entry,
+                            identifier_field=delete_preview_context.identifier_field,
+                        ),
+                        flow_num=state["trace_id"],
+                        created_by=created_by or "",
+                        allowed_fields=delete_preview_context.delete_entry.param_schema.properties.keys(),
+                    ),
+                    "source": {
+                        "identifier_field": delete_preview_context.identifier_field,
+                        "value_type": _normalize_runtime_value_type(
+                            None,
+                            fallback_value=candidate_rows[0].get(delete_preview_context.identifier_field),
+                        ),
+                        "required": True,
+                    },
+                },
+            }
+        ]
+        base_runtime = ApiQueryUIRuntime(
+            components=["PlannerCard", "PlannerTable", "PlannerForm", "PlannerPagination", "PlannerButton"],
+            ui_actions=_build_runtime_actions({"remoteMutation", "refresh"}, ui_catalog_service=self._ui_catalog_service),
+        )
+        ui_build_result = await _generate_ui_spec_result(
+            self._dynamic_ui,
+            intent="query",
+            data=candidate_rows,
+            context={
+                "question": "删除角色候选",
+                "user_query": state.get("query_text", ""),
+                "total": len(candidate_rows),
+                "flow_num": state["trace_id"],
+                "created_by": created_by or "",
+                "row_actions": row_actions,
+            },
+            # 此处展示的是查询出的候选表，而不是“跳过提示”；若继续传 SKIPPED，
+            # 规则渲染会被通用 Notice 分支短路，因此只在页面生成阶段临时视作成功。
+            status=ApiQueryExecutionStatus.SUCCESS,
+            runtime=base_runtime,
+            trace_id=state["trace_id"],
+        )
+        ui_runtime = _finalize_render_runtime(
+            base_runtime,
+            ui_build_result.spec,
+            ui_build_result,
+            ui_catalog_service=self._ui_catalog_service,
+        )
+        response = ApiQueryResponse(
+            trace_id=state["trace_id"],
+            execution_status=ApiQueryExecutionStatus.SKIPPED,
+            execution_plan=None,
+            ui_runtime=ui_runtime,
+            ui_spec=ui_build_result.spec,
+            error=None,
+        )
+        state["execution_status"] = ApiQueryExecutionStatus.SKIPPED
+        state["ui_runtime"] = ui_runtime
+        state["ui_spec"] = ui_build_result.spec
+        state["plan"] = None
+        state["response"] = response
+        return response
+
 
 
 
 def _build_business_intents(intent_codes: list[str]) -> list[ApiQueryBusinessIntent]:
-    """将业务意图编码转换为对外响应对象。"""
+    """将业务意图编码转换为对外响应对象。
+
+    功能：
+        对外响应不应暴露内部目录的全部意图定义，因此这里只输出允许公开、且当前请求真正命中的
+        意图列表；若没有合法命中，则回退到 `none`。
+
+    Edge Cases:
+        - 被禁用或禁止出现在响应中的意图会被直接过滤
+        - 空结果会回退到 noop 意图，避免前端再写一套“无意图”兼容逻辑
+    """
 
     intent_catalog = get_business_intent_catalog_service()
     codes = normalize_business_intent_codes(intent_codes)
@@ -575,6 +932,8 @@ def _build_business_intents(intent_codes: list[str]) -> list[ApiQueryBusinessInt
 def _build_mutation_form_fields(
     entry: Any,
     pre_fill_params: dict[str, Any],
+    *,
+    query_text: str = "",
 ) -> list[ApiQueryFormFieldRuntime]:
     """从 mutation 接口的 param_schema 与预填值构造表单字段运行时契约。
 
@@ -588,15 +947,24 @@ def _build_mutation_form_fields(
 
         主键/ID 字段（名称以 id/Id 结尾或以 Id 开头）会标记为 `writable=False`，
         让 `_infer_form_mode` 推导出 `edit`，符合"修改已知记录"的语义。
+
+    Edge Cases:
+        - 创建类 mutation 会隐藏纯 `id` 字段，避免把服务端生成主键误展示给用户填写
+        - 字典字段会转为 `PlannerSelect` 语义，确保前端走稳定选项源而不是自由输入
     """
 
     schema_properties = entry.param_schema.properties if entry.param_schema else {}
     required_fields = set(entry.param_schema.required) if entry.param_schema else set()
+    is_create_mutation = _is_create_mutation_form(query_text=query_text, entry=entry)
 
     all_visible_fields: list[ApiQueryFormFieldRuntime] = []
 
     for field_name, prop in schema_properties.items():
-        if _should_hide_mutation_form_field(field_name=field_name, schema=prop):
+        if _should_hide_mutation_form_field(
+            field_name=field_name,
+            schema=prop,
+            hide_identifier=is_create_mutation,
+        ):
             continue
 
         has_value = field_name in pre_fill_params and pre_fill_params[field_name] not in ("", None)
@@ -638,12 +1006,64 @@ def _build_mutation_form_fields(
     return all_visible_fields
 
 
-def _should_hide_mutation_form_field(*, field_name: str, schema: dict[str, Any]) -> bool:
+def _enrich_mutation_prefill_params(
+    *,
+    entry: Any,
+    pre_fill_params: dict[str, Any],
+    query_text: str,
+) -> dict[str, Any]:
+    """为 mutation 表单补齐轻量兜底预填值。
+
+    功能：
+        当前 LLM 提参对“新增一个健管师角色”这类创建短句并不总能稳定抽到 `roleName`。
+        这里补一层确定性兜底：仅在创建类 mutation 场景、且 name-like 字段尚未命中时，
+        从用户 query 中把实体名称切出来，回填到最匹配的 `xxxName` / “名称”字段。
+
+    Args:
+        entry: 当前命中的 mutation 目录项。
+        pre_fill_params: LLM 已经提取出的参数。
+        query_text: 用户原始自然语言。
+
+    Returns:
+        合并兜底后的参数字典；若不存在可安全推断的名称，则原样返回。
+
+    Edge Cases:
+        - 仅创建类 mutation 允许做名称兜底，避免修改类表单被错误覆盖现有主键/名称
+        - 若 name-like 字段已有值，则绝不再覆盖，尊重上游提参结果
+    """
+
+    normalized = dict(pre_fill_params)
+    if not _is_create_mutation_form(query_text=query_text, entry=entry):
+        return normalized
+
+    target_field = _find_create_name_target_field(entry)
+    if not target_field:
+        return normalized
+
+    existing_value = normalized.get(target_field)
+    if existing_value not in (None, "", [], {}):
+        return normalized
+
+    inferred_name = _infer_create_name_from_query(query_text)
+    if not inferred_name:
+        return normalized
+
+    normalized[target_field] = inferred_name
+    return normalized
+
+
+def _should_hide_mutation_form_field(
+    *,
+    field_name: str,
+    schema: dict[str, Any],
+    hide_identifier: bool,
+) -> bool:
     """判断 mutation confirm 表单里是否应隐藏当前字段。
 
     功能：
         request_schema 需要作为表单的主事实来源，但系统审计字段通常不属于用户确认范围。
-        这里统一屏蔽创建/更新时间与删除时间，既避免噪声，又不需要在每个接口上重复配置。
+        这里统一屏蔽创建/更新时间与删除时间；另外在“新增类 mutation”里，`id`
+        往往是服务端生成字段，若继续展示会把用户误导成必须手填主键，因此单独隐藏。
 
     Args:
         field_name: request_schema 中的原始属性名。
@@ -654,11 +1074,187 @@ def _should_hide_mutation_form_field(*, field_name: str, schema: dict[str, Any])
     """
 
     normalized_name = "".join(ch for ch in field_name.lower() if ch.isalnum())
+    if hide_identifier and normalized_name == "id":
+        return True
     if normalized_name in _MUTATION_FORM_HIDDEN_FIELD_NAMES:
         return True
 
     title = str(schema.get("title") or schema.get("label") or "").strip()
     return title in _MUTATION_FORM_HIDDEN_FIELD_TITLES
+
+
+def _is_create_mutation_form(*, query_text: str, entry: Any) -> bool:
+    """判断当前 mutation confirm 是否属于“新增/创建”语义。
+
+    功能：
+        业务意图层当前只有通用写意图 `saveToServer`，还不足以区分“新增”和“修改”。
+        为了只在创建场景隐藏自增主键，这里结合用户原始 query 与接口元数据做轻量识别。
+
+    Args:
+        query_text: 用户自然语言查询。
+        entry: 当前命中的 mutation 目录项。
+
+    Returns:
+        `True` 表示当前表单更接近创建类 mutation。
+    """
+
+    normalized_query = str(query_text or "").strip().lower()
+    if any(keyword in normalized_query for keyword in _CREATE_MUTATION_QUERY_KEYWORDS):
+        return True
+
+    haystack = f"{getattr(entry, 'description', '')} {getattr(entry, 'path', '')}".lower()
+    return any(keyword in haystack for keyword in _CREATE_MUTATION_ENTRY_KEYWORDS)
+
+
+def _find_create_name_target_field(entry: Any) -> str | None:
+    """为创建类表单找到最适合承接“实体名称”的字段。"""
+
+    schema_properties = entry.param_schema.properties if getattr(entry, "param_schema", None) else {}
+    for field_name, schema in schema_properties.items():
+        if not isinstance(schema, dict):
+            continue
+        if str(schema.get("type") or "string").lower() != "string":
+            continue
+
+        normalized_name = field_name.lower()
+        title = str(schema.get("title") or schema.get("label") or "").strip()
+        if normalized_name.endswith("name"):
+            return field_name
+        if any(keyword in title for keyword in _NAME_LIKE_FIELD_TITLE_KEYWORDS):
+            return field_name
+    return None
+
+
+def _infer_create_name_from_query(query_text: str) -> str | None:
+    """从“新增一个健管师角色”这类短句中抽取实体名称。"""
+
+    normalized_query = " ".join(str(query_text or "").split())
+    if not normalized_query:
+        return None
+
+    for pattern in _CREATE_MUTATION_NAME_PATTERNS:
+        match = pattern.search(normalized_query)
+        if not match:
+            continue
+
+        candidate = str(match.group("name") or "").strip().strip("“”\"'‘’：:，。,.;； ")
+        candidate = re.sub(r"^(?:一个|一名|一条|名为|叫做|叫)\s*", "", candidate)
+        candidate = candidate.strip()
+        if candidate:
+            return candidate
+
+    return None
+
+
+def _build_delete_confirm_form_fields(
+    *,
+    row: dict[str, Any],
+    identifier_field: str,
+    lookup_entry: ApiCatalogEntry | None,
+) -> list[ApiQueryFormFieldRuntime]:
+    """为单候选删除确认页构造只读展示字段。"""
+
+    field_labels = lookup_entry.field_labels if lookup_entry is not None else {}
+    selected_fields = _select_delete_display_fields(row, identifier_field=identifier_field)
+    form_fields: list[ApiQueryFormFieldRuntime] = []
+    for field_name in selected_fields:
+        form_fields.append(
+            ApiQueryFormFieldRuntime(
+                name=field_labels.get(field_name) or field_name,
+                value_type=_normalize_runtime_value_type(None, fallback_value=row.get(field_name)),
+                state_path=f"/form/{field_name}",
+                submit_key=field_name,
+                required=field_name == identifier_field,
+                writable=False,
+                source_kind="context",
+            )
+        )
+    return form_fields
+
+
+def _build_delete_candidate_rows(
+    *,
+    rows: list[dict[str, Any]],
+    identifier_field: str,
+) -> list[dict[str, Any]]:
+    """裁剪删除候选列表，只保留用户确认真正需要的列。"""
+
+    if not rows:
+        return []
+    selected_fields = _select_delete_display_fields(rows[0], identifier_field=identifier_field)
+    candidate_rows: list[dict[str, Any]] = []
+    for row in rows:
+        candidate_rows.append({field_name: row.get(field_name) for field_name in selected_fields})
+    return candidate_rows
+
+
+def _select_delete_display_fields(row: dict[str, Any], *, identifier_field: str) -> list[str]:
+    """挑选删除确认和候选列表的展示列。"""
+
+    selected_fields: list[str] = []
+    for field_name in _DELETE_DISPLAY_FIELD_PRIORITY:
+        actual_field = identifier_field if field_name == "id" and identifier_field in row else field_name
+        if actual_field in row and actual_field not in selected_fields:
+            selected_fields.append(actual_field)
+
+    for field_name in row:
+        if field_name == identifier_field and field_name not in selected_fields:
+            selected_fields.append(field_name)
+        elif field_name.lower().endswith("name") and field_name not in selected_fields:
+            selected_fields.append(field_name)
+        elif field_name.lower().endswith("code") and field_name not in selected_fields:
+            selected_fields.append(field_name)
+        elif field_name.lower() == "status" and field_name not in selected_fields:
+            selected_fields.append(field_name)
+        if len(selected_fields) >= 5:
+            break
+
+    if not selected_fields:
+        selected_fields = [identifier_field] if identifier_field in row else list(row.keys())[:4]
+    return selected_fields
+
+
+def _build_delete_submit_payload(
+    *,
+    delete_entry: ApiCatalogEntry,
+    row: dict[str, Any],
+    identifier_field: str,
+) -> dict[str, Any]:
+    """为单候选删除确认页构造最终提交 payload。"""
+
+    payload_key = _resolve_delete_payload_key(delete_entry, identifier_field=identifier_field)
+    identifier_value = row.get(identifier_field)
+    schema = delete_entry.param_schema.properties.get(payload_key, {})
+    if str(schema.get("type") or "").lower() == "array":
+        return {payload_key: [identifier_value]}
+    return {payload_key: identifier_value}
+
+
+def _build_delete_row_payload_template(
+    *,
+    delete_entry: ApiCatalogEntry,
+    identifier_field: str,
+) -> dict[str, Any]:
+    """为多候选删除行按钮构造按行取值的 payload 模板。"""
+
+    payload_key = _resolve_delete_payload_key(delete_entry, identifier_field=identifier_field)
+    schema = delete_entry.param_schema.properties.get(payload_key, {})
+    if str(schema.get("type") or "").lower() == "array":
+        return {payload_key: [{"$bindRow": identifier_field}]}
+    return {payload_key: {"$bindRow": identifier_field}}
+
+
+def _resolve_delete_payload_key(delete_entry: ApiCatalogEntry, *, identifier_field: str) -> str:
+    """为删除接口确定最合理的主键入参名。"""
+
+    schema_properties = delete_entry.param_schema.properties
+    preferred_keys = [field_name for field_name in schema_properties if field_name.lower() in {"id", "ids"}]
+    preferred_keys.extend(
+        [field_name for field_name in schema_properties if field_name.lower().endswith("id")]
+    )
+    if preferred_keys:
+        return preferred_keys[0]
+    return identifier_field or "id"
 
 
 def _build_runtime_actions(
@@ -701,7 +1297,16 @@ def _build_list_filter_fields(
     page_param: str | None,
     page_size_param: str | None,
 ) -> list[ApiQueryListFilterFieldRuntime]:
-    """根据目录参数 schema 推导列表筛选字段。"""
+    """根据目录参数 schema 推导列表筛选字段。
+
+    功能：
+        列表筛选区只展示对用户有意义的业务过滤字段，分页控制字段和内部保留字段不应直接暴露
+        给前端筛选表单。
+
+    Edge Cases:
+        - 当前接口声明的 page/pageSize 字段会与全局排除集一起过滤，避免重复暴露
+        - 标签优先取 title/label，保证前端不必再猜字段中文名
+    """
 
     excluded_fields = set(_LIST_FILTER_EXCLUDED_FIELDS)
     if page_param:
@@ -742,14 +1347,20 @@ def _build_ui_runtime(
     business_intents: list[ApiQueryBusinessIntent],
     ui_catalog_service: UICatalogService,
 ) -> ApiQueryUIRuntime:
-    """根据接口元数据和执行结果推导前端运行时契约。"""
+    """根据接口元数据和执行结果推导前端运行时契约。
+
+    功能：
+        `/api-query` 已不再把 `ui_runtime` 直接暴露给前端执行二跳，但内部仍需要一份稳定
+        运行时事实来驱动 UI 生成、动作白名单和 patch/detail 能力判定。
+
+    Edge Cases:
+        - detail/list 是否启用不仅取决于目录 hint，还要结合实际数据形态和执行状态
+        - 多步骤汇总结果不会误启详情/分页能力，避免前端把摘要表当单接口列表继续查询
+        - preserve_on_pagination 会主动排除分页字段和 id，避免二跳请求把旧定位参数重复透传
+    """
 
     rows = _normalize_rows(execution_result.data)
     action_codes = {"refresh", "export"}
-    requested_component_codes = ["PlannerCard", "PlannerTable", "PlannerDetailCard", "PlannerNotice"]
-    if _has_write_business_intent(business_intents):
-        requested_component_codes.extend(["PlannerForm", "PlannerInput", "PlannerSelect", "PlannerButton"])
-    components = ui_catalog_service.get_component_codes(intent="query", requested_codes=requested_component_codes)
     param_source = _infer_param_source(entry.method)
 
     detail_hint = entry.detail_hint
@@ -760,6 +1371,7 @@ def _build_ui_runtime(
         and (detail_hint.enabled or identifier_field is not None)
     )
 
+    # 分页和筛选能力来自目录 hint + 执行事实双重判定，不能只看 schema 是否“像列表”。
     pagination_hint = entry.pagination_hint
     page_param = pagination_hint.page_param or "pageNum"
     page_size_param = pagination_hint.page_size_param or "pageSize"
@@ -773,6 +1385,19 @@ def _build_ui_runtime(
     list_enabled = execution_result.status in {ApiQueryExecutionStatus.SUCCESS, ApiQueryExecutionStatus.EMPTY} and (
         is_list_payload or pagination_enabled or bool(filter_fields)
     )
+
+    requested_component_codes = [
+        "PlannerCard",
+        "PlannerTable",
+        "PlannerDetailCard",
+        "PlannerNotice",
+        "PlannerPagination",
+    ]
+    if list_enabled:
+        requested_component_codes.extend(["PlannerForm", "PlannerInput", "PlannerButton"])
+    if _has_write_business_intent(business_intents):
+        requested_component_codes.extend(["PlannerForm", "PlannerInput", "PlannerSelect", "PlannerButton"])
+    components = ui_catalog_service.get_component_codes(intent="query", requested_codes=requested_component_codes)
 
     if detail_enabled or list_enabled:
         action_codes.add("remoteQuery")
@@ -796,11 +1421,12 @@ def _build_ui_runtime(
             route_url="/api/v1/api-query" if list_enabled else None,
             ui_action=(pagination_hint.ui_action or "remoteQuery") if list_enabled else None,
             param_source=param_source if list_enabled else None,
+            request_schema_fields=list(entry.param_schema.properties) if list_enabled else None,
             pagination=ApiQueryListPaginationRuntime(
                 enabled=pagination_enabled,
                 total=execution_result.total,
                 page_size=_infer_page_size(params, len(rows)),
-                current_page=_infer_current_page(params),
+                current_page=_infer_current_page(params, page_param=page_param),
                 page_param=page_param if list_enabled else None,
                 page_size_param=page_size_param if list_enabled else None,
                 mutation_target=pagination_hint.mutation_target if pagination_enabled else None,
@@ -823,6 +1449,11 @@ def _build_ui_runtime(
             request=ApiQueryDetailRequestRuntime(
                 param_source=param_source if detail_enabled else None,
                 identifier_param=(detail_hint.query_param or identifier_field) if detail_enabled else None,
+                request_schema_fields=(
+                    [(detail_hint.query_param or identifier_field)]
+                    if detail_enabled and (detail_hint.query_param or identifier_field)
+                    else None
+                ),
             ),
             source=ApiQueryDetailSourceRuntime(
                 identifier_field=identifier_field if detail_enabled else None,
@@ -838,6 +1469,82 @@ def _build_ui_runtime(
             ),
         ),
     )
+
+
+async def _enrich_detail_runtime_request_schema(
+    runtime: ApiQueryUIRuntime,
+    *,
+    registry_source: ApiCatalogRegistrySource,
+) -> ApiQueryUIRuntime:
+    """按详情接口自己的 request_schema 修正详情请求参数键。"""
+
+    if not runtime.detail.enabled or not runtime.detail.api_id:
+        return runtime
+
+    try:
+        detail_entry = await registry_source.get_entry_by_id(runtime.detail.api_id)
+    except Exception as exc:  # pragma: no cover - 依赖外部治理源状态的兜底分支
+        logger.warning(
+            "api_query failed to load detail request_schema api_id=%s error=%s",
+            runtime.detail.api_id,
+            exc,
+        )
+        return runtime
+
+    if detail_entry is None:
+        return runtime
+
+    resolved_identifier_param = _resolve_detail_identifier_param(
+        detail_entry=detail_entry,
+        preferred_param=runtime.detail.request.identifier_param,
+        source_identifier_field=runtime.detail.source.identifier_field,
+    )
+    return runtime.model_copy(
+        update={
+            "detail": runtime.detail.model_copy(
+                update={
+                    "request": runtime.detail.request.model_copy(
+                        update={
+                            "identifier_param": resolved_identifier_param,
+                            "request_schema_fields": list(detail_entry.param_schema.properties),
+                        }
+                    )
+                }
+            )
+        }
+    )
+
+
+def _resolve_detail_identifier_param(
+    *,
+    detail_entry: ApiCatalogEntry,
+    preferred_param: str | None,
+    source_identifier_field: str | None,
+) -> str | None:
+    """选择一个真实存在于详情接口 request_schema 中的参数键。"""
+
+    schema_properties = list(detail_entry.param_schema.properties)
+    if not schema_properties:
+        return preferred_param or source_identifier_field
+
+    if preferred_param in schema_properties:
+        return preferred_param
+    if source_identifier_field in schema_properties:
+        return source_identifier_field
+
+    id_like_fields = [
+        field_name
+        for field_name in schema_properties
+        if field_name.lower() in {"id", "ids"} or field_name.lower().endswith("id")
+    ]
+    if id_like_fields:
+        return id_like_fields[0]
+
+    for required_field in detail_entry.param_schema.required:
+        if required_field in detail_entry.param_schema.properties:
+            return required_field
+
+    return schema_properties[0]
 
 
 async def _enrich_runtime_from_ui_spec(
@@ -868,7 +1575,18 @@ async def _extract_form_runtime_from_spec(
     trace_id: str,
     registry_source: ApiCatalogRegistrySource,
 ) -> ApiQueryFormRuntime:
-    """从最终 Spec 中提取表单运行时契约。"""
+    """从最终 Spec 中提取表单运行时契约。
+
+    功能：
+        规则渲染和 LLM 渲染最终都只输出 `ui_spec`，因此若后续还需要恢复表单提交契约，
+        就必须在这一层从真实渲染结果反推。这样可以确保最终暴露的 form runtime 与页面
+        实际字段一致，而不是和理论 schema 脱节。
+
+    Edge Cases:
+        - 没有写意图、没有 remoteMutation、或 `body/queryParams` 不含 `$bindState` 时都会直接视为“无表单”
+        - 治理源查询失败不会让整个响应失败，只会回退到最小表单契约
+        - 未出现在交互组件中的绑定会被视为只读上下文字段，避免误标为可编辑输入
+    """
 
     write_intent = next(
         (intent for intent in business_intents if intent.category == "write" and intent.code != NOOP_BUSINESS_INTENT),
@@ -886,8 +1604,10 @@ async def _extract_form_runtime_from_spec(
         return ApiQueryFormRuntime()
 
     api_id = action_params.get("api_id")
-    payload = action_params.get("payload")
-    if not isinstance(api_id, str) or not api_id.strip() or not isinstance(payload, dict):
+    request_params = action_params.get("body")
+    if not isinstance(request_params, dict) or not request_params:
+        request_params = action_params.get("queryParams")
+    if not isinstance(api_id, str) or not api_id.strip() or not isinstance(request_params, dict):
         return ApiQueryFormRuntime()
 
     mutation_entry: ApiCatalogEntry | None = None
@@ -908,7 +1628,7 @@ async def _extract_form_runtime_from_spec(
 
     form_fields: list[ApiQueryFormFieldRuntime] = []
     bind_paths: list[str] = []
-    for submit_key, submit_value in payload.items():
+    for submit_key, submit_value in request_params.items():
         if not isinstance(submit_value, dict):
             continue
         state_path = submit_value.get("$bindState")
@@ -916,6 +1636,7 @@ async def _extract_form_runtime_from_spec(
             continue
 
         bind_paths.append(state_path)
+        # 绑定路径是否出现在交互组件里，决定了这个字段应被视为用户输入还是只读上下文。
         binding_meta = interactive_bindings.get(state_path, {})
         component_type = binding_meta.get("component_type")
         source_kind = "user_input"
@@ -926,7 +1647,7 @@ async def _extract_form_runtime_from_spec(
             source_kind = "context"
             writable = False
 
-        state_value = _read_state_value(state, state_path)
+        state_value = read_state_value(state, state_path)
         field_schema = property_schemas.get(submit_key, {})
         form_fields.append(
             ApiQueryFormFieldRuntime(
@@ -953,6 +1674,7 @@ async def _extract_form_runtime_from_spec(
         # 这样不同环境、灰度域名和回滚切换都不会散落到 renderer 契约里。
         route_url=_build_runtime_invoke_url(api_id),
         ui_action="remoteMutation",
+        request_schema_fields=list(property_schemas),
         state_path=_infer_form_state_root(bind_paths),
         fields=form_fields,
         submit=ApiQueryFormSubmitRuntime(business_intent=write_intent.code, confirm_required=True),
@@ -1014,6 +1736,16 @@ def _build_runtime_invoke_url(api_id: str) -> str:
         raise RuntimeError("API_QUERY_RUNTIME_INVOKE_URL_TEMPLATE 缺少 {id} 占位符") from exc
 
 
+def _normalize_response_created_by(user_context: dict[str, Any]) -> str:
+    """从请求级用户上下文提取前端二跳元数据里的 `createdBy`。"""
+
+    raw_user_id = user_context.get("userId")
+    if raw_user_id is None:
+        return ""
+    normalized_user_id = str(raw_user_id).strip()
+    return normalized_user_id
+
+
 def _extract_form_option_source(options_payload: Any) -> ApiQueryFormOptionSourceRuntime | None:
     """从 `PlannerSelect.props.options` 推导可复用的选项来源契约。"""
 
@@ -1064,39 +1796,6 @@ def _find_first_action_payload(ui_spec: dict[str, Any], *, target_action_code: s
     return walk(ui_spec)
 
 
-def _read_state_value(state: Any, state_path: str) -> Any:
-    """按 `/form/goal` 形式读取当前 state 中的值。"""
-
-    if not isinstance(state, dict) or not state_path.startswith("/"):
-        return None
-    current: Any = state
-    for segment in [item for item in state_path.split("/") if item]:
-        if not isinstance(current, dict) or segment not in current:
-            return None
-        current = current[segment]
-    return current
-
-
-def _write_state_value(state: dict[str, Any], state_path: str, value: Any) -> None:
-    """按 `/form/email` 形式把值写入嵌套 state。"""
-
-    if not isinstance(state, dict) or not state_path.startswith("/"):
-        return
-
-    current: dict[str, Any] = state
-    segments = [item for item in state_path.split("/") if item]
-    if not segments:
-        return
-
-    for segment in segments[:-1]:
-        child = current.get(segment)
-        if not isinstance(child, dict):
-            child = {}
-            current[segment] = child
-        current = child
-    current[segments[-1]] = value
-
-
 def _build_prefilled_form_state(
     *,
     fields: list[ApiQueryFormFieldRuntime],
@@ -1112,7 +1811,7 @@ def _build_prefilled_form_state(
 
     state: dict[str, Any] = {}
     for field in fields:
-        _write_state_value(
+        write_state_value(
             state,
             field.state_path,
             pre_fill_params.get(field.submit_key),
@@ -1293,10 +1992,14 @@ def _infer_page_size(params: dict[str, Any], row_count: int) -> int | None:
     return row_count or None
 
 
-def _infer_current_page(params: dict[str, Any]) -> int | None:
+def _infer_current_page(params: dict[str, Any], *, page_param: str | None = None) -> int | None:
     """从查询参数中推断当前页码。"""
 
-    for key in ("page", "pageNum", "page_no", "pageIndex", "current"):
+    candidate_keys: list[str] = []
+    if page_param:
+        candidate_keys.append(page_param)
+    candidate_keys.extend(["page", "pageNum", "pageNo", "page_no", "pageIndex", "current"])
+    for key in candidate_keys:
         value = params.get(key)
         if isinstance(value, int) and value > 0:
             return value
@@ -1453,7 +2156,7 @@ def _build_runtime_from_execution_report(
     return ApiQueryUIRuntime(
         components=ui_catalog_service.get_component_codes(
             intent="query",
-            requested_codes=["PlannerCard", "PlannerTable", "PlannerNotice"],
+            requested_codes=["PlannerCard", "PlannerTable", "PlannerForm", "PlannerPagination", "PlannerNotice"],
         ),
         ui_actions=_build_runtime_actions({"refresh", "export"}, ui_catalog_service=ui_catalog_service),
     )
@@ -1546,7 +2249,16 @@ def _build_list_patch_spec(
     aggregate_status: ApiQueryExecutionStatus,
     requested_target: str | None,
 ) -> dict[str, Any]:
-    """把单步列表结果压缩成前端可直接应用的 patch spec。"""
+    """把单步列表结果压缩成前端可直接应用的 patch spec。
+
+    功能：
+        patch 响应只解决“列表数据与分页状态如何局部更新”，而不是重新返回整页 UI。
+        这里统一约定 mutation target 和 replace 操作，便于前端做幂等刷新。
+
+    Edge Cases:
+        - 只有 SUCCESS/EMPTY 才会输出 replace 操作，错误态交由前端沿用旧视图并看外层状态
+        - 若 mutation_target 指向表格 dataSource，会同步更新分页器当前页/页大小/总数
+    """
 
     mutation_target = runtime.list.pagination.mutation_target or requested_target or "report-table.props.dataSource"
     rows: list[dict[str, Any]] = []
@@ -1594,6 +2306,8 @@ def _infer_patch_pagination_container_path(mutation_target: str) -> str | None:
 
     if not mutation_target:
         return None
+    if mutation_target == "report-table.props.dataSource":
+        return "report-pagination.props"
     if mutation_target.endswith(".dataSource"):
         return mutation_target[: -len(".dataSource")] + ".pagination"
     return None
@@ -1663,7 +2377,16 @@ def _build_error_detail(execution_result: ApiQueryExecutionResult) -> ApiQueryEx
 def _shape_context_data(
     data: list[dict[str, Any]] | dict[str, Any] | None,
 ) -> tuple[list[dict[str, Any]] | dict[str, Any], dict[str, Any]]:
-    """裁剪进入 `context_pool` 和 Renderer 的数据体量。"""
+    """裁剪进入 `context_pool` 和 Renderer 的数据体量。
+
+    功能：
+        `context_pool` 的任务是支撑解释和渲染，而不是替代完整数据翻页接口。这里统一裁剪到
+        少量样本，兼顾可解释性与网关负载控制。
+
+    Edge Cases:
+        - 单对象保持对象形态，避免详情页被强行改写成单元素数组
+        - 超过 `_CONTEXT_ROW_LIMIT` 时会补 `truncated_count`，方便前端和日志识别这是预览不是全量
+    """
 
     if data is None:
         return [], {
@@ -1721,7 +2444,16 @@ def _maybe_attach_snapshot(
     ui_runtime: ApiQueryUIRuntime,
     metadata: dict[str, Any],
 ) -> ApiQueryUIRuntime:
-    """在高危写意图场景下挂载快照凭证。"""
+    """在高危写意图场景下挂载快照凭证。
+
+    功能：
+        快照只服务高风险写意图审计，因此这里把是否采集的判断集中在响应出口，避免不同调用方
+        各自决定是否留痕。
+
+    Edge Cases:
+        - 非高危意图不会生成快照，避免普通查询把快照存储打爆
+        - 即使 ui_spec 为空，也仍允许 snapshot_service 自行决定是否记录最小审计信息
+    """
 
     if not snapshot_service.should_capture(business_intents):
         return ui_runtime
@@ -1757,7 +2489,16 @@ async def _generate_ui_spec_result(
     runtime: ApiQueryUIRuntime | None,
     trace_id: str,
 ) -> UISpecBuildResult:
-    """兼容第五阶段新旧接口，统一返回带 Guard 状态的结果对象。"""
+    """兼容第五阶段新旧接口，统一返回带 Guard 状态的结果对象。
+
+    功能：
+        当前代码库里 `DynamicUIService` 仍处于新旧接口并存阶段。这里提供一层兼容包装，
+        让响应构建器始终拿到统一的 `UISpecBuildResult`，避免调用方到处判断方法签名。
+
+    Edge Cases:
+        - 老版本 `generate_ui_spec_result/generate_ui_spec` 不支持 `trace_id` 时会自动回退旧签名
+        - 旧接口只能返回裸 spec，因此 validation/frozen 会回退为空结果和 `False`
+    """
 
     if hasattr(dynamic_ui, "generate_ui_spec_result"):
         try:

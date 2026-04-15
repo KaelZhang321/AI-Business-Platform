@@ -1,19 +1,28 @@
 from __future__ import annotations
 
 import aiomysql
-import json
+from datetime import UTC, datetime
 import logging
 import re
 from typing import Any
 
 from app.core.config import settings
+from app.core.mysql import build_business_mysql_conn_params
+from app.services.api_catalog.schema_utils import (
+    describe_schema_type,
+    extract_schema_description,
+    resolve_schema_at_data_path,
+    schema_is_array,
+)
 from app.services.api_catalog.schema import (
     ApiCatalogDetailHint,
     ApiCatalogEntry,
+    ApiCatalogFieldProfile,
     ApiCatalogPaginationHint,
     ApiCatalogTemplateHint,
     ParamSchema,
 )
+from app.utils.json_utils import load_json_object
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +56,16 @@ FROM ui_api_endpoints e
 LEFT JOIN ui_api_sources s ON e.source_id = s.id
 LEFT JOIN ui_api_tags t ON e.tag_id = t.id
 WHERE e.status = 'active'
+"""
+
+_API_CATALOG_REGISTRY_SELECT_BY_ID_SQL = _API_CATALOG_REGISTRY_SELECT_SQL + "AND e.id = %s\n"
+_API_CATALOG_REGISTRY_SELECT_CHANGED_IDS_SQL = """
+SELECT e.id AS endpointId
+FROM ui_api_endpoints e
+WHERE e.status = 'active'
+  AND e.updated_at >= %s
+ORDER BY e.updated_at ASC
+LIMIT %s
 """
 
 
@@ -103,13 +122,42 @@ class ApiCatalogRegistrySource:
             return builtin_entry
 
         try:
-            rows = await self._fetch_mysql_rows(_API_CATALOG_REGISTRY_SELECT_SQL, (api_id,))
+            rows = await self._fetch_mysql_rows(_API_CATALOG_REGISTRY_SELECT_BY_ID_SQL, (api_id,))
         except Exception as exc:
             raise ApiCatalogSourceError(f"无法从 MySQL 加载接口 {api_id}: {exc}") from exc
 
         if not rows:
             return None
         return _build_entry_from_mysql_row(rows[0])
+
+    async def load_changed_api_ids(self, *, updated_since: datetime | None, limit: int = 500) -> list[str]:
+        """按 `updated_at` 探测增量接口 ID。
+
+        功能：
+            稳态阶段如果上游只发“发生过变更”的事件而未携带 API ID，可通过该方法做窗口探测。
+
+        Args:
+            updated_since: 增量窗口起点。为空时回退到 Unix Epoch，表示全量扫描。
+            limit: 最大返回数量，防止单次治理任务被历史积压拖成长事务。
+        """
+
+        lower_bound = updated_since or datetime(1970, 1, 1, tzinfo=UTC)
+        rows = await self._fetch_mysql_rows(
+            _API_CATALOG_REGISTRY_SELECT_CHANGED_IDS_SQL,
+            (
+                lower_bound.strftime("%Y-%m-%d %H:%M:%S"),
+                max(1, int(limit)),
+            ),
+        )
+        api_ids: list[str] = []
+        seen: set[str] = set()
+        for row in rows:
+            api_id = str(row.get("endpointId") or "").strip()
+            if not api_id or api_id in seen:
+                continue
+            seen.add(api_id)
+            api_ids.append(api_id)
+        return api_ids
 
     async def _load_mysql_entries(self) -> list[ApiCatalogEntry]:
         """从业务 MySQL 直连抽取接口目录元数据。
@@ -155,7 +203,7 @@ class ApiCatalogRegistrySource:
                 settings.business_mysql_database,
                 settings.api_catalog_mysql_connect_timeout_seconds,
             )
-            self._pool = await aiomysql.create_pool(minsize=1, maxsize=5, **_build_business_mysql_conn_params())
+            self._pool = await aiomysql.create_pool(minsize=1, maxsize=5, **build_business_mysql_conn_params())
         return self._pool
 
     async def close(self) -> None:
@@ -164,24 +212,6 @@ class ApiCatalogRegistrySource:
             self._pool.close()
             await self._pool.wait_closed()
             self._pool = None
-
-
-def _build_business_mysql_conn_params() -> dict[str, str | int | float]:
-    """从 `BUSINESS_MYSQL_*` 生成 API Catalog 直连配置。
-
-    功能：
-        API Catalog 的治理元数据本质属于业务库，不应再维持一套 `AI_MYSQL_*` 私有环境变量。
-        这里统一改读业务库配置，同时让部署侧只维护一份 MySQL 连接来源。
-    """
-    return {
-        "host": settings.business_mysql_host,
-        "port": settings.business_mysql_port,
-        "user": settings.business_mysql_user,
-        "password": settings.business_mysql_password,
-        "db": settings.business_mysql_database,
-        "charset": "utf8mb4",
-        "connect_timeout": settings.api_catalog_mysql_connect_timeout_seconds,
-    }
 
 
 def _build_entry_from_mysql_row(row: dict[str, Any]) -> ApiCatalogEntry:
@@ -242,10 +272,10 @@ def _build_entry(
     name = str(endpoint.get("name") or "").strip()
     summary = str(endpoint.get("summary") or "").strip()
 
-    request_schema = _safe_json_loads(endpoint.get("requestSchema"))
-    response_schema = _safe_json_loads(endpoint.get("responseSchema"))
-    sample_request = _safe_json_loads(endpoint.get("sampleRequest"))
-    sample_response = _safe_json_loads(endpoint.get("sampleResponse"))
+    request_schema = load_json_object(endpoint.get("requestSchema"))
+    response_schema = load_json_object(endpoint.get("responseSchema"))
+    sample_request = load_json_object(endpoint.get("sampleRequest"))
+    sample_response = load_json_object(endpoint.get("sampleResponse"))
     operation_safety = _normalize_operation_safety(endpoint.get("operationSafety"))
 
     auth_type = str(source.get("authType") or "").strip()
@@ -253,6 +283,8 @@ def _build_entry(
     source_code = str(source.get("code") or "").strip()
     source_name = str(source.get("name") or "").strip()
     tag_name = _resolve_tag_name(endpoint, tag_name_by_id or {})
+    response_data_path = _infer_response_data_path(sample_response, response_schema)
+    field_labels = _extract_field_labels(response_schema)
 
     return ApiCatalogEntry(
         id=str(endpoint.get("id") or f"{method}:{path}"),
@@ -265,6 +297,7 @@ def _build_entry(
         tag_name=_normalize_tag_name(tag_name),
         business_intents=_infer_business_intents(name, summary, path),
         operation_safety=operation_safety,
+        requires_confirmation=_infer_requires_confirmation(operation_safety=operation_safety),
         method=method,
         path=path,
         auth_required=auth_required,
@@ -278,8 +311,8 @@ def _build_entry(
             "base_url": source.get("baseUrl"),
             "doc_url": source.get("docUrl"),
             "auth_type": auth_type,
-            "auth_config": _safe_json_loads(source.get("authConfig")),
-            "default_headers": _safe_json_loads(source.get("defaultHeaders")),
+            "auth_config": load_json_object(source.get("authConfig")),
+            "default_headers": load_json_object(source.get("defaultHeaders")),
         },
         security_rules={
             "auth_required": auth_required,
@@ -293,12 +326,14 @@ def _build_entry(
         param_schema=_to_param_schema(request_schema),
         response_schema=response_schema,
         sample_request=sample_request,
-        response_data_path=_infer_response_data_path(sample_response, response_schema),
-        field_labels=_extract_field_labels(response_schema),
+        response_data_path=response_data_path,
+        field_labels=field_labels,
         ui_hint=_infer_ui_hint(summary, path, sample_response),
         detail_hint=ApiCatalogDetailHint(),
         pagination_hint=ApiCatalogPaginationHint(),
         template_hint=ApiCatalogTemplateHint(),
+        request_field_profiles=_extract_request_field_profiles(method, _to_param_schema(request_schema)),
+        response_field_profiles=_extract_response_field_profiles(response_schema, response_data_path, field_labels),
     )
 
 
@@ -330,6 +365,34 @@ def _build_system_dict_entry() -> ApiCatalogEntry:
         再通过 `allowed_values` 约束可用字典编码，避免为每个下拉框膨胀一条 API。
     """
     allowed_values = ["customer_region", "customer_level", "industry", "contract_type"]
+    param_schema = ParamSchema(
+        type="object",
+        properties={
+            "types": {
+                "type": "string",
+                "description": "字典编码，多个用逗号分隔",
+                "allowed_values": allowed_values,
+            }
+        },
+        required=["types"],
+    )
+    response_schema = {
+        "type": "object",
+        "properties": {
+            "data": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "label": {"type": "string", "description": "显示文案"},
+                        "value": {"type": "string", "description": "提交值"},
+                        "type": {"type": "string", "description": "字典编码"},
+                    },
+                },
+            }
+        },
+    }
+    field_labels = {"label": "标签", "value": "值"}
     return ApiCatalogEntry(
         id="system_dicts_v1",
         description="批量获取系统级字典项。用于生成表单下拉选项和枚举值映射。",
@@ -341,6 +404,7 @@ def _build_system_dict_entry() -> ApiCatalogEntry:
         tag_name="dictionary",
         business_intents=["query_business_data"],
         operation_safety="query",
+        requires_confirmation=False,
         method="GET",
         path="/api/system/dicts",
         auth_required=True,
@@ -358,40 +422,17 @@ def _build_system_dict_entry() -> ApiCatalogEntry:
             "query_safe": True,
             "enforcement": "delegated_to_business_server",
         },
-        param_schema=ParamSchema(
-            type="object",
-            properties={
-                "types": {
-                    "type": "string",
-                    "description": "字典编码，多个用逗号分隔",
-                    "allowed_values": allowed_values,
-                }
-            },
-            required=["types"],
-        ),
-        response_schema={
-            "type": "object",
-            "properties": {
-                "data": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "label": {"type": "string", "description": "显示文案"},
-                            "value": {"type": "string", "description": "提交值"},
-                            "type": {"type": "string", "description": "字典编码"},
-                        },
-                    },
-                }
-            },
-        },
+        param_schema=param_schema,
+        response_schema=response_schema,
         sample_request={"types": "customer_region,customer_level"},
         response_data_path="data",
-        field_labels={"label": "标签", "value": "值"},
+        field_labels=field_labels,
         ui_hint="list",
         detail_hint=ApiCatalogDetailHint(),
         pagination_hint=ApiCatalogPaginationHint(),
         template_hint=ApiCatalogTemplateHint(),
+        request_field_profiles=_extract_request_field_profiles("GET", param_schema),
+        response_field_profiles=_extract_response_field_profiles(response_schema, "data", field_labels),
     )
 
 
@@ -553,6 +594,82 @@ def _infer_ui_hint(summary: str, path: str, sample_response: Any) -> str:
     return "table"
 
 
+def _infer_requires_confirmation(*, operation_safety: str) -> bool:
+    """推断接口是否需要确认。
+
+    功能：
+        Phase 04 先把“高风险 mutation 默认需要确认”固化进 catalog 层，避免后续 workflow
+        继续靠零散 if/else 去补判安全语义。等业务元数据表补齐显式字段后，这里再切换为主读 DB。
+    """
+    return operation_safety == "mutation"
+
+
+def _extract_request_field_profiles(method: str, param_schema: ParamSchema) -> list[ApiCatalogFieldProfile]:
+    """提取请求侧原始字段画像。
+
+    功能：
+        GraphRAG 后续要做字段名称 / 类型 / 描述三元归一，因此 catalog 层必须先保存原始证据，
+        避免 resolver 每次都重新遍历 schema 并重复推断字段位置。
+    """
+    location: str = "queryParams" if method.upper() == "GET" else "body"
+    required_fields = set(param_schema.required)
+    profiles: list[ApiCatalogFieldProfile] = []
+    for field_name, field_schema in param_schema.properties.items():
+        if not isinstance(field_schema, dict):
+            continue
+        profiles.append(
+            ApiCatalogFieldProfile(
+                direction="request",
+                location=location,
+                field_name=field_name,
+                json_path=f"{location}.{field_name}",
+                raw_field_type=describe_schema_type(field_schema),
+                raw_description=extract_schema_description(field_schema),
+                required=field_name in required_fields,
+                array_mode=schema_is_array(field_schema),
+            )
+        )
+    return profiles
+
+
+def _extract_response_field_profiles(
+    response_schema: dict[str, Any],
+    response_data_path: str,
+    field_labels: dict[str, str],
+) -> list[ApiCatalogFieldProfile]:
+    """提取响应侧原始字段画像。
+
+    功能：
+        第一阶段不追求穷尽所有深层字段，只稳定提取主数据区的业务字段，供 GraphRAG 建图使用。
+    """
+    data_schema, array_mode = resolve_schema_at_data_path(response_schema, response_data_path)
+    if not isinstance(data_schema, dict):
+        return []
+
+    properties = data_schema.get("properties")
+    if not isinstance(properties, dict):
+        return []
+
+    profiles: list[ApiCatalogFieldProfile] = []
+    for field_name, field_schema in properties.items():
+        if not isinstance(field_schema, dict):
+            continue
+        json_path = f"{response_data_path}[].{field_name}" if array_mode else f"{response_data_path}.{field_name}"
+        profiles.append(
+            ApiCatalogFieldProfile(
+                direction="response",
+                location="response",
+                field_name=field_name,
+                json_path=json_path,
+                raw_field_type=describe_schema_type(field_schema),
+                raw_description=extract_schema_description(field_schema, fallback_label=field_labels.get(field_name)),
+                required=False,
+                array_mode=array_mode or schema_is_array(field_schema),
+            )
+        )
+    return profiles
+
+
 def _to_param_schema(value: dict[str, Any]) -> ParamSchema:
     if not isinstance(value, dict):
         return ParamSchema()
@@ -565,18 +682,6 @@ def _to_param_schema(value: dict[str, Any]) -> ParamSchema:
     if isinstance(properties, dict):
         return ParamSchema(type="object", properties=properties, required=value.get("required") or [])
     return ParamSchema()
-
-
-def _safe_json_loads(value: Any) -> dict[str, Any]:
-    if isinstance(value, dict):
-        return value
-    if isinstance(value, str) and value.strip():
-        try:
-            parsed = json.loads(value)
-        except json.JSONDecodeError:
-            return {}
-        return parsed if isinstance(parsed, dict) else {}
-    return {}
 
 
 def _compact_list(values: list[Any]) -> list[str]:

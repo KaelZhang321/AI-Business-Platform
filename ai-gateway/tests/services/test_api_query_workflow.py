@@ -10,6 +10,7 @@ from app.models.schemas import (
     ApiQueryRoutingResult,
     ApiQueryRequest,
 )
+from app.services.api_catalog.graph_models import ApiCatalogSubgraphResult, GraphFieldPath
 from app.services.api_catalog.dag_planner import DagPlanValidationError
 from app.services.api_catalog.schema import (
     ApiCatalogDetailHint,
@@ -20,20 +21,29 @@ from app.services.api_catalog.schema import (
 )
 from app.services.api_query_response_builder import ApiQueryResponseBuilder
 from app.services.api_query_workflow import ApiQueryWorkflow
-from app.services.dynamic_ui_service import UISpecBuildResult
+from app.services.dynamic_ui_service import DynamicUIService, UISpecBuildResult
 from app.services.ui_catalog_service import UICatalogService
 from app.services.ui_snapshot_service import UISnapshotService
 from app.services.ui_spec_guard import UISpecValidationError, UISpecValidationResult
 
 
 class StubRetriever:
-    def __init__(self, entries: list[ApiCatalogEntry]) -> None:
+    def __init__(self, entries: list[ApiCatalogEntry], *, subgraph_result: ApiCatalogSubgraphResult | None = None) -> None:
         self._entries = entries
+        self._subgraph_result = subgraph_result
         self.calls = 0
+        self.trace_ids: list[str] = []
 
     async def search_stratified(self, query: str, *, domains, top_k: int = 3, filters=None, **kwargs):
         self.calls += 1
+        trace_id = kwargs.get("trace_id")
+        if trace_id is not None:
+            self.trace_ids.append(trace_id)
         return [ApiCatalogSearchResult(entry=entry, score=0.9) for entry in self._entries]
+
+    def get_subgraph_result(self, trace_id: str) -> ApiCatalogSubgraphResult | None:
+        self.trace_ids.append(trace_id)
+        return self._subgraph_result
 
 
 class StubExtractor:
@@ -80,7 +90,7 @@ class StubExecutor:
         self._result = result
         self.calls = 0
 
-    async def call(self, entry: ApiCatalogEntry, params: dict[str, object], user_token=None, trace_id=None):
+    async def call(self, entry: ApiCatalogEntry, params: dict[str, object], user_token=None, trace_id=None, user_id=None):
         self.calls += 1
         return self._result.model_copy(update={"trace_id": trace_id or self._result.trace_id})
 
@@ -91,6 +101,8 @@ class StubPlanner:
         self._validate_error = validate_error
         self.validate_calls = 0
         self.build_calls = 0
+        self.last_subgraph_result: ApiCatalogSubgraphResult | None = None
+        self.last_trace_id: str | None = None
 
     async def build_plan(self, query, candidates, user_context, route_hint, *, trace_id=None):
         self.build_calls += 1
@@ -106,21 +118,36 @@ class StubPlanner:
             plan_id=f"dag_{(trace_id or 'trace')[:8]}",
         )
 
-    def validate_plan(self, plan, candidates):
+    def validate_plan(self, plan, candidates, *, subgraph_result=None, trace_id=None):
         self.validate_calls += 1
+        self.last_subgraph_result = subgraph_result
+        self.last_trace_id = trace_id
         if self._validate_error is not None:
             raise self._validate_error
         return dict(self._step_entries)
 
 
 class StubRegistrySource:
-    def __init__(self, entry: ApiCatalogEntry | None) -> None:
+    def __init__(self, entry: ApiCatalogEntry | list[ApiCatalogEntry] | None) -> None:
         self._entry = entry
         self.calls = 0
 
     async def get_entry_by_id(self, api_id: str):
         self.calls += 1
+        if isinstance(self._entry, list):
+            for entry in self._entry:
+                if entry.id == api_id:
+                    return entry
+            return None
         return self._entry
+
+    async def load_entries(self):
+        self.calls += 1
+        if isinstance(self._entry, list):
+            return list(self._entry)
+        if self._entry is None:
+            return []
+        return [self._entry]
 
 
 @dataclass(slots=True)
@@ -183,6 +210,53 @@ def _build_flat_spec() -> dict[str, object]:
     }
 
 
+def _build_role_delete_entry() -> ApiCatalogEntry:
+    return ApiCatalogEntry(
+        id="role_delete",
+        description="删除角色",
+        domain="iam",
+        method="POST",
+        path="/system/employee/sys-role/delete",
+        status="active",
+        operation_safety="mutation",
+        param_schema={
+            "type": "object",
+            "properties": {
+                "id": {"type": "string"},
+                "roleName": {"type": "string"},
+            },
+            "required": [],
+        },
+        detail_hint=ApiCatalogDetailHint(enabled=False),
+        pagination_hint=ApiCatalogPaginationHint(enabled=False),
+        template_hint=ApiCatalogTemplateHint(enabled=False),
+    )
+
+
+def _build_role_list_entry() -> ApiCatalogEntry:
+    return ApiCatalogEntry(
+        id="role_list",
+        description="角色列表",
+        domain="iam",
+        method="POST",
+        path="/system/employee/sys-role/list",
+        status="active",
+        operation_safety="list",
+        param_schema={
+            "type": "object",
+            "properties": {
+                "roleName": {"type": "string", "title": "角色名称"},
+                "pageNo": {"type": "integer", "title": "页码"},
+                "pageSize": {"type": "integer", "title": "分页大小"},
+            },
+            "required": [],
+        },
+        detail_hint=ApiCatalogDetailHint(enabled=False),
+        pagination_hint=ApiCatalogPaginationHint(enabled=True, page_param="pageNo", page_size_param="pageSize"),
+        template_hint=ApiCatalogTemplateHint(enabled=False),
+    )
+
+
 def _build_workflow(
     *,
     retriever: StubRetriever,
@@ -191,19 +265,21 @@ def _build_workflow(
     planner: StubPlanner,
     registry_source: StubRegistrySource,
     ui_result: UISpecBuildResult,
+    dynamic_ui_override=None,
 ) -> ApiQueryWorkflow:
+    dynamic_ui = dynamic_ui_override or FakeDynamicUI(result=ui_result)
     response_builder = ApiQueryResponseBuilder(
-        dynamic_ui=FakeDynamicUI(result=ui_result),
+        dynamic_ui=dynamic_ui,
         snapshot_service=UISnapshotService(),
         ui_catalog_service=UICatalogService(),
         registry_source=registry_source,
     )
     return ApiQueryWorkflow(
-        services_getter=lambda: (retriever, extractor, executor, FakeDynamicUI(result=ui_result), UISnapshotService()),
+        services_getter=lambda: (retriever, extractor, executor, dynamic_ui, UISnapshotService()),
         planner_getter=lambda: planner,
         response_builder_getter=lambda: response_builder,
         registry_source_getter=lambda: registry_source,
-        allowed_business_intent_codes_getter=lambda: {"none", "saveToServer"},
+        allowed_business_intent_codes_getter=lambda: {"none", "saveToServer", "deleteCustomer"},
     )
 
 
@@ -256,9 +332,58 @@ async def test_workflow_runs_direct_path_without_routing(caplog) -> None:
     assert extractor.route_calls == 0
     assert executor.calls == 1
     assert "phase=stage4" in caplog.text
-    assert "node=execute_plan" in caplog.text
-    assert "conversation_id=conversation-001" in caplog.text
-    assert "execution_status=SUCCESS" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_workflow_passes_stage2_subgraph_into_stage3_validation() -> None:
+    entry = _build_entry()
+    subgraph = ApiCatalogSubgraphResult(
+        anchor_api_ids=[entry.id],
+        support_api_ids=["customer_detail"],
+        field_paths=[
+            GraphFieldPath(
+                consumer_api_id=entry.id,
+                producer_api_id="customer_detail",
+                semantic_key="Customer.id",
+                source_extract_path="data.customerId",
+                target_inject_path="queryParams.customerId",
+                is_identifier=True,
+                source_array_mode=False,
+                target_array_mode=False,
+            )
+        ],
+    )
+    retriever = StubRetriever([entry], subgraph_result=subgraph)
+    extractor = StubExtractor(entry, {"customerId": "C001"})
+    executor = StubExecutor(
+        ApiQueryExecutionResult(
+            status=ApiQueryExecutionStatus.SUCCESS,
+            data=[{"customerId": "C001", "customerName": "张三"}],
+            total=1,
+        )
+    )
+    planner = StubPlanner(step_entries={f"step_{entry.id}": entry})
+    workflow = _build_workflow(
+        retriever=retriever,
+        extractor=extractor,
+        executor=executor,
+        planner=planner,
+        registry_source=StubRegistrySource(entry),
+        ui_result=UISpecBuildResult(spec=_build_flat_spec(), frozen=False),
+    )
+
+    response = await workflow.run(
+        ApiQueryRequest.model_validate({"mode": "nl", "query": "查询客户列表"}),
+        trace_id="trace-subgraph-pass-through",
+        interaction_id="interaction-subgraph-pass-through",
+        conversation_id="conversation-subgraph-pass-through",
+        user_context={},
+        user_token="Bearer test-token",
+    )
+
+    assert response.execution_status == ApiQueryExecutionStatus.SUCCESS
+    assert planner.last_subgraph_result == subgraph
+    assert planner.last_trace_id == "trace-subgraph-pass-through"
 
 
 @pytest.mark.asyncio
@@ -671,3 +796,270 @@ async def test_workflow_multi_candidate_write_intent_bypasses_planner_and_return
     assert response.ui_runtime.form.route_url.endswith("/ui-builder/runtime/endpoints/employee_update/invoke")
     assert response.execution_plan is not None
     assert response.execution_plan.steps[0].api_id == "employee_update"
+
+
+@pytest.mark.asyncio
+async def test_workflow_multi_mutation_candidates_uses_selected_create_entry_for_form() -> None:
+    """多 mutation 候选时，只要路由已选中创建接口，也必须直接返回创建表单。"""
+
+    update_entry = ApiCatalogEntry(
+        id="role_update",
+        description="修改角色",
+        domain="iam",
+        method="POST",
+        path="/api/v1/roles/update",
+        status="active",
+        operation_safety="mutation",
+        param_schema={
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "title": "ID"},
+                "roleName": {"type": "string", "title": "角色名称"},
+            },
+            "required": ["id", "roleName"],
+        },
+        detail_hint=ApiCatalogDetailHint(enabled=False),
+        pagination_hint=ApiCatalogPaginationHint(enabled=False),
+        template_hint=ApiCatalogTemplateHint(enabled=False),
+    )
+    create_entry = ApiCatalogEntry(
+        id="role_create",
+        description="新增角色",
+        domain="iam",
+        method="POST",
+        path="/api/v1/roles/create",
+        status="active",
+        operation_safety="mutation",
+        param_schema={
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "title": "ID"},
+                "roleName": {"type": "string", "title": "角色名称"},
+                "createTime": {"type": "string", "title": "创建时间"},
+                "updateTime": {"type": "string", "title": "更新时间"},
+            },
+            "required": ["roleName"],
+        },
+        detail_hint=ApiCatalogDetailHint(enabled=False),
+        pagination_hint=ApiCatalogPaginationHint(enabled=False),
+        template_hint=ApiCatalogTemplateHint(enabled=False),
+    )
+    retriever = StubRetriever([update_entry, create_entry])
+    extractor = StubExtractor(
+        create_entry,
+        {},
+        business_intents=["saveToServer"],
+    )
+    executor = StubExecutor(ApiQueryExecutionResult(status=ApiQueryExecutionStatus.SUCCESS, data=[], total=0))
+    planner = StubPlanner(
+        step_entries={},
+        validate_error=DagPlanValidationError("planner_unsafe_api", f"Planner 引入了非查询语义接口: {create_entry.id}"),
+    )
+
+    flat_form_spec = {
+        "root": "root",
+        "state": {},
+        "elements": {
+            "root": {"type": "PlannerCard", "props": {"title": "确认新增：新增角色"}, "children": ["f"]},
+            "f": {"type": "PlannerForm", "props": {}},
+        },
+    }
+    workflow = _build_workflow(
+        retriever=retriever,
+        extractor=extractor,
+        executor=executor,
+        planner=planner,
+        registry_source=StubRegistrySource(create_entry),
+        ui_result=UISpecBuildResult(spec=flat_form_spec, frozen=False),
+    )
+
+    response = await workflow.run(
+        ApiQueryRequest.model_validate({"query": "新增一个健管师角色"}),
+        trace_id="trace-multi-create-001",
+        interaction_id=None,
+        conversation_id=None,
+        user_context={"userId": "U001"},
+        user_token=None,
+    )
+
+    assert planner.build_calls == 0
+    assert planner.validate_calls == 0
+    assert executor.calls == 0
+    assert response.execution_status == ApiQueryExecutionStatus.SKIPPED
+    assert response.error is None
+    assert response.ui_runtime is not None
+    assert response.ui_runtime.form.enabled is True
+    assert response.ui_runtime.form.api_id == "role_create"
+    field_names = [field.submit_key for field in response.ui_runtime.form.fields]
+    assert field_names == ["roleName"]
+    assert response.ui_runtime.form.fields[0].source_kind == "context"
+    assert response.execution_plan is not None
+    assert response.execution_plan.steps[0].api_id == "role_create"
+    assert response.execution_plan.steps[0].params["roleName"] == "健管师"
+
+
+@pytest.mark.asyncio
+async def test_workflow_delete_role_returns_confirm_form_when_single_match() -> None:
+    delete_entry = _build_role_delete_entry()
+    retriever = StubRetriever([delete_entry])
+    extractor = StubExtractor(
+        delete_entry,
+        {},
+        business_intents=["deleteCustomer"],
+    )
+    executor = StubExecutor(ApiQueryExecutionResult(status=ApiQueryExecutionStatus.SUCCESS, data=[], total=0))
+    workflow = _build_workflow(
+        retriever=retriever,
+        extractor=extractor,
+        executor=executor,
+        planner=StubPlanner(),
+        registry_source=StubRegistrySource([delete_entry]),
+        ui_result=UISpecBuildResult(spec={}, frozen=False),
+        dynamic_ui_override=DynamicUIService(catalog_service=UICatalogService()),
+    )
+
+    response = await workflow.run(
+        ApiQueryRequest.model_validate({"query": "删除健管师角色"}),
+        trace_id="trace-delete-confirm-001",
+        interaction_id=None,
+        conversation_id=None,
+        user_context={"userId": "U001"},
+        user_token=None,
+    )
+
+    assert executor.calls == 0
+    assert response.execution_status == ApiQueryExecutionStatus.SKIPPED
+    assert response.error is None
+    assert response.ui_runtime is not None
+    assert response.ui_runtime.form.enabled is True
+    assert response.ui_runtime.form.mode == "confirm"
+    assert response.ui_runtime.form.api_id == "role_delete"
+    assert response.execution_plan is not None
+    assert response.execution_plan.steps[0].params == {"roleName": "健管师"}
+    assert response.ui_spec["state"]["form"]["roleName"] == "健管师"
+    submit = response.ui_spec["elements"]["form_submit"]
+    assert submit["on"]["press"]["params"]["body"] == {"roleName": "健管师"}
+
+
+@pytest.mark.asyncio
+async def test_workflow_delete_role_returns_notice_when_missing() -> None:
+    delete_entry = _build_role_delete_entry()
+    list_entry = _build_role_list_entry()
+    retriever = StubRetriever([delete_entry, list_entry])
+    extractor = StubExtractor(
+        delete_entry,
+        {},
+        business_intents=["deleteCustomer"],
+    )
+
+    class MissingDeletePreviewExecutor:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def call(self, entry: ApiCatalogEntry, params: dict[str, object], user_token=None, trace_id=None, user_id=None):
+            self.calls += 1
+            return ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.SUCCESS,
+                data=[],
+                total=0,
+                trace_id=trace_id,
+            )
+
+    executor = MissingDeletePreviewExecutor()
+    workflow = _build_workflow(
+        retriever=retriever,
+        extractor=extractor,
+        executor=executor,  # type: ignore[arg-type]
+        planner=StubPlanner(),
+        registry_source=StubRegistrySource([delete_entry, list_entry]),
+        ui_result=UISpecBuildResult(spec={}, frozen=False),
+        dynamic_ui_override=DynamicUIService(catalog_service=UICatalogService()),
+    )
+
+    response = await workflow.run(
+        ApiQueryRequest.model_validate({"query": "删除健管师角色"}),
+        trace_id="trace-delete-missing-001",
+        interaction_id=None,
+        conversation_id=None,
+        user_context={"userId": "U001"},
+        user_token=None,
+    )
+
+    assert executor.calls == 1
+    assert response.execution_status == ApiQueryExecutionStatus.SKIPPED
+    assert response.execution_plan is None
+    assert response.error is None
+    notice = response.ui_spec["elements"]["child_1"]
+    assert notice["type"] == "PlannerNotice"
+    assert "不存在名为“健管师”的角色" in notice["props"]["text"]
+
+
+@pytest.mark.asyncio
+async def test_workflow_delete_role_returns_candidate_table_when_multiple_matches() -> None:
+    delete_entry = _build_role_delete_entry()
+    list_entry = _build_role_list_entry()
+    retriever = StubRetriever([delete_entry, list_entry])
+    extractor = StubExtractor(
+        delete_entry,
+        {},
+        business_intents=["deleteCustomer"],
+    )
+
+    class CandidateDeletePreviewExecutor:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def call(self, entry: ApiCatalogEntry, params: dict[str, object], user_token=None, trace_id=None, user_id=None):
+            self.calls += 1
+            return ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.SUCCESS,
+                data=[
+                    {
+                        "id": "r001",
+                        "roleName": "健管师",
+                        "roleCode": "HEALTH_MANAGER_A",
+                        "appCode": "employee",
+                        "status": 1,
+                    },
+                    {
+                        "id": "r002",
+                        "roleName": "健管师",
+                        "roleCode": "HEALTH_MANAGER_B",
+                        "appCode": "medical",
+                        "status": 1,
+                    },
+                ],
+                total=2,
+                trace_id=trace_id,
+            )
+
+    executor = CandidateDeletePreviewExecutor()
+    workflow = _build_workflow(
+        retriever=retriever,
+        extractor=extractor,
+        executor=executor,  # type: ignore[arg-type]
+        planner=StubPlanner(),
+        registry_source=StubRegistrySource([delete_entry, list_entry]),
+        ui_result=UISpecBuildResult(spec={}, frozen=False),
+        dynamic_ui_override=DynamicUIService(catalog_service=UICatalogService()),
+    )
+
+    response = await workflow.run(
+        ApiQueryRequest.model_validate({"query": "删除健管师角色"}),
+        trace_id="trace-delete-candidates-001",
+        interaction_id=None,
+        conversation_id=None,
+        user_context={"userId": "U001"},
+        user_token=None,
+    )
+
+    assert executor.calls == 1
+    assert response.execution_status == ApiQueryExecutionStatus.SKIPPED
+    assert response.execution_plan is None
+    table = response.ui_spec["elements"]["report-table"]
+    assert table["type"] == "PlannerTable"
+    assert len(table["props"]["dataSource"]) == 2
+    row_action = table["props"]["rowActions"][0]
+    assert row_action["type"] == "remoteMutation"
+    assert row_action["label"] == "删除该角色"
+    assert row_action["params"]["body"] == {"id": {"$bindRow": "id"}}

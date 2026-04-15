@@ -11,7 +11,7 @@ from app.models.schemas import (
     ApiQueryPlanStep,
     ApiQueryRoutingResult,
 )
-from app.services.api_catalog.schema import ApiCatalogEntry, ApiCatalogSearchResult
+from app.services.api_catalog.schema import ApiCatalogDetailHint, ApiCatalogEntry, ApiCatalogSearchResult
 
 
 class StubRetriever:
@@ -22,6 +22,17 @@ class StubRetriever:
     async def search(self, query: str, top_k: int = 3, score_threshold: float = 0.3, filters=None):
         self.last_filters = filters
         return [ApiCatalogSearchResult(entry=self._entry, score=0.95)]
+
+    async def search_stratified(self, query: str, *, domains, top_k: int = 3, filters=None, **kwargs):
+        return await self.search(query, top_k=top_k, score_threshold=0.3, filters=filters)
+
+
+class MultiStubRetriever:
+    def __init__(self, entries: list[ApiCatalogEntry]) -> None:
+        self._entries = entries
+
+    async def search(self, query: str, top_k: int = 3, score_threshold: float = 0.3, filters=None):
+        return [ApiCatalogSearchResult(entry=entry, score=0.95) for entry in self._entries]
 
     async def search_stratified(self, query: str, *, domains, top_k: int = 3, filters=None, **kwargs):
         return await self.search(query, top_k=top_k, score_threshold=0.3, filters=filters)
@@ -70,11 +81,32 @@ class MutationExtractor(StubExtractor):
         )
 
 
+class CreateMutationExtractor(StubExtractor):
+    """为创建类 mutation 场景返回选中的创建接口与预填参数。"""
+
+    async def route_query(self, query: str, user_context: dict[str, object], **kwargs):
+        return ApiQueryRoutingResult(
+            query_domains=[self._entry.domain],
+            business_intents=["saveToServer"],
+            is_multi_domain=False,
+            reasoning="runtime create-mutation route",
+            route_status="ok",
+        )
+
+    async def extract_routing_result(self, query: str, candidates, user_context: dict[str, object], **kwargs):
+        return ApiQueryRoutingResult(
+            selected_api_id=self._entry.id,
+            query_domains=[self._entry.domain],
+            business_intents=["saveToServer"],
+            params={},
+        )
+
+
 class StubExecutor:
     def __init__(self, result: ApiQueryExecutionResult) -> None:
         self._result = result
 
-    async def call(self, entry, params, user_token=None, trace_id: str | None = None):
+    async def call(self, entry, params, user_token=None, trace_id: str | None = None, user_id: str | None = None):
         return self._result.model_copy(update={"trace_id": trace_id})
 
 
@@ -84,10 +116,12 @@ class PassThroughSnapshotService:
 
 
 class StubRegistrySource:
-    def __init__(self, entry: ApiCatalogEntry | None) -> None:
+    def __init__(self, entry: ApiCatalogEntry | dict[str, ApiCatalogEntry] | None) -> None:
         self._entry = entry
 
     async def get_entry_by_id(self, api_id: str) -> ApiCatalogEntry | None:
+        if isinstance(self._entry, dict):
+            return self._entry.get(api_id)
         return self._entry
 
 
@@ -127,6 +161,27 @@ def _make_mutation_entry() -> ApiCatalogEntry:
                 "updateTime": {"type": "string", "title": "更新时间"},
             },
             "required": ["id", "email", "realName"],
+        },
+    )
+
+
+def _make_create_mutation_entry() -> ApiCatalogEntry:
+    return ApiCatalogEntry(
+        id="role_create",
+        description="新增角色",
+        domain="iam",
+        operation_safety="mutation",
+        method="POST",
+        path="/system/role/create",
+        param_schema={
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "title": "ID"},
+                "roleName": {"type": "string", "title": "角色名称"},
+                "createTime": {"type": "string", "title": "创建时间"},
+                "updateTime": {"type": "string", "title": "更新时间"},
+            },
+            "required": ["roleName"],
         },
     )
 
@@ -171,6 +226,28 @@ def _get_child_by_type(spec: dict[str, object], expected_type: str) -> dict[str,
     raise AssertionError(f"missing child type: {expected_type}")
 
 
+def _assert_api_query_response_keys(body: dict[str, object]) -> None:
+    """断言 `/api-query` 仅暴露收口后的对外字段。"""
+
+    assert set(body.keys()) == {"trace_id", "execution_status", "execution_plan", "ui_spec", "error"}
+
+
+def _assert_runtime_metadata(
+    payload: dict[str, object],
+    *,
+    trace_id: str,
+    api_suffix: str | None = None,
+) -> None:
+    """断言 ui_spec 节点已携带前端二跳请求所需元数据。"""
+
+    if api_suffix is not None:
+        assert payload["api"] == f"/api/v1/ui-builder/runtime/endpoints/{api_suffix}/invoke"
+    assert "queryParams" in payload
+    assert "body" in payload
+    assert payload["flowNum"] == trace_id
+    assert "createdBy" in payload
+
+
 def test_api_query_returns_empty_notice_for_empty_execution(monkeypatch) -> None:
     entry = _make_entry()
     stub_services = (
@@ -193,10 +270,9 @@ def test_api_query_returns_empty_notice_for_empty_execution(monkeypatch) -> None
 
     assert response.status_code == 200
     body = response.json()
-    assert set(body.keys()) == {"trace_id", "execution_status", "execution_plan", "ui_runtime", "ui_spec", "error"}
+    _assert_api_query_response_keys(body)
     assert body["execution_status"] == "EMPTY"
     assert body["execution_plan"]["steps"][0]["step_id"] == "step_customer_list"
-    assert body["ui_runtime"]["audit"]["enabled"] is False
     notice = _get_root_children(body["ui_spec"])[0]
     assert body["ui_spec"]["root"] == "root"
     assert notice["type"] == "PlannerNotice"
@@ -226,7 +302,7 @@ def test_api_query_returns_error_notice_for_error_execution(monkeypatch) -> None
 
     assert response.status_code == 200
     body = response.json()
-    assert set(body.keys()) == {"trace_id", "execution_status", "execution_plan", "ui_runtime", "ui_spec", "error"}
+    _assert_api_query_response_keys(body)
     assert body["execution_status"] == "ERROR"
     assert body["error"] == "业务接口超时"
     assert body["execution_plan"]["steps"][0]["step_id"] == "step_customer_list"
@@ -258,7 +334,7 @@ def test_api_query_returns_skipped_notice_for_missing_required_params(monkeypatc
 
     assert response.status_code == 200
     body = response.json()
-    assert set(body.keys()) == {"trace_id", "execution_status", "execution_plan", "ui_runtime", "ui_spec", "error"}
+    _assert_api_query_response_keys(body)
     assert body["execution_status"] == "SKIPPED"
     assert body["error"] == "缺少必要参数：customerId"
     assert body["execution_plan"]["steps"][0]["step_id"] == "step_customer_list"
@@ -295,11 +371,9 @@ def test_api_query_renders_mutation_form_instead_of_skipped_notice(monkeypatch) 
     assert response.status_code == 200
     body = response.json()
     assert body["execution_status"] == "SKIPPED"
-    assert body["ui_runtime"]["form"]["enabled"] is True
-    field_names = [field["submit_key"] for field in body["ui_runtime"]["form"]["fields"]]
-    assert field_names == ["id", "email", "realName", "mobile"]
     form = _get_child_by_type(body["ui_spec"], "PlannerForm")
     assert form["props"]["formCode"] == "employee_update_form"
+    _assert_runtime_metadata(form["props"], trace_id=body["trace_id"], api_suffix="employee_update")
     assert body["ui_spec"]["state"]["form"]["id"] == "8058"
     assert body["ui_spec"]["state"]["form"]["email"] == "437462373467289@qq.com"
     assert body["ui_spec"]["state"]["form"]["realName"] is None
@@ -310,6 +384,53 @@ def test_api_query_renders_mutation_form_instead_of_skipped_notice(monkeypatch) 
     assert body["ui_spec"]["elements"]["form_field_2"]["props"]["required"] is True
     assert body["ui_spec"]["elements"]["form_field_3"]["props"]["required"] is True
     assert body["ui_spec"]["elements"]["form_field_4"]["props"]["required"] is False
+    submit = body["ui_spec"]["elements"]["form_submit"]["on"]["press"]["params"]
+    assert submit["api_id"] == "employee_update"
+    _assert_runtime_metadata(submit, trace_id=body["trace_id"], api_suffix="employee_update")
+    assert submit["body"]["email"] == {"$bindState": "/form/email"}
+    assert submit["body"]["id"] == {"$bindState": "/form/id"}
+    root_children = _get_root_children(body["ui_spec"])
+    assert all(child["type"] != "PlannerNotice" for child in root_children)
+
+
+def test_api_query_write_intent_with_multiple_mutations_still_renders_selected_create_form(monkeypatch) -> None:
+    """多 mutation 候选时，只要选中了创建接口，就不能退化成安全拦截 Notice。"""
+
+    update_entry = _make_mutation_entry()
+    create_entry = _make_create_mutation_entry()
+    stub_services = (
+        MultiStubRetriever([update_entry, create_entry]),
+        CreateMutationExtractor(create_entry),
+        StubExecutor(
+            ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.SUCCESS,
+                data=[],
+                total=0,
+            )
+        ),
+        api_query_routes.DynamicUIService(),
+        PassThroughSnapshotService(),
+    )
+    monkeypatch.setattr(api_query_routes, "_get_services", lambda: stub_services)
+
+    client = TestClient(create_test_app())
+    response = client.post(
+        "/api/v1/api-query",
+        json={"query": "新增一个健管师角色"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["execution_status"] == "SKIPPED"
+    assert body["error"] is None
+    assert body["ui_spec"]["state"]["form"]["roleName"] == "健管师"
+    assert body["execution_plan"]["steps"][0]["params"]["roleName"] == "健管师"
+    form = _get_child_by_type(body["ui_spec"], "PlannerForm")
+    assert form["props"]["formCode"] == "role_create_form"
+    _assert_runtime_metadata(form["props"], trace_id=body["trace_id"], api_suffix="role_create")
+    submit = body["ui_spec"]["elements"]["form_submit"]["on"]["press"]["params"]
+    assert submit["api_id"] == "role_create"
+    _assert_runtime_metadata(submit, trace_id=body["trace_id"], api_suffix="role_create")
     root_children = _get_root_children(body["ui_spec"])
     assert all(child["type"] != "PlannerNotice" for child in root_children)
 
@@ -337,13 +458,17 @@ def test_api_query_truncates_context_pool_and_ui_rows(monkeypatch) -> None:
 
     assert response.status_code == 200
     body = response.json()
-    assert set(body.keys()) == {"trace_id", "execution_status", "execution_plan", "ui_runtime", "ui_spec", "error"}
+    _assert_api_query_response_keys(body)
     assert body["execution_plan"]["steps"][0]["step_id"] == "step_customer_list"
-    assert body["ui_runtime"]["list"]["pagination"]["total"] == 20
-    table = _get_child_by_type(body["ui_spec"], "PlannerTable")
+    children = _get_root_children(body["ui_spec"])
+    assert [child["type"] for child in children] == ["PlannerForm", "PlannerTable", "PlannerPagination"]
+    table = children[1]
+    pagination = children[2]
     assert table["props"]["columns"][0]["dataIndex"] == "customerId"
     assert len(table["props"]["dataSource"]) == 5
-    assert set(body["ui_runtime"]["components"]) >= {"PlannerCard", "PlannerTable"}
+    _assert_runtime_metadata(table["props"], trace_id=body["trace_id"], api_suffix="customer_list")
+    _assert_runtime_metadata(pagination["props"], trace_id=body["trace_id"], api_suffix="customer_list")
+    assert pagination["props"]["total"] == 20
 
 
 def test_api_query_renders_single_object_as_detail_card(monkeypatch) -> None:
@@ -368,13 +493,67 @@ def test_api_query_renders_single_object_as_detail_card(monkeypatch) -> None:
 
     assert response.status_code == 200
     body = response.json()
-    assert set(body.keys()) == {"trace_id", "execution_status", "execution_plan", "ui_runtime", "ui_spec", "error"}
+    _assert_api_query_response_keys(body)
     assert body["execution_plan"]["steps"][0]["step_id"] == "step_customer_list"
     detail_card = _get_child_by_type(body["ui_spec"], "PlannerDetailCard")
     assert detail_card["props"]["title"] == "查询客户列表"
     assert {"label": "customerId", "value": "C001"} in detail_card["props"]["items"]
     assert {"label": "level", "value": "VIP"} in detail_card["props"]["items"]
-    assert "PlannerDetailCard" in body["ui_runtime"]["components"]
+    _assert_runtime_metadata(detail_card["props"], trace_id=body["trace_id"], api_suffix="customer_list")
+
+
+def test_api_query_detail_card_uses_detail_request_schema_keys(monkeypatch) -> None:
+    entry = _make_entry()
+    entry.detail_hint = ApiCatalogDetailHint(
+        enabled=True,
+        api_id="customer_detail",
+        identifier_field="customerId",
+        query_param="legacyId",
+    )
+    detail_entry = ApiCatalogEntry(
+        id="customer_detail",
+        description="查询客户详情",
+        domain="crm",
+        operation_safety="query",
+        method="GET",
+        path="/api/v1/customers/detail",
+        param_schema={
+            "type": "object",
+            "properties": {
+                "customerId": {"type": "string"},
+            },
+            "required": ["customerId"],
+        },
+    )
+    stub_services = (
+        StubRetriever(entry),
+        StubExtractor(entry),
+        StubExecutor(
+            ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.SUCCESS,
+                data={"customerId": "C001", "customerName": "张三"},
+                total=1,
+            )
+        ),
+        api_query_routes.DynamicUIService(),
+        PassThroughSnapshotService(),
+    )
+    monkeypatch.setattr(api_query_routes, "_get_services", lambda: stub_services)
+    monkeypatch.setattr(
+        api_query_routes,
+        "_get_registry_source",
+        lambda: StubRegistrySource({"customer_detail": detail_entry}),
+    )
+
+    client = TestClient(create_test_app())
+    response = client.post("/api/v1/api-query", json={"query": "查询客户详情"})
+
+    assert response.status_code == 200
+    body = response.json()
+    detail_card = _get_child_by_type(body["ui_spec"], "PlannerDetailCard")
+    assert detail_card["props"]["queryParams"] == {"customerId": "C001"}
+    assert detail_card["props"]["body"] == {}
+    assert "legacyId" not in detail_card["props"]["queryParams"]
 
 
 def test_api_query_direct_mode_renders_detail_card_without_nl_chain(monkeypatch) -> None:
@@ -397,7 +576,7 @@ def test_api_query_direct_mode_renders_detail_card_without_nl_chain(monkeypatch)
             raise AssertionError("direct mode should bypass extractor.extract_routing_result")
 
     class DetailExecutor:
-        async def call(self, entry, params, user_token=None, trace_id: str | None = None):
+        async def call(self, entry, params, user_token=None, trace_id: str | None = None, user_id: str | None = None):
             assert params == {"customerId": "C001"}
             return ApiQueryExecutionResult(
                 status=ApiQueryExecutionStatus.SUCCESS,
@@ -516,7 +695,7 @@ def test_api_query_executes_multi_step_plan_and_returns_multi_step_context_pool(
             }
 
     class MultiStepExecutor:
-        async def call(self, entry, params, user_token=None, trace_id: str | None = None):
+        async def call(self, entry, params, user_token=None, trace_id: str | None = None, user_id: str | None = None):
             if entry.id == "customer_list":
                 assert params == {"owner_id": "E8899"}
                 return ApiQueryExecutionResult(
@@ -549,14 +728,16 @@ def test_api_query_executes_multi_step_plan_and_returns_multi_step_context_pool(
 
     assert response.status_code == 200
     body = response.json()
-    assert set(body.keys()) == {"trace_id", "execution_status", "execution_plan", "ui_runtime", "ui_spec", "error"}
+    _assert_api_query_response_keys(body)
     assert body["execution_plan"]["plan_id"] == "dag_customer_orders"
     assert [step["step_id"] for step in body["execution_plan"]["steps"]] == ["step_customers", "step_orders"]
     assert [step["api_id"] for step in body["execution_plan"]["steps"]] == ["customer_list", "order_stats"]
     assert body["execution_status"] == "SUCCESS"
     assert body["ui_spec"]["root"] == "root"
     assert isinstance(body["ui_spec"]["elements"], dict)
-    table = _get_child_by_type(body["ui_spec"], "PlannerTable")
+    children = _get_root_children(body["ui_spec"])
+    assert [child["type"] for child in children] == ["PlannerForm", "PlannerTable", "PlannerPagination"]
+    table = children[1]
     assert table["props"]["columns"][0]["dataIndex"] == "stepId"
 
 
@@ -635,7 +816,7 @@ def test_api_query_renders_partial_success_with_notice_and_table(monkeypatch) ->
             }
 
     class PartialExecutor:
-        async def call(self, entry, params, user_token=None, trace_id: str | None = None):
+        async def call(self, entry, params, user_token=None, trace_id: str | None = None, user_id: str | None = None):
             if entry.id == "customer_list":
                 return ApiQueryExecutionResult(
                     status=ApiQueryExecutionStatus.SUCCESS,
@@ -666,13 +847,12 @@ def test_api_query_renders_partial_success_with_notice_and_table(monkeypatch) ->
 
     assert response.status_code == 200
     body = response.json()
-    assert set(body.keys()) == {"trace_id", "execution_status", "execution_plan", "ui_runtime", "ui_spec", "error"}
+    _assert_api_query_response_keys(body)
     assert body["execution_plan"]["plan_id"] == "dag_customer_orders_partial"
     assert body["execution_status"] == "PARTIAL_SUCCESS"
-    notice = _get_child_by_type(body["ui_spec"], "PlannerNotice")
-    table = _get_child_by_type(body["ui_spec"], "PlannerTable")
-    assert notice["props"]["tone"] == "info"
-    assert "部分步骤执行失败" in notice["props"]["text"]
+    root = _get_root_element(body["ui_spec"])
+    assert "部分步骤执行失败" in root["props"]["subtitle"]
+    table = _get_root_children(body["ui_spec"])[1]
     assert table["props"]["dataSource"][0]["stepId"] == "step_customers"
 
 
@@ -734,7 +914,7 @@ def test_api_query_returns_error_response_when_execution_graph_fails(monkeypatch
             return {"step_customer_list": entry}
 
     class BrokenExecutor:
-        async def call(self, entry, params, user_token=None, trace_id: str | None = None):
+        async def call(self, entry, params, user_token=None, trace_id: str | None = None, user_id: str | None = None):
             raise RuntimeError("executor exploded in runtime test")
 
     stub_services = (

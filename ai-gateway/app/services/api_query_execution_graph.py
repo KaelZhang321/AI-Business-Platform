@@ -82,11 +82,12 @@ class ApiQueryExecutionRuntime:
 
     入参业务含义：
         plan: 当前请求的 DAG 规划结果。
-    step_entries: `step_id -> ApiCatalogEntry` 白名单，确保节点只执行校验后的接口。
+        step_entries: `step_id -> ApiCatalogEntry` 白名单，确保节点只执行校验后的接口。
         trace_id: 当前请求链路 Trace ID。
         interaction_id: 一次连续交互内的多请求聚合标识。
         conversation_id: 跨多轮查询共享的会话标识。
         user_token: 透传给业务系统或 runtime invoke 的认证头。
+        user_id: 当前请求最终认定的用户主键，供 runtime invoke 落审计字段。
         step_timeout_seconds: 单节点外层保护超时。
 
     返回值约束：
@@ -99,6 +100,7 @@ class ApiQueryExecutionRuntime:
     interaction_id: str | None
     conversation_id: str | None
     user_token: str | None
+    user_id: str | None
     step_timeout_seconds: float
 
 
@@ -141,16 +143,23 @@ class ApiQueryExecutionGraph:
         step_entries: dict[str, ApiCatalogEntry],
         *,
         user_token: str | None,
+        user_id: str | None = None,
         trace_id: str,
         interaction_id: str | None = None,
         conversation_id: str | None = None,
     ) -> ApiQueryExecutionGraphResult:
         """执行一张动态 DAG。
 
+        功能：
+            该方法除了执行依赖图，还负责把 route 层已经确定好的 `user_token` / `user_id`
+            绑定进一次 graph run 的闭包，确保每个节点看到的身份口径一致，避免某些节点
+            继续从局部上下文二次猜测“当前是谁在发起查询”。
+
         Args:
             plan: 已通过第三阶段白名单与依赖校验的执行计划。
             step_entries: `step_id -> ApiCatalogEntry` 映射。
             user_token: 请求期认证头。
+            user_id: 当前请求最终认定的用户主键。
             trace_id: 当前链路 Trace ID。
 
         Returns:
@@ -158,6 +167,11 @@ class ApiQueryExecutionGraph:
 
         Raises:
             该方法会吞掉 compile / run 异常并返回 synthetic report，因此正常情况下不向外抛错。
+
+        Edge Cases:
+            - graph compile 失败会直接降级成 synthetic report，而不会让 route 收到裸异常
+            - 整图 timeout 会保留 plan 与 step 语义，确保第五阶段仍能构造结构化错误页面
+            - LangGraph 最终 state 若缺失聚合字段，会回退本地汇总逻辑，避免执行摘要为空
         """
 
         runtime = ApiQueryExecutionRuntime(
@@ -167,10 +181,12 @@ class ApiQueryExecutionGraph:
             interaction_id=interaction_id,
             conversation_id=conversation_id,
             user_token=user_token,
+            user_id=user_id,
             step_timeout_seconds=_resolve_step_timeout(self._budget),
         )
         build_started = perf_counter()
         try:
+            # 每次请求按当前 planner 结果现编现用，避免跨请求复用错误的节点依赖关系。
             compiled_graph = self._build_graph(plan, runtime).compile()
         except Exception as exc:
             build_ms = (perf_counter() - build_started) * 1000
@@ -198,6 +214,7 @@ class ApiQueryExecutionGraph:
         build_ms = (perf_counter() - build_started) * 1000
         run_started = perf_counter()
         try:
+            # graph state 只放轻量摘要，敏感运行时对象继续通过闭包透传。
             final_state = await asyncio.wait_for(
                 compiled_graph.ainvoke(
                     {
@@ -263,6 +280,7 @@ class ApiQueryExecutionGraph:
             )
 
         run_ms = (perf_counter() - run_started) * 1000
+        # LangGraph 并发节点完成顺序不稳定，因此这里统一回退到 planner 顺序做最终收敛。
         records_by_step_id = dict(final_state.get("records_by_step_id") or {})
         execution_order = list(final_state.get("execution_order") or _build_execution_order(plan, records_by_step_id))
         aggregate_status = final_state.get("aggregate_status") or _summarize_execution_records(
@@ -308,6 +326,17 @@ class ApiQueryExecutionGraph:
         功能：
             这里不做跨请求缓存。第四阶段的 graph 形状由 LLM 规划结果决定，先优先保证
             正确性和隔离性，等拿到真实性能数据后再评估是否做签名缓存。
+
+        Args:
+            plan: 已通过第三阶段校验的执行计划。
+            runtime: 当前请求的执行期闭包上下文。
+
+        Returns:
+            尚未 compile 的 `StateGraph`，由调用方决定何时编译与执行。
+
+        Edge Cases:
+            - 缺失 `step_entries` 或步骤数超限会在编译前硬失败，避免 LangGraph 才暴露晦涩错误
+            - 叶子节点统一汇入 finalize 节点，确保多分支 DAG 也能稳定产出聚合摘要
         """
 
         _validate_execution_graph_inputs(plan, runtime.step_entries, self._budget)
@@ -325,11 +354,13 @@ class ApiQueryExecutionGraph:
             for upstream_step_id in step.depends_on:
                 depended_step_ids.add(upstream_step_id)
 
+        # 依赖边按 planner 的 step_id 建图，避免执行层再猜测业务依赖语义。
         for step in plan.steps:
             node_name = node_names[step.step_id]
             for upstream_step_id in step.depends_on:
                 graph.add_edge(node_names[upstream_step_id], node_name)
 
+        # 只把叶子节点接到 finalize，才能让多终点 DAG 在一个出口统一汇总状态。
         leaf_step_ids = [step.step_id for step in plan.steps if step.step_id not in depended_step_ids]
         graph.add_node(_FINALIZE_NODE_NAME, self._finalize_execution)
         for step_id in leaf_step_ids:
@@ -342,9 +373,42 @@ class ApiQueryExecutionGraph:
         step: ApiQueryPlanStep,
         runtime: ApiQueryExecutionRuntime,
     ):
-        """为单个规划步骤生成 LangGraph 节点函数。"""
+        """为单个规划步骤生成 LangGraph 节点函数。
+
+        功能：
+            每个步骤节点都统一遵循“先解析绑定，再决定是否可安全执行，最后调用业务接口”
+            的顺序，避免不同 DAG 步骤出现各自一套缺参和短路语义。
+
+        Args:
+            step: 当前 planner 步骤定义。
+            runtime: 当前请求的执行期闭包上下文。
+
+        Returns:
+            可直接注册到 LangGraph 的异步节点函数。
+
+        Edge Cases:
+            - 上游绑定为空时必须短路为 `SKIPPED`，不能继续调用业务接口
+            - 必填参数缺失会折叠成标准化跳过结果，保持和旧执行器一致
+            - 节点执行成功后仍会补写 planner 元数据，方便第五阶段审计与定位
+        """
 
         async def _run_step(state: ApiQueryExecutionGraphState) -> dict[str, Any]:
+            """执行单个 DAG 步骤并产出标准化记录。
+
+            功能：
+                节点函数既承担实际调用，也负责把“为什么没调下游”折叠成结构化结果，
+                这样第五阶段无需区分是业务失败、超时还是前置短路。
+
+            Args:
+                state: 当前 LangGraph 轻量状态，只包含上游记录与计划摘要。
+
+            Returns:
+                只包含当前步骤记录增量的 state patch。
+
+            Edge Cases:
+                - 空绑定和缺参都走 `SKIPPED`，避免 UI 把这类安全短路误判成系统错误
+                - 下游执行即使成功，也会把 resolved_params 写回记录，供响应层回溯
+            """
             upstream_records = state.get("records_by_step_id") or {}
             step_data_by_id = {
                 step_id: record.execution_result.data
@@ -388,6 +452,7 @@ class ApiQueryExecutionGraph:
                     }
                 }
 
+            # 缺参短路发生在真正发起 HTTP 调用前，避免把“参数不成立”污染成下游错误。
             missing_required_params = _find_missing_required_params(entry, resolved_params)
             if missing_required_params:
                 logger.info(
@@ -424,6 +489,7 @@ class ApiQueryExecutionGraph:
                 entry=entry,
                 resolved_params=resolved_params,
                 user_token=runtime.user_token,
+                user_id=runtime.user_id,
                 trace_id=runtime.trace_id,
                 step=step,
                 step_timeout_seconds=runtime.step_timeout_seconds,
@@ -563,13 +629,39 @@ async def _call_entry_with_timeout(
     entry: ApiCatalogEntry,
     resolved_params: dict[str, Any],
     user_token: str | None,
+    user_id: str | None,
     trace_id: str,
     step: ApiQueryPlanStep,
     step_timeout_seconds: float,
     interaction_id: str | None = None,
     conversation_id: str | None = None,
 ) -> ApiQueryExecutionResult:
-    """执行单个业务接口并加上节点级超时保护。"""
+    """执行单个业务接口并加上节点级超时保护。
+
+    功能：
+        runtime invoke 现在需要把请求级 `user_id` 一并写入请求壳；这里把用户主键和 token
+        一起透传给执行器，是为了让“谁发起了这次查询”和“凭什么能调下游”继续在同一个
+        节点执行上下文里闭环，而不是在 DAG 节点里再额外拼装一次身份信息。
+
+    Args:
+        api_executor: 统一业务接口执行器。
+        entry: 当前步骤命中的目录项。
+        resolved_params: 已完成上游绑定解析的最终参数。
+        user_token: 透传给下游的认证头。
+        user_id: 当前可信用户主键。
+        trace_id: 当前请求 Trace ID。
+        step: planner 里的当前步骤定义。
+        step_timeout_seconds: 节点级超时阈值。
+        interaction_id: 连续交互聚合 ID。
+        conversation_id: 多轮会话 ID。
+
+    Returns:
+        标准化后的 `ApiQueryExecutionResult`；超时场景也返回结构化错误对象。
+
+    Edge Cases:
+        - 节点超时不会炸穿整图，而是折叠成单步骤 `ERROR`
+        - 超时结果仍保留 `depends_on` 与 `resolved_params`，便于复盘到底卡在什么输入上
+    """
 
     try:
         return await asyncio.wait_for(
@@ -577,6 +669,7 @@ async def _call_entry_with_timeout(
                 entry,
                 resolved_params,
                 user_token=user_token,
+                user_id=user_id,
                 trace_id=trace_id,
             ),
             timeout=step_timeout_seconds,
@@ -635,6 +728,21 @@ def _build_synthetic_failure_result(
     功能：
         `/api-query` 对外要保持“始终返回结构化执行报告”的契约，即使底层状态图本身失效，
         第五阶段也必须能拿到一个最小可消费的错误报告。
+
+    Args:
+        plan: 当前执行计划。
+        step_entries: 已校验的步骤目录映射。
+        trace_id: 当前请求 Trace ID。
+        error_code: 结构化错误码。
+        message: 对外可读的失败摘要。
+        retryable: 当前错误是否允许前端提示用户重试。
+
+    Returns:
+        带 synthetic report 的执行图结果对象。
+
+    Edge Cases:
+        - 若目录映射异常缺失，仍会构造占位 entry，保证响应结构不塌陷
+        - synthetic report 固定锚定首个步骤，确保第五阶段至少能拿到稳定 anchor
     """
 
     fallback_step = plan.steps[0]
@@ -724,7 +832,24 @@ def _resolve_param_value(
     value: Any,
     step_data_by_id: dict[str, Any],
 ) -> tuple[Any, list[str]]:
-    """递归解析参数值中的绑定表达式。"""
+    """递归解析参数值中的绑定表达式。
+
+    功能：
+        planner 参数既可能是标量，也可能是深层对象/数组。这里统一做递归解析，确保
+        所有 `$step_xxx...` 绑定都在执行前被还原成最终值，并顺手收集“哪些绑定解析为空”，
+        供上层节点决定是否短路。
+
+    Args:
+        value: 待解析的参数片段。
+        step_data_by_id: `step_id -> execution_result.data` 的上游数据视图。
+
+    Returns:
+        二元组 `(resolved_value, empty_bindings)`，后者用于上层短路判定。
+
+    Edge Cases:
+        - 绑定表达式即使解析为空，也要保留原始空值结果，避免下游参数形状失真
+        - 嵌套 dict/list 会继续递归解析，防止局部绑定遗漏
+    """
 
     if is_dag_binding(value):
         resolved_value = evaluate_binding_expression(value, step_data_by_id)

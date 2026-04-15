@@ -28,6 +28,7 @@ services:
     environment:
       - FE_SERVERS=fe1:doris-fe:9010
       - FE_ID=1
+      - TZ=Asia/Shanghai
     ports:
       - "8030:8030" # Web UI & Stream Load
       - "9030:9030" # MySQL 协议端口（JDBC 连这个）
@@ -56,6 +57,7 @@ services:
     environment:
       - FE_SERVERS=fe1:doris-fe:9010
       - BE_ADDR=doris-be:9050
+      - TZ=Asia/Shanghai
     ports:
       - "8040:8040" # BE Web UI
       - "9050:9050" # BE 心跳端口
@@ -86,6 +88,8 @@ services:
     depends_on:
       doris-be:
         condition: service_healthy
+    environment:
+      - TZ=Asia/Shanghai
     command: >
       bash -c "
         echo '>>> 注册 BE 到 FE...' &&
@@ -121,6 +125,7 @@ services:
         condition: service_healthy
     environment:
       - ST_DOCKER_MEMBER_LIST=seatunnel:5801
+      - TZ=Asia/Shanghai
     command: >
       bash -c "
         /opt/seatunnel/bin/seatunnel-cluster.sh -d &&
@@ -137,6 +142,7 @@ services:
     environment:
       MYSQL_ROOT_PASSWORD: root123
       MYSQL_DATABASE: orders_db
+      TZ: Asia/Shanghai
     ports:
       - "3307:3306" # 用 3307 避免与本机 MySQL 冲突
     volumes:

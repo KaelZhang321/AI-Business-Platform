@@ -9,9 +9,11 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.lecz.service.tools.core.dto.ResponseDto;
+import com.lzke.ai.application.rule.dto.RuleDataSourceResponse;
 import com.lzke.ai.application.rule.dto.RuleQueryDTO;
 import com.lzke.ai.application.rule.po.Rule;
 import com.lzke.ai.application.rule.service.RuleService;
+import com.lzke.ai.application.rule.service.SQLRuleService;
 
 import io.swagger.v3.oas.annotations.Operation;
 import jakarta.annotation.Resource;
@@ -27,6 +29,9 @@ public class RuleController {
 	
 	@Resource
 	RuleService ruleService;
+
+	@Resource
+	SQLRuleService sqlRuleService;
     
     @Operation(summary = "规则列表查询")
     @PostMapping("/ruleList")
@@ -38,6 +43,12 @@ public class RuleController {
     @GetMapping("/getRuleById/{id}")
     public ResponseDto<Rule> getRuleById(@PathVariable("id") Long id) {
     	return ruleService.getRuleById(id);
+    }
+
+    @Operation(summary = "规则引擎可选数据源列表")
+    @GetMapping("/data-sources")
+    public ResponseDto<java.util.List<RuleDataSourceResponse>> listDataSources() {
+    	return ResponseDto.success(sqlRuleService.listDataSources());
     }
     
     /**
@@ -69,7 +80,13 @@ public class RuleController {
      */
     @Operation(summary = "启用禁用")
     @GetMapping("/enable/{id}")
-    public ResponseDto enable(@PathVariable("id") Long id) {
+    public ResponseDto<Rule> enable(@PathVariable("id") Long id) {
+    	return ruleService.enable(id);
+    }
+
+    @Operation(summary = "启用禁用")
+    @PostMapping("/enable/{id}")
+    public ResponseDto<Rule> enableByPost(@PathVariable("id") Long id) {
     	return ruleService.enable(id);
     }
 

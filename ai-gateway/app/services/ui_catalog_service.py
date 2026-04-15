@@ -1,15 +1,15 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from dataclasses import dataclass, field
 from typing import Any, Sequence
 
 import aiomysql
 
-from app.core.config import settings
+from app.core.mysql import build_business_mysql_conn_params
 from app.models.schemas import ApiQueryUIAction
+from app.utils.json_utils import load_json_object
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +18,7 @@ _QUERY_DEFAULT_COMPONENT_CODES = [
     "PlannerMetric",
     "PlannerTable",
     "PlannerDetailCard",
+    "PlannerPagination",
     "PlannerForm",
     "PlannerInput",
     "PlannerSelect",
@@ -283,7 +284,7 @@ class UICatalogService:
                 code=code,
                 name=str(row.get("name") or code).strip(),
                 description=str(row.get("description") or code).strip(),
-                props_schema=_coerce_json_object(row.get("props_schema")),
+                props_schema=load_json_object(row.get("props_schema")),
                 is_container=bool(row.get("is_container")),
                 status=str(row.get("status") or "active").strip().lower(),
             )
@@ -316,7 +317,7 @@ class UICatalogService:
                 code=code,
                 name=str(row.get("name") or code).strip(),
                 description=str(row.get("description") or code).strip(),
-                params_schema=_coerce_json_object(row.get("params_schema")),
+                params_schema=load_json_object(row.get("params_schema")),
                 # MySQL 目录表只负责声明能力，不负责请求级启用态，因此默认启用态沿用内置策略。
                 enabled=builtin_definition.enabled if builtin_definition else True,
                 status=str(row.get("status") or "active").strip().lower(),
@@ -343,12 +344,7 @@ class UICatalogService:
             self._pool = await aiomysql.create_pool(
                 minsize=1,
                 maxsize=3,
-                host=settings.business_mysql_host,
-                port=settings.business_mysql_port,
-                user=settings.business_mysql_user,
-                password=settings.business_mysql_password,
-                db=settings.business_mysql_database,
-                charset="utf8mb4",
+                **build_business_mysql_conn_params(include_connect_timeout=False),
             )
         return self._pool
 
@@ -371,6 +367,11 @@ def _build_builtin_snapshot() -> UICatalogSnapshot:
             code="PlannerTable",
             name="规划表格",
             description="同质列表展示，props: columns, dataSource",
+        ),
+        "PlannerPagination": UIComponentDefinition(
+            code="PlannerPagination",
+            name="规划分页器",
+            description="列表底部分页器，props: total, currentPage, pageSize, pageParam, pageSizeParam",
         ),
         "PlannerMetric": UIComponentDefinition(
             code="PlannerMetric",
@@ -486,8 +487,11 @@ def _build_builtin_snapshot() -> UICatalogSnapshot:
                 "type": "object",
                 "properties": {
                     "api_id": {"type": "string"},
-                    "route_url": {"type": "string"},
-                    "params": {"type": "object"},
+                    "api": {"type": "string"},
+                    "queryParams": {"type": "object"},
+                    "body": {"type": "object"},
+                    "flowNum": {"type": "string"},
+                    "createdBy": {"type": "string"},
                     "mutation_target": {"type": "string"},
                 },
                 "required": ["api_id"],
@@ -502,10 +506,14 @@ def _build_builtin_snapshot() -> UICatalogSnapshot:
                 "type": "object",
                 "properties": {
                     "api_id": {"type": "string"},
-                    "payload": {"type": "object"},
+                    "api": {"type": "string"},
+                    "queryParams": {"type": "object"},
+                    "body": {"type": "object"},
+                    "flowNum": {"type": "string"},
+                    "createdBy": {"type": "string"},
                     "snapshot_id": {"type": "string"},
                 },
-                "required": ["api_id", "payload"],
+                "required": ["api_id"],
             },
         ),
     }
@@ -554,25 +562,6 @@ def _merge_snapshot(
         actions=merged_actions,
         template_scenarios=[dict(item) for item in base_snapshot.template_scenarios],
     )
-
-
-def _coerce_json_object(value: Any) -> dict[str, Any]:
-    """把 MySQL JSON 字段稳定转换成对象。
-
-    功能：
-        MySQL 驱动在不同环境下可能返回 Python 字典，也可能返回字符串。
-        这里统一收口成对象，避免上游代码为了兼容连接器差异到处写类型分支。
-    """
-    if isinstance(value, dict):
-        return dict(value)
-    if isinstance(value, str):
-        try:
-            parsed = json.loads(value)
-        except json.JSONDecodeError:
-            logger.warning("Invalid JSON payload found in UI catalog metadata: %s", value[:120])
-            return {}
-        return dict(parsed) if isinstance(parsed, dict) else {}
-    return {}
 
 
 def _dedupe_codes(codes: Sequence[str]) -> list[str]:

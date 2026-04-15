@@ -531,10 +531,21 @@ public class UiBuilderApplicationService {
      * @param sourceId 接口源 ID
      * @param query 分页参数
      * @param tagId 标签 ID，可为空
+     * @param name 接口名称模糊匹配，可为空
+     * @param path 接口路径模糊匹配，可为空
+     * @param status 接口状态精确匹配，可为空
      * @param untagged 是否仅查询未分组接口
      * @return 分页后的接口定义列表
      */
-    public PageResult<UiApiEndpoint> listEndpointsBySource(String sourceId, PageQuery query, String tagId, Boolean untagged) {
+    public PageResult<UiApiEndpoint> listEndpointsBySource(
+            String sourceId,
+            PageQuery query,
+            String tagId,
+            String name,
+            String path,
+            String status,
+            Boolean untagged
+    ) {
         requireSource(sourceId);
         LambdaQueryWrapper<UiApiEndpoint> wrapper = new LambdaQueryWrapper<UiApiEndpoint>()
                 .eq(UiApiEndpoint::getSourceId, sourceId)
@@ -544,6 +555,15 @@ public class UiBuilderApplicationService {
             wrapper.and(condition -> condition.isNull(UiApiEndpoint::getTagId).or().eq(UiApiEndpoint::getTagId, ""));
         } else if (StringUtils.hasText(tagId)) {
             wrapper.eq(UiApiEndpoint::getTagId, tagId);
+        }
+        if (StringUtils.hasText(name)) {
+            wrapper.like(UiApiEndpoint::getName, name.trim());
+        }
+        if (StringUtils.hasText(path)) {
+            wrapper.like(UiApiEndpoint::getPath, path.trim());
+        }
+        if (StringUtils.hasText(status)) {
+            wrapper.eq(UiApiEndpoint::getStatus, status.trim());
         }
 
         Page<UiApiEndpoint> pageParam = buildPage(query);
@@ -596,6 +616,49 @@ public class UiBuilderApplicationService {
         Page<UiApiTestLog> result = uiApiTestLogMapper.selectPage(pageParam, new LambdaQueryWrapper<UiApiTestLog>()
                 .eq(UiApiTestLog::getEndpointId, endpointId)
                 .orderByDesc(UiApiTestLog::getCreatedAt));
+        return PageResult.of(result.getRecords(), result.getTotal(), query.getPage(), query.getSize());
+    }
+
+    /**
+     * 分页查询运行时调用日志。
+     *
+     * <p>该列表主要服务 UI Builder 的“调用日志”页签，支持按流程号、请求地址、
+     * 创建人和调用状态做组合筛选，并统一按创建时间倒序返回。
+     *
+     * @param query 分页参数
+     * @param flowNum 流程号，可为空
+     * @param requestUrl 请求地址模糊匹配，可为空
+     * @param createdBy 创建人模糊匹配，可为空
+     * @param invokeStatus 调用状态精确匹配，可为空
+     * @return 分页运行时调用日志
+     */
+    public PageResult<UiApiFlowLog> listFlowLogs(
+            PageQuery query,
+            String flowNum,
+            String requestUrl,
+            String createdBy,
+            String invokeStatus
+    ) {
+        Page<UiApiFlowLog> pageParam = buildPage(query);
+        LambdaQueryWrapper<UiApiFlowLog> wrapper = new LambdaQueryWrapper<UiApiFlowLog>()
+                .orderByDesc(UiApiFlowLog::getCreatedAt)
+                .orderByDesc(UiApiFlowLog::getUpdatedAt);
+        if (StringUtils.hasText(flowNum)) {
+            wrapper.like(UiApiFlowLog::getFlowNum, flowNum.trim());
+        }
+        if (StringUtils.hasText(requestUrl)) {
+            wrapper.like(UiApiFlowLog::getRequestUrl, requestUrl.trim());
+        }
+        if (StringUtils.hasText(createdBy)) {
+            String normalizedCreatedBy = createdBy.trim();
+            wrapper.and(condition -> condition.like(UiApiFlowLog::getCreatedBy, normalizedCreatedBy)
+                    .or()
+                    .like(UiApiFlowLog::getCreatedByName, normalizedCreatedBy));
+        }
+        if (StringUtils.hasText(invokeStatus)) {
+            wrapper.eq(UiApiFlowLog::getInvokeStatus, invokeStatus.trim());
+        }
+        Page<UiApiFlowLog> result = uiApiFlowLogMapper.selectPage(pageParam, wrapper);
         return PageResult.of(result.getRecords(), result.getTotal(), query.getPage(), query.getSize());
     }
 
@@ -865,7 +928,7 @@ public class UiBuilderApplicationService {
      * @param request 运行时调用请求
      * @return 三方接口的原始响应体解析结果
      */
-    @Transactional
+    //@Transactional
     public Object invokeEndpoint(String endpointId, UiApiInvokeRequest request) {
         UiApiEndpoint endpoint = requireEndpoint(endpointId);
         UiApiSource source = requireSource(endpoint.getSourceId());

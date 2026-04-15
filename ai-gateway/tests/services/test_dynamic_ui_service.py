@@ -54,6 +54,10 @@ class StubUICatalogService:
                 "PlannerCard": "自定义卡片说明",
                 "PlannerTable": "自定义表格说明",
                 "PlannerDetailCard": "自定义详情说明",
+                "PlannerPagination": "自定义分页说明",
+                "PlannerForm": "自定义表单说明",
+                "PlannerInput": "自定义输入框说明",
+                "PlannerButton": "自定义按钮说明",
                 "PlannerNotice": "自定义提示说明",
             }
         return {
@@ -63,11 +67,31 @@ class StubUICatalogService:
 
     def get_component_codes(self, *, intent: str | None = None, requested_codes=None) -> list[str]:
         if intent == "query":
-            return ["PlannerCard", "PlannerTable", "PlannerDetailCard", "PlannerNotice"]
+            return [
+                "PlannerCard",
+                "PlannerTable",
+                "PlannerDetailCard",
+                "PlannerPagination",
+                "PlannerForm",
+                "PlannerInput",
+                "PlannerButton",
+                "PlannerNotice",
+            ]
         return ["Card", "Table"]
 
     def get_all_component_codes(self) -> set[str]:
-        return {"PlannerCard", "PlannerTable", "PlannerDetailCard", "PlannerNotice", "Card", "Table"}
+        return {
+            "PlannerCard",
+            "PlannerTable",
+            "PlannerDetailCard",
+            "PlannerPagination",
+            "PlannerForm",
+            "PlannerInput",
+            "PlannerButton",
+            "PlannerNotice",
+            "Card",
+            "Table",
+        }
 
     def get_all_action_codes(self) -> set[str]:
         return {"remoteQuery"}
@@ -86,7 +110,16 @@ class StubUICatalogService:
 
 def _make_runtime() -> ApiQueryUIRuntime:
     return ApiQueryUIRuntime(
-        components=["PlannerCard", "PlannerTable", "PlannerDetailCard", "PlannerNotice"],
+        components=[
+            "PlannerCard",
+            "PlannerTable",
+            "PlannerDetailCard",
+            "PlannerPagination",
+            "PlannerForm",
+            "PlannerInput",
+            "PlannerButton",
+            "PlannerNotice",
+        ],
         ui_actions=[
             ApiQueryUIAction(
                 code="remoteQuery",
@@ -335,6 +368,87 @@ async def test_generate_ui_spec_parses_dirty_renderer_json_payload(
 
 
 @pytest.mark.asyncio
+async def test_generate_ui_spec_sanitizes_llm_detail_request_keys_to_request_schema(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "llm_ui_spec_enabled", True)
+    service = DynamicUIService(catalog_service=StubUICatalogService())
+    service._llm_service = RecordingLLM(
+        [
+            """
+            {
+              "root": "root",
+              "state": {},
+              "elements": {
+                "root": {
+                  "type": "PlannerCard",
+                  "props": {"title": "客户详情"},
+                  "children": ["detail"]
+                },
+                "detail": {
+                  "type": "PlannerDetailCard",
+                  "props": {
+                    "title": "客户详情",
+                    "items": [
+                      {"label": "主键ID", "value": "71593"},
+                      {"label": "客户姓名", "value": "张三"}
+                    ],
+                    "api": "/api/v1/ui-builder/runtime/endpoints/customer_detail/invoke",
+                    "queryParams": {"主键ID": "71593"},
+                    "body": {},
+                    "flowNum": "trace-detail-001",
+                    "createdBy": "user-001"
+                  }
+                }
+              }
+            }
+            """
+        ]
+    )
+    runtime = _make_runtime().model_copy(
+        update={
+            "detail": ApiQueryDetailRuntime(
+                enabled=True,
+                api_id="customer_detail",
+                route_url="/api/v1/api-query",
+                ui_action="remoteQuery",
+                request=ApiQueryDetailRequestRuntime(
+                    param_source="queryParams",
+                    identifier_param="id",
+                    request_schema_fields=["id"],
+                ),
+                source=ApiQueryDetailSourceRuntime(
+                    identifier_field="主键ID",
+                    value_type="string",
+                    required=True,
+                ),
+            )
+        }
+    )
+
+    result = await service.generate_ui_spec_result(
+        intent="query",
+        data=[{"主键ID": "71593", "客户姓名": "张三"}],
+        context={
+            "question": "帮我查一下客户71593的详情",
+            "title": "客户详情",
+            "query_render_mode": "detail",
+            "request_params": {"id": 71593},
+            "flow_num": "trace-detail-001",
+            "created_by": "user-001",
+        },
+        runtime=runtime,
+        trace_id="trace-detail-001",
+    )
+
+    assert result.frozen is False
+    assert result.spec is not None
+    detail = _root_child_by_type(result.spec, "PlannerDetailCard")
+    assert detail["props"]["queryParams"] == {"id": 71593}
+    assert detail["props"]["body"] == {}
+
+
+@pytest.mark.asyncio
 async def test_generate_ui_spec_falls_back_to_rule_renderer_when_llm_output_is_invalid(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -404,8 +518,11 @@ async def test_generate_ui_spec_result_freezes_invalid_renderer_spec(
 
 
 @pytest.mark.asyncio
-async def test_rule_query_spec_exposes_patch_metadata_for_pagination() -> None:
-    """首跳列表页必须把 patch 二跳所需元信息直接挂到分页动作里。"""
+async def test_rule_query_spec_exposes_runtime_metadata_for_list_components(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """列表视图必须固定输出三段式节点，并在组件 props 中携带 runtime 元数据。"""
+    monkeypatch.setattr(settings, "llm_ui_spec_enabled", False)
     service = DynamicUIService(catalog_service=StubUICatalogService())
 
     spec = await service.generate_ui_spec(
@@ -414,19 +531,54 @@ async def test_rule_query_spec_exposes_patch_metadata_for_pagination() -> None:
             {"customerId": "C021", "customerName": "客户21"},
             {"customerId": "C022", "customerName": "客户22"},
         ],
-        context={"question": "查询客户列表"},
+        context={
+            "question": "查询客户列表",
+            "flow_num": "trace-query-001",
+            "created_by": "user-001",
+        },
         runtime=_make_list_runtime(),
     )
 
     assert spec is not None
-    table = _root_child_by_type(spec, "PlannerTable")
-    pagination = table["props"]["pagination"]
-    assert pagination["action"]["params"]["response_mode"] == "patch"
-    assert pagination["action"]["params"]["patch_context"] == {
-        "patch_type": "list_query",
-        "trigger": "pagination",
-        "mutation_target": "report-table.props.dataSource",
-    }
+    root = _root_element(spec)
+    assert root["children"] == ["query-filters", "report-table", "report-pagination"]
+
+    elements = spec["elements"]
+    assert isinstance(elements, dict)
+
+    filters = elements["query-filters"]
+    table = elements["report-table"]
+    pagination = elements["report-pagination"]
+    assert filters["type"] == "PlannerForm"
+    assert table["type"] == "PlannerTable"
+    assert pagination["type"] == "PlannerPagination"
+
+    assert filters["props"]["api"] == "/api/v1/ui-builder/runtime/endpoints/customer_list/invoke"
+    assert filters["props"]["queryParams"] == {"ownerId": "E8899", "pageNum": 2, "pageSize": 20}
+    assert filters["props"]["body"] == {}
+    assert filters["props"]["flowNum"] == "trace-query-001"
+    assert filters["props"]["createdBy"] == "user-001"
+
+    assert table["props"]["api"] == "/api/v1/ui-builder/runtime/endpoints/customer_list/invoke"
+    assert table["props"]["queryParams"] == {"ownerId": "E8899", "pageNum": 2, "pageSize": 20}
+    assert table["props"]["body"] == {}
+    row_action = table["props"]["rowActions"][0]
+    assert row_action["params"]["api"] == "/api/v1/ui-builder/runtime/endpoints/customer_detail/invoke"
+    assert row_action["params"]["queryParams"] == {"customerId": {"$bindRow": "customerId"}}
+    assert row_action["params"]["body"] == {}
+    assert row_action["params"]["flowNum"] == "trace-query-001"
+    assert row_action["params"]["createdBy"] == "user-001"
+
+    assert pagination["props"]["api"] == "/api/v1/ui-builder/runtime/endpoints/customer_list/invoke"
+    assert pagination["props"]["queryParams"] == {"ownerId": "E8899", "pageNum": 2, "pageSize": 20}
+    assert pagination["props"]["body"] == {}
+    assert pagination["props"]["flowNum"] == "trace-query-001"
+    assert pagination["props"]["createdBy"] == "user-001"
+    assert pagination["props"]["currentPage"] == 2
+    assert pagination["props"]["pageSize"] == 20
+    assert pagination["props"]["total"] == 68
+    assert pagination["props"]["pageParam"] == "pageNum"
+    assert pagination["props"]["pageSizeParam"] == "pageSize"
 
 
 @pytest.mark.asyncio
@@ -448,7 +600,7 @@ async def test_mutation_form_skipped_status_still_renders_planner_form() -> None
                 code="remoteMutation",
                 description="远程写入",
                 enabled=True,
-                params_schema={"type": "object", "required": ["api_id", "payload"]},
+                params_schema={"type": "object", "required": ["api_id"]},
             )
         ],
         form=ApiQueryFormRuntime(
@@ -517,6 +669,11 @@ async def test_mutation_form_skipped_status_still_renders_planner_form() -> None
     assert result.spec is not None
     form = _root_child_by_type(result.spec, "PlannerForm")
     assert form["props"]["formCode"] == "employee_update_form"
+    assert form["props"]["api"] == "/api/v1/ui-builder/runtime/endpoints/employee_update/invoke"
+    assert form["props"]["queryParams"] == {}
+    assert form["props"]["body"]["email"] == {"$bindState": "/form/email"}
+    assert form["props"]["flowNum"] == ""
+    assert form["props"]["createdBy"] == ""
     elements = result.spec["elements"]
     assert isinstance(elements, dict)
     assert elements["form_field_1"]["props"]["required"] is True
@@ -528,8 +685,12 @@ async def test_mutation_form_skipped_status_still_renders_planner_form() -> None
     assert submit["type"] == "PlannerButton"
     assert submit["on"]["press"]["action"] == "remoteMutation"
     assert submit["on"]["press"]["params"]["api_id"] == "employee_update"
-    assert submit["on"]["press"]["params"]["payload"]["email"] == {"$bindState": "/form/email"}
-    assert submit["on"]["press"]["params"]["payload"]["mobile"] == {"$bindState": "/form/mobile"}
+    assert submit["on"]["press"]["params"]["api"] == "/api/v1/ui-builder/runtime/endpoints/employee_update/invoke"
+    assert submit["on"]["press"]["params"]["queryParams"] == {}
+    assert submit["on"]["press"]["params"]["body"]["email"] == {"$bindState": "/form/email"}
+    assert submit["on"]["press"]["params"]["body"]["mobile"] == {"$bindState": "/form/mobile"}
+    assert submit["on"]["press"]["params"]["flowNum"] == ""
+    assert submit["on"]["press"]["params"]["createdBy"] == ""
     root = _root_element(result.spec)
     child_ids = root.get("children", [])
     assert isinstance(child_ids, list)

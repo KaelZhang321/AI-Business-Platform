@@ -43,6 +43,7 @@ import com.lzke.ai.domain.entity.SemanticFieldDict;
 import com.lzke.ai.domain.entity.SemanticFieldValueMap;
 import com.lzke.ai.domain.entity.UiApiSource;
 import com.lzke.ai.domain.entity.UiApiTag;
+import com.lzke.ai.domain.entity.UiApiFlowLog;
 import com.lzke.ai.domain.entity.UiApiTestLog;
 import com.lzke.ai.domain.entity.UiNodeBinding;
 import com.lzke.ai.domain.entity.UiPage;
@@ -261,9 +262,12 @@ public class UiBuilderController {
             @PathVariable String sourceId,
             @Valid PageQuery query,
             @RequestParam(required = false) String tagId,
+            @RequestParam(required = false) String name,
+            @RequestParam(required = false) String path,
+            @RequestParam(required = false) String status,
             @RequestParam(required = false) Boolean untagged
     ) {
-        return ApiResponse.ok(uiBuilderApplicationService.listEndpointsBySource(sourceId, query, tagId, untagged));
+        return ApiResponse.ok(uiBuilderApplicationService.listEndpointsBySource(sourceId, query, tagId, name, path, status, untagged));
     }
 
     /**
@@ -408,6 +412,20 @@ public class UiBuilderController {
             request.setCreatedBy(String.valueOf(userId));
         }
         return ApiResponse.ok(uiBuilderApplicationService.submitJsonRenderForm(request));
+    }
+
+    /**
+     * 分页查询运行时调用日志。
+     */
+    @GetMapping("/flow-logs")
+    public ApiResponse<PageResult<UiApiFlowLog>> listFlowLogs(
+            @Valid PageQuery query,
+            @RequestParam(required = false) String flowNum,
+            @RequestParam(required = false) String requestUrl,
+            @RequestParam(required = false) String createdBy,
+            @RequestParam(required = false) String invokeStatus
+    ) {
+        return ApiResponse.ok(uiBuilderApplicationService.listFlowLogs(query, flowNum, requestUrl, createdBy, invokeStatus));
     }
 
     /**

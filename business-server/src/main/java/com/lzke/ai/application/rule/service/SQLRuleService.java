@@ -8,8 +8,6 @@ import java.util.concurrent.ExecutorService;
 
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Qualifier;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
 
@@ -25,6 +23,7 @@ import com.lzke.ai.application.rule.InputNode;
 import com.lzke.ai.application.rule.ParseResultNode;
 import com.lzke.ai.application.rule.RuleEngine;
 import com.lzke.ai.application.rule.SqlExecuteNode;
+import com.lzke.ai.application.rule.dto.RuleDataSourceResponse;
 import com.lzke.ai.application.rule.InputNode.ValidationRule;
 import com.lzke.ai.application.rule.InputNode.ValidationType;
 import com.lzke.ai.application.rule.SqlExecuteNode.ResultType;
@@ -52,14 +51,20 @@ public class SQLRuleService {
 	RuleNodeMapper ruleNodeMapper;
 
 	@Autowired
-	@Qualifier("odcJdbcTemplate")
-	JdbcTemplate odcJdbcTemplate;
+	RuleJdbcTemplateResolver ruleJdbcTemplateResolver;
 	
 	@Resource
 	private ExecutorService executorService;
 	
 	@Resource
 	private RestTemplate restTemplate;
+
+	/**
+	 * 返回规则引擎可选数据源列表。
+	 */
+	public List<RuleDataSourceResponse> listDataSources() {
+		return ruleJdbcTemplateResolver.listDataSources();
+	}
 
 	/**
 	 * 执行规则引擎
@@ -155,13 +160,19 @@ public class SQLRuleService {
 				JSONObject config = JSON.parseObject(nodeConfig);
 				String resultKey = config.getString("resultKey");
 				String resultType = config.getString("resultType");
+				String dataSourceKey = config.getString("dataSourceKey");
 				if(resultType == null || resultType.isEmpty()) {
 					resultType = "TO_MAP_LIST";
 					
 				}
 				
 				engine.addNode(
-						new SqlExecuteNode(node.getNodeName(), odcJdbcTemplate, node.getNodeSql(), resultKey,ResultType.valueOf(resultType)));
+						new SqlExecuteNode(
+								node.getNodeName(),
+								ruleJdbcTemplateResolver.resolve(dataSourceKey),
+								node.getNodeSql(),
+								resultKey,
+								ResultType.valueOf(resultType)));
 
 			// 4.3 结果解析节点：解析SQL查询结果
 			// nodeConfig格式：

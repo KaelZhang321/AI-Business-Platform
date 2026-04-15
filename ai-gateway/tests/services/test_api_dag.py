@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from app.models.schemas import ApiQueryExecutionPlan, ApiQueryExecutionResult, ApiQueryExecutionStatus, ApiQueryPlanStep
+from app.services.api_catalog.graph_models import ApiCatalogSubgraphResult, GraphFieldPath
 from app.services.api_catalog.dag_executor import ApiDagExecutor
 from app.services.api_catalog.dag_planner import ApiDagPlanner, DagPlanValidationError
 from app.services.api_catalog.schema import ApiCatalogEntry, ApiCatalogSearchResult
@@ -89,6 +90,64 @@ def test_validate_plan_rejects_mutation_entry() -> None:
     assert exc_info.value.code == "planner_unsafe_api"
 
 
+def test_validate_plan_preserves_cardinality_mismatch_error_code_and_wait_select_metadata() -> None:
+    planner = ApiDagPlanner()
+    role_list_entry = _make_entry(entry_id="role_list_v1", path="/system/employee/sys-role/list")
+    role_list_entry.response_data_path = "data.records"
+    role_detail_entry = _make_entry(
+        entry_id="role_detail_v1",
+        path="/system/employee/sys-role/detail",
+        required=["roleId"],
+    )
+    role_detail_entry.method = "POST"
+    candidates = [
+        ApiCatalogSearchResult(entry=role_list_entry, score=0.95),
+        ApiCatalogSearchResult(entry=role_detail_entry, score=0.92),
+    ]
+    plan = ApiQueryExecutionPlan(
+        plan_id="dag_role_detail",
+        steps=[
+            ApiQueryPlanStep(
+                step_id="step_role_list",
+                api_id="role_list_v1",
+                api_path="/system/employee/sys-role/list",
+                params={"pageNo": 1},
+                depends_on=[],
+            ),
+            ApiQueryPlanStep(
+                step_id="step_role_detail",
+                api_id="role_detail_v1",
+                api_path="/system/employee/sys-role/detail",
+                params={"roleId": "$[step_role_list.data][*].roleId"},
+                depends_on=["step_role_list"],
+            ),
+        ],
+    )
+    subgraph = ApiCatalogSubgraphResult(
+        anchor_api_ids=["role_detail_v1"],
+        support_api_ids=["role_list_v1"],
+        field_paths=[
+            GraphFieldPath(
+                consumer_api_id="role_detail_v1",
+                producer_api_id="role_list_v1",
+                semantic_key="Role.id",
+                source_extract_path="data.records[].roleId",
+                target_inject_path="body.roleId",
+                is_identifier=True,
+                source_array_mode=True,
+                target_array_mode=False,
+            )
+        ],
+    )
+
+    with pytest.raises(DagPlanValidationError) as exc_info:
+        planner.validate_plan(plan, candidates, subgraph_result=subgraph)
+
+    assert exc_info.value.code == "planner_cardinality_mismatch"
+    assert exc_info.value.metadata["pause_type"] == "WAIT_SELECT"
+    assert exc_info.value.metadata["source_step_id"] == "step_role_list"
+
+
 @pytest.mark.asyncio
 async def test_execute_plan_skips_downstream_when_json_binding_is_empty() -> None:
     customers_entry = _make_entry(entry_id="customers", path="/api/crm/customers")
@@ -115,7 +174,7 @@ async def test_execute_plan_skips_downstream_when_json_binding_is_empty() -> Non
         def __init__(self) -> None:
             self.calls: list[tuple[str, dict[str, object]]] = []
 
-        async def call(self, entry, params, user_token=None, trace_id=None):
+        async def call(self, entry, params, user_token=None, trace_id=None, user_id=None):
             self.calls.append((entry.id, dict(params)))
             if entry.id == "customers":
                 return ApiQueryExecutionResult(
@@ -174,7 +233,7 @@ async def test_execute_plan_keeps_partial_success_report_shape_after_graph_cutov
     )
 
     class StubApiExecutor:
-        async def call(self, entry, params, user_token=None, trace_id=None):
+        async def call(self, entry, params, user_token=None, trace_id=None, user_id=None):
             if entry.id == "customers":
                 return ApiQueryExecutionResult(
                     status=ApiQueryExecutionStatus.SUCCESS,
@@ -221,7 +280,7 @@ async def test_execute_plan_returns_synthetic_report_when_graph_runtime_crashes(
     )
 
     class BrokenApiExecutor:
-        async def call(self, entry, params, user_token=None, trace_id=None):
+        async def call(self, entry, params, user_token=None, trace_id=None, user_id=None):
             raise RuntimeError("executor crashed")
 
     report = await ApiDagExecutor(BrokenApiExecutor()).execute_plan(

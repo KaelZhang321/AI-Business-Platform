@@ -24,7 +24,10 @@ from pydantic import ValidationError
 from app.core.config import settings
 from app.models.schemas import ApiQueryExecutionPlan, ApiQueryPlanStep, ApiQueryRoutingResult
 from app.services.api_catalog.dag_bindings import DagBindingSyntaxError, collect_binding_step_ids
+from app.services.api_catalog.graph_models import ApiCatalogSubgraphResult
+from app.services.api_catalog.graph_plan_validator import GraphPlanValidationError, GraphPlanValidator
 from app.services.api_catalog.schema import ApiCatalogEntry, ApiCatalogSearchResult
+from app.utils.json_utils import parse_dirty_json_object, summarize_log_text
 
 logger = logging.getLogger(__name__)
 _QUERY_SAFE_METHODS = {"GET", "POST"}
@@ -33,10 +36,11 @@ _QUERY_SAFE_METHODS = {"GET", "POST"}
 class DagPlanValidationError(ValueError):
     """第三阶段 DAG 校验失败。"""
 
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(self, code: str, message: str, metadata: dict[str, Any] | None = None) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
+        self.metadata = metadata or {}
 
 
 class ApiDagPlanner:
@@ -53,7 +57,7 @@ class ApiDagPlanner:
         - 任意一步引用候选集外接口、未声明依赖或形成环，都会被直接拦截
     """
 
-    def __init__(self, llm_service: Any | None = None) -> None:
+    def __init__(self, llm_service: Any | None = None, graph_plan_validator: GraphPlanValidator | None = None) -> None:
         """初始化第三阶段 DAG Planner。
 
         Args:
@@ -64,6 +68,7 @@ class ApiDagPlanner:
             注入进来，避免 Planner 在不同运行环境里命中不同默认后端。
         """
         self._llm = llm_service
+        self._graph_plan_validator = graph_plan_validator or GraphPlanValidator()
 
     def _get_llm(self):
         """懒加载 LLM 服务，避免单接口直达路径也初始化 Planner 客户端。"""
@@ -110,7 +115,7 @@ class ApiDagPlanner:
                 "stage3 planner degraded trace_id=%s code=%s query=%s",
                 trace_id or "-",
                 "planner_parse_failed",
-                _summarize_log_text(query),
+                summarize_log_text(query),
             )
             raise DagPlanValidationError("planner_parse_failed", "Planner 未返回可解析的 DAG JSON。")
 
@@ -128,8 +133,11 @@ class ApiDagPlanner:
         self,
         plan: ApiQueryExecutionPlan,
         candidates: list[ApiCatalogSearchResult],
+        *,
+        subgraph_result: ApiCatalogSubgraphResult | None = None,
+        trace_id: str | None = None,
     ) -> dict[str, ApiCatalogEntry]:
-        """对查询 DAG 做结构与白名单校验。
+        """对查询 DAG 做结构、白名单与图事实校验。
 
         Args:
             plan: Planner 生成的 DAG。
@@ -144,6 +152,7 @@ class ApiDagPlanner:
         Edge Cases:
             - 同一路径允许被多个步骤复用，但每个步骤 ID 必须唯一
             - JSONPath 引用到未声明依赖时直接拦截，避免执行阶段出现隐式依赖
+            - 子图可用时，会追加字段路径与基数对齐校验，把危险误编排拦在 Stage 3
         """
         allowed_entries_by_id = _build_allowed_entries_by_id(candidates)
         allowed_entries_by_path = _build_allowed_entries_by_path(candidates)
@@ -210,6 +219,15 @@ class ApiDagPlanner:
         except CycleError as exc:
             raise DagPlanValidationError("planner_cycle_detected", "Planner 生成的 DAG 存在循环依赖。") from exc
 
+        try:
+            self._graph_plan_validator.validate_plan(
+                plan=plan,
+                step_entries=step_entries,
+                subgraph_result=subgraph_result,
+            )
+        except GraphPlanValidationError as exc:
+            raise DagPlanValidationError(exc.code, exc.message, metadata=exc.metadata) from exc
+
         return step_entries
 
     async def _call_llm_json(self, prompt: str, *, trace_id: str | None = None) -> dict[str, Any]:
@@ -244,7 +262,7 @@ class ApiDagPlanner:
                 )
                 continue
 
-            parsed = _parse_json_payload(raw)
+            parsed = parse_dirty_json_object(raw)
             if parsed:
                 return parsed
 
@@ -253,7 +271,7 @@ class ApiDagPlanner:
                 trace_id or "-",
                 attempt + 1,
                 max_attempts,
-                _summarize_log_text(raw),
+                summarize_log_text(raw),
             )
 
         return {}
@@ -419,128 +437,3 @@ def _build_planner_prompt(
 }}
 """
 
-
-def _parse_json_payload(raw: str) -> dict[str, Any]:
-    """从 Planner 输出中尽量提取首个 JSON 对象。
-
-    设计说明：
-        这里刻意复制第二阶段的“脏 JSON 清洗”策略，而不是直接复用内部私有函数。
-        原因是第三阶段一旦出问题，定位链路需要尽量本地自洽，避免让 Planner 的
-        可用性绑定到第二阶段私有实现细节上。
-    """
-    text = raw.strip()
-    if text.startswith("```"):
-        lines = text.split("\n")
-        text = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
-
-    start = text.find("{")
-    end = text.rfind("}")
-    if start != -1 and end != -1 and start < end:
-        text = text[start : end + 1]
-
-    text = _strip_json_comments(text)
-    text = _strip_trailing_commas(text)
-
-    try:
-        payload = json.loads(text)
-    except json.JSONDecodeError:
-        logger.debug("Failed to parse planner JSON: %s", raw[:300])
-        return {}
-
-    return payload if isinstance(payload, dict) else {}
-
-
-def _summarize_log_text(text: str | None, *, limit: int = 240) -> str:
-    """压缩日志文本，保留排查 DAG 脏输出所需的首段上下文。"""
-    normalized = " ".join((text or "").split())
-    if len(normalized) <= limit:
-        return normalized
-    return f"{normalized[:limit]}..."
-
-
-def _strip_json_comments(text: str) -> str:
-    """删除 JSON 中的注释，同时保留字符串字面量。"""
-    result: list[str] = []
-    index = 0
-    in_string = False
-    escaped = False
-
-    while index < len(text):
-        char = text[index]
-        next_char = text[index + 1] if index + 1 < len(text) else ""
-
-        if in_string:
-            result.append(char)
-            if escaped:
-                escaped = False
-            elif char == "\\":
-                escaped = True
-            elif char == '"':
-                in_string = False
-            index += 1
-            continue
-
-        if char == '"':
-            in_string = True
-            result.append(char)
-            index += 1
-            continue
-
-        if char == "/" and next_char == "/":
-            index += 2
-            while index < len(text) and text[index] not in ("\n", "\r"):
-                index += 1
-            continue
-
-        if char == "/" and next_char == "*":
-            index += 2
-            while index + 1 < len(text) and not (text[index] == "*" and text[index + 1] == "/"):
-                index += 1
-            index += 2
-            continue
-
-        result.append(char)
-        index += 1
-
-    return "".join(result)
-
-
-def _strip_trailing_commas(text: str) -> str:
-    """删除对象或数组闭合前的尾逗号。"""
-    result: list[str] = []
-    index = 0
-    in_string = False
-    escaped = False
-
-    while index < len(text):
-        char = text[index]
-
-        if in_string:
-            result.append(char)
-            if escaped:
-                escaped = False
-            elif char == "\\":
-                escaped = True
-            elif char == '"':
-                in_string = False
-            index += 1
-            continue
-
-        if char == '"':
-            in_string = True
-            result.append(char)
-            index += 1
-            continue
-
-        if char == ",":
-            lookahead = index + 1
-            while lookahead < len(text) and text[lookahead].isspace():
-                lookahead += 1
-            if lookahead < len(text) and text[lookahead] in ("]", "}"):
-                index += 1
-                continue
-
-        result.append(char)
-        index += 1
-
-    return "".join(result)
