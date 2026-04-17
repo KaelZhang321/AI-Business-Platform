@@ -447,9 +447,6 @@ public class DoctorWorkbenchApplicationService {
         if (doctorCardGroupMapper.selectById(request.getGroupId()) == null) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "groupId对应的分组不存在");
         }
-        if (doctorRoleCardConfigMapper.selectById(request.getCardConfigId()) == null) {
-            throw new BusinessException(ErrorCode.BAD_REQUEST, "cardConfigId对应的卡片配置不存在");
-        }
     }
 
     private void copyRoleCardConfig(DoctorRoleCardConfig entity, DoctorRoleCardConfigRequest request) {

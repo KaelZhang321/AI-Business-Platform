@@ -2,14 +2,13 @@ import { useEffect, useState } from 'react'
 import { Alert, Spin, Tabs, Typography, message } from 'antd'
 
 import { uiBuilderApi } from './api'
+import { CardWorkbenchTab } from './components/CardWorkbenchTab'
 import { EndpointRoleTab } from './components/EndpointRoleTab'
 import { FlowLogTab } from './components/FlowLogTab'
 import { JsonRenderPlaygroundTab } from './components/JsonRenderPlaygroundTab'
 import { OverviewTab } from './components/OverviewTab'
-import { ReleaseTab } from './components/ReleaseTab'
 import { SemanticFieldTab } from './components/SemanticFieldTab'
 import { SourceCenterTab } from './components/SourceCenterTab'
-import { StudioTab } from './components/StudioTab'
 import { RuleEngineTab } from './rule/RuleEngineTab'
 import type {
   PageQuery,
@@ -32,17 +31,11 @@ import type {
   UiApiTestRequest,
   UiApiTestResponse,
   UiBuilderOverview,
-  UiBuilderPageDetail,
+  UiCard,
+  UiCardEndpointRelation,
+  UiCardRequest,
   UiOpenApiImportPayload,
-  UiNodeBindingRequest,
-  UiPage,
-  UiPageNodeRequest,
-  UiPagePreviewResponse,
-  UiPageRequest,
-  UiProject,
-  UiProjectRequest,
   UiRole,
-  UiSpecVersion,
 } from './types'
 
 const DEFAULT_PAGE_SIZE = 20
@@ -114,18 +107,14 @@ export function UiBuilderPage() {
   const [testLogs, setTestLogs] = useState<UiApiTestLog[]>([])
   const [flowLogs, setFlowLogs] = useState<UiApiFlowLog[]>([])
   const [testResult, setTestResult] = useState<UiApiTestResponse | null>(null)
-  const [projects, setProjects] = useState<UiProject[]>([])
-  const [pages, setPages] = useState<UiPage[]>([])
-  const [pageDetail, setPageDetail] = useState<UiBuilderPageDetail | null>(null)
-  const [preview, setPreview] = useState<UiPagePreviewResponse | null>(null)
-  const [versions, setVersions] = useState<UiSpecVersion[]>([])
+  const [cards, setCards] = useState<UiCard[]>([])
+  const [cardEndpointRelations, setCardEndpointRelations] = useState<UiCardEndpointRelation[]>([])
 
   const [selectedSourceId, setSelectedSourceId] = useState<string>()
   const [selectedEndpointId, setSelectedEndpointId] = useState<string>()
   const [selectedSemanticFieldId, setSelectedSemanticFieldId] = useState<number>()
   const [selectedRoleId, setSelectedRoleId] = useState<string>()
-  const [selectedProjectId, setSelectedProjectId] = useState<string>()
-  const [selectedPageId, setSelectedPageId] = useState<string>()
+  const [selectedCardId, setSelectedCardId] = useState<string>()
   const [selectedEndpointTagFilter, setSelectedEndpointTagFilter] = useState<string>('all')
   const [endpointKeyword, setEndpointKeyword] = useState('')
   const [endpointPathKeyword, setEndpointPathKeyword] = useState('')
@@ -143,22 +132,19 @@ export function UiBuilderPage() {
   const [roleRelationPagination, setRoleRelationPagination] = useState<PaginationState>(createPaginationState())
   const [testLogPagination, setTestLogPagination] = useState<PaginationState>(createPaginationState())
   const [flowLogPagination, setFlowLogPagination] = useState<PaginationState>(createPaginationState())
-  const [projectPagination, setProjectPagination] = useState<PaginationState>(createPaginationState())
-  const [pagePagination, setPagePagination] = useState<PaginationState>(createPaginationState())
-  const [versionPagination, setVersionPagination] = useState<PaginationState>(createPaginationState())
+  const [cardPagination, setCardPagination] = useState<PaginationState>(createPaginationState())
+  const [cardRelationPagination, setCardRelationPagination] = useState<PaginationState>(createPaginationState())
 
   const [booting, setBooting] = useState(true)
   const [sourceLoading, setSourceLoading] = useState(false)
   const [semanticLoading, setSemanticLoading] = useState(false)
   const [roleLoading, setRoleLoading] = useState(false)
-  const [studioLoading, setStudioLoading] = useState(false)
-  const [releaseLoading, setReleaseLoading] = useState(false)
+  const [cardLoading, setCardLoading] = useState(false)
   const [flowLogLoading, setFlowLogLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const selectedEndpoint = endpoints.find((item) => item.id === selectedEndpointId)
   const selectedSemanticField = semanticFields.find((item) => item.id === selectedSemanticFieldId)
-  const selectedPage = pages.find((item) => item.id === selectedPageId)
 
   useEffect(() => {
     let cancelled = false
@@ -286,35 +272,35 @@ export function UiBuilderPage() {
   useEffect(() => {
     let cancelled = false
 
-    async function loadProjects() {
-      setStudioLoading(true)
+    async function loadCards() {
+      setCardLoading(true)
       try {
-        const result = await uiBuilderApi.listProjects({
-          page: projectPagination.page,
-          size: projectPagination.size,
+        const result = await uiBuilderApi.listCards({
+          page: cardPagination.page,
+          size: cardPagination.size,
         })
         if (cancelled) {
           return
         }
-        setProjects(result.data)
-        setProjectPagination(toPaginationState(result))
+        setCards(result.data)
+        setCardPagination(toPaginationState(result))
       } catch (err) {
         if (!cancelled) {
-          messageApi.error(getErrorMessage(err, '加载项目列表失败'))
+          messageApi.error(getErrorMessage(err, '加载卡片列表失败'))
         }
       } finally {
         if (!cancelled) {
-          setStudioLoading(false)
+          setCardLoading(false)
         }
       }
     }
 
-    void loadProjects()
+    void loadCards()
 
     return () => {
       cancelled = true
     }
-  }, [messageApi, projectPagination.page, projectPagination.size])
+  }, [cardPagination.page, cardPagination.size, messageApi])
 
   useEffect(() => {
     if (!sources.length) {
@@ -328,15 +314,15 @@ export function UiBuilderPage() {
   }, [selectedSourceId, sources])
 
   useEffect(() => {
-    if (!projects.length) {
-      setSelectedProjectId(undefined)
+    if (!cards.length) {
+      setSelectedCardId(undefined)
+      setCardEndpointRelations([])
       return
     }
-
-    if (!selectedProjectId || !projects.some((item) => item.id === selectedProjectId)) {
-      setSelectedProjectId(projects[0].id)
+    if (!selectedCardId || !cards.some((item) => item.id === selectedCardId)) {
+      setSelectedCardId(cards[0].id)
     }
-  }, [projects, selectedProjectId])
+  }, [cards, selectedCardId])
 
   useEffect(() => {
     if (!semanticFields.length) {
@@ -463,6 +449,42 @@ export function UiBuilderPage() {
       cancelled = true
     }
   }, [messageApi, selectedEndpointId, testLogPagination.page, testLogPagination.size])
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function loadCardRelations() {
+      if (!selectedCardId) {
+        setCardEndpointRelations([])
+        return
+      }
+      setCardLoading(true)
+      try {
+        const result = await uiBuilderApi.listCardEndpointRelations(selectedCardId, {
+          page: cardRelationPagination.page,
+          size: cardRelationPagination.size,
+        })
+        if (!cancelled) {
+          setCardEndpointRelations(result.data)
+          setCardRelationPagination(toPaginationState(result))
+        }
+      } catch (err) {
+        if (!cancelled) {
+          messageApi.error(getErrorMessage(err, '加载卡片接口关系失败'))
+        }
+      } finally {
+        if (!cancelled) {
+          setCardLoading(false)
+        }
+      }
+    }
+
+    void loadCardRelations()
+
+    return () => {
+      cancelled = true
+    }
+  }, [cardRelationPagination.page, cardRelationPagination.size, messageApi, selectedCardId])
 
   useEffect(() => {
     let cancelled = false
@@ -602,140 +624,6 @@ export function UiBuilderPage() {
     }
   }, [messageApi, roleRelationPagination.page, roleRelationPagination.size, selectedRoleId])
 
-  useEffect(() => {
-    let cancelled = false
-
-    async function loadPages() {
-      if (!selectedProjectId) {
-        setPages([])
-        setSelectedPageId(undefined)
-        return
-      }
-
-      setStudioLoading(true)
-      try {
-        const result = await uiBuilderApi.listPages(selectedProjectId, {
-          page: pagePagination.page,
-          size: pagePagination.size,
-        })
-        if (!cancelled) {
-          setPages(result.data)
-          setPagePagination(toPaginationState(result))
-        }
-      } catch (err) {
-        if (!cancelled) {
-          messageApi.error(getErrorMessage(err, '加载页面列表失败'))
-        }
-      } finally {
-        if (!cancelled) {
-          setStudioLoading(false)
-        }
-      }
-    }
-
-    void loadPages()
-
-    return () => {
-      cancelled = true
-    }
-  }, [messageApi, pagePagination.page, pagePagination.size, selectedProjectId])
-
-  useEffect(() => {
-    if (!pages.length) {
-      setSelectedPageId(undefined)
-      setPageDetail(null)
-      setPreview(null)
-      setVersions([])
-      return
-    }
-
-    if (!selectedPageId || !pages.some((item) => item.id === selectedPageId)) {
-      setSelectedPageId(pages[0].id)
-    }
-  }, [pages, selectedPageId])
-
-  useEffect(() => {
-    let cancelled = false
-
-    async function loadPageWorkspace() {
-      if (!selectedPageId) {
-        setPageDetail(null)
-        setPreview(null)
-        return
-      }
-
-      setReleaseLoading(true)
-      try {
-        const detail = await uiBuilderApi.getPageDetail(selectedPageId)
-
-        let previewData: UiPagePreviewResponse | null = null
-        try {
-          previewData = await uiBuilderApi.previewPage(selectedPageId)
-        } catch {
-          previewData = null
-        }
-
-        if (cancelled) {
-          return
-        }
-
-        setPageDetail(detail)
-        setPreview(previewData)
-      } catch (err) {
-        if (!cancelled) {
-          messageApi.error(getErrorMessage(err, '加载页面工作台失败'))
-        }
-      } finally {
-        if (!cancelled) {
-          setReleaseLoading(false)
-        }
-      }
-    }
-
-    void loadPageWorkspace()
-
-    return () => {
-      cancelled = true
-    }
-  }, [messageApi, selectedPageId])
-
-  useEffect(() => {
-    let cancelled = false
-
-    async function loadVersions() {
-      if (!selectedPageId) {
-        setVersions([])
-        return
-      }
-
-      setReleaseLoading(true)
-      try {
-        const result = await uiBuilderApi.listVersions(selectedPageId, {
-          page: versionPagination.page,
-          size: versionPagination.size,
-        })
-        if (!cancelled) {
-          setVersions(result.data)
-          setVersionPagination(toPaginationState(result))
-        }
-      } catch (err) {
-        if (!cancelled) {
-          messageApi.error(getErrorMessage(err, '加载版本记录失败'))
-        }
-      } finally {
-        if (!cancelled) {
-          setReleaseLoading(false)
-        }
-      }
-    }
-
-    void loadVersions()
-
-    return () => {
-      cancelled = true
-    }
-  }, [messageApi, selectedPageId, versionPagination.page, versionPagination.size])
-
   async function reloadSources(preferredId?: string, query: PageQuery = sourcePagination) {
     const result = await uiBuilderApi.listSources(query)
     setSources(result.data)
@@ -743,6 +631,29 @@ export function UiBuilderPage() {
     if (preferredId && result.data.some((item) => item.id === preferredId)) {
       setSelectedSourceId(preferredId)
     }
+  }
+
+  async function reloadCards(preferredId?: string, query: PageQuery = cardPagination) {
+    const result = await uiBuilderApi.listCards(query)
+    setCards(result.data)
+    setCardPagination(toPaginationState(result))
+    if (preferredId && result.data.some((item) => item.id === preferredId)) {
+      setSelectedCardId(preferredId)
+      return
+    }
+    if (result.data.length) {
+      setSelectedCardId(result.data[0].id)
+    }
+  }
+
+  async function reloadCardRelations(cardId = selectedCardId, query: PageQuery = cardRelationPagination) {
+    if (!cardId) {
+      setCardEndpointRelations([])
+      return
+    }
+    const result = await uiBuilderApi.listCardEndpointRelations(cardId, query)
+    setCardEndpointRelations(result.data)
+    setCardRelationPagination(toPaginationState(result))
   }
 
   async function reloadSemanticFields(preferredId?: number, query: PageQuery = semanticFieldPagination) {
@@ -830,48 +741,6 @@ export function UiBuilderPage() {
     setRoleRelationPagination(toPaginationState(result))
   }
 
-  async function reloadProjects(preferredId?: string, query: PageQuery = projectPagination) {
-    const result = await uiBuilderApi.listProjects(query)
-    setProjects(result.data)
-    setProjectPagination(toPaginationState(result))
-    if (preferredId && result.data.some((item) => item.id === preferredId)) {
-      setSelectedProjectId(preferredId)
-    }
-  }
-
-  async function reloadPages(projectId: string, preferredId?: string, query: PageQuery = pagePagination) {
-    const result = await uiBuilderApi.listPages(projectId, query)
-    setPages(result.data)
-    setPagePagination(toPaginationState(result))
-    if (preferredId && result.data.some((item) => item.id === preferredId)) {
-      setSelectedPageId(preferredId)
-      return
-    }
-    if (result.data.length) {
-      setSelectedPageId(result.data[0].id)
-    }
-  }
-
-  async function reloadPageWorkspace(pageId: string) {
-    const detail = await uiBuilderApi.getPageDetail(pageId)
-
-    let previewData: UiPagePreviewResponse | null = null
-    try {
-      previewData = await uiBuilderApi.previewPage(pageId)
-    } catch {
-      previewData = null
-    }
-
-    setPageDetail(detail)
-    setPreview(previewData)
-  }
-
-  async function reloadVersions(pageId: string, query: PageQuery = versionPagination) {
-    const result = await uiBuilderApi.listVersions(pageId, query)
-    setVersions(result.data)
-    setVersionPagination(toPaginationState(result))
-  }
-
   function handleSelectSource(sourceId: string) {
     setSelectedSourceId(sourceId)
     setSelectedEndpointTagFilter('all')
@@ -884,16 +753,6 @@ export function UiBuilderPage() {
     setSelectedEndpointId(endpointId)
     setTestLogPagination((prev) => ({ ...prev, page: 1 }))
     setTestResult(null)
-  }
-
-  function handleSelectProject(projectId: string) {
-    setSelectedProjectId(projectId)
-    setPagePagination((prev) => ({ ...prev, page: 1, total: 0 }))
-  }
-
-  function handleSelectPage(pageId: string) {
-    setSelectedPageId(pageId)
-    setVersionPagination((prev) => ({ ...prev, page: 1, total: 0 }))
   }
 
   async function handleSaveSource(sourceId: string | undefined, payload: UiApiSourceRequest) {
@@ -1089,152 +948,52 @@ export function UiBuilderPage() {
     }
   }
 
-  async function handleSaveProject(projectId: string | undefined, payload: UiProjectRequest) {
+  async function handleSaveCard(cardId: string | undefined, payload: UiCardRequest) {
     try {
-      const saved = projectId
-        ? await uiBuilderApi.updateProject(projectId, payload)
-        : await uiBuilderApi.createProject(payload)
-      await reloadProjects(saved.id)
-      messageApi.success(projectId ? '项目已更新' : '项目已创建')
+      const saved = cardId
+        ? await uiBuilderApi.updateCard(cardId, payload)
+        : await uiBuilderApi.createCard(payload)
+      await reloadCards(saved.id)
+      messageApi.success(cardId ? '卡片已更新' : '卡片已创建')
     } catch (err) {
-      messageApi.error(getErrorMessage(err, '保存项目失败'))
+      messageApi.error(getErrorMessage(err, '保存卡片失败'))
       throw err
     }
   }
 
-  async function handleDeleteProject(projectId: string) {
+  async function handleDeleteCard(cardId: string) {
     try {
-      await uiBuilderApi.deleteProject(projectId)
-      await reloadProjects(undefined, { page: 1, size: projectPagination.size })
-      setProjectPagination((prev) => ({ ...prev, page: 1 }))
-      setPages([])
-      setPageDetail(null)
-      setPreview(null)
-      setVersions([])
-      messageApi.success('项目已删除')
+      await uiBuilderApi.deleteCard(cardId)
+      await reloadCards(undefined, { page: 1, size: cardPagination.size })
+      setCardPagination((prev) => ({ ...prev, page: 1 }))
+      setCardRelationPagination((prev) => ({ ...prev, page: 1, total: 0 }))
+      setCardEndpointRelations([])
+      messageApi.success('卡片已删除')
     } catch (err) {
-      messageApi.error(getErrorMessage(err, '删除项目失败'))
+      messageApi.error(getErrorMessage(err, '删除卡片失败'))
     }
   }
 
-  async function handleSavePage(projectId: string, pageId: string | undefined, payload: UiPageRequest) {
+  async function handleBindCardRelations(cardId: string, endpointIds: string[]) {
     try {
-      const saved = pageId
-        ? await uiBuilderApi.updatePage(pageId, payload)
-        : await uiBuilderApi.createPage(projectId, payload)
-      await reloadPages(projectId, saved.id)
-      messageApi.success(pageId ? '页面已更新' : '页面已创建')
+      await uiBuilderApi.bindCardEndpointRelations(cardId, { endpointIds })
+      await reloadCardRelations(cardId, { page: 1, size: cardRelationPagination.size })
+      setCardRelationPagination((prev) => ({ ...prev, page: 1 }))
+      messageApi.success('卡片接口关联已保存')
     } catch (err) {
-      messageApi.error(getErrorMessage(err, '保存页面失败'))
+      messageApi.error(getErrorMessage(err, '保存卡片接口关联失败'))
       throw err
     }
   }
 
-  async function handleDeletePage(pageId: string) {
-    if (!selectedProjectId) {
-      return
-    }
+  async function handleDeleteCardRelation(cardId: string, relationId: string) {
     try {
-      await uiBuilderApi.deletePage(pageId)
-      await reloadPages(selectedProjectId, undefined, { page: 1, size: pagePagination.size })
-      setPagePagination((prev) => ({ ...prev, page: 1 }))
-      messageApi.success('页面已删除')
+      await uiBuilderApi.deleteCardEndpointRelation(cardId, relationId)
+      await reloadCardRelations(cardId, { page: 1, size: cardRelationPagination.size })
+      setCardRelationPagination((prev) => ({ ...prev, page: 1 }))
+      messageApi.success('卡片接口关联已删除')
     } catch (err) {
-      messageApi.error(getErrorMessage(err, '删除页面失败'))
-    }
-  }
-
-  async function handleSaveNode(pageId: string, nodeId: string | undefined, payload: UiPageNodeRequest) {
-    try {
-      if (nodeId) {
-        await uiBuilderApi.updateNode(nodeId, payload)
-      } else {
-        await uiBuilderApi.createNode(pageId, payload)
-      }
-      await reloadPageWorkspace(pageId)
-      messageApi.success(nodeId ? '节点已更新' : '节点已创建')
-    } catch (err) {
-      messageApi.error(getErrorMessage(err, '保存节点失败'))
-      throw err
-    }
-  }
-
-  async function handleDeleteNode(nodeId: string) {
-    if (!selectedPageId) {
-      return
-    }
-    try {
-      await uiBuilderApi.deleteNode(nodeId)
-      await reloadPageWorkspace(selectedPageId)
-      messageApi.success('节点已删除')
-    } catch (err) {
-      messageApi.error(getErrorMessage(err, '删除节点失败'))
-    }
-  }
-
-  async function handleSaveBinding(nodeId: string, bindingId: string | undefined, payload: UiNodeBindingRequest) {
-    if (!selectedPageId) {
-      return
-    }
-    try {
-      if (bindingId) {
-        await uiBuilderApi.updateBinding(bindingId, payload)
-      } else {
-        await uiBuilderApi.createBinding(nodeId, payload)
-      }
-      await reloadPageWorkspace(selectedPageId)
-      messageApi.success(bindingId ? '字段绑定已更新' : '字段绑定已创建')
-    } catch (err) {
-      messageApi.error(getErrorMessage(err, '保存字段绑定失败'))
-      throw err
-    }
-  }
-
-  async function handleDeleteBinding(bindingId: string) {
-    if (!selectedPageId) {
-      return
-    }
-    try {
-      await uiBuilderApi.deleteBinding(bindingId)
-      await reloadPageWorkspace(selectedPageId)
-      messageApi.success('字段绑定已删除')
-    } catch (err) {
-      messageApi.error(getErrorMessage(err, '删除字段绑定失败'))
-    }
-  }
-
-  async function handleRefreshPreview(pageId: string) {
-    try {
-      let previewData: UiPagePreviewResponse | null = null
-      try {
-        previewData = await uiBuilderApi.previewPage(pageId)
-      } catch {
-        previewData = null
-      }
-      setPreview(previewData)
-      if (pageId === selectedPageId) {
-        const detail = await uiBuilderApi.getPageDetail(pageId)
-        setPageDetail(detail)
-      }
-      messageApi.success(previewData ? '预览已刷新' : '当前页面还没有节点，预览已清空')
-    } catch (err) {
-      messageApi.error(getErrorMessage(err, '刷新预览失败'))
-      throw err
-    }
-  }
-
-  async function handlePublishPage(pageId: string) {
-    try {
-      await uiBuilderApi.publishPage(pageId)
-      await Promise.all([
-        reloadPageWorkspace(pageId),
-        reloadVersions(pageId, { page: 1, size: versionPagination.size }),
-      ])
-      setVersionPagination((prev) => ({ ...prev, page: 1 }))
-      messageApi.success('页面已发布新版本')
-    } catch (err) {
-      messageApi.error(getErrorMessage(err, '发布失败'))
-      throw err
+      messageApi.error(getErrorMessage(err, '删除卡片接口关联失败'))
     }
   }
 
@@ -1269,10 +1028,10 @@ export function UiBuilderPage() {
           <div className="space-y-3">
             <Typography.Text type="secondary">UI Builder / OpenAPI to json-render</Typography.Text>
             <Typography.Title level={2} style={{ margin: 0 }}>
-              接口文档、页面编排、字段绑定和版本发布一站式工作台
+              接口文档、卡片编排、角色映射和运行时调用一站式工作台
             </Typography.Title>
             <Typography.Paragraph type="secondary" style={{ marginBottom: 0, maxWidth: 980 }}>
-              现在这页已经不是静态流程介绍了。你可以在这里创建接口源、导入 OpenAPI、手工补接口定义、配置项目页面、维护节点和字段绑定，并直接生成当前 json-render spec。
+              当前工作流已经切换为卡片驱动。你可以在这里管理接口源、导入 OpenAPI、定义接口、维护语义字典、配置接口角色，并把接口绑定到工作台卡片。
             </Typography.Paragraph>
           </div>
           <div className="grid grid-cols-2 gap-3 rounded-[24px] border border-sky-100 bg-white/90 p-4 shadow-sm">
@@ -1281,16 +1040,16 @@ export function UiBuilderPage() {
               <div className="mt-1 text-2xl font-semibold text-slate-900">{sourcePagination.total}</div>
             </div>
             <div>
-              <div className="text-xs uppercase tracking-[0.2em] text-slate-400">页面</div>
-              <div className="mt-1 text-2xl font-semibold text-slate-900">{pagePagination.total}</div>
+              <div className="text-xs uppercase tracking-[0.2em] text-slate-400">接口</div>
+              <div className="mt-1 text-2xl font-semibold text-slate-900">{endpointPagination.total}</div>
             </div>
             <div>
-              <div className="text-xs uppercase tracking-[0.2em] text-slate-400">节点</div>
-              <div className="mt-1 text-2xl font-semibold text-slate-900">{pageDetail?.nodes.length ?? 0}</div>
+              <div className="text-xs uppercase tracking-[0.2em] text-slate-400">卡片</div>
+              <div className="mt-1 text-2xl font-semibold text-slate-900">{cardPagination.total}</div>
             </div>
             <div>
-              <div className="text-xs uppercase tracking-[0.2em] text-slate-400">版本</div>
-              <div className="mt-1 text-2xl font-semibold text-slate-900">{versionPagination.total}</div>
+              <div className="text-xs uppercase tracking-[0.2em] text-slate-400">调用日志</div>
+              <div className="mt-1 text-2xl font-semibold text-slate-900">{flowLogPagination.total}</div>
             </div>
           </div>
         </div>
@@ -1500,43 +1259,37 @@ export function UiBuilderPage() {
             key: 'studio',
             label: '页面工作台',
             children: (
-              <StudioTab
-                projects={projects}
-                pages={pages}
-                pageDetail={pageDetail}
-                selectedProjectId={selectedProjectId}
-                selectedPageId={selectedPageId}
-                preview={preview}
-                nodeTypes={overview.nodeTypes}
-                endpoints={endpoints}
-                loading={studioLoading || releaseLoading}
-                projectPagination={{
-                  current: projectPagination.page,
-                  pageSize: projectPagination.size,
-                  total: projectPagination.total,
+              <CardWorkbenchTab
+                cards={cards}
+                relations={cardEndpointRelations}
+                sources={sources}
+                selectedCardId={selectedCardId}
+                loading={cardLoading}
+                cardPagination={{
+                  current: cardPagination.page,
+                  pageSize: cardPagination.size,
+                  total: cardPagination.total,
                 }}
-                pagePagination={{
-                  current: pagePagination.page,
-                  pageSize: pagePagination.size,
-                  total: pagePagination.total,
+                relationPagination={{
+                  current: cardRelationPagination.page,
+                  pageSize: cardRelationPagination.size,
+                  total: cardRelationPagination.total,
                 }}
-                onProjectPageChange={(page, size) => {
-                  setProjectPagination((prev) => ({ ...prev, page, size }))
+                onSelectCard={(cardId) => {
+                  setSelectedCardId(cardId)
+                  setCardRelationPagination((prev) => ({ ...prev, page: 1, total: 0 }))
                 }}
-                onPagePageChange={(page, size) => {
-                  setPagePagination((prev) => ({ ...prev, page, size }))
+                onCardPageChange={(page, size) => {
+                  setCardPagination((prev) => ({ ...prev, page, size }))
                 }}
-                onSelectProject={handleSelectProject}
-                onSelectPage={handleSelectPage}
-                onSaveProject={handleSaveProject}
-                onDeleteProject={handleDeleteProject}
-                onSavePage={handleSavePage}
-                onDeletePage={handleDeletePage}
-                onSaveNode={handleSaveNode}
-                onDeleteNode={handleDeleteNode}
-                onSaveBinding={handleSaveBinding}
-                onDeleteBinding={handleDeleteBinding}
-                onRefreshPreview={handleRefreshPreview}
+                onRelationPageChange={(page, size) => {
+                  setCardRelationPagination((prev) => ({ ...prev, page, size }))
+                }}
+                onSaveCard={handleSaveCard}
+                onDeleteCard={handleDeleteCard}
+                onBindRelations={handleBindCardRelations}
+                onDeleteRelation={handleDeleteCardRelation}
+                onLoadEndpointsBySource={handleLoadEndpointsBySource}
               />
             ),
           },
@@ -1544,28 +1297,6 @@ export function UiBuilderPage() {
             key: 'rule-engine',
             label: '规则引擎',
             children: <RuleEngineTab />,
-          },
-          {
-            key: 'release',
-            label: '预览与发布',
-            children: (
-              <ReleaseTab
-                selectedPage={selectedPage}
-                preview={preview}
-                versions={versions}
-                loading={releaseLoading}
-                versionPagination={{
-                  current: versionPagination.page,
-                  pageSize: versionPagination.size,
-                  total: versionPagination.total,
-                }}
-                onVersionPageChange={(page, size) => {
-                  setVersionPagination((prev) => ({ ...prev, page, size }))
-                }}
-                onRefreshPreview={handleRefreshPreview}
-                onPublishPage={handlePublishPage}
-              />
-            ),
           },
           {
             key: 'json-render-playground',
