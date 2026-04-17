@@ -106,7 +106,7 @@ public class DoctorWorkbenchApplicationService {
     /**
      * 查询当前登录员工可用的角色卡片配置。
      *
-     * <p>会先查询员工在指定应用下的角色，再按角色ID聚合查询启用且可见的卡片配置。
+     * <p>会先查询员工在指定应用下的角色，再按角色ID聚合查询启用且可见的卡片配置。 
      *
      * @param appCode 应用编码，未传时默认 {@value DEFAULT_ROLE_APP_CODE}
      * @return 当前员工可见卡片配置

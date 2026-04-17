@@ -11,11 +11,6 @@ import com.lzke.ai.infrastructure.persistence.mapper.UiApiFlowLogMapper;
 import com.lzke.ai.infrastructure.persistence.mapper.UiApiSourceMapper;
 import com.lzke.ai.infrastructure.persistence.mapper.UiApiTagMapper;
 import com.lzke.ai.infrastructure.persistence.mapper.UiApiTestLogMapper;
-import com.lzke.ai.infrastructure.persistence.mapper.UiNodeBindingMapper;
-import com.lzke.ai.infrastructure.persistence.mapper.UiPageMapper;
-import com.lzke.ai.infrastructure.persistence.mapper.UiPageNodeMapper;
-import com.lzke.ai.infrastructure.persistence.mapper.UiProjectMapper;
-import com.lzke.ai.infrastructure.persistence.mapper.UiSpecVersionMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.web.client.RestTemplate;
@@ -45,14 +40,9 @@ class UiBuilderApplicationServiceOpenApiImportTest {
                 mock(UiApiEndpointRoleMapper.class),
                 mock(UiApiFlowLogMapper.class),
                 mock(UiApiTestLogMapper.class),
-                mock(SemanticFieldDictMapper.class),
+                null, null, mock(SemanticFieldDictMapper.class),
                 mock(SemanticFieldAliasMapper.class),
-                mock(SemanticFieldValueMapMapper.class),
-                mock(UiProjectMapper.class),
-                mock(UiPageMapper.class),
-                mock(UiPageNodeMapper.class),
-                mock(UiNodeBindingMapper.class),
-                mock(UiSpecVersionMapper.class)
+                mock(SemanticFieldValueMapMapper.class)
         );
     }
 

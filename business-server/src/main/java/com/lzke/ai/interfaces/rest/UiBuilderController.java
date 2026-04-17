@@ -18,6 +18,8 @@ import com.lzke.ai.application.dto.SemanticFieldValueMapRequest;
 import com.lzke.ai.application.dto.UiApiEndpointRequest;
 import com.lzke.ai.application.dto.UiApiEndpointRoleBindRequest;
 import com.lzke.ai.application.dto.UiApiInvokeRequest;
+import com.lzke.ai.application.dto.UiCardEndpointBindRequest;
+import com.lzke.ai.application.dto.UiCardRequest;
 import com.lzke.ai.application.dto.UiJsonRenderInvokeRequest;
 import com.lzke.ai.application.dto.UiJsonRenderInvokeResponse;
 import com.lzke.ai.application.dto.UiJsonRenderSubmitRequest;
@@ -28,13 +30,7 @@ import com.lzke.ai.application.dto.UiApiTestResponse;
 import com.lzke.ai.application.dto.UiBuilderAuthTypeResponse;
 import com.lzke.ai.application.dto.UiBuilderNodeTypeResponse;
 import com.lzke.ai.application.dto.UiBuilderOverviewResponse;
-import com.lzke.ai.application.dto.UiBuilderPageDetailResponse;
-import com.lzke.ai.application.dto.UiNodeBindingRequest;
 import com.lzke.ai.application.dto.UiOpenApiImportRequest;
-import com.lzke.ai.application.dto.UiPageNodeRequest;
-import com.lzke.ai.application.dto.UiPagePreviewResponse;
-import com.lzke.ai.application.dto.UiPageRequest;
-import com.lzke.ai.application.dto.UiProjectRequest;
 import com.lzke.ai.application.ui.UiBuilderApplicationService;
 import com.lzke.ai.domain.entity.UiApiEndpoint;
 import com.lzke.ai.domain.entity.UiApiEndpointRole;
@@ -45,11 +41,8 @@ import com.lzke.ai.domain.entity.UiApiSource;
 import com.lzke.ai.domain.entity.UiApiTag;
 import com.lzke.ai.domain.entity.UiApiFlowLog;
 import com.lzke.ai.domain.entity.UiApiTestLog;
-import com.lzke.ai.domain.entity.UiNodeBinding;
-import com.lzke.ai.domain.entity.UiPage;
-import com.lzke.ai.domain.entity.UiPageNode;
-import com.lzke.ai.domain.entity.UiProject;
-import com.lzke.ai.domain.entity.UiSpecVersion;
+import com.lzke.ai.domain.entity.UiCard;
+import com.lzke.ai.domain.entity.UiCardEndpointRelation;
 import com.lzke.ai.interfaces.dto.ApiResponse;
 import com.lzke.ai.interfaces.dto.PageResult;
 
@@ -66,8 +59,8 @@ import lombok.RequiredArgsConstructor;
  * <ul>
  *     <li>接口源与接口定义管理</li>
  *     <li>OpenAPI/Swagger 导入与接口联调</li>
- *     <li>项目、页面、节点、字段绑定配置</li>
- *     <li>页面预览与版本发布</li>
+ *     <li>卡片与接口关系配置</li>
+ *     <li>运行时渲染与调用日志查询</li>
  * </ul>
  *
  * <p>控制器本身只承担 HTTP 协议转换职责，核心业务逻辑统一下沉到
@@ -429,166 +422,81 @@ public class UiBuilderController {
     }
 
     /**
-     * 查询项目列表。
+     * 分页查询卡片。
      */
-    @GetMapping("/projects")
-    public ApiResponse<PageResult<UiProject>> listProjects(@Valid PageQuery query) {
-        return ApiResponse.ok(uiBuilderApplicationService.listProjects(query));
+    @GetMapping("/cards")
+    public ApiResponse<PageResult<UiCard>> listCards(
+            @Valid PageQuery query,
+            @RequestParam(required = false) String name,
+            @RequestParam(required = false) String status
+    ) {
+        return ApiResponse.ok(uiBuilderApplicationService.listCards(query, name, status));
     }
 
     /**
-     * 创建项目。
+     * 创建卡片。
      */
-    @PostMapping("/projects")
-    public ApiResponse<UiProject> createProject(@RequestBody UiProjectRequest request) {
-        return ApiResponse.ok(uiBuilderApplicationService.createProject(request));
+    @PostMapping("/cards")
+    public ApiResponse<UiCard> createCard(@RequestBody UiCardRequest request) {
+        Long userId = AuthUtil.getUserId();
+        if (userId != null && !org.springframework.util.StringUtils.hasText(request.getCreatedBy())) {
+            request.setCreatedBy(String.valueOf(userId));
+        }
+        return ApiResponse.ok(uiBuilderApplicationService.createCard(request));
     }
 
     /**
-     * 更新项目。
+     * 更新卡片。
      */
-    @PutMapping("/projects/{projectId}")
-    public ApiResponse<UiProject> updateProject(@PathVariable String projectId, @RequestBody UiProjectRequest request) {
-        return ApiResponse.ok(uiBuilderApplicationService.updateProject(projectId, request));
+    @PutMapping("/cards/{cardId}")
+    public ApiResponse<UiCard> updateCard(@PathVariable String cardId, @RequestBody UiCardRequest request) {
+        Long userId = AuthUtil.getUserId();
+        if (userId != null && !org.springframework.util.StringUtils.hasText(request.getCreatedBy())) {
+            request.setCreatedBy(String.valueOf(userId));
+        }
+        return ApiResponse.ok(uiBuilderApplicationService.updateCard(cardId, request));
     }
 
     /**
-     * 删除项目。
+     * 删除卡片。
      */
-    @DeleteMapping("/projects/{projectId}")
-    public ApiResponse<Void> deleteProject(@PathVariable String projectId) {
-        uiBuilderApplicationService.deleteProject(projectId);
+    @DeleteMapping("/cards/{cardId}")
+    public ApiResponse<Void> deleteCard(@PathVariable String cardId) {
+        uiBuilderApplicationService.deleteCard(cardId);
         return ApiResponse.ok();
     }
 
     /**
-     * 查询项目下的页面列表。
+     * 查询卡片关联的接口。
      */
-    @GetMapping("/projects/{projectId}/pages")
-    public ApiResponse<PageResult<UiPage>> listPages(@PathVariable String projectId, @Valid PageQuery query) {
-        return ApiResponse.ok(uiBuilderApplicationService.listPages(projectId, query));
+    @GetMapping("/cards/{cardId}/endpoint-relations")
+    public ApiResponse<PageResult<UiCardEndpointRelation>> listCardEndpointRelations(
+            @PathVariable String cardId,
+            @Valid PageQuery query
+    ) {
+        return ApiResponse.ok(uiBuilderApplicationService.listCardEndpointRelations(cardId, query));
     }
 
     /**
-     * 创建页面。
+     * 批量关联接口到卡片。
      */
-    @PostMapping("/projects/{projectId}/pages")
-    public ApiResponse<UiPage> createPage(@PathVariable String projectId, @RequestBody UiPageRequest request) {
-        return ApiResponse.ok(uiBuilderApplicationService.createPage(projectId, request));
+    @PostMapping("/cards/{cardId}/endpoint-relations")
+    public ApiResponse<java.util.List<UiCardEndpointRelation>> bindCardEndpointRelations(
+            @PathVariable String cardId,
+            @RequestBody UiCardEndpointBindRequest request
+    ) {
+        return ApiResponse.ok(uiBuilderApplicationService.bindCardEndpointRelations(cardId, request));
     }
 
     /**
-     * 获取页面详情。
+     * 删除卡片接口关系。
      */
-    @GetMapping("/pages/{pageId}")
-    public ApiResponse<UiBuilderPageDetailResponse> getPageDetail(@PathVariable String pageId) {
-        return ApiResponse.ok(uiBuilderApplicationService.getPageDetail(pageId));
-    }
-
-    /**
-     * 更新页面。
-     */
-    @PutMapping("/pages/{pageId}")
-    public ApiResponse<UiPage> updatePage(@PathVariable String pageId, @RequestBody UiPageRequest request) {
-        return ApiResponse.ok(uiBuilderApplicationService.updatePage(pageId, request));
-    }
-
-    /**
-     * 删除页面。
-     */
-    @DeleteMapping("/pages/{pageId}")
-    public ApiResponse<Void> deletePage(@PathVariable String pageId) {
-        uiBuilderApplicationService.deletePage(pageId);
-        return ApiResponse.ok();
-    }
-
-    /**
-     * 查询页面节点列表。
-     */
-    @GetMapping("/pages/{pageId}/nodes")
-    public ApiResponse<PageResult<UiPageNode>> listNodes(@PathVariable String pageId, @Valid PageQuery query) {
-        return ApiResponse.ok(uiBuilderApplicationService.listNodes(pageId, query));
-    }
-
-    /**
-     * 创建页面节点。
-     */
-    @PostMapping("/pages/{pageId}/nodes")
-    public ApiResponse<UiPageNode> createNode(@PathVariable String pageId, @RequestBody UiPageNodeRequest request) {
-        return ApiResponse.ok(uiBuilderApplicationService.createNode(pageId, request));
-    }
-
-    /**
-     * 生成页面预览 spec。
-     */
-    @GetMapping("/pages/{pageId}/preview")
-    public ApiResponse<UiPagePreviewResponse> previewPage(@PathVariable String pageId) {
-        return ApiResponse.ok(uiBuilderApplicationService.previewPage(pageId));
-    }
-
-    /**
-     * 查询页面版本列表。
-     */
-    @GetMapping("/pages/{pageId}/versions")
-    public ApiResponse<PageResult<UiSpecVersion>> listVersions(@PathVariable String pageId, @Valid PageQuery query) {
-        return ApiResponse.ok(uiBuilderApplicationService.listVersions(pageId, query));
-    }
-
-    /**
-     * 发布页面新版本。
-     */
-    @PostMapping("/pages/{pageId}/publish")
-    public ApiResponse<UiSpecVersion> publishPage(@PathVariable String pageId) {
-        return ApiResponse.ok(uiBuilderApplicationService.publishPage(pageId, "system"));
-    }
-
-    /**
-     * 更新节点。
-     */
-    @PutMapping("/nodes/{nodeId}")
-    public ApiResponse<UiPageNode> updateNode(@PathVariable String nodeId, @RequestBody UiPageNodeRequest request) {
-        return ApiResponse.ok(uiBuilderApplicationService.updateNode(nodeId, request));
-    }
-
-    /**
-     * 删除节点。
-     */
-    @DeleteMapping("/nodes/{nodeId}")
-    public ApiResponse<Void> deleteNode(@PathVariable String nodeId) {
-        uiBuilderApplicationService.deleteNode(nodeId);
-        return ApiResponse.ok();
-    }
-
-    /**
-     * 查询节点绑定列表。
-     */
-    @GetMapping("/nodes/{nodeId}/bindings")
-    public ApiResponse<PageResult<UiNodeBinding>> listBindings(@PathVariable String nodeId, @Valid PageQuery query) {
-        return ApiResponse.ok(uiBuilderApplicationService.listBindings(nodeId, query));
-    }
-
-    /**
-     * 创建字段绑定。
-     */
-    @PostMapping("/nodes/{nodeId}/bindings")
-    public ApiResponse<UiNodeBinding> createBinding(@PathVariable String nodeId, @RequestBody UiNodeBindingRequest request) {
-        return ApiResponse.ok(uiBuilderApplicationService.createBinding(nodeId, request));
-    }
-
-    /**
-     * 更新字段绑定。
-     */
-    @PutMapping("/bindings/{bindingId}")
-    public ApiResponse<UiNodeBinding> updateBinding(@PathVariable String bindingId, @RequestBody UiNodeBindingRequest request) {
-        return ApiResponse.ok(uiBuilderApplicationService.updateBinding(bindingId, request));
-    }
-
-    /**
-     * 删除字段绑定。
-     */
-    @DeleteMapping("/bindings/{bindingId}")
-    public ApiResponse<Void> deleteBinding(@PathVariable String bindingId) {
-        uiBuilderApplicationService.deleteBinding(bindingId);
+    @DeleteMapping("/cards/{cardId}/endpoint-relations/{relationId}")
+    public ApiResponse<Void> deleteCardEndpointRelation(
+            @PathVariable String cardId,
+            @PathVariable String relationId
+    ) {
+        uiBuilderApplicationService.deleteCardEndpointRelation(cardId, relationId);
         return ApiResponse.ok();
     }
 }

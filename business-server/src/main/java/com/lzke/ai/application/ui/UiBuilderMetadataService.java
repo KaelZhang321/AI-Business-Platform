@@ -43,7 +43,7 @@ public class UiBuilderMetadataService {
     public UiBuilderOverviewResponse buildOverview() {
         return new UiBuilderOverviewResponse(
                 "JSON Render Builder",
-                "围绕三方接口文档导入、接口联调、页面编排、字段绑定和 json-render 生成的配置中心。",
+                "围绕三方接口文档导入、接口联调、卡片编排和 json-render 生成的配置中心。",
                 featureDefinitions(),
                 workflowSteps(),
                 authTypes(),
@@ -101,9 +101,8 @@ public class UiBuilderMetadataService {
                 new UiBuilderFeatureResponse("运行时调用", "按 endpointId 发起真实接口调用，并记录 flowNum 级别的调用日志。"),
                 new UiBuilderFeatureResponse("角色关联", "把已导入的接口定义绑定到 IAM 角色，支持按角色筛选接口。"),
                 new UiBuilderFeatureResponse("语义转换", "维护标准字段、字段别名和值映射，为字段编排和 AI 理解提供上下文。"),
-                new UiBuilderFeatureResponse("页面编排", "用 Card、Table、Metric、Chart 等节点描述页面结构。"),
-                new UiBuilderFeatureResponse("字段绑定", "把接口返回字段通过 JSONPath 绑定到组件 props。"),
-                new UiBuilderFeatureResponse("版本发布", "将页面配置转换为 json-render spec，并进行版本化发布。")
+                new UiBuilderFeatureResponse("卡片管理", "统一维护工作台卡片，并按卡片管理接口编排。"),
+                new UiBuilderFeatureResponse("卡片接口关联", "为卡片绑定多个接口定义，支持后续动态渲染和调用。")
         );
     }
 
@@ -116,9 +115,9 @@ public class UiBuilderMetadataService {
         return List.of(
                 "1. 导入接口文档并生成标准化接口定义",
                 "2. 配置接口认证、环境和测试样例",
-                "3. 新建项目和页面，搭建节点结构",
-                "4. 为节点 props 配置字段绑定和转换规则",
-                "5. 生成 json-render spec 并发布版本"
+                "3. 新建卡片并维护卡片元信息",
+                "4. 为卡片关联接口定义并调整排序",
+                "5. 运行时按卡片聚合接口数据并生成 json-render"
         );
     }
 
@@ -185,30 +184,16 @@ public class UiBuilderMetadataService {
                         new UiBuilderFieldResponse("response_body", "json", "实际响应体"),
                         new UiBuilderFieldResponse("invoke_status", "varchar(32)", "接口调用状态")
                 )),
-                new UiBuilderTableSchemaResponse("ui_projects", "页面配置项目", List.of(
-                        new UiBuilderFieldResponse("code", "varchar(64)", "项目编码"),
-                        new UiBuilderFieldResponse("status", "varchar(32)", "项目状态")
+                new UiBuilderTableSchemaResponse("ui_cards", "工作台卡片定义", List.of(
+                        new UiBuilderFieldResponse("name", "varchar(128)", "卡片名称"),
+                        new UiBuilderFieldResponse("code", "varchar(64)", "卡片编码"),
+                        new UiBuilderFieldResponse("card_type", "varchar(32)", "卡片类型"),
+                        new UiBuilderFieldResponse("status", "varchar(32)", "状态")
                 )),
-                new UiBuilderTableSchemaResponse("ui_pages", "项目下的页面", List.of(
-                        new UiBuilderFieldResponse("project_id", "varchar(64)", "所属项目"),
-                        new UiBuilderFieldResponse("root_node_id", "varchar(64)", "根节点"),
-                        new UiBuilderFieldResponse("route_path", "varchar(128)", "页面路由")
-                )),
-                new UiBuilderTableSchemaResponse("ui_page_nodes", "页面节点树", List.of(
-                        new UiBuilderFieldResponse("node_key", "varchar(64)", "最终 spec 节点 ID"),
-                        new UiBuilderFieldResponse("node_type", "varchar(32)", "节点类型"),
-                        new UiBuilderFieldResponse("props_config", "json", "静态 props"),
-                        new UiBuilderFieldResponse("style_config", "json", "样式配置")
-                )),
-                new UiBuilderTableSchemaResponse("ui_node_bindings", "节点字段绑定", List.of(
-                        new UiBuilderFieldResponse("target_prop", "varchar(128)", "目标属性"),
-                        new UiBuilderFieldResponse("source_path", "varchar(255)", "JSONPath 来源"),
-                        new UiBuilderFieldResponse("transform_script", "text", "转换规则")
-                )),
-                new UiBuilderTableSchemaResponse("ui_spec_versions", "生成的 json-render 版本", List.of(
-                        new UiBuilderFieldResponse("version_no", "int", "版本号"),
-                        new UiBuilderFieldResponse("spec_content", "json", "最终 spec"),
-                        new UiBuilderFieldResponse("source_snapshot", "json", "发布快照")
+                new UiBuilderTableSchemaResponse("ui_card_endpoint_relations", "卡片和接口关系", List.of(
+                        new UiBuilderFieldResponse("card_id", "varchar(64)", "卡片ID"),
+                        new UiBuilderFieldResponse("endpoint_id", "varchar(64)", "接口定义ID"),
+                        new UiBuilderFieldResponse("sort_order", "int", "显示排序")
                 ))
         );
     }
