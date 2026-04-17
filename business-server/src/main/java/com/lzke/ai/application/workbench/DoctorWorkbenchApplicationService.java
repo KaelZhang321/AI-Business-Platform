@@ -10,15 +10,23 @@ import com.lecz.service.tools.core.dto.ResponseDto;
 import com.lecz.service.tools.core.utils.AuthUtil;
 import com.lzke.ai.application.workbench.dto.DoctorCustomerCardCustomizeQueryRequest;
 import com.lzke.ai.application.workbench.dto.DoctorCustomerCardCustomizeRequest;
+import com.lzke.ai.application.workbench.dto.DoctorCardGroupQueryRequest;
+import com.lzke.ai.application.workbench.dto.DoctorCardGroupRelationQueryRequest;
+import com.lzke.ai.application.workbench.dto.DoctorCardGroupRelationRequest;
+import com.lzke.ai.application.workbench.dto.DoctorCardGroupRequest;
 import com.lzke.ai.application.workbench.dto.DoctorCustomerNoteQueryRequest;
 import com.lzke.ai.application.workbench.dto.DoctorCustomerNoteRequest;
 import com.lzke.ai.application.workbench.dto.DoctorRoleCardConfigQueryRequest;
 import com.lzke.ai.application.workbench.dto.DoctorRoleCardConfigRequest;
+import com.lzke.ai.domain.entity.DoctorCardGroup;
+import com.lzke.ai.domain.entity.DoctorCardGroupRelation;
 import com.lzke.ai.domain.entity.DoctorCustomerCardCustomize;
 import com.lzke.ai.domain.entity.DoctorCustomerNote;
 import com.lzke.ai.domain.entity.DoctorRoleCardConfig;
 import com.lzke.ai.exception.BusinessException;
 import com.lzke.ai.exception.ErrorCode;
+import com.lzke.ai.infrastructure.persistence.mapper.DoctorCardGroupMapper;
+import com.lzke.ai.infrastructure.persistence.mapper.DoctorCardGroupRelationMapper;
 import com.lzke.ai.infrastructure.persistence.mapper.DoctorCustomerCardCustomizeMapper;
 import com.lzke.ai.infrastructure.persistence.mapper.DoctorCustomerNoteMapper;
 import com.lzke.ai.infrastructure.persistence.mapper.DoctorRoleCardConfigMapper;
@@ -50,6 +58,8 @@ public class DoctorWorkbenchApplicationService {
     private static final String USER_INFO_CACHE_PREFIX = "auth:info:user:";
     private static final Duration USER_INFO_CACHE_TTL = Duration.ofHours(8);
 
+    private final DoctorCardGroupMapper doctorCardGroupMapper;
+    private final DoctorCardGroupRelationMapper doctorCardGroupRelationMapper;
     private final DoctorRoleCardConfigMapper doctorRoleCardConfigMapper;
     private final DoctorCustomerCardCustomizeMapper doctorCustomerCardCustomizeMapper;
     private final DoctorCustomerNoteMapper doctorCustomerNoteMapper;
@@ -111,6 +121,113 @@ public class DoctorWorkbenchApplicationService {
     public void deleteRoleCardConfig(String id) {
         if (doctorRoleCardConfigMapper.deleteById(id) <= 0) {
             throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "未找到医生角色卡片配置: " + id);
+        }
+    }
+
+    public PageResult<DoctorCardGroup> listCardGroups(DoctorCardGroupQueryRequest request) {
+        DoctorCardGroupQueryRequest query = request == null ? new DoctorCardGroupQueryRequest() : request;
+        Page<DoctorCardGroup> page = new Page<>(query.getPage(), query.getSize());
+        LambdaQueryWrapper<DoctorCardGroup> wrapper = new LambdaQueryWrapper<DoctorCardGroup>()
+                .like(StringUtils.hasText(query.getGroupName()), DoctorCardGroup::getGroupName, query.getGroupName())
+                .eq(StringUtils.hasText(query.getStatus()), DoctorCardGroup::getStatus, query.getStatus())
+                .eq(query.getVisibleFlag() != null, DoctorCardGroup::getVisibleFlag, query.getVisibleFlag())
+                .orderByAsc(DoctorCardGroup::getGroupSort)
+                .orderByDesc(DoctorCardGroup::getUpdatedAt);
+        Page<DoctorCardGroup> result = doctorCardGroupMapper.selectPage(page, wrapper);
+        return PageResult.of(result.getRecords(), result.getTotal(), (int) result.getCurrent(), (int) result.getSize());
+    }
+
+    public DoctorCardGroup getCardGroup(String id) {
+        DoctorCardGroup entity = doctorCardGroupMapper.selectById(id);
+        if (entity == null) {
+            throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "未找到医生工作台卡片分组: " + id);
+        }
+        return entity;
+    }
+
+    @Transactional
+    public DoctorCardGroup createCardGroup(DoctorCardGroupRequest request) {
+        validateCardGroupRequest(request);
+        DoctorCardGroup entity = new DoctorCardGroup();
+        copyCardGroup(entity, request);
+        doctorCardGroupMapper.insert(entity);
+        return entity;
+    }
+
+    @Transactional
+    public DoctorCardGroup updateCardGroup(String id, DoctorCardGroupRequest request) {
+        validateCardGroupRequest(request);
+        DoctorCardGroup entity = getCardGroup(id);
+        copyCardGroup(entity, request);
+        doctorCardGroupMapper.updateById(entity);
+        return getCardGroup(id);
+    }
+
+    @Transactional
+    public void deleteCardGroup(String id) {
+        doctorCardGroupRelationMapper.delete(new LambdaQueryWrapper<DoctorCardGroupRelation>()
+                .eq(DoctorCardGroupRelation::getGroupId, id));
+        if (doctorCardGroupMapper.deleteById(id) <= 0) {
+            throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "未找到医生工作台卡片分组: " + id);
+        }
+    }
+
+    public PageResult<DoctorCardGroupRelation> listCardGroupRelations(DoctorCardGroupRelationQueryRequest request) {
+        DoctorCardGroupRelationQueryRequest query = request == null ? new DoctorCardGroupRelationQueryRequest() : request;
+        Page<DoctorCardGroupRelation> page = new Page<>(query.getPage(), query.getSize());
+        LambdaQueryWrapper<DoctorCardGroupRelation> wrapper = new LambdaQueryWrapper<DoctorCardGroupRelation>()
+                .eq(StringUtils.hasText(query.getGroupId()), DoctorCardGroupRelation::getGroupId, query.getGroupId())
+                .eq(StringUtils.hasText(query.getCardConfigId()), DoctorCardGroupRelation::getCardConfigId, query.getCardConfigId())
+                .eq(StringUtils.hasText(query.getStatus()), DoctorCardGroupRelation::getStatus, query.getStatus())
+                .eq(query.getVisibleFlag() != null, DoctorCardGroupRelation::getVisibleFlag, query.getVisibleFlag())
+                .orderByAsc(DoctorCardGroupRelation::getCardSort)
+                .orderByDesc(DoctorCardGroupRelation::getUpdatedAt);
+        Page<DoctorCardGroupRelation> result = doctorCardGroupRelationMapper.selectPage(page, wrapper);
+        return PageResult.of(result.getRecords(), result.getTotal(), (int) result.getCurrent(), (int) result.getSize());
+    }
+
+    public DoctorCardGroupRelation getCardGroupRelation(String id) {
+        DoctorCardGroupRelation entity = doctorCardGroupRelationMapper.selectById(id);
+        if (entity == null) {
+            throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "未找到医生工作台分组卡片关系: " + id);
+        }
+        return entity;
+    }
+
+    public List<DoctorCardGroupRelation> listCardGroupRelationsByGroup(String groupId) {
+        if (!StringUtils.hasText(groupId)) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "groupId不能为空");
+        }
+        return doctorCardGroupRelationMapper.selectList(new LambdaQueryWrapper<DoctorCardGroupRelation>()
+                .eq(DoctorCardGroupRelation::getGroupId, groupId)
+                .eq(DoctorCardGroupRelation::getStatus, "active")
+                .eq(DoctorCardGroupRelation::getVisibleFlag, 1)
+                .orderByAsc(DoctorCardGroupRelation::getCardSort)
+                .orderByDesc(DoctorCardGroupRelation::getUpdatedAt));
+    }
+
+    @Transactional
+    public DoctorCardGroupRelation createCardGroupRelation(DoctorCardGroupRelationRequest request) {
+        validateCardGroupRelationRequest(request);
+        DoctorCardGroupRelation entity = new DoctorCardGroupRelation();
+        copyCardGroupRelation(entity, request);
+        doctorCardGroupRelationMapper.insert(entity);
+        return entity;
+    }
+
+    @Transactional
+    public DoctorCardGroupRelation updateCardGroupRelation(String id, DoctorCardGroupRelationRequest request) {
+        validateCardGroupRelationRequest(request);
+        DoctorCardGroupRelation entity = getCardGroupRelation(id);
+        copyCardGroupRelation(entity, request);
+        doctorCardGroupRelationMapper.updateById(entity);
+        return getCardGroupRelation(id);
+    }
+
+    @Transactional
+    public void deleteCardGroupRelation(String id) {
+        if (doctorCardGroupRelationMapper.deleteById(id) <= 0) {
+            throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "未找到医生工作台分组卡片关系: " + id);
         }
     }
 
@@ -273,6 +390,33 @@ public class DoctorWorkbenchApplicationService {
         }
     }
 
+    private void validateCardGroupRequest(DoctorCardGroupRequest request) {
+        if (request == null) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "卡片分组请求不能为空");
+        }
+        if (!StringUtils.hasText(request.getGroupName())) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "groupName不能为空");
+        }
+    }
+
+    private void validateCardGroupRelationRequest(DoctorCardGroupRelationRequest request) {
+        if (request == null) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "分组卡片关系请求不能为空");
+        }
+        if (!StringUtils.hasText(request.getGroupId())) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "groupId不能为空");
+        }
+        if (!StringUtils.hasText(request.getCardConfigId())) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "cardConfigId不能为空");
+        }
+        if (doctorCardGroupMapper.selectById(request.getGroupId()) == null) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "groupId对应的分组不存在");
+        }
+        if (doctorRoleCardConfigMapper.selectById(request.getCardConfigId()) == null) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "cardConfigId对应的卡片配置不存在");
+        }
+    }
+
     private void copyRoleCardConfig(DoctorRoleCardConfig entity, DoctorRoleCardConfigRequest request) {
         entity.setRoleId(trimToNull(request.getRoleId()));
         entity.setRoleCode(trimToNull(request.getRoleCode()));
@@ -285,6 +429,33 @@ public class DoctorWorkbenchApplicationService {
         entity.setCreatedByName(trimToNull(request.getCreatedByName()));
         entity.setUpdatedBy(trimToNull(request.getUpdatedBy()));
         entity.setUpdatedByName(trimToNull(request.getUpdatedByName()));
+    }
+
+    private void copyCardGroup(DoctorCardGroup entity, DoctorCardGroupRequest request) {
+        entity.setGroupName(trimToNull(request.getGroupName()));
+        entity.setGroupSort(defaultInt(request.getGroupSort()));
+        entity.setVisibleFlag(request.getVisibleFlag() == null ? 1 : request.getVisibleFlag());
+        entity.setStatus(StringUtils.hasText(request.getStatus()) ? request.getStatus().trim() : "active");
+        entity.setRemark(trimToNull(request.getRemark()));
+        String currentEmployeeId = getCurrentEmployeeId();
+        String currentEmployeeName = getCurrentEmployeeName();
+        if (!StringUtils.hasText(entity.getCreatedBy())) {
+            entity.setCreatedBy(currentEmployeeId);
+        }
+        if (!StringUtils.hasText(entity.getCreatedByName())) {
+            entity.setCreatedByName(currentEmployeeName);
+        }
+        entity.setUpdatedBy(currentEmployeeId);
+        entity.setUpdatedByName(currentEmployeeName);
+    }
+
+    private void copyCardGroupRelation(DoctorCardGroupRelation entity, DoctorCardGroupRelationRequest request) {
+        entity.setGroupId(trimToNull(request.getGroupId()));
+        entity.setCardConfigId(trimToNull(request.getCardConfigId()));
+        entity.setCardSort(defaultInt(request.getCardSort()));
+        entity.setVisibleFlag(request.getVisibleFlag() == null ? 1 : request.getVisibleFlag());
+        entity.setStatus(StringUtils.hasText(request.getStatus()) ? request.getStatus().trim() : "active");
+        entity.setRemark(trimToNull(request.getRemark()));
     }
 
     private void copyCustomerCardCustomize(DoctorCustomerCardCustomize entity, DoctorCustomerCardCustomizeRequest request) {
