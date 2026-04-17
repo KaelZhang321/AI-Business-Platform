@@ -110,16 +110,14 @@ class HealthQuadrantSingleExamItem(BaseModel):
 class HealthQuadrantRequest(BaseModel):
     """四象限分析请求。"""
     sex: str = Field(..., description="性别：男/女")
+    age: int | None = Field(None, description="年龄")
     study_id: str = Field(..., min_length=1, description="体检主单号 StudyID")
     quadrant_type: Literal["exam", "treatment"] = Field(..., description="四象限类型：体检或治疗")
     single_exam_items: list[HealthQuadrantSingleExamItem] = Field(
         default_factory=list,
         description="单项体检条目列表（可选，可多条）",
     )
-    chief_complaint_items: list[str] = Field(
-        default_factory=list,
-        description="主诉文本列表（可选，可多条）",
-    )
+    chief_complaint_text: str | None = Field(None, description="主诉文本（可选）")
 
 
 class HealthQuadrantBucket(BaseModel):

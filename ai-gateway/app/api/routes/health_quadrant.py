@@ -41,21 +41,22 @@ async def build_health_quadrant(request: HealthQuadrantRequest, raw_request: Req
     trace_id = (raw_request.headers.get("X-Trace-Id") or raw_request.headers.get("X-Request-Id") or "").strip() or uuid4().hex
     route_started_at = time.perf_counter()
     # 查询接口只接受列表形态主诉；这里统一去重并排序，避免签名输入抖动。
-    chief_complaint_items = sorted(set(item.strip() for item in request.chief_complaint_items if item and item.strip()))
     logger.info(
-        "health quadrant route query received trace_id=%s study_id=%s quadrant_type=%s single_exam_count=%s complaint_count=%s",
+        "health quadrant route query received trace_id=%s study_id=%s quadrant_type=%s single_exam_count=%s complaint_len=%s",
         trace_id,
         request.study_id,
         request.quadrant_type,
         len(request.single_exam_items),
-        len(chief_complaint_items),
+        len(request.chief_complaint_text or ""),
     )
     try:
         result = await health_quadrant_service.query_quadrants(
+            sex=request.sex,
+            age=request.age,
             study_id=request.study_id,
             quadrant_type=request.quadrant_type,
             single_exam_items=[item.model_dump(by_alias=True) for item in request.single_exam_items],
-            chief_complaint_items=chief_complaint_items,
+            chief_complaint_text=request.chief_complaint_text,
             trace_id=trace_id,
         )
         logger.info(
@@ -118,7 +119,7 @@ async def confirm_health_quadrant(
             study_id=request.study_id,
             quadrant_type=request.quadrant_type,
             single_exam_items=[item.model_dump(by_alias=True) for item in request.single_exam_items],
-            chief_complaint_items=chief_complaint_items,
+            chief_complaint_text="，".join(chief_complaint_items) if chief_complaint_items else None,
             quadrants=[bucket.model_dump(by_alias=False) for bucket in request.quadrants],
             confirmed_by=confirmed_by,
             trace_id=trace_id,

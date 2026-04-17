@@ -10,15 +10,19 @@ class StubHealthQuadrantService:
     async def query_quadrants(
         self,
         *,
+        sex: str,
+        age: int | None,
         study_id: str,
         quadrant_type: str,
         single_exam_items: list[dict[str, str]],
-        chief_complaint_items: list[str],
+        chief_complaint_text: str | None,
         trace_id: str | None,
     ) -> dict:
         assert study_id == "1675218389653693282"
         assert quadrant_type == "exam"
-        assert chief_complaint_items == ["夜间易醒", "睡眠障碍"]
+        assert sex == "男"
+        assert age is None
+        assert chief_complaint_text == "睡眠障碍，夜间易醒"
         assert trace_id == "trace-001"
         assert len(single_exam_items) == 2
         assert single_exam_items[0]["itemId"] == "A1"
@@ -60,7 +64,7 @@ class StubHealthQuadrantService:
         study_id: str,
         quadrant_type: str,
         single_exam_items: list[dict[str, str]],
-        chief_complaint_items: list[str],
+        chief_complaint_text: str | None,
         quadrants: list[dict],
         confirmed_by: str | None,
         trace_id: str | None,
@@ -70,7 +74,7 @@ class StubHealthQuadrantService:
         assert confirmed_by == "hello"
         assert trace_id == "trace-001"
         assert len(single_exam_items) == 2
-        assert sorted(chief_complaint_items) == ["夜间易醒", "睡眠障碍"]
+        assert chief_complaint_text == "夜间易醒，睡眠障碍"
         assert len(quadrants) == 4
 
 
@@ -95,7 +99,7 @@ def test_health_quadrant_query_route_returns_unified_quadrants(monkeypatch) -> N
                 {"itemId": "A1", "itemText": "维生素D缺乏", "abnormalIndicator": "维生素D偏低"},
                 {"itemId": "A2", "itemText": "甲状腺结节", "abnormalIndicator": "结节"},
             ],
-            "chief_complaint_items": ["睡眠障碍", "夜间易醒"],
+            "chief_complaint_text": "睡眠障碍，夜间易醒",
         },
     )
 
@@ -124,6 +128,7 @@ def test_health_quadrant_confirm_route_persists_payload(monkeypatch) -> None:
                 {"itemId": "A1", "itemText": "维生素D缺乏", "abnormalIndicator": "维生素D偏低"},
                 {"itemId": "A2", "itemText": "甲状腺结节", "abnormalIndicator": "结节"},
             ],
+            "chief_complaint_text": None,
             "chief_complaint_items": ["睡眠障碍", "夜间易醒"],
             "quadrants": [
                 {

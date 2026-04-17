@@ -60,17 +60,3 @@ def build_health_quadrant_ods_mysql_conn_params(*, include_connect_timeout: bool
         connect_timeout_seconds=settings.health_quadrant_mysql_connect_timeout_seconds,
         include_connect_timeout=include_connect_timeout,
     )
-
-
-def build_health_quadrant_dw_mysql_conn_params(*, include_connect_timeout: bool = True) -> dict[str, str | int | float]:
-    """构建健康四象限 DW 数据源 MySQL 连接参数。"""
-
-    return _build_mysql_conn_params(
-        host=settings.health_quadrant_dw_mysql_host,
-        port=settings.health_quadrant_dw_mysql_port,
-        user=settings.health_quadrant_dw_mysql_user,
-        password=settings.health_quadrant_dw_mysql_password,
-        database=settings.health_quadrant_dw_mysql_database,
-        connect_timeout_seconds=settings.health_quadrant_mysql_connect_timeout_seconds,
-        include_connect_timeout=include_connect_timeout,
-    )

@@ -1,7 +1,7 @@
 """健康四象限多数据源 MySQL 连接池管理。
 
 功能：
-    把 ODS、DW、业务库三套连接池的生命周期统一收敛，避免在请求链路里反复创建和销毁连接池。
+    把 ODS、业务库两套连接池的生命周期统一收敛，避免在请求链路里反复创建和销毁连接池。
     该模块服务于“高并发下连接复用”的稳定性目标。
 """
 
@@ -14,7 +14,6 @@ import aiomysql
 
 from app.core.mysql import (
     build_business_mysql_conn_params,
-    build_health_quadrant_dw_mysql_conn_params,
     build_health_quadrant_ods_mysql_conn_params,
 )
 
@@ -25,7 +24,7 @@ class HealthQuadrantMySQLPools:
     """健康四象限多数据源连接池管理器。
 
     功能：
-        统一维护 ODS / DW / BUSINESS 三类连接池，并提供按需懒加载与统一关闭能力。
+        统一维护 ODS / BUSINESS 两类连接池，并提供按需懒加载与统一关闭能力。
         该设计的核心目的不是“封装语法”，而是避免请求级连接池抖动导致的吞吐退化。
 
     Args:
@@ -41,12 +40,11 @@ class HealthQuadrantMySQLPools:
         self._minsize = minsize
         self._maxsize = maxsize
         self._ods_pool: aiomysql.Pool | None = None
-        self._dw_pool: aiomysql.Pool | None = None
         self._business_pool: aiomysql.Pool | None = None
         self._lock = asyncio.Lock()
 
     async def warmup(self) -> None:
-        """预热三类连接池。
+        """预热连接池。
 
         功能：
             在服务启动阶段主动建立连接池，把首次请求的连接建链耗时前置，降低首包延迟。
@@ -54,7 +52,6 @@ class HealthQuadrantMySQLPools:
         """
 
         await self.get_ods_pool()
-        await self.get_dw_pool()
         await self.get_business_pool()
 
     async def get_ods_pool(self) -> aiomysql.Pool:
@@ -64,15 +61,6 @@ class HealthQuadrantMySQLPools:
             pool_name="ods",
             current_pool=self._ods_pool,
             conn_params=build_health_quadrant_ods_mysql_conn_params(),
-        )
-
-    async def get_dw_pool(self) -> aiomysql.Pool:
-        """获取 DW 连接池。"""
-
-        return await self._get_or_create_pool(
-            pool_name="dw",
-            current_pool=self._dw_pool,
-            conn_params=build_health_quadrant_dw_mysql_conn_params(),
         )
 
     async def get_business_pool(self) -> aiomysql.Pool:
@@ -98,7 +86,7 @@ class HealthQuadrantMySQLPools:
             避免并发首建时重复建池。
 
         Args:
-            pool_name: 连接池名称（`ods` / `dw` / `business`）。
+            pool_name: 连接池名称（`ods` / `business`）。
             current_pool: 当前缓存池实例。
             conn_params: 建池连接参数。
 
@@ -136,11 +124,9 @@ class HealthQuadrantMySQLPools:
         async with self._lock:
             pools = {
                 "ods": self._ods_pool,
-                "dw": self._dw_pool,
                 "business": self._business_pool,
             }
             self._ods_pool = None
-            self._dw_pool = None
             self._business_pool = None
 
         for pool_name, pool in pools.items():
@@ -155,8 +141,6 @@ class HealthQuadrantMySQLPools:
 
         if pool_name == "ods":
             return self._ods_pool
-        if pool_name == "dw":
-            return self._dw_pool
         if pool_name == "business":
             return self._business_pool
         raise ValueError(f"unsupported pool_name: {pool_name}")
@@ -166,9 +150,6 @@ class HealthQuadrantMySQLPools:
 
         if pool_name == "ods":
             self._ods_pool = pool
-            return
-        if pool_name == "dw":
-            self._dw_pool = pool
             return
         if pool_name == "business":
             self._business_pool = pool

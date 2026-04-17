@@ -43,7 +43,7 @@ class HealthQuadrantRepository:
         study_id: str,
         quadrant_type: str,
         single_exam_items: list[dict[str, str]],
-        chief_complaint_items: list[str],
+        chief_complaint_text: str | None,
         source_jlrq: Any = None,
         source_zjrq: Any = None,
         draft_not_older_than: datetime,
@@ -56,7 +56,7 @@ class HealthQuadrantRepository:
             quadrant_type: 四象限类型（`exam` / `treatment`）。
             single_exam_items: 规范化后的单项体检列表，每项包含
                 `itemId/itemText/abnormalIndicator`。
-            chief_complaint_items: 主诉文本列表。
+            chief_complaint_text: 主诉文本。
             source_jlrq: ODS `ods_tj_jlb.JLRQ`，用于追踪源数据录入时间变化。
             source_zjrq: ODS `ods_tj_jlb.ZJRQ`，用于追踪终检结果更新时间变化。
             draft_not_older_than: 草稿生效窗口下限；早于该时间的 DRAFT 视为过期。
@@ -80,7 +80,7 @@ class HealthQuadrantRepository:
             study_id=study_id,
             quadrant_type=quadrant_type,
             single_exam_items_json=items_json,
-            chief_complaint_items_json=_dump_canonical_complaints_json(chief_complaint_items),
+            chief_complaint_text=chief_complaint_text,
             source_jlrq=source_jlrq,
             source_zjrq=source_zjrq,
         )
@@ -142,7 +142,7 @@ LIMIT 1
         study_id: str,
         quadrant_type: str,
         single_exam_items: list[dict[str, str]],
-        chief_complaint_items: list[str],
+        chief_complaint_text: str | None,
         source_jlrq: Any = None,
         source_zjrq: Any = None,
         payload: dict[str, Any],
@@ -155,7 +155,7 @@ LIMIT 1
             study_id: 体检主单号。
             quadrant_type: 四象限类型（`exam` / `treatment`）。
             single_exam_items: 规范化后的单项体检列表。
-            chief_complaint_items: 主诉文本列表。
+            chief_complaint_text: 主诉文本。
             source_jlrq: ODS `ods_tj_jlb.JLRQ`，用于签名追踪源数据变化。
             source_zjrq: ODS `ods_tj_jlb.ZJRQ`，用于签名追踪源数据变化。
             payload: 四象限结果数据。
@@ -175,12 +175,11 @@ LIMIT 1
         # 1) 先构造签名：确保确认写入与查询命中使用同一上下文口径。
         # await self._ensure_table()
         items_json = _dump_canonical_items_json(single_exam_items)
-        complaints_json = _dump_canonical_complaints_json(chief_complaint_items)
         context_signature = _build_context_signature(
             study_id=study_id,
             quadrant_type=quadrant_type,
             single_exam_items_json=items_json,
-            chief_complaint_items_json=complaints_json,
+            chief_complaint_text=chief_complaint_text,
             source_jlrq=source_jlrq,
             source_zjrq=source_zjrq,
         )
@@ -214,7 +213,7 @@ updated_at = CURRENT_TIMESTAMP
                             study_id,
                             quadrant_type,
                             items_json,
-                            complaints_json,
+                            chief_complaint_text,
                             context_signature,
                             json.dumps(payload, ensure_ascii=False),
                             _normalize_nullable_text(confirmed_by),
@@ -236,7 +235,7 @@ updated_at = CURRENT_TIMESTAMP
         study_id: str,
         quadrant_type: str,
         single_exam_items: list[dict[str, str]],
-        chief_complaint_items: list[str],
+        chief_complaint_text: str | None,
         source_jlrq: Any = None,
         source_zjrq: Any = None,
         payload: dict[str, Any],
@@ -252,7 +251,7 @@ updated_at = CURRENT_TIMESTAMP
             study_id: 体检主单号。
             quadrant_type: 四象限类型（`exam` / `treatment`）。
             single_exam_items: 规范化后的单项体检列表。
-            chief_complaint_items: 主诉文本列表。
+            chief_complaint_text: 主诉文本。
             source_jlrq: ODS `ods_tj_jlb.JLRQ`，用于签名追踪源数据变化。
             source_zjrq: ODS `ods_tj_jlb.ZJRQ`，用于签名追踪源数据变化。
             payload: 四象限草稿结果。
@@ -271,12 +270,11 @@ updated_at = CURRENT_TIMESTAMP
         # 1) 与查询/确认链路共用同一签名算法，确保草稿与确认在同一上下文维度可追踪。
         # await self._ensure_table()
         items_json = _dump_canonical_items_json(single_exam_items)
-        complaints_json = _dump_canonical_complaints_json(chief_complaint_items)
         context_signature = _build_context_signature(
             study_id=study_id,
             quadrant_type=quadrant_type,
             single_exam_items_json=items_json,
-            chief_complaint_items_json=complaints_json,
+            chief_complaint_text=chief_complaint_text,
             source_jlrq=source_jlrq,
             source_zjrq=source_zjrq,
         )
@@ -287,7 +285,7 @@ INSERT INTO {_TABLE_NAME}(
     study_id,
     quadrant_type,
     single_exam_items_json,
-    chief_complaint_items_json,
+    chief_complaint_text,
     context_signature,
     status,
     payload_json,
@@ -296,7 +294,7 @@ INSERT INTO {_TABLE_NAME}(
 VALUES(%s, %s, %s, %s, %s, 'DRAFT', %s, NULL)
 ON DUPLICATE KEY UPDATE
 single_exam_items_json = VALUES(single_exam_items_json),
-chief_complaint_items_json = VALUES(chief_complaint_items_json),
+chief_complaint_text = VALUES(chief_complaint_text),
 payload_json = IF(status='CONFIRMED', payload_json, VALUES(payload_json)),
 status = IF(status='CONFIRMED', status, VALUES(status)),
 updated_at = IF(status='CONFIRMED', updated_at, CURRENT_TIMESTAMP)
@@ -312,7 +310,7 @@ updated_at = IF(status='CONFIRMED', updated_at, CURRENT_TIMESTAMP)
                             study_id,
                             quadrant_type,
                             items_json,
-                            complaints_json,
+                            chief_complaint_text,
                             context_signature,
                             json.dumps(payload, ensure_ascii=False),
                         ),
@@ -428,7 +426,7 @@ def _build_context_signature(
     study_id: str,
     quadrant_type: str,
     single_exam_items_json: str,
-    chief_complaint_items_json: str,
+    chief_complaint_text: str | None,
     source_jlrq: Any = None,
     source_zjrq: Any = None,
 ) -> str:
@@ -442,22 +440,10 @@ def _build_context_signature(
     normalized_jlrq = _normalize_source_signature_part(source_jlrq)
     normalized_zjrq = _normalize_source_signature_part(source_zjrq)
     raw = (
-        f"{study_id}|{quadrant_type}|{single_exam_items_json}|{chief_complaint_items_json}|"
+        f"{study_id}|{quadrant_type}|{single_exam_items_json}|{chief_complaint_text}|"
         f"{normalized_jlrq}|{normalized_zjrq}"
     )
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
-
-
-def _dump_canonical_complaints_json(complaints: list[str]) -> str:
-    """序列化规范化后的主诉列表。"""
-
-    normalized = []
-    for item in complaints:
-        text = _normalize_nullable_text(item)
-        if text:
-            normalized.append(text)
-    return _stable_json_dumps(normalized)
-
 
 def _stable_json_dumps(value: Any) -> str:
     """把 JSON 数据规范化后稳定序列化。

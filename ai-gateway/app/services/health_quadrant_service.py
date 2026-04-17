@@ -7,22 +7,28 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import json
 import logging
+import re
 import time
 from datetime import datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
 import aiomysql
+import httpx
 
+from app.core.config import settings
 from app.services.health_quadrant_llm_service import HealthQuadrantLLMService
 from app.services.health_quadrant_mysql_pools import HealthQuadrantMySQLPools
 from app.services.health_quadrant_repository import HealthQuadrantRepository
+from app.services.health_quadrant_treatment_repository import (
+    HealthQuadrantTreatmentRepository,
+    HealthQuadrantTreatmentRepositoryError,
+)
 
 logger = logging.getLogger(__name__)
-
-_DW_TABLE_SPLIT = "dwd_his_zt_physicalexam_conclusion_split"
 
 _EXAM_BUCKETS = [
     ("exam_q1", "第一象限（基础筛查）"),
@@ -40,11 +46,67 @@ _TREATMENT_BUCKETS = [
 
 _IMAGING_KEYWORDS = ("影像", "CT", "MR", "MRI", "超声", "彩超", "X线", "DR", "PET")
 _PREMIUM_KEYWORDS = ("全基因", "PET-MR", "PET/CT", "肿瘤早筛", "心脑血管高级评估")
-_RED_RISK_KEYWORDS = ("肿瘤", "重度狭窄", "脑动脉硬化", "高血压危象", "心梗", "脑梗")
-_ORANGE_RISK_KEYWORDS = ("睡眠障碍", "肥胖", "结节", "肝功能异常", "肾功能异常")
-_BLUE_RISK_KEYWORDS = ("维生素D缺乏", "骨质疏松", "胰岛素抵抗", "免疫力降低", "荷尔蒙")
 _DRAFT_TTL_HOURS = 24
 _Q4_MASS_SPEC_KEYWORD = "质谱"
+_TREATMENT_QUADRANT_PRIORITY = {
+    "RED": 0,
+    "ORANGE": 1,
+    "BLUE": 2,
+    "GREEN": 3,
+}
+_TREATMENT_QUADRANT_TO_INDEX = {
+    "RED": 0,
+    "ORANGE": 1,
+    "BLUE": 2,
+    "GREEN": 3,
+}
+_TREATMENT_SYSTEM_ENUM = {
+    "消化系统",
+    "心脑血管",
+    "神经系统",
+    "内分泌系统",
+    "免疫系统",
+    "骨骼运动",
+    "呼吸系统",
+    "泌尿系统",
+    "生殖系统",
+}
+_TREATMENT_EMPTY_MESSAGE = "无安全可推荐项目"
+
+
+@dataclass(frozen=True)
+class _TreatmentTriageItem:
+    """治疗分诊阶段的标准化条目。"""
+
+    item_name: str
+    value_or_desc: str
+    quadrant: str
+    belong_system: str
+    reason: str
+
+    @property
+    def dedupe_key(self) -> str:
+        """用于同指标冲突裁决的稳定键。"""
+        if self.value_or_desc.startswith(self.item_name):
+            return self.value_or_desc
+        return f"{self.item_name} + {self.value_or_desc}"
+
+
+@dataclass(frozen=True)
+class _TreatmentCandidateProject:
+    """治疗知识库召回后的候选项目。"""
+
+    candidate_id: str
+    project_name: str
+    package_version: str
+    quadrant: str
+    belong_system: str
+    trigger_item: str
+    trigger_value_or_desc: str
+    priority_level: int
+    sort_order: int
+    match_source: str
+    contraindications: str
 
 
 class HealthQuadrantServiceError(RuntimeError):
@@ -66,11 +128,28 @@ class HealthQuadrantService:
         repository: HealthQuadrantRepository | None = None,
         llm_service: HealthQuadrantLLMService | None = None,
         mysql_pools: HealthQuadrantMySQLPools | None = None,
+        treatment_repository: HealthQuadrantTreatmentRepository | None = None,
     ) -> None:
         self._repository = repository or HealthQuadrantRepository()
         # 健康四象限的终检意见抽取需要稳定结构化输出，默认优先走 Ark（ARK_DEFAULT_MODEL）。
         self._llm_service = llm_service or HealthQuadrantLLMService()
         self._mysql_pools = mysql_pools or HealthQuadrantMySQLPools(minsize=1, maxsize=3)
+        self._treatment_repository = treatment_repository or HealthQuadrantTreatmentRepository(
+            mysql_pools=self._mysql_pools
+        )
+        self._dw_http_client: httpx.AsyncClient | None = None
+
+    def _get_dw_http_client(self) -> httpx.AsyncClient:
+        """懒加载 DW 路由 HTTP 客户端。
+
+        功能：
+            DW 数据源已经改为通过业务接口获取，连接复用能显著降低高并发下的 TLS/Socket 建连开销。
+            这里集中管理 AsyncClient，避免在 `_load_source_data` 中每次请求都新建客户端。
+        """
+
+        if self._dw_http_client is None:
+            self._dw_http_client = httpx.AsyncClient(timeout=10.0)
+        return self._dw_http_client
 
     async def warmup(self) -> None:
         """预热服务依赖资源。
@@ -85,10 +164,12 @@ class HealthQuadrantService:
     async def query_quadrants(
         self,
         *,
+        sex: str,
+        age: int | None,
         study_id: str,
         quadrant_type: str,
         single_exam_items: list[dict[str, str]],
-        chief_complaint_items: list[str],
+        chief_complaint_text: str | None = None,
         trace_id: str | None = None,
     ) -> dict[str, Any]:
         """查询四象限结果，优先命中持久化，再回退实时计算。
@@ -102,7 +183,7 @@ class HealthQuadrantService:
             quadrant_type: 象限类型（`exam` 或 `treatment`），决定计算分支。
             single_exam_items: 前端补充的单项体检条目（可多条）。
                 每条支持 `itemId/itemText/abnormalIndicator`。
-            chief_complaint_items: 前端补充的主诉条目（可多条）。
+            chief_complaint_text: 前端补充的主诉文本（可为空）。
             trace_id: 链路追踪 ID，缺失时自动生成。
 
         Returns:
@@ -121,7 +202,7 @@ class HealthQuadrantService:
         normalize_started_at = time.perf_counter()
         normalized_trace_id = trace_id or uuid4().hex
         normalized_items = _normalize_single_exam_items(single_exam_items)
-        normalized_complaints = _normalize_complaint_items(chief_complaint_items)
+        normalized_complaint_text = _normalize_text(chief_complaint_text)
         logger.info(
             "health quadrant stage duration stage=service.query.normalize duration_ms=%s trace_id=%s study_id=%s quadrant_type=%s",
             int((time.perf_counter() - normalize_started_at) * 1000),
@@ -148,7 +229,7 @@ class HealthQuadrantService:
                 study_id=study_id,
                 quadrant_type=quadrant_type,
                 single_exam_items=normalized_items,
-                chief_complaint_items=normalized_complaints,
+                chief_complaint_text=normalized_complaint_text,
                 source_jlrq=source.get("sourceJlrq"),
                 source_zjrq=source.get("sourceZjrq"),
                 draft_not_older_than=draft_not_older_than,
@@ -178,16 +259,22 @@ class HealthQuadrantService:
             if quadrant_type == "exam":
                 quadrants = await self._build_exam_quadrants(
                     source=source,
+                    sex=sex,
+                    age=age,
                     single_exam_items=normalized_items,
-                    chief_complaint_items=normalized_complaints,
+                    chief_complaint_text=normalized_complaint_text,
                     study_id=study_id,
-                    trace_id=normalized_trace_id,
+                    trace_id=normalized_trace_id
                 )
             elif quadrant_type == "treatment":
-                quadrants = self._build_treatment_quadrants(
+                quadrants = await self._build_treatment_quadrants(
                     source=source,
+                    sex=sex,
+                    age=age,
                     single_exam_items=normalized_items,
-                    chief_complaint_items=normalized_complaints,
+                    chief_complaint_text=normalized_complaint_text,
+                    study_id=study_id,
+                    trace_id=normalized_trace_id,
                 )
             else:
                 raise HealthQuadrantServiceError("quadrant_type 仅支持 exam 或 treatment")
@@ -212,7 +299,7 @@ class HealthQuadrantService:
                 study_id=study_id,
                 quadrant_type=quadrant_type,
                 single_exam_items=normalized_items,
-                chief_complaint_items=normalized_complaints,
+                chief_complaint_text=normalized_complaint_text,
                 source_jlrq=source.get("sourceJlrq"),
                 source_zjrq=source.get("sourceZjrq"),
                 payload={"quadrants": quadrants},
@@ -247,7 +334,7 @@ class HealthQuadrantService:
         study_id: str,
         quadrant_type: str,
         single_exam_items: list[dict[str, str]],
-        chief_complaint_items: list[str],
+        chief_complaint_text: str | None,
         quadrants: list[dict[str, Any]],
         confirmed_by: str | None,
         trace_id: str | None = None,
@@ -263,7 +350,7 @@ class HealthQuadrantService:
             quadrant_type: 象限类型（`exam` 或 `treatment`）。
             single_exam_items: 单项体检条目列表（可多条）。
                 每条支持 `itemId/itemText/abnormalIndicator`。
-            chief_complaint_items: 主诉条目列表（可多条）。
+            chief_complaint_text: 主诉条目。
             quadrants: 前端确认后的四象限结果。
             confirmed_by: 操作人（通常来自 `X-User-Id`）。
             trace_id: 链路追踪 ID，缺失时自动生成。
@@ -281,7 +368,7 @@ class HealthQuadrantService:
         normalize_started_at = time.perf_counter()
         normalized_trace_id = trace_id or uuid4().hex
         normalized_items = _normalize_single_exam_items(single_exam_items)
-        normalized_complaints = _normalize_complaint_items(chief_complaint_items)
+        normalized_complaint_text = _normalize_text(chief_complaint_text)
         logger.info(
             "health quadrant stage duration stage=service.confirm.normalize duration_ms=%s trace_id=%s study_id=%s quadrant_type=%s",
             int((time.perf_counter() - normalize_started_at) * 1000),
@@ -309,7 +396,7 @@ class HealthQuadrantService:
                 study_id=study_id,
                 quadrant_type=quadrant_type,
                 single_exam_items=normalized_items,
-                chief_complaint_items=normalized_complaints,
+                chief_complaint_text=normalized_complaint_text,
                 source_jlrq=source.get("sourceJlrq"),
                 source_zjrq=source.get("sourceZjrq"),
                 payload=payload,
@@ -348,14 +435,18 @@ class HealthQuadrantService:
         """
 
         await self._repository.close()
+        await self._treatment_repository.close()
         await self._mysql_pools.close()
+        if self._dw_http_client is not None:
+            await self._dw_http_client.aclose()
+            self._dw_http_client = None
 
     async def _load_source_data(self, *, study_id: str, trace_id: str | None = None) -> dict[str, Any]:
         """加载体检源数据。
 
         功能：
-            上游两套库字段命名并不完全一致，这里采用“多候选列探测 + 降级 SQL”策略，
-            降低字段变更对接口可用性的冲击。
+            ODS 主数据继续走 MySQL 直连；DW 异常拆分数据改为经业务路由获取，
+            通过接口契约屏蔽底层表结构变更，降低网关对 DW 物理表的耦合。
 
         Args:
             study_id: 体检主单号。
@@ -376,6 +467,7 @@ class HealthQuadrantService:
         split_rows: list[dict[str, Any]] = []
         source_jlrq = None
         source_zjrq = None
+        jcjg = ""
 
         ods_started_at = time.perf_counter()
         ods_status = "success"
@@ -388,6 +480,7 @@ class HealthQuadrantService:
                         """
                         SELECT
                           jlb.JKYLBJ AS finalConclusion,
+                          jlb.JCJG AS jcjg,
                           xmzh.XMMC AS packageName,
                           jlb.JLRQ AS sourceJlrq,
                           jlb.ZJRQ AS sourceZjrq
@@ -404,6 +497,7 @@ class HealthQuadrantService:
                         # 2) ODS 作为版本信号源：JLRQ/ZJRQ 参与签名，驱动缓存有效性判断。
                         package_name = _normalize_text(row.get("packageName")) or ""
                         final_conclusion = _normalize_text(row.get("finalConclusion")) or ""
+                        jcjg = _normalize_text(row.get("jcjg")) or ""
                         source_jlrq = row.get("sourceJlrq")
                         source_zjrq = row.get("sourceZjrq")
         except Exception as exc:
@@ -423,28 +517,56 @@ class HealthQuadrantService:
 
         dw_started_at = time.perf_counter()
         dw_status = "success"
+        dw_url = ""
         try:
-            dw_pool = await self._mysql_pools.get_dw_pool()
-            async with dw_pool.acquire() as conn:
-                async with conn.cursor(aiomysql.DictCursor) as cursor:
-                    await cursor.execute(
-                        f"""
-                        SELECT
-                          category_name,
-                          one_item_name,
-                          two_item_name,
-                          abnormal_item
-                        FROM {_DW_TABLE_SPLIT}
-                        WHERE peisno = %s
-                        AND delete_flag = 0
-                        """,
-                        (study_id,),
-                    )
-                    split_rows = [dict(item) for item in await cursor.fetchall()]
+            # 4) 通过 DW 路由接口取异常拆分数据，避免网关继续直连 DW 物理表。
+            client = self._get_dw_http_client()
+            dw_base_url = settings.dw_route_url.rstrip("/")
+            dw_url = f"{dw_base_url}/physicalexam-conclusion-split/{study_id}"
+            response = await client.get(dw_url)
+            response.raise_for_status()
+            payload = response.json()
+            if isinstance(payload, list):
+                rows = payload
+            elif isinstance(payload, dict):
+                data = payload.get("rows")
+                rows = data if isinstance(data, list) else []
+            else:
+                rows = []
+            split_rows = []
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                # 业务规则：仅保留 delete_flag=0 的有效记录，并规范化字段名。
+                delete_flag = row.get("delete_flag")
+                if str(delete_flag) != "0":
+                    continue
+                split_rows.append(
+                    {
+                        "category_name": _normalize_text(row.get("category_name")) or "",
+                        "one_item_name": _normalize_text(row.get("one_item_name")) or "",
+                        "two_item_name": _normalize_text(row.get("two_item_name")) or "",
+                        "abnormal_item": _normalize_text(row.get("abnormal_item")) or "",
+                    }
+                )
         except Exception as exc:
-            # 4) DW 异常同样降级：体检/治疗计算允许在“仅终检意见”条件下继续执行。
+            # 5) DW 路由异常同样降级：体检/治疗计算允许在“仅终检意见”条件下继续执行。
             dw_status = "failed"
-            logger.warning("load dw split failed study_id=%s error=%s", study_id, exc)
+            status_code = None
+            body_snippet = ""
+            if isinstance(exc, httpx.HTTPStatusError):
+                status_code = exc.response.status_code
+                body_snippet = (exc.response.text or "")[:300]
+            logger.warning(
+                "load dw split failed trace_id=%s study_id=%s url=%s status_code=%s error_type=%s error=%r body_snippet=%s",
+                normalized_trace_id,
+                study_id,
+                dw_url,
+                status_code,
+                type(exc).__name__,
+                exc,
+                body_snippet,
+            )
         finally:
             logger.info(
                 "health quadrant stage duration stage=service.source.dw_query duration_ms=%s trace_id=%s study_id=%s status=%s",
@@ -464,6 +586,7 @@ class HealthQuadrantService:
         return {
             "packageName": package_name,
             "finalConclusion": final_conclusion,
+            'jcjg': jcjg,
             "splitRows": split_rows,
             "sourceJlrq": source_jlrq,
             "sourceZjrq": source_zjrq,
@@ -472,9 +595,11 @@ class HealthQuadrantService:
     async def _build_exam_quadrants(
         self,
         *,
+        sex: str,
+        age: int | None,
         source: dict[str, Any],
         single_exam_items: list[dict[str, str]],
-        chief_complaint_items: list[str],
+        chief_complaint_text: str | None,
         study_id: str | None = None,
         trace_id: str | None = None,
     ) -> list[dict[str, Any]]:
@@ -489,7 +614,7 @@ class HealthQuadrantService:
             source: 聚合后的源数据，含 splitRows/finalConclusion 等。
             single_exam_items: 前端补充单项体检条目。
                 `itemText` 作为单项项目名，`abnormalIndicator` 作为异常指标描述。
-            chief_complaint_items: 前端补充主诉条目。
+            chief_complaint_text: 前端补充主诉文本。
 
         Returns:
             体检四象限列表（固定 4 个象限）。
@@ -553,9 +678,8 @@ class HealthQuadrantService:
             len(extracted_items),
         )
         q3_merge_started_at = time.perf_counter()
-        # mapped_items = await self._map_doctor_conclusion_items_to_standard(items=extracted_items)
-
-        q3_items = _deduplicate_exam_items_by_keys(extracted_items, existing_exam_keys)
+        mapped_items = await self._map_doctor_conclusion_items_to_standard(items=extracted_items)
+        q3_items = _deduplicate_exam_items_by_keys(mapped_items or extracted_items, existing_exam_keys)
         if q3_items:
             # 终检意见抽取项属于第三象限“专项深度筛查”。
             buckets[2]["recommendationPlans"].extend(q3_items)
@@ -588,6 +712,10 @@ class HealthQuadrantService:
 
         # 4) 第四象限：基于主诉做 pathway LIKE 召回，再过滤为功能医学“质谱”检测项目。
         q4_started_at = time.perf_counter()
+        # 主诉文本允许为空；统一按中英文逗号切分为条目列表，确保 Q4 召回和去重逻辑稳定。
+        normalized_complaint_text = _normalize_text(chief_complaint_text) or ""
+        # 按稳定排序输出主诉条目，确保测试和签名口径一致，避免同语义输入顺序抖动。
+        chief_complaint_items = sorted(item for item in re.split(r"[，,]", normalized_complaint_text) if item)
         q4_candidates = await self._query_q4_mass_spec_projects(chief_complaint_items=chief_complaint_items)
         q4_items = _deduplicate_exam_items_by_keys(q4_candidates, existing_exam_keys)
         if q4_items:
@@ -620,62 +748,440 @@ class HealthQuadrantService:
         )
         return buckets
 
-    def _build_treatment_quadrants(
+    async def _build_treatment_quadrants(
         self,
         *,
+        sex: str,
+        age: int | None,
         source: dict[str, Any],
         single_exam_items: list[dict[str, str]],
-        chief_complaint_items: list[str],
+        chief_complaint_text: str | None,
+        study_id: str | None = None,
+        trace_id: str | None = None,
     ) -> list[dict[str, Any]]:
         """构建治疗四象限。
 
         功能：
-            按“红橙蓝绿”风险优先级对异常项进行分桶，把多源文本条目转成可执行的干预层级。
+            治疗链路采用三阶段编排：
+            1) Triage: LLM 分诊定象限 + 归属系统
+            2) Match: 基于系统/指标从知识库召回候选项目
+            3) Safety: 一次批量做禁忌审查并剔除，再按 DB 规则装填四象限
 
         Args:
             source: 聚合后的源数据。
             single_exam_items: 前端补充单项体检条目。
-            chief_complaint_items: 前端补充主诉条目。
+            chief_complaint_text: 前端补充主诉。
+            study_id: 体检主单号，仅用于日志追踪。
+            trace_id: 链路追踪 ID。
 
         Returns:
             治疗四象限列表（固定 4 个象限）。
 
         Edge Cases:
-            未命中任何风险关键词的条目会进入绿色维养区，避免结果丢项。
+            安全审查后若全部项目被剔除，仍返回四个空象限，保证前端结构稳定。
+        """
+        total_started_at = time.perf_counter()
+        normalized_trace_id = trace_id or "-"
+        normalized_study_id = study_id or "-"
+
+        # 1) 输入归一化：把 jcjg + 单项收敛成 triage 语料，避免提示词遗漏关键上下文。
+        normalize_started_at = time.perf_counter()
+        abnormal_items_text = _build_treatment_triage_inputs(
+            jcjg=source["jcjg"],
+            single_exam_items=single_exam_items
+        )
+        logger.info(
+            "health quadrant stage duration stage=service.treatment.normalize duration_ms=%s trace_id=%s study_id=%s in_count=%s",
+            int((time.perf_counter() - normalize_started_at) * 1000),
+            normalized_trace_id,
+            normalized_study_id,
+            len(abnormal_items_text),
+        )
+        if not abnormal_items_text:
+            buckets = _empty_buckets(_TREATMENT_BUCKETS)
+            _finalize_treatment_recommendations(buckets)
+            return buckets
+
+        # 2) Triage 阶段：顶层失败必须硬失败；行级失败只丢弃异常行。
+        triage_started_at = time.perf_counter()
+        triage_items, triage_dropped = await self._triage_treatment_items(
+            sex=sex,
+            age=age,
+            abnormal_items_text=_normalize_text(abnormal_items_text),
+            chief_complaint_text=_normalize_text(chief_complaint_text),
+            trace_id=normalized_trace_id,
+            study_id=normalized_study_id,
+        )
+        logger.info(
+            "health quadrant stage duration stage=service.treatment.triage duration_ms=%s trace_id=%s study_id=%s in_count=%s out_count=%s dropped_count=%s",
+            int((time.perf_counter() - triage_started_at) * 1000),
+            normalized_trace_id,
+            normalized_study_id,
+            len(abnormal_items_text),
+            len(triage_items),
+            triage_dropped,
+        )
+        if not triage_items:
+            buckets = _empty_buckets(_TREATMENT_BUCKETS)
+            _finalize_treatment_recommendations(buckets)
+            return buckets
+
+        # 3) Match 阶段：仅负责召回，不做安全过滤。
+        match_started_at = time.perf_counter()
+        candidates = await self._match_treatment_candidates(
+            triage_items=triage_items,
+            trace_id=normalized_trace_id,
+            study_id=normalized_study_id,
+        )
+        logger.info(
+            "health quadrant stage duration stage=service.treatment.match duration_ms=%s trace_id=%s study_id=%s in_count=%s out_count=%s",
+            int((time.perf_counter() - match_started_at) * 1000),
+            normalized_trace_id,
+            normalized_study_id,
+            len(triage_items),
+            len(candidates),
+        )
+        if not candidates:
+            buckets = _build_treatment_quadrant_buckets_from_triage(triage_items=triage_items)
+            _finalize_treatment_recommendations(buckets)
+            return buckets
+
+        # 4) Safety 阶段：对所有候选项目一次性做禁忌症过滤，避免多次模型调用带来的时延和不一致。
+        #   - Safety 后执行每象限 Top3 限流，只保留优先级最高的 3 个项目。
+        #   - dropped_count 统计口径：禁忌剔除 + 未覆盖剔除 + Top3 裁剪剔除。
+        safety_started_at = time.perf_counter()
+        safe_candidates, safety_dropped = await self._filter_treatment_candidates_by_safety(
+            candidates=candidates,
+            chief_complaint_text=chief_complaint_text,
+            trace_id=normalized_trace_id,
+            study_id=normalized_study_id,
+        )
+        logger.info(
+            "health quadrant stage duration stage=service.treatment.safety duration_ms=%s trace_id=%s study_id=%s in_count=%s out_count=%s dropped_count=%s",
+            int((time.perf_counter() - safety_started_at) * 1000),
+            normalized_trace_id,
+            normalized_study_id,
+            len(candidates),
+            len(safe_candidates),
+            safety_dropped,
+        )
+
+        # 5) Fill 阶段：按 triage 和安全过滤结果装填固定四象限结构，保证前端渲染契约不变。
+        fill_started_at = time.perf_counter()
+        buckets = _build_treatment_quadrant_buckets(
+            triage_items=triage_items,
+            safe_candidates=safe_candidates,
+        )
+        _finalize_treatment_recommendations(buckets)
+        logger.info(
+            "health quadrant stage duration stage=service.treatment.fill duration_ms=%s trace_id=%s study_id=%s quadrant_count=%s",
+            int((time.perf_counter() - fill_started_at) * 1000),
+            normalized_trace_id,
+            normalized_study_id,
+            len(buckets),
+        )
+        logger.info(
+            "health quadrant stage duration stage=service.treatment.total duration_ms=%s trace_id=%s study_id=%s",
+            int((time.perf_counter() - total_started_at) * 1000),
+            normalized_trace_id,
+            normalized_study_id,
+        )
+        return buckets
+
+    async def _triage_treatment_items(
+        self,
+        *,
+        sex: str,
+        age: int | None,
+        abnormal_items_text: str,
+        chief_complaint_text: str | None,
+        trace_id: str,
+        study_id: str,
+    ) -> tuple[list[_TreatmentTriageItem], int]:
+        """执行治疗四象限分诊（Triage）并做行级容错。
+
+        功能：
+            使用单次 LLM 请求输出结构化分诊结论。顶层解析失败直接硬失败，
+            行级字段不合法只剔除异常行，避免单条脏数据拖垮整单。
+
+        Args:
+            triage_inputs: 待分诊异常项与主诉列表。
+            source: 源数据，用于补充终检意见上下文。
+            trace_id: 链路追踪 ID。
+            study_id: 体检主单号。
+
+        Returns:
+            `(triage_items, dropped_count)`。
+
+        Raises:
+            HealthQuadrantServiceError: 当 LLM 调用失败、输出非 JSON 或顶层结构非法时抛出。
         """
 
-        buckets = _empty_buckets(_TREATMENT_BUCKETS)
-        all_candidates: list[str] = []
-        # 1) 先汇总所有候选条目：统一分层前必须先做数据面归集，避免漏判。
-        for row in source.get("splitRows", []):
-            for key in ("abnormal_item", "one_item_name", "two_item_name"):
-                value = _normalize_text(row.get(key))
-                if value:
-                    all_candidates.append(value)
-        for item in single_exam_items:
-            if item.get("itemText"):
-                all_candidates.append(item["itemText"])
-        final_conclusion = _normalize_text(source.get("finalConclusion"))
-        if final_conclusion:
-            all_candidates.append(final_conclusion)
-        all_candidates.extend(chief_complaint_items)
+        prompt = _build_treatment_triage_prompt(
+            sex=sex,
+            age=age,
+            abnormal_items_text=abnormal_items_text,
+            chief_complaint_text=chief_complaint_text
+        )
+        llm_started_at = time.perf_counter()
+        try:
+            raw = await self._llm_service.chat(
+                [{"role": "user", "content": prompt}],
+                temperature=0.0,
+                response_format={"type": "json_object"},
+                timeout_seconds=120.0,
+            )
+        except Exception as exc:
+            logger.error(
+                "health quadrant treatment triage llm failed trace_id=%s study_id=%s error_type=%s error=%r",
+                trace_id,
+                study_id,
+                type(exc).__name__,
+                exc,
+                exc_info=True,
+            )
+            raise HealthQuadrantServiceError("triage_failed: 治疗四象限分诊失败") from exc
+        logger.info(
+            "health quadrant stage duration stage=service.treatment.triage_llm_request duration_ms=%s trace_id=%s study_id=%s",
+            int((time.perf_counter() - llm_started_at) * 1000),
+            trace_id,
+            study_id,
+        )
+        parsed = json_loads_safe(raw)
+        if not isinstance(parsed, dict):
+            raise HealthQuadrantServiceError("triage_failed: 分诊模型返回非 JSON 对象")
+        rows = parsed.get("triage_results")
+        if not isinstance(rows, list):
+            raise HealthQuadrantServiceError("triage_failed: triage_results 非法")
 
-        # 2) 风险分层采用“高风险优先短路”策略，避免同条目被低优先级规则重复归档。
-        for text in all_candidates:
-            if any(keyword in text for keyword in _RED_RISK_KEYWORDS):
-                buckets[0]["abnormalIndicators"].append(text)
+        # 以“条目+描述”为主键，冲突时保留更高风险象限（RED > ORANGE > BLUE > GREEN）。
+        normalized_map: dict[str, _TreatmentTriageItem] = {}
+        dropped = 0
+        for row in rows:
+            triage_item = _parse_treatment_triage_row(row)
+            if triage_item is None:
+                dropped += 1
                 continue
-            if any(keyword in text for keyword in _ORANGE_RISK_KEYWORDS):
-                buckets[1]["abnormalIndicators"].append(text)
+            existed = normalized_map.get(triage_item.dedupe_key)
+            if existed is None:
+                normalized_map[triage_item.dedupe_key] = triage_item
                 continue
-            if any(keyword in text for keyword in _BLUE_RISK_KEYWORDS):
-                buckets[2]["abnormalIndicators"].append(text)
-                continue
-            buckets[3]["abnormalIndicators"].append(text)
+            if _TREATMENT_QUADRANT_PRIORITY[triage_item.quadrant] < _TREATMENT_QUADRANT_PRIORITY[existed.quadrant]:
+                normalized_map[triage_item.dedupe_key] = triage_item
+        return list(normalized_map.values()), dropped
 
-        # 3) 最终统一补推荐策略与去重，保证前端确认动作有完整操作依据。
-        _finalize_treatment_recommendations(buckets)
-        return buckets
+    async def _match_treatment_candidates(
+        self,
+        *,
+        triage_items: list[_TreatmentTriageItem],
+        trace_id: str,
+        study_id: str,
+    ) -> list[_TreatmentCandidateProject]:
+        """按 triage 结果执行知识库召回（Match）。
+
+        功能：
+            Match 阶段的职责是“多路召回并并集去重”，不做安全判断。召回策略优先级：
+            indicator_name 精确命中 > indications 模糊补充。
+
+        Args:
+            triage_items: Triage 阶段产出的有效条目。
+            trace_id: 链路追踪 ID。
+            study_id: 体检主单号。
+
+        Returns:
+            按候选排序规则稳定输出的候选项目列表。
+
+        Raises:
+            HealthQuadrantServiceError: 当仓储查询失败时抛出。
+        """
+
+        try:
+            rows = await self._treatment_repository.match_candidates(triage_items=triage_items)
+        except HealthQuadrantTreatmentRepositoryError as exc:
+            logger.error(
+                "health quadrant treatment match failed trace_id=%s study_id=%s error=%s",
+                trace_id,
+                study_id,
+                exc,
+                exc_info=True,
+            )
+            raise HealthQuadrantServiceError("match_failed: 治疗四象限知识库召回失败") from exc
+
+        candidates: list[_TreatmentCandidateProject] = []
+        seen: set[tuple[str, str, str, str]] = set()
+        for row in rows:
+            project_name = _normalize_text(row.get("project_name"))
+            package_version = _normalize_text(row.get("package_version")) or "-"
+            quadrant = _normalize_text(row.get("quadrant"))
+            belong_system = _normalize_text(row.get("belong_system"))
+            trigger_item = _normalize_text(row.get("trigger_item"))
+            if (
+                not project_name
+                or not package_version
+                or not quadrant
+                or quadrant not in _TREATMENT_QUADRANT_TO_INDEX
+                or not belong_system
+                or not trigger_item
+            ):
+                continue
+            dedupe_key = (project_name, package_version, quadrant, trigger_item)
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            candidate_id = f"{project_name}||{package_version}||{quadrant}||{trigger_item}"
+            candidates.append(
+                _TreatmentCandidateProject(
+                    candidate_id=candidate_id,
+                    project_name=project_name,
+                    package_version=package_version,
+                    quadrant=quadrant,
+                    belong_system=belong_system,
+                    trigger_item=trigger_item,
+                    # 兼容历史 mapping 数据只提供 trigger_item 的场景，避免新字段要求打断主链路。
+                    trigger_value_or_desc=trigger_item,
+                    priority_level=_safe_int(row.get("priority_level"), default=1000),
+                    sort_order=_safe_int(row.get("sort_order"), default=1000),
+                    match_source=_normalize_text(row.get("match_source")) or "unknown",
+                    contraindications=_normalize_text(row.get("contraindications")) or "",
+                )
+            )
+        candidates.sort(key=lambda item: (item.priority_level, item.sort_order, item.project_name))
+        return candidates
+
+    async def _filter_treatment_candidates_by_safety(
+        self,
+        *,
+        candidates: list[_TreatmentCandidateProject],
+        chief_complaint_text: str | None,
+        trace_id: str,
+        study_id: str,
+    ) -> tuple[list[_TreatmentCandidateProject], int]:
+        """执行单次全量安全审查（Filter）。
+
+        功能：
+            1. 一次性提交全部候选项目给 Safety LLM 做禁忌审查；
+            2. 对未被有效审查覆盖的项目按“安全优先”默认剔除；
+            3. 在安全过滤后对每个象限仅保留 Top3 项目，避免单象限推荐过载。
+
+        Args:
+            candidates: Match 阶段候选项目。
+            chief_complaint_text: 主诉，用于禁忌风险判断。
+            trace_id: 链路追踪 ID。
+            study_id: 体检主单号。
+
+        Returns:
+            `(safe_candidates, dropped_count)`，其中 dropped_count 包含禁忌剔除与未覆盖剔除。
+
+        Raises:
+            HealthQuadrantServiceError: 当 Safety 模型调用失败或顶层结构非法时抛出。
+        """
+
+        if not candidates:
+            return [], 0
+
+        # 先做一次全量安全过滤，再做每象限裁剪，避免“先分桶后审查”导致的多次模型调用成本。
+        safe_candidates, dropped_count = await self._filter_treatment_candidates_by_quadrant_safety(
+            candidates=candidates,
+            chief_complaint_text=chief_complaint_text,
+            trace_id=trace_id,
+            study_id=study_id,
+        )
+
+        # 3) 安全过滤后执行每象限 Top3 裁剪，防止单象限项目过多造成前端信息噪声。
+        limited_candidates, top_limit_dropped = _limit_treatment_candidates_per_quadrant(
+            candidates=safe_candidates,
+            top_n=3,
+        )
+        dropped_count += top_limit_dropped
+        return limited_candidates, dropped_count
+
+    async def _filter_treatment_candidates_by_quadrant_safety(
+        self,
+        *,
+        candidates: list[_TreatmentCandidateProject],
+        chief_complaint_text: str | None,
+        trace_id: str,
+        study_id: str,
+    ) -> tuple[list[_TreatmentCandidateProject], int]:
+        """执行单次 Safety 审查并返回安全候选。
+
+        功能：
+            把全部候选项目一次性提交给 Safety LLM 进行禁忌症过滤。
+            本方法只负责“安全过滤”，Top3 裁剪由上层方法统一执行。
+
+        Returns:
+            `(safe_candidates, dropped_count)`。
+        """
+
+        if not candidates:
+            return [], 0
+
+        prompt = _build_treatment_safety_prompt(
+            chief_complaint_text=chief_complaint_text,
+            candidates=candidates,
+        )
+        llm_started_at = time.perf_counter()
+        try:
+            raw = await self._llm_service.chat(
+                [{"role": "user", "content": prompt}],
+                temperature=0.0,
+                response_format={"type": "json_object"},
+                timeout_seconds=120.0,
+            )
+        except Exception as exc:
+            logger.error(
+                "health quadrant treatment safety llm failed trace_id=%s study_id=%s error_type=%s error=%r",
+                trace_id,
+                study_id,
+                type(exc).__name__,
+                exc,
+                exc_info=True,
+            )
+            raise HealthQuadrantServiceError("safety_failed: 治疗四象限安全审查失败") from exc
+        logger.info(
+            "health quadrant stage duration stage=service.treatment.safety_llm_request duration_ms=%s trace_id=%s study_id=%s in_count=%s",
+            int((time.perf_counter() - llm_started_at) * 1000),
+            trace_id,
+            study_id,
+            len(candidates),
+        )
+
+        parsed = json_loads_safe(raw)
+        if not isinstance(parsed, dict):
+            raise HealthQuadrantServiceError(f"safety_failed: 安全模型返回非 JSON 对象")
+        rows = parsed.get("safety_checks")
+        if not isinstance(rows, list):
+            raise HealthQuadrantServiceError(f"safety_failed: safety_checks 非法")
+
+        # 兼容两类模型输出：
+        # 1) 精确输出 candidate_id（优先，歧义最小）；
+        # 2) 仅输出 project_name（保留历史 Prompt 行为，按名称回退匹配）。
+        review_by_candidate_id: dict[str, bool] = {}
+        review_by_project_name: dict[str, bool] = {}
+        for row in rows:
+            parsed_row = _parse_treatment_safety_row(row)
+            if parsed_row is None:
+                continue
+            candidate_id, project_name, is_contraindicated = parsed_row
+            if candidate_id:
+                review_by_candidate_id[candidate_id] = is_contraindicated
+            if project_name:
+                review_by_project_name[project_name] = is_contraindicated
+
+        safe_candidates: list[_TreatmentCandidateProject] = []
+        dropped_count = 0
+        for candidate in candidates:
+            verdict = review_by_candidate_id.get(candidate.candidate_id)
+            if verdict is None:
+                verdict = review_by_project_name.get(candidate.project_name)
+            if verdict is None:
+                dropped_count += 1
+                continue
+            if verdict:
+                dropped_count += 1
+                continue
+            safe_candidates.append(candidate)
+        return safe_candidates, dropped_count
 
     async def _extract_deep_screening_items(
         self,
@@ -740,7 +1246,6 @@ class HealthQuadrantService:
             # 1) 优先走 LLM 结构化提取：在长文本场景下比纯关键词更稳健。
             raw = await self._llm_service.chat(
                 [
-                    # {"role": "system", "content": "你只输出合法JSON，不要解释。"},
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0.0,
@@ -939,22 +1444,20 @@ def _normalize_single_exam_items(items: list[dict[str, Any]]) -> list[dict[str, 
     return normalized
 
 
-def _normalize_complaint_items(items: list[str]) -> list[str]:
-    """规范化主诉列表。"""
-
-    normalized = []
-    for item in items:
-        text = _normalize_text(item)
-        if text:
-            normalized.append(text)
-    return sorted(set(normalized))
-
-
 def _normalize_text(value: Any) -> str | None:
     if value is None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _safe_int(value: Any, *, default: int) -> int:
+    """安全转换整数，避免脏数据把排序链路打断。"""
+
+    try:
+        return int(value)
+    except Exception:
+        return default
 
 
 def _normalize_exam_name_for_key(raw: str) -> str:
@@ -1026,6 +1529,252 @@ def _finalize_exam_recommendations(buckets: list[dict[str, Any]]) -> None:
 def _finalize_treatment_recommendations(buckets: list[dict[str, Any]]) -> None:
     for bucket in buckets:
         bucket["abnormalIndicators"] = _deduplicate_text_list(bucket["abnormalIndicators"])
+        bucket["recommendationPlans"] = _deduplicate_text_list(bucket["recommendationPlans"])
+
+
+def _build_treatment_triage_inputs(
+    *,
+    jcjg: str,
+    single_exam_items: list[dict[str, str]],
+) -> list[str]:
+    """构造治疗分诊输入语料。
+
+    功能：
+        分诊提示词依赖“套餐异常指标+单项异常指标”的完整上下文。这里把多源数据归一并去重，
+        防止 LLM 因输入碎片化出现象限漏判。
+    """
+
+    merged: list[str] = []
+    merged.append(jcjg)
+    for item in single_exam_items:
+        abnormal_indicator = _normalize_text(item.get("abnormalIndicator"))
+        if abnormal_indicator:
+            merged.append(abnormal_indicator)
+    return "\n".join(merged)
+
+
+def _build_treatment_triage_prompt(
+    *,
+    sex: str,
+    age: int | None,
+    abnormal_items_text: str,
+    chief_complaint_text: str
+) -> str:
+    """构建治疗分诊 Prompt。"""
+    return f"""
+        # 角色设定
+        你是一位拥有 20 年临床与功能医学经验的顶级健康管理分诊专家（Triage Expert）。你的任务是根据患者的【异常体检指标】和【主诉症状】，严格按照我提供的“医疗风险四象限标准”，对每一项异常进行危险评级，并输出结构化的 JSON 结果。
+        
+        # 医疗风险四象限评级标准（必须严格遵守）
+        
+        1. **【RED】红色高风险区（急治/救命）**：
+           - 判定标准：指标严重偏离正常值，存在确诊的重大疾病隐患、即刻的心脑血管意外风险（如不稳定斑块、重度狭窄）、急性靶器官损伤或高度疑似恶性肿瘤（肿瘤标志物极高）。
+           - 核心词：危急、重度、随时有生命或致残危险、需立即就医。
+        
+        2. **【ORANGE】橙色较高风险区（干预/治病）**：
+           - 判定标准：健康风险明确，指标明显异常（如中重度代谢综合征、严重睡眠障碍、结节明显进展、脏器功能轻度下降），不立即干预将在中短期内恶化为重大疾病。
+           - 核心词：明显异常、持续进展、需专项方案重点干预。
+        
+        3. **【BLUE】蓝色一般风险区（调整/防病）**：
+           - 判定标准：指标处于临界值或轻微异常（如轻度血脂异常、轻度胰岛素抵抗、维生素D缺乏、免疫力低下、女性荷尔蒙轻微失调），风险相对可控。
+           - 核心词：临界、轻度、亚健康、需生活方式与营养干预。
+        
+        4. **【GREEN】绿色低风险区（维养/抗衰）**：
+           - 判定标准：健康状况良好，无明显病理性异常指标。主要基于客户年龄、轻微体感或主动抗衰需求进行日常保养。
+           - 核心词：健康维持、免疫巩固、抗衰老、日常营养补充。
+        
+        # 分析规则
+        1. **取高原则**：如果一个指标同时满足两个象限的特征，必须强行归入更高危的象限（RED > ORANGE > BLUE > GREEN）。
+        2. **禁止臆测**：绝不允许凭空捏造患者没有的症状或指标。只对输入的数据进行评级。
+        3. **拆分独立项**：每一个独立的异常指标或主诉，必须独立生成一条记录，不可合并。
+        
+        # 输出格式限制
+        请仅输出合法的 JSON 格式，禁止包含任何 Markdown 标记（如 ```json）或其他解释性语言。JSON 结构必须严格如下：
+        {{
+          "triage_results": [
+            {{
+              "item_name": "异常指标或主诉的名称",
+              "value_or_desc": "异常指标取值或症状描述（没有具体数值则不用填）",
+              "quadrant": "RED / ORANGE / BLUE / GREEN (必须是这四个大写英文之一)",
+              "belong_system": "该异常归属的医学系统(必须从以下列表中选择：消化系统、呼吸系统、内分泌系统、内分泌系统、心脑血管、泌尿系统、生殖系统、骨骼运动、神经系统、免疫系统)",
+              "reason": "结合四象限标准，给出简短且专业的医学判定理由(限50字以内)"
+            }}
+          ]
+        }}
+        
+        # 待分析患者数据：
+        【基本信息】：性别：{sex}，年龄：{age if age is not None else "未知"}岁
+        【异常检查指标】：
+        {abnormal_items_text}
+        【患者主诉/症状】：
+        {chief_complaint_text}
+        """.strip()
+
+
+def _build_treatment_safety_prompt(
+    *,
+    chief_complaint_text: str | None,
+    candidates: list[_TreatmentCandidateProject],
+) -> str:
+    """构建治疗安全审查 Prompt。"""
+
+    # 安全审查以自由文本主诉为主输入：为空时显式标记“无主诉”，降低模型臆测风险。
+    complaints = _normalize_text(chief_complaint_text) or "无主诉"
+    candidate_payload = [
+        {
+            "candidate_id": item.candidate_id,
+            "project_name": item.project_name,
+            "package_version": item.package_version,
+            "quadrant": item.quadrant,
+            "belong_system": item.belong_system,
+            "trigger_item": item.trigger_item,
+            "contraindications": item.contraindications,
+        }
+        for item in candidates
+    ]
+    return f"""
+        # 角色设定
+        你是一个顶级的临床决策支持系统（CDSS）引擎，身兼两职：
+        1. **安全风控官**：严格审查候选项目的禁忌症，宁错杀不放过。
+        2. **临床路径优化师**：在绝对安全的前提下，结合患者的主诉和病史，为每个治疗象限挑选出最合适的 Top 3 核心干预项目。
+        
+        # 任务一：安全审查原则（生命至上）
+        1. **语义包含与同义穿透**：识别患者不规范的口语化病史。如患者表述“心衰”、“放过支架”，必须精准触发生理或器械类禁忌症拦截。
+        2. **就高不就低**：若无法 100% 确认安全，必须判定为“拦截（is_contraindicated: true）”。
+        
+        # 任务二：各象限 Top 3 优选原则（精准医疗）
+        1. **绝对安全前提**：所有在任务一中被判定为 `is_contraindicated: true` 的项目，**绝对禁止**出现在推荐列表中！
+        2. **限制数量**：按照 RED（红）、ORANGE（橙）、BLUE（蓝）、GREEN（绿）四个象限进行输出。每个象限最多只推荐 3 个项目（宁缺毋滥，如果没有符合该象限的合适项目，输出空列表）。
+        3. **排序权重**：
+           - 匹配度：高度契合患者当前最严重主诉的项目优先。
+           - 标签库：带有“优选(PREFERRED)”标签的候选项目优先于“备选(ALTERNATIVE)”。
+        
+        # 输出格式限制
+        必须输出纯 JSON 格式。包含 `safety_checks`（全部候选项目的体检报告）和 `top_recommendations`（各象限过滤后的最终 Top 3 方案）。
+        {{
+          "safety_checks": [
+            {{
+              "project_name": "候选项目名称",
+              "is_contraindicated": true 或 false,
+              "reason": "是否拦截的医学推理（限30字）"
+            }}
+          ],
+          "top_recommendations": {{
+            "RED": [
+              {{
+                 "project_name": "项目名称",
+                 "recommendation_reason": "结合主诉给出为何它能排进前三的专业理由"
+              }}
+            ],
+            "ORANGE": [ ... ],
+            "BLUE": [ ... ],
+            "GREEN": [ ... ]
+          }}
+        }}
+        
+        # 待处理数据：
+        患者主诉：
+        {complaints}
+        候选项目：
+        {json.dumps(candidate_payload, ensure_ascii=False)}
+        """.strip()
+
+
+def _parse_treatment_triage_row(raw: Any) -> _TreatmentTriageItem | None:
+    """解析并校验单条 triage 记录。"""
+
+    if not isinstance(raw, dict):
+        return None
+    item_name = _normalize_text(raw.get("item_name"))
+    value_or_desc = _normalize_text(raw.get("value_or_desc"))
+    quadrant = _normalize_text(raw.get("quadrant"))
+    belong_system = _normalize_text(raw.get("belong_system"))
+    reason = _normalize_text(raw.get("reason")) or ""
+    if not item_name or not value_or_desc or not quadrant or not belong_system:
+        return None
+    normalized_quadrant = quadrant.upper()
+    if normalized_quadrant not in _TREATMENT_QUADRANT_TO_INDEX:
+        return None
+    if belong_system not in _TREATMENT_SYSTEM_ENUM:
+        return None
+    return _TreatmentTriageItem(
+        item_name=item_name,
+        value_or_desc=value_or_desc,
+        quadrant=normalized_quadrant,
+        belong_system=belong_system,
+        reason=reason,
+    )
+
+
+def _parse_treatment_safety_row(raw: Any) -> tuple[str | None, str | None, bool] | None:
+    """解析单条 safety 结果，兼容 candidate_id 与 project_name 双键回填。"""
+
+    if not isinstance(raw, dict):
+        return None
+    candidate_id = _normalize_text(raw.get("candidate_id"))
+    project_name = _normalize_text(raw.get("project_name"))
+    is_contraindicated = raw.get("is_contraindicated")
+    if not isinstance(is_contraindicated, bool):
+        return None
+    if not candidate_id and not project_name:
+        return None
+    return candidate_id, project_name, is_contraindicated
+
+
+def _build_treatment_quadrant_buckets_from_triage(
+    *,
+    triage_items: list[_TreatmentTriageItem],
+) -> list[dict[str, Any]]:
+    """仅根据 triage 结果构建四象限骨架。"""
+
+    buckets = _empty_buckets(_TREATMENT_BUCKETS)
+    for item in triage_items:
+        bucket = buckets[_TREATMENT_QUADRANT_TO_INDEX[item.quadrant]]
+        bucket["abnormalIndicators"].append(item.item_name + item.value_or_desc)
+    return buckets
+
+
+def _build_treatment_quadrant_buckets(
+    *,
+    triage_items: list[_TreatmentTriageItem],
+    safe_candidates: list[_TreatmentCandidateProject],
+) -> list[dict[str, Any]]:
+    """将 triage 与安全通过的候选项目装填为四象限结果。"""
+
+    buckets = _build_treatment_quadrant_buckets_from_triage(triage_items=triage_items)
+    for candidate in safe_candidates:
+        bucket = buckets[_TREATMENT_QUADRANT_TO_INDEX[candidate.quadrant]]
+        bucket["recommendationPlans"].append(f"{candidate.project_name} ({candidate.package_version})")
+    if not any(bucket["recommendationPlans"] for bucket in buckets):
+        buckets[-1]["abnormalIndicators"].append(_TREATMENT_EMPTY_MESSAGE)
+    return buckets
+
+
+def _limit_treatment_candidates_per_quadrant(
+    *,
+    candidates: list[_TreatmentCandidateProject],
+    top_n: int,
+) -> tuple[list[_TreatmentCandidateProject], int]:
+    """对安全过滤后的候选按象限做 TopN 裁剪。
+
+    功能：
+        Safety 阶段之后若单象限候选过多，会导致报告可读性下降。这里按候选排序稳定裁剪，
+        保证每个象限最多展示 `top_n` 项，同时返回被裁剪数量用于监控。
+    """
+
+    if top_n <= 0:
+        return [], len(candidates)
+
+    kept_candidates: list[_TreatmentCandidateProject] = []
+    dropped_count = 0
+    for quadrant in _TREATMENT_QUADRANT_TO_INDEX:
+        quadrant_candidates = [item for item in candidates if item.quadrant == quadrant]
+        if len(quadrant_candidates) <= top_n:
+            kept_candidates.extend(quadrant_candidates)
+            continue
+        kept_candidates.extend(quadrant_candidates[:top_n])
+        dropped_count += len(quadrant_candidates) - top_n
+    return kept_candidates, dropped_count
 
 
 def _deduplicate_text_list(values: list[str]) -> list[str]:
@@ -1068,8 +1817,8 @@ def _normalize_quadrants_payload(payload: dict[str, Any]) -> list[dict[str, Any]
         normalized.append(
             {
                 # 兼容新旧字段：新契约使用 q_code/q_name，旧缓存可能仍是 code/name。
-                "code": str(item.get("q_code") or item.get("code") or ""),
-                "name": str(item.get("q_name") or item.get("name") or ""),
+                "q_code": str(item.get("q_code") or item.get("code") or ""),
+                "q_name": str(item.get("q_name") or item.get("name") or ""),
                 "abnormalIndicators": _deduplicate_text_list(list(item.get("abnormalIndicators") or [])),
                 "recommendationPlans": _deduplicate_text_list(list(item.get("recommendationPlans") or [])),
             }
