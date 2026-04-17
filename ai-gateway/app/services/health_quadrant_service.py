@@ -129,14 +129,6 @@ class HealthQuadrantService:
             study_id,
             quadrant_type,
         )
-        logger.info(
-            "health quadrant query start trace_id=%s study_id=%s quadrant_type=%s single_exam_count=%s complaint_count=%s",
-            normalized_trace_id,
-            study_id,
-            quadrant_type,
-            len(normalized_items),
-            len(normalized_complaints),
-        )
         try:
             # 2) 先取源系统版本信号（JLRQ/ZJRQ）：签名要感知源数据变更，不能仅看前端入参。
             source_started_at = time.perf_counter()
@@ -894,14 +886,12 @@ class HealthQuadrantService:
                     # 每条主诉都能触发召回，符合已确认的“任一主诉命中即召回”策略。
                     like_clauses = " OR ".join(["p.trigger_name LIKE %s"] * len(normalized_complaints))
                     params: list[str] = [f"%{item}%" for item in normalized_complaints]
-                    params.insert(0, f"%{_Q4_MASS_SPEC_KEYWORD}%")
                     await cursor.execute(
                         f"""
                         SELECT DISTINCT n.exam_name
                         FROM lz_clinical_pathway p
                         JOIN lz_physicalexam_node n ON n.pathway_id = p.pathway_id
                         WHERE n.exam_type = 'FUNCTIONAL'
-                          AND n.exam_name LIKE %s
                           AND ({like_clauses})
                         ORDER BY n.exam_name ASC
                         """,
