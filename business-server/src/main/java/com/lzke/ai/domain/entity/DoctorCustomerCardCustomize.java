@@ -29,14 +29,8 @@ public class DoctorCustomerCardCustomize {
     private String customerIdCard;
     @Schema(description = "收藏名称")
     private String favoriteName;
-    @Schema(description = "卡片key")
-    private String cardKey;
-    @Schema(description = "分组key")
-    private String groupKey;
     @Schema(description = "卡片JSON")
     private String cardJson;
-    @Schema(description = "排序")
-    private Integer sortOrder;
     @Schema(description = "状态，例如 active / inactive")
     private String status;
     @Schema(description = "备注")

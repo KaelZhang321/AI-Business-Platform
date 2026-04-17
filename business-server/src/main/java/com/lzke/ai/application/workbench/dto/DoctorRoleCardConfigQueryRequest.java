@@ -17,10 +17,6 @@ public class DoctorRoleCardConfigQueryRequest extends PageQuery {
     private String roleId;
     @Schema(description = "角色编码")
     private String roleCode;
-    @Schema(description = "卡片分组key")
-    private String groupKey;
-    @Schema(description = "卡片名称，支持模糊查询")
-    private String cardName;
     @Schema(description = "状态，例如 active / inactive")
     private String status;
     @Schema(description = "是否展示：1展示，0隐藏")

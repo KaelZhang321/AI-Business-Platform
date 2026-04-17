@@ -63,12 +63,8 @@ public class DoctorWorkbenchApplicationService {
         LambdaQueryWrapper<DoctorRoleCardConfig> wrapper = new LambdaQueryWrapper<DoctorRoleCardConfig>()
                 .eq(StringUtils.hasText(query.getRoleId()), DoctorRoleCardConfig::getRoleId, query.getRoleId())
                 .eq(StringUtils.hasText(query.getRoleCode()), DoctorRoleCardConfig::getRoleCode, query.getRoleCode())
-                .eq(StringUtils.hasText(query.getGroupKey()), DoctorRoleCardConfig::getGroupKey, query.getGroupKey())
-                .like(StringUtils.hasText(query.getCardName()), DoctorRoleCardConfig::getCardName, query.getCardName())
                 .eq(StringUtils.hasText(query.getStatus()), DoctorRoleCardConfig::getStatus, query.getStatus())
                 .eq(query.getVisibleFlag() != null, DoctorRoleCardConfig::getVisibleFlag, query.getVisibleFlag())
-                .orderByAsc(DoctorRoleCardConfig::getGroupSort)
-                .orderByAsc(DoctorRoleCardConfig::getCardSort)
                 .orderByDesc(DoctorRoleCardConfig::getUpdatedAt);
         Page<DoctorRoleCardConfig> result = doctorRoleCardConfigMapper.selectPage(page, wrapper);
         return PageResult.of(result.getRecords(), result.getTotal(), (int) result.getCurrent(), (int) result.getSize());
@@ -90,8 +86,6 @@ public class DoctorWorkbenchApplicationService {
                 .eq(DoctorRoleCardConfig::getRoleId, roleId)
                 .eq(DoctorRoleCardConfig::getStatus, "active")
                 .eq(DoctorRoleCardConfig::getVisibleFlag, 1)
-                .orderByAsc(DoctorRoleCardConfig::getGroupSort)
-                .orderByAsc(DoctorRoleCardConfig::getCardSort)
                 .orderByDesc(DoctorRoleCardConfig::getUpdatedAt));
     }
 
@@ -129,7 +123,6 @@ public class DoctorWorkbenchApplicationService {
                 .eq(StringUtils.hasText(query.getCustomerIdCard()), DoctorCustomerCardCustomize::getCustomerIdCard, query.getCustomerIdCard())
                 .like(StringUtils.hasText(query.getFavoriteName()), DoctorCustomerCardCustomize::getFavoriteName, query.getFavoriteName())
                 .eq(StringUtils.hasText(query.getStatus()), DoctorCustomerCardCustomize::getStatus, query.getStatus())
-                .orderByAsc(DoctorCustomerCardCustomize::getSortOrder)
                 .orderByDesc(DoctorCustomerCardCustomize::getUpdatedAt);
         Page<DoctorCustomerCardCustomize> result = doctorCustomerCardCustomizeMapper.selectPage(page, wrapper);
         return PageResult.of(result.getRecords(), result.getTotal(), (int) result.getCurrent(), (int) result.getSize());
@@ -152,7 +145,6 @@ public class DoctorWorkbenchApplicationService {
                 .eq(DoctorCustomerCardCustomize::getEmployeeId, currentEmployeeId)
                 .eq(DoctorCustomerCardCustomize::getCustomerIdCard, customerIdCard)
                 .eq(DoctorCustomerCardCustomize::getStatus, "active")
-                .orderByAsc(DoctorCustomerCardCustomize::getSortOrder)
                 .orderByDesc(DoctorCustomerCardCustomize::getUpdatedAt));
     }
 
@@ -249,11 +241,8 @@ public class DoctorWorkbenchApplicationService {
         if (!StringUtils.hasText(request.getRoleId())) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "roleId不能为空");
         }
-        if (!StringUtils.hasText(request.getGroupKey()) || !StringUtils.hasText(request.getGroupName())) {
-            throw new BusinessException(ErrorCode.BAD_REQUEST, "分组key和名称不能为空");
-        }
-        if (!StringUtils.hasText(request.getCardKey()) || !StringUtils.hasText(request.getCardName())) {
-            throw new BusinessException(ErrorCode.BAD_REQUEST, "卡片key和名称不能为空");
+        if (!StringUtils.hasText(request.getCardSchemaJson())) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "cardSchemaJson不能为空");
         }
     }
 
@@ -288,14 +277,7 @@ public class DoctorWorkbenchApplicationService {
         entity.setRoleId(trimToNull(request.getRoleId()));
         entity.setRoleCode(trimToNull(request.getRoleCode()));
         entity.setRoleName(trimToNull(request.getRoleName()));
-        entity.setGroupKey(trimToNull(request.getGroupKey()));
-        entity.setGroupName(trimToNull(request.getGroupName()));
-        entity.setGroupSort(defaultInt(request.getGroupSort()));
-        entity.setCardKey(trimToNull(request.getCardKey()));
-        entity.setCardName(trimToNull(request.getCardName()));
-        entity.setCardType(StringUtils.hasText(request.getCardType()) ? request.getCardType().trim() : "json_render");
         entity.setCardSchemaJson(trimToNull(request.getCardSchemaJson()));
-        entity.setCardSort(defaultInt(request.getCardSort()));
         entity.setVisibleFlag(request.getVisibleFlag() == null ? 1 : request.getVisibleFlag());
         entity.setStatus(StringUtils.hasText(request.getStatus()) ? request.getStatus().trim() : "active");
         entity.setRemark(trimToNull(request.getRemark()));
@@ -310,10 +292,7 @@ public class DoctorWorkbenchApplicationService {
         entity.setEmployeeName(getCurrentEmployeeName());
         entity.setCustomerIdCard(trimToNull(request.getCustomerIdCard()));
         entity.setFavoriteName(trimToNull(request.getFavoriteName()));
-        entity.setCardKey(trimToNull(request.getCardKey()));
-        entity.setGroupKey(trimToNull(request.getGroupKey()));
         entity.setCardJson(trimToNull(request.getCardJson()));
-        entity.setSortOrder(defaultInt(request.getSortOrder()));
         entity.setStatus(StringUtils.hasText(request.getStatus()) ? request.getStatus().trim() : "active");
         entity.setRemark(trimToNull(request.getRemark()));
     }

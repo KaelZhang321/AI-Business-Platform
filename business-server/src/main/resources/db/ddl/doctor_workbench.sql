@@ -3,13 +3,6 @@ CREATE TABLE IF NOT EXISTS `doctor_role_card_config` (
   `role_id` varchar(64) NOT NULL COMMENT '角色ID',
   `role_code` varchar(64) DEFAULT NULL COMMENT '角色编码',
   `role_name` varchar(128) DEFAULT NULL COMMENT '角色名称',
-  `group_key` varchar(64) NOT NULL COMMENT '卡片分组key',
-  `group_name` varchar(128) NOT NULL COMMENT '卡片分组名称',
-  `group_sort` int NOT NULL DEFAULT 0 COMMENT '分组排序',
-  `card_key` varchar(64) NOT NULL COMMENT '卡片key',
-  `card_name` varchar(128) NOT NULL COMMENT '卡片名称',
-  `card_type` varchar(32) NOT NULL DEFAULT 'json_render' COMMENT '卡片类型',
-  `card_sort` int NOT NULL DEFAULT 0 COMMENT '卡片排序',
   `card_schema_json` json DEFAULT NULL COMMENT '卡片配置json',
   `visible_flag` tinyint NOT NULL DEFAULT 1 COMMENT '是否展示',
   `status` varchar(32) NOT NULL DEFAULT 'active' COMMENT '状态',
@@ -21,9 +14,7 @@ CREATE TABLE IF NOT EXISTS `doctor_role_card_config` (
   `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
   PRIMARY KEY (`id`),
-  UNIQUE KEY `uk_doctor_role_group_card` (`role_id`, `group_key`, `card_key`),
-  KEY `idx_doctor_role_card_role` (`role_id`, `status`, `visible_flag`),
-  KEY `idx_doctor_role_card_sort` (`group_sort`, `card_sort`)
+  KEY `idx_doctor_role_card_role` (`role_id`, `status`, `visible_flag`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='医生角色卡片配置表';
 
 CREATE TABLE IF NOT EXISTS `doctor_customer_card_customize` (
@@ -32,22 +23,14 @@ CREATE TABLE IF NOT EXISTS `doctor_customer_card_customize` (
   `employee_name` varchar(64) DEFAULT NULL COMMENT '登录员工名称',
   `customer_id_card` varchar(128) NOT NULL COMMENT '客户身份证号',
   `favorite_name` varchar(128) NOT NULL COMMENT '收藏名称',
-  `card_key` varchar(64) DEFAULT NULL COMMENT '卡片key',
-  `group_key` varchar(64) DEFAULT NULL COMMENT '分组key',
   `card_json` json NOT NULL COMMENT '卡片json信息',
-  `sort_order` int NOT NULL DEFAULT 0 COMMENT '排序',
   `status` varchar(32) NOT NULL DEFAULT 'active' COMMENT '状态',
   `remark` varchar(500) DEFAULT NULL COMMENT '备注',
-  `created_by` varchar(64) DEFAULT NULL COMMENT '创建人',
-  `created_by_name` varchar(64) DEFAULT NULL COMMENT '创建人名称',
-  `updated_by` varchar(64) DEFAULT NULL COMMENT '更新人',
-  `updated_by_name` varchar(64) DEFAULT NULL COMMENT '更新人名称',
   `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_doctor_customer_favorite` (`employee_id`, `customer_id_card`, `favorite_name`),
-  KEY `idx_doctor_customer_card_employee_customer` (`employee_id`, `customer_id_card`, `status`),
-  KEY `idx_doctor_customer_card_sort` (`sort_order`)
+  KEY `idx_doctor_customer_card_employee_customer` (`employee_id`, `customer_id_card`, `status`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='医生客户定制卡片表';
 
 CREATE TABLE IF NOT EXISTS `doctor_customer_note` (
@@ -59,10 +42,6 @@ CREATE TABLE IF NOT EXISTS `doctor_customer_note` (
   `sort_order` int NOT NULL DEFAULT 0 COMMENT '排序',
   `status` varchar(32) NOT NULL DEFAULT 'active' COMMENT '状态',
   `remark` varchar(500) DEFAULT NULL COMMENT '备注',
-  `created_by` varchar(64) DEFAULT NULL COMMENT '创建人',
-  `created_by_name` varchar(64) DEFAULT NULL COMMENT '创建人名称',
-  `updated_by` varchar(64) DEFAULT NULL COMMENT '更新人',
-  `updated_by_name` varchar(64) DEFAULT NULL COMMENT '更新人名称',
   `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
   PRIMARY KEY (`id`),
