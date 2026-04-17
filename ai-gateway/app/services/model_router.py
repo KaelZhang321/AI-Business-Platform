@@ -103,7 +103,23 @@ class ModelRouter:
         Edge Cases:
             某些兼容后端可能不支持 `response_format`，此时调用方应结合 fallback 逻辑重试。
         """
-        for backend in self._enabled_backends():
+        enabled_backends = self._enabled_backends()
+        logger.info(
+            "model router chat start backend_count=%s response_format=%s timeout_seconds=%s",
+            len(enabled_backends),
+            response_format,
+            timeout_seconds,
+        )
+        for backend in enabled_backends:
+            logger.info(
+                "model router trying backend name=%s type=%s base_url=%s chat_path=%s model=%s priority=%s",
+                backend.name,
+                backend.type,
+                backend.base_url,
+                backend.chat_path,
+                backend.model,
+                backend.priority,
+            )
             try:
                 return await self._call_chat(
                     backend,
@@ -113,7 +129,17 @@ class ModelRouter:
                     timeout_seconds=timeout_seconds,
                 )
             except Exception as exc:
-                logger.warning("Backend '%s' failed: %s, trying next...", backend.name, exc)
+                logger.warning(
+                    "backend failed name=%s type=%s model=%s base_url=%s chat_path=%s error_type=%s error=%r",
+                    backend.name,
+                    backend.type,
+                    backend.model,
+                    backend.base_url,
+                    backend.chat_path,
+                    type(exc).__name__,
+                    exc,
+                    exc_info=True,
+                )
         raise RuntimeError("所有模型后端均不可用")
 
     async def stream_chat(self, messages: list[dict], temperature: float = 0.7) -> AsyncGenerator[str, None]:
@@ -156,6 +182,11 @@ class ModelRouter:
             json=payload,
             headers=headers,
             timeout=timeout_seconds,
+        )
+        logger.info(
+            "model router backend response name=%s status_code=%s",
+            backend.name,
+            resp.status_code,
         )
         resp.raise_for_status()
         data = resp.json()

@@ -104,6 +104,10 @@ class Settings(BaseSettings):
     ark_api_base: str = "https://ark.cn-beijing.volces.com/api/v3"
     ark_default_model: str = "doubao-1-5-pro-32k-250115"
 
+    # Runtime LLM 配置（MySQL 驱动）
+    llm_runtime_config_table: str = "llm_service_backend_config"
+    llm_runtime_config_cache_ttl_seconds: int = Field(60, ge=1, le=3600)
+
     # API Query Stage-2
     api_query_route_timeout_seconds: float = 8.0
     api_query_route_retry_count: int = 1

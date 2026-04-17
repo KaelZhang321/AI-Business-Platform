@@ -9,36 +9,33 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timedelta, timezone
-from uuid import uuid4
+import time
+from datetime import datetime, timedelta
 from typing import Any
+from uuid import uuid4
 
 import aiomysql
 
-from app.core.mysql import (
-    build_business_mysql_conn_params,
-    build_health_quadrant_dw_mysql_conn_params,
-    build_health_quadrant_ods_mysql_conn_params,
-)
+from app.services.health_quadrant_llm_service import HealthQuadrantLLMService
+from app.services.health_quadrant_mysql_pools import HealthQuadrantMySQLPools
 from app.services.health_quadrant_repository import HealthQuadrantRepository
-from app.services.llm_service import LLMService
 
 logger = logging.getLogger(__name__)
 
 _DW_TABLE_SPLIT = "dwd_his_zt_physicalexam_conclusion_split"
 
 _EXAM_BUCKETS = [
-    ("exam_q1_basic_screening", "第一象限（基础筛查）"),
-    ("exam_q2_imaging", "第二象限（影像评估）"),
-    ("exam_q3_deep_screening", "第三象限（专项深度筛查）"),
-    ("exam_q4_premium", "第四象限（丽滋特色项目）"),
+    ("exam_q1", "第一象限（基础筛查）"),
+    ("exam_q2", "第二象限（影像评估）"),
+    ("exam_q3", "第三象限（专项深度筛查）"),
+    ("exam_q4", "第四象限（丽滋特色项目）"),
 ]
 
 _TREATMENT_BUCKETS = [
-    ("treat_q1_red", "红色高风险区（救命：医疗级干预）"),
-    ("treat_q2_orange", "橙色较高风险区（治病：专项健康管理）"),
-    ("treat_q3_blue", "蓝色一般风险区（防病：生活方式医学）"),
-    ("treat_q4_green", "绿色低风险区（抗衰：高端维养服务）"),
+    ("treat_q1", "红色高风险区（救命：医疗级干预）"),
+    ("treat_q2", "橙色较高风险区（治病：专项健康管理）"),
+    ("treat_q3", "蓝色一般风险区（防病：生活方式医学）"),
+    ("treat_q4", "绿色低风险区（抗衰：高端维养服务）"),
 ]
 
 _IMAGING_KEYWORDS = ("影像", "CT", "MR", "MRI", "超声", "彩超", "X线", "DR", "PET")
@@ -67,10 +64,23 @@ class HealthQuadrantService:
         self,
         *,
         repository: HealthQuadrantRepository | None = None,
-        llm_service: LLMService | None = None,
+        llm_service: HealthQuadrantLLMService | None = None,
+        mysql_pools: HealthQuadrantMySQLPools | None = None,
     ) -> None:
         self._repository = repository or HealthQuadrantRepository()
-        self._llm_service = llm_service or LLMService()
+        # 健康四象限的终检意见抽取需要稳定结构化输出，默认优先走 Ark（ARK_DEFAULT_MODEL）。
+        self._llm_service = llm_service or HealthQuadrantLLMService()
+        self._mysql_pools = mysql_pools or HealthQuadrantMySQLPools(minsize=1, maxsize=3)
+
+    async def warmup(self) -> None:
+        """预热服务依赖资源。
+
+        功能：
+            在启动期预建多数据源连接池，减少首个业务请求触发建池带来的冷启动时延。
+            该能力是性能优化，不改变业务语义。
+        """
+
+        await self._mysql_pools.warmup()
 
     async def query_quadrants(
         self,
@@ -91,6 +101,7 @@ class HealthQuadrantService:
             study_id: 体检主单号，作为跨库聚合与持久化主维度。
             quadrant_type: 象限类型（`exam` 或 `treatment`），决定计算分支。
             single_exam_items: 前端补充的单项体检条目（可多条）。
+                每条支持 `itemId/itemText/abnormalIndicator`。
             chief_complaint_items: 前端补充的主诉条目（可多条）。
             trace_id: 链路追踪 ID，缺失时自动生成。
 
@@ -104,11 +115,20 @@ class HealthQuadrantService:
             1. ODS/DW 任一侧短暂不可用时，允许部分源数据缺失并按可用数据继续计算。
             2. 仅当前端上下文和源系统版本信号（JLRQ/ZJRQ）同时一致时才命中旧结果。
         """
+        total_started_at = time.perf_counter()
 
         # 1) 统一请求上下文：先做输入归一，避免“语义相同、字符串形态不同”导致签名分裂。
+        normalize_started_at = time.perf_counter()
         normalized_trace_id = trace_id or uuid4().hex
         normalized_items = _normalize_single_exam_items(single_exam_items)
         normalized_complaints = _normalize_complaint_items(chief_complaint_items)
+        logger.info(
+            "health quadrant stage duration stage=service.query.normalize duration_ms=%s trace_id=%s study_id=%s quadrant_type=%s",
+            int((time.perf_counter() - normalize_started_at) * 1000),
+            normalized_trace_id,
+            study_id,
+            quadrant_type,
+        )
         logger.info(
             "health quadrant query start trace_id=%s study_id=%s quadrant_type=%s single_exam_count=%s complaint_count=%s",
             normalized_trace_id,
@@ -117,73 +137,117 @@ class HealthQuadrantService:
             len(normalized_items),
             len(normalized_complaints),
         )
-
-        # 2) 先取源系统版本信号（JLRQ/ZJRQ）：签名要感知源数据变更，不能仅看前端入参。
-        source = await self._load_source_data(study_id=study_id)
-        draft_not_older_than = datetime.now(timezone.utc) - timedelta(hours=_DRAFT_TTL_HOURS)
-
-        # 3) 先读缓存：确认态优先，草稿态受 TTL 约束，避免误用过期草稿。
-        cached, cached_status = await self._repository.get_preferred_payload(
-            study_id=study_id,
-            quadrant_type=quadrant_type,
-            single_exam_items=normalized_items,
-            chief_complaint_items=normalized_complaints,
-            source_jlrq=source.get("sourceJlrq"),
-            source_zjrq=source.get("sourceZjrq"),
-            draft_not_older_than=draft_not_older_than,
-            trace_id=normalized_trace_id,
-        )
-        if cached:
+        try:
+            # 2) 先取源系统版本信号（JLRQ/ZJRQ）：签名要感知源数据变更，不能仅看前端入参。
+            source_started_at = time.perf_counter()
+            source = await self._load_source_data(study_id=study_id, trace_id=normalized_trace_id)
             logger.info(
-                "health quadrant query cache hit trace_id=%s study_id=%s quadrant_type=%s status=%s",
+                "health quadrant stage duration stage=service.query.load_source duration_ms=%s trace_id=%s study_id=%s quadrant_type=%s",
+                int((time.perf_counter() - source_started_at) * 1000),
                 normalized_trace_id,
                 study_id,
                 quadrant_type,
+            )
+            draft_not_older_than = datetime.now() - timedelta(hours=_DRAFT_TTL_HOURS)
+
+            # 3) 先读缓存：确认态优先，草稿态受 TTL 约束，避免误用过期草稿。
+            cache_lookup_started_at = time.perf_counter()
+            cached, cached_status = await self._repository.get_preferred_payload(
+                study_id=study_id,
+                quadrant_type=quadrant_type,
+                single_exam_items=normalized_items,
+                chief_complaint_items=normalized_complaints,
+                source_jlrq=source.get("sourceJlrq"),
+                source_zjrq=source.get("sourceZjrq"),
+                draft_not_older_than=draft_not_older_than,
+                trace_id=normalized_trace_id,
+            )
+            logger.info(
+                "health quadrant stage duration stage=service.query.cache_lookup duration_ms=%s trace_id=%s study_id=%s quadrant_type=%s cache_hit=%s cache_status=%s",
+                int((time.perf_counter() - cache_lookup_started_at) * 1000),
+                normalized_trace_id,
+                study_id,
+                quadrant_type,
+                bool(cached),
                 cached_status,
             )
-            return {"quadrants": _normalize_quadrants_payload(cached), "fromCache": True}
+            if cached:
+                logger.info(
+                    "health quadrant query cache hit trace_id=%s study_id=%s quadrant_type=%s status=%s",
+                    normalized_trace_id,
+                    study_id,
+                    quadrant_type,
+                    cached_status,
+                )
+                return {"quadrants": _normalize_quadrants_payload(cached), "fromCache": True}
 
-        # 4) 缓存未命中时才进入实时计算分支，降低高并发下的跨库与 LLM 成本。
-        if quadrant_type == "exam":
-            quadrants = await self._build_exam_quadrants(
-                source=source,
+            # 4) 缓存未命中时才进入实时计算分支，降低高并发下的跨库与 LLM 成本。
+            compute_started_at = time.perf_counter()
+            if quadrant_type == "exam":
+                quadrants = await self._build_exam_quadrants(
+                    source=source,
+                    single_exam_items=normalized_items,
+                    chief_complaint_items=normalized_complaints,
+                    study_id=study_id,
+                    trace_id=normalized_trace_id,
+                )
+            elif quadrant_type == "treatment":
+                quadrants = self._build_treatment_quadrants(
+                    source=source,
+                    single_exam_items=normalized_items,
+                    chief_complaint_items=normalized_complaints,
+                )
+            else:
+                raise HealthQuadrantServiceError("quadrant_type 仅支持 exam 或 treatment")
+            logger.info(
+                "health quadrant stage duration stage=service.query.compute duration_ms=%s trace_id=%s study_id=%s quadrant_type=%s",
+                int((time.perf_counter() - compute_started_at) * 1000),
+                normalized_trace_id,
+                study_id,
+                quadrant_type,
+            )
+
+            logger.info(
+                "health quadrant query computed trace_id=%s study_id=%s quadrant_type=%s",
+                normalized_trace_id,
+                study_id,
+                quadrant_type,
+            )
+
+            # 5) 计算结果先落 DRAFT：重复请求可直接命中，等待前端确认后再提升为 CONFIRMED。
+            draft_persist_started_at = time.perf_counter()
+            await self._repository.upsert_draft_payload(
+                study_id=study_id,
+                quadrant_type=quadrant_type,
                 single_exam_items=normalized_items,
                 chief_complaint_items=normalized_complaints,
+                source_jlrq=source.get("sourceJlrq"),
+                source_zjrq=source.get("sourceZjrq"),
+                payload={"quadrants": quadrants},
+                trace_id=normalized_trace_id,
             )
-        elif quadrant_type == "treatment":
-            quadrants = self._build_treatment_quadrants(
-                source=source,
-                single_exam_items=normalized_items,
-                chief_complaint_items=normalized_complaints,
+            logger.info(
+                "health quadrant stage duration stage=service.query.persist_draft duration_ms=%s trace_id=%s study_id=%s quadrant_type=%s",
+                int((time.perf_counter() - draft_persist_started_at) * 1000),
+                normalized_trace_id,
+                study_id,
+                quadrant_type,
             )
-        else:
-            raise HealthQuadrantServiceError("quadrant_type 仅支持 exam 或 treatment")
-
-        logger.info(
-            "health quadrant query computed trace_id=%s study_id=%s quadrant_type=%s",
-            normalized_trace_id,
-            study_id,
-            quadrant_type,
-        )
-
-        # 5) 计算结果先落 DRAFT：重复请求可直接命中，等待前端确认后再提升为 CONFIRMED。
-        await self._repository.upsert_draft_payload(
-            study_id=study_id,
-            quadrant_type=quadrant_type,
-            single_exam_items=normalized_items,
-            chief_complaint_items=normalized_complaints,
-            source_jlrq=source.get("sourceJlrq"),
-            source_zjrq=source.get("sourceZjrq"),
-            payload={"quadrants": quadrants},
-            trace_id=normalized_trace_id,
-        )
-        logger.info(
-            "health quadrant draft persisted trace_id=%s study_id=%s quadrant_type=%s",
-            normalized_trace_id,
-            study_id,
-            quadrant_type,
-        )
-        return {"quadrants": quadrants, "fromCache": False}
+            logger.info(
+                "health quadrant draft persisted trace_id=%s study_id=%s quadrant_type=%s",
+                normalized_trace_id,
+                study_id,
+                quadrant_type,
+            )
+            return {"quadrants": quadrants, "fromCache": False}
+        finally:
+            logger.info(
+                "health quadrant stage duration stage=service.query.total duration_ms=%s trace_id=%s study_id=%s quadrant_type=%s",
+                int((time.perf_counter() - total_started_at) * 1000),
+                normalized_trace_id,
+                study_id,
+                quadrant_type,
+            )
 
     async def confirm_quadrants(
         self,
@@ -206,6 +270,7 @@ class HealthQuadrantService:
             study_id: 体检主单号。
             quadrant_type: 象限类型（`exam` 或 `treatment`）。
             single_exam_items: 单项体检条目列表（可多条）。
+                每条支持 `itemId/itemText/abnormalIndicator`。
             chief_complaint_items: 主诉条目列表（可多条）。
             quadrants: 前端确认后的四象限结果。
             confirmed_by: 操作人（通常来自 `X-User-Id`）。
@@ -218,42 +283,82 @@ class HealthQuadrantService:
             即使前端传入与当前源系统版本不一致的数据，也会以当前 JLRQ/ZJRQ 参与签名，
             防止旧版本确认结果污染新版本上下文。
         """
+        total_started_at = time.perf_counter()
 
         # 1) 入参归一化：确保确认链路与查询链路使用同一签名语义。
+        normalize_started_at = time.perf_counter()
         normalized_trace_id = trace_id or uuid4().hex
         normalized_items = _normalize_single_exam_items(single_exam_items)
         normalized_complaints = _normalize_complaint_items(chief_complaint_items)
-
-        # 2) 重新读取源系统版本时间：避免“先查后确认”的时间窗口内版本漂移。
-        source = await self._load_source_data(study_id=study_id)
-        payload = {"quadrants": _normalize_quadrants_payload({"quadrants": quadrants})}
-
-        # 3) 使用 repository 的幂等写入策略，抵御并发确认与重试重放。
-        await self._repository.upsert_confirmed_payload(
-            study_id=study_id,
-            quadrant_type=quadrant_type,
-            single_exam_items=normalized_items,
-            chief_complaint_items=normalized_complaints,
-            source_jlrq=source.get("sourceJlrq"),
-            source_zjrq=source.get("sourceZjrq"),
-            payload=payload,
-            confirmed_by=_normalize_text(confirmed_by),
-            trace_id=normalized_trace_id,
-        )
         logger.info(
-            "health quadrant confirm persisted trace_id=%s study_id=%s quadrant_type=%s confirmed_by=%s",
+            "health quadrant stage duration stage=service.confirm.normalize duration_ms=%s trace_id=%s study_id=%s quadrant_type=%s",
+            int((time.perf_counter() - normalize_started_at) * 1000),
             normalized_trace_id,
             study_id,
             quadrant_type,
-            _normalize_text(confirmed_by),
         )
 
+        try:
+            # 2) 重新读取源系统版本时间：避免“先查后确认”的时间窗口内版本漂移。
+            source_started_at = time.perf_counter()
+            source = await self._load_source_data(study_id=study_id, trace_id=normalized_trace_id)
+            logger.info(
+                "health quadrant stage duration stage=service.confirm.load_source duration_ms=%s trace_id=%s study_id=%s quadrant_type=%s",
+                int((time.perf_counter() - source_started_at) * 1000),
+                normalized_trace_id,
+                study_id,
+                quadrant_type,
+            )
+            payload = {"quadrants": _normalize_quadrants_payload({"quadrants": quadrants})}
+
+            # 3) 使用 repository 的幂等写入策略，抵御并发确认与重试重放。
+            persist_started_at = time.perf_counter()
+            await self._repository.upsert_confirmed_payload(
+                study_id=study_id,
+                quadrant_type=quadrant_type,
+                single_exam_items=normalized_items,
+                chief_complaint_items=normalized_complaints,
+                source_jlrq=source.get("sourceJlrq"),
+                source_zjrq=source.get("sourceZjrq"),
+                payload=payload,
+                confirmed_by=_normalize_text(confirmed_by),
+                trace_id=normalized_trace_id,
+            )
+            logger.info(
+                "health quadrant stage duration stage=service.confirm.persist_confirmed duration_ms=%s trace_id=%s study_id=%s quadrant_type=%s",
+                int((time.perf_counter() - persist_started_at) * 1000),
+                normalized_trace_id,
+                study_id,
+                quadrant_type,
+            )
+            logger.info(
+                "health quadrant confirm persisted trace_id=%s study_id=%s quadrant_type=%s confirmed_by=%s",
+                normalized_trace_id,
+                study_id,
+                quadrant_type,
+                _normalize_text(confirmed_by),
+            )
+        finally:
+            logger.info(
+                "health quadrant stage duration stage=service.confirm.total duration_ms=%s trace_id=%s study_id=%s quadrant_type=%s",
+                int((time.perf_counter() - total_started_at) * 1000),
+                normalized_trace_id,
+                study_id,
+                quadrant_type,
+            )
+
     async def close(self) -> None:
-        """释放底层资源。"""
+        """释放底层资源。
+
+        功能：
+            在应用 shutdown 阶段统一释放 repository 与多数据源连接池，
+            避免实例重启后残留无主连接。
+        """
 
         await self._repository.close()
+        await self._mysql_pools.close()
 
-    async def _load_source_data(self, *, study_id: str) -> dict[str, Any]:
+    async def _load_source_data(self, *, study_id: str, trace_id: str | None = None) -> dict[str, Any]:
         """加载体检源数据。
 
         功能：
@@ -270,6 +375,8 @@ class HealthQuadrantService:
             1. ODS 或 DW 任一侧失败时返回部分数据，不让整个流程因单点抖动不可用。
             2. `sourceJlrq/sourceZjrq` 缺失时回退为 `None`，签名侧会稳定归一为空串。
         """
+        total_started_at = time.perf_counter()
+        normalized_trace_id = trace_id or "-"
 
         # 1) 初始化为可降级默认值：确保任一数据源不可用时仍能返回结构化结果。
         package_name = ""
@@ -278,29 +385,25 @@ class HealthQuadrantService:
         source_jlrq = None
         source_zjrq = None
 
-        ods_pool: aiomysql.Pool | None = None
-        dw_pool: aiomysql.Pool | None = None
+        ods_started_at = time.perf_counter()
+        ods_status = "success"
         try:
-            ods_pool = await aiomysql.create_pool(
-                minsize=1,
-                maxsize=2,
-                **build_health_quadrant_ods_mysql_conn_params(),
-            )
+            ods_pool = await self._mysql_pools.get_ods_pool()
             async with ods_pool.acquire() as conn:
                 async with conn.cursor(aiomysql.DictCursor) as cursor:
                     # 业务背景：套餐名可能沉在 ods_tj_jcxx，终检意见通常在 ods_tj_jlb.JKYLBJ。
                     await cursor.execute(
                         """
-SELECT
-  jlb.JKYLBJ AS finalConclusion,
-  xmzh.XMMC AS packageName,
-  jlb.JLRQ AS sourceJlrq,
-  jlb.ZJRQ AS sourceZjrq
-FROM ods_tj_jlb jlb
-JOIN ods_tj_jcxx jcxx ON jcxx.StudyID = jlb.StudyID
-JOIN ods_tj_xmzh xmzh ON jcxx.ZHXMDM = xmzh.XMDM 
-WHERE jlb.StudyID = %s
-LIMIT 1
+                        SELECT
+                          jlb.JKYLBJ AS finalConclusion,
+                          xmzh.XMMC AS packageName,
+                          jlb.JLRQ AS sourceJlrq,
+                          jlb.ZJRQ AS sourceZjrq
+                        FROM ods_tj_jlb jlb
+                        JOIN ods_tj_jcxx jcxx ON jcxx.ID = jlb.StudyID
+                        JOIN ods_tj_xmzh xmzh ON jcxx.ZHXMDM = xmzh.XMDM 
+                        WHERE jlb.StudyID = %s
+                        LIMIT 1
                         """,
                         (study_id,),
                     )
@@ -313,42 +416,58 @@ LIMIT 1
                         source_zjrq = row.get("sourceZjrq")
         except Exception as exc:
             # 3) ODS 异常不阻断主链路：保持可用性优先，后续由日志追踪修复。
+            ods_status = "failed"
             logger.warning("load ods source failed study_id=%s error=%s", study_id, exc)
             source_jlrq = None
             source_zjrq = None
-
-        try:
-            dw_pool = await aiomysql.create_pool(
-                minsize=1,
-                maxsize=2,
-                **build_health_quadrant_dw_mysql_conn_params(),
+        finally:
+            logger.info(
+                "health quadrant stage duration stage=service.source.ods_query duration_ms=%s trace_id=%s study_id=%s status=%s",
+                int((time.perf_counter() - ods_started_at) * 1000),
+                normalized_trace_id,
+                study_id,
+                ods_status,
             )
+
+        dw_started_at = time.perf_counter()
+        dw_status = "success"
+        try:
+            dw_pool = await self._mysql_pools.get_dw_pool()
             async with dw_pool.acquire() as conn:
                 async with conn.cursor(aiomysql.DictCursor) as cursor:
                     await cursor.execute(
                         f"""
-SELECT
-  category_name,
-  one_item_name,
-  two_item_name,
-  abnormal_item
-FROM {_DW_TABLE_SPLIT}
-WHERE study_id = %s
+                        SELECT
+                          category_name,
+                          one_item_name,
+                          two_item_name,
+                          abnormal_item
+                        FROM {_DW_TABLE_SPLIT}
+                        WHERE peisno = %s
+                        AND delete_flag = 0
                         """,
                         (study_id,),
                     )
                     split_rows = [dict(item) for item in await cursor.fetchall()]
         except Exception as exc:
             # 4) DW 异常同样降级：体检/治疗计算允许在“仅终检意见”条件下继续执行。
+            dw_status = "failed"
             logger.warning("load dw split failed study_id=%s error=%s", study_id, exc)
         finally:
-            # 5) 无论成功失败都显式关闭连接池，避免压测/重试场景连接泄漏。
-            if ods_pool is not None:
-                ods_pool.close()
-                await ods_pool.wait_closed()
-            if dw_pool is not None:
-                dw_pool.close()
-                await dw_pool.wait_closed()
+            logger.info(
+                "health quadrant stage duration stage=service.source.dw_query duration_ms=%s trace_id=%s study_id=%s status=%s",
+                int((time.perf_counter() - dw_started_at) * 1000),
+                normalized_trace_id,
+                study_id,
+                dw_status,
+            )
+
+        logger.info(
+            "health quadrant stage duration stage=service.source.total duration_ms=%s trace_id=%s study_id=%s",
+            int((time.perf_counter() - total_started_at) * 1000),
+            normalized_trace_id,
+            study_id,
+        )
 
         return {
             "packageName": package_name,
@@ -364,6 +483,8 @@ WHERE study_id = %s
         source: dict[str, Any],
         single_exam_items: list[dict[str, str]],
         chief_complaint_items: list[str],
+        study_id: str | None = None,
+        trace_id: str | None = None,
     ) -> list[dict[str, Any]]:
         """构建体检四象限。
 
@@ -375,6 +496,7 @@ WHERE study_id = %s
         Args:
             source: 聚合后的源数据，含 splitRows/finalConclusion 等。
             single_exam_items: 前端补充单项体检条目。
+                `itemText` 作为单项项目名，`abnormalIndicator` 作为异常指标描述。
             chief_complaint_items: 前端补充主诉条目。
 
         Returns:
@@ -384,51 +506,126 @@ WHERE study_id = %s
             1. 当 splitRows 为空时，第三象限仍可基于终检意见与前端补充条目产出结果。
             2. 映射表未命中时保留原始抽取项，避免有效复查项被误丢弃。
         """
+        total_started_at = time.perf_counter()
+        normalized_trace_id = trace_id or "-"
+        normalized_study_id = study_id or "-"
 
         buckets = _empty_buckets(_EXAM_BUCKETS)
         # 1) 基于分拆表先构建第一、二象限：这是“体检事实数据”最稳定的来源。
+        q1_q2_started_at = time.perf_counter()
         for row in source.get("splitRows", []):
             one_item = _normalize_text(row.get("one_item_name"))
             two_item = _normalize_text(row.get("two_item_name"))
             abnormal_item = _normalize_text(row.get("abnormal_item"))
-            category = _normalize_text(row.get("category"))
+            category = _normalize_text(row.get("category_name"))
+            if not abnormal_item:
+                continue
 
             # 1. 非影像异常归第一象限；影像异常归第二象限，符合“1+X”基础筛查语义。
-            if one_item and not _looks_like_imaging(one_item, category):
-                buckets[0]["abnormalIndicators"].append(one_item if not abnormal_item else f"{one_item}：{abnormal_item}")
-            if two_item or (one_item and _looks_like_imaging(one_item, category)):
+            if one_item and category != '影像类':
+                buckets[0]["abnormalIndicators"].append(abnormal_item)
+                buckets[0]["recommendationPlans"].append(one_item)
+            if two_item or (one_item and category == '影像类'):
                 imaging_name = two_item or one_item or ""
-                buckets[1]["abnormalIndicators"].append(
-                    imaging_name if not abnormal_item else f"{imaging_name}：{abnormal_item}"
-                )
+                buckets[1]["abnormalIndicators"].append(abnormal_item)
+                buckets[1]["recommendationPlans"].append(imaging_name)
+
+        # 对第一、二象限的推荐方案去重
+        buckets[0]["recommendationPlans"] = list(_build_exam_dedup_keys(buckets[0]["recommendationPlans"]))
+        buckets[1]["recommendationPlans"] = list(_build_exam_dedup_keys(buckets[1]["recommendationPlans"]))
+        logger.info(
+            "health quadrant stage duration stage=service.exam.q1_q2_build duration_ms=%s trace_id=%s study_id=%s",
+            int((time.perf_counter() - q1_q2_started_at) * 1000),
+            normalized_trace_id,
+            normalized_study_id,
+        )
 
         # 2) 先建立 Q1/Q2 去重基线：后续 Q3/Q4 只补“新增价值项”，避免重复展示。
         existing_exam_keys = _build_exam_dedup_keys(
-            buckets[0]["abnormalIndicators"] + buckets[1]["abnormalIndicators"]
+            buckets[0]["recommendationPlans"] + buckets[1]["recommendationPlans"]
         )
 
         # 3) 第三象限：终检意见抽取 -> 标准化映射 -> 与 Q1/Q2 去重。
+        q3_extract_started_at = time.perf_counter()
         final_conclusion = _normalize_text(source.get("finalConclusion")) or ""
-        extracted_items = await self._extract_deep_screening_items(final_conclusion=final_conclusion)
-        mapped_items = await self._map_doctor_conclusion_items_to_standard(items=extracted_items)
+        extracted_items = await self._extract_deep_screening_items(
+            final_conclusion=final_conclusion,
+            trace_id=normalized_trace_id,
+            study_id=normalized_study_id,
+        )
+        logger.info(
+            "health quadrant stage duration stage=service.exam.q3_extract duration_ms=%s trace_id=%s study_id=%s extracted_count=%s",
+            int((time.perf_counter() - q3_extract_started_at) * 1000),
+            normalized_trace_id,
+            normalized_study_id,
+            len(extracted_items),
+        )
+        q3_merge_started_at = time.perf_counter()
+        # mapped_items = await self._map_doctor_conclusion_items_to_standard(items=extracted_items)
 
-        # 保留既有单项补充入口：前端人工补充条目属于业务确认输入，应并入第三象限。
-        single_items = [item["itemText"] for item in single_exam_items if item.get("itemText")]
-        q3_candidates = mapped_items + single_items
-        q3_items = _deduplicate_exam_items_by_keys(q3_candidates, existing_exam_keys)
+        q3_items = _deduplicate_exam_items_by_keys(extracted_items, existing_exam_keys)
         if q3_items:
-            buckets[2]["abnormalIndicators"].extend(q3_items)
-            existing_exam_keys.update(_build_exam_dedup_keys(q3_items))
+            # 终检意见抽取项属于第三象限“专项深度筛查”。
+            buckets[2]["recommendationPlans"].extend(q3_items)
+
+        # 单项体检是结构化人工补充输入：项目名进入 recommendationPlans，异常描述进入 abnormalIndicators。
+        single_plan_seen: set[str] = set()
+        for item in single_exam_items:
+            item_text = _normalize_text(item.get("itemText"))
+            if not item_text:
+                continue
+            item_key = _normalize_exam_name_for_key(item_text)
+            if not item_key or item_key in existing_exam_keys or item_key in single_plan_seen:
+                continue
+            single_plan_seen.add(item_key)
+            buckets[2]["recommendationPlans"].append(item_text)
+
+            abnormal_indicator = _normalize_text(item.get("abnormalIndicator"))
+            if abnormal_indicator:
+                buckets[2]["abnormalIndicators"].append(abnormal_indicator)
+        if single_plan_seen:
+            existing_exam_keys.update(single_plan_seen)
+        logger.info(
+            "health quadrant stage duration stage=service.exam.q3_merge duration_ms=%s trace_id=%s study_id=%s q3_plan_count=%s single_plan_count=%s",
+            int((time.perf_counter() - q3_merge_started_at) * 1000),
+            normalized_trace_id,
+            normalized_study_id,
+            len(buckets[2]["recommendationPlans"]),
+            len(single_plan_seen),
+        )
 
         # 4) 第四象限：基于主诉做 pathway LIKE 召回，再过滤为功能医学“质谱”检测项目。
+        q4_started_at = time.perf_counter()
         q4_candidates = await self._query_q4_mass_spec_projects(chief_complaint_items=chief_complaint_items)
         q4_items = _deduplicate_exam_items_by_keys(q4_candidates, existing_exam_keys)
         if q4_items:
-            buckets[3]["abnormalIndicators"].extend(q4_items)
+            buckets[3]["abnormalIndicators"].extend(chief_complaint_items)
+            buckets[3]["recommendationPlans"].extend(q4_items)
             existing_exam_keys.update(_build_exam_dedup_keys(q4_items))
+        logger.info(
+            "health quadrant stage duration stage=service.exam.q4_recall duration_ms=%s trace_id=%s study_id=%s q4_candidate_count=%s q4_result_count=%s",
+            int((time.perf_counter() - q4_started_at) * 1000),
+            normalized_trace_id,
+            normalized_study_id,
+            len(q4_candidates),
+            len(q4_items),
+        )
 
         # 5) 统一补齐推荐方案与去重，保证确认页字段完整且可直接渲染。
+        finalize_started_at = time.perf_counter()
         _finalize_exam_recommendations(buckets)
+        logger.info(
+            "health quadrant stage duration stage=service.exam.finalize duration_ms=%s trace_id=%s study_id=%s",
+            int((time.perf_counter() - finalize_started_at) * 1000),
+            normalized_trace_id,
+            normalized_study_id,
+        )
+        logger.info(
+            "health quadrant stage duration stage=service.exam.total duration_ms=%s trace_id=%s study_id=%s",
+            int((time.perf_counter() - total_started_at) * 1000),
+            normalized_trace_id,
+            normalized_study_id,
+        )
         return buckets
 
     def _build_treatment_quadrants(
@@ -488,7 +685,13 @@ WHERE study_id = %s
         _finalize_treatment_recommendations(buckets)
         return buckets
 
-    async def _extract_deep_screening_items(self, *, final_conclusion: str) -> list[str]:
+    async def _extract_deep_screening_items(
+        self,
+        *,
+        final_conclusion: str,
+        trace_id: str | None = None,
+        study_id: str | None = None,
+    ) -> list[str]:
         """从终检意见抽取专项筛查项目。
 
         功能：
@@ -502,50 +705,113 @@ WHERE study_id = %s
             提取出的“进一步检查/复查/筛查”项目列表。
 
         Edge Cases:
-            LLM 超时、输出非 JSON、或返回空结果时，会自动回退到规则切分兜底策略。
+            LLM 超时、输出非 JSON、或返回空结果时，返回空列表。
         """
-
+        normalized_trace_id = trace_id or "-"
+        normalized_study_id = study_id or "-"
         if not final_conclusion:
+            logger.info("health quadrant deep screening skipped because final_conclusion is empty")
             return []
-        prompt = (
-            "你是体检终检意见抽取器。请从文本中提取“建议进一步检查/复查/筛查”的项目，"
-            "仅返回 JSON：{\"items\":[\"...\"]}。\n"
-            f"文本：{final_conclusion}"
+        logger.info(
+            "health quadrant deep screening llm start conclusion_length=%s",
+            len(final_conclusion)
         )
+        llm_request_started_at = time.perf_counter()
+        prompt = f"""
+            # 角色设定
+            你是一个专业的临床医疗文本数据抽取引擎（NER Engine）。你的任务是从医生撰写的【终检意见】中，精准提取出建议患者去进行的“复查”、“筛查”、“监测”或“进一步检查”的医疗项目实体。
+            
+            # 提取规则（请严格遵守底线）：
+            1. **绝对忠实原文**：禁止进行任何脱离文本的医学推理！即使你认为患者需要查A，但原文没写，也绝对不能输出A。
+            2. **精准切分**：遇到顿号“、”、逗号“，”或“和”、“或”连接的多个独立检查项目时（例如“UA、血脂、空腹血糖”），必须将其拆分为独立的数组元素。
+            3. **严格排他**：
+               - 排除**治疗或干预建议**（如：调脂治疗、控制体重、饮食调节、规范治疗等）。
+               - 排除**就诊科室建议**（如：甲状腺外科就诊、心内科就诊等，除非明确要求提取）。
+               - 排除**非具体的宽泛指导**（如：按影像检查推荐随诊复查、进一步检查）。
+            4. **上下文指代还原（重要）**：当医生建议复查“标志物”、“抗体”、“指标”、“结节”等【泛指代名词】时，必须结合该段落的前文语境，找到具体指代的项目名称并完整提取。
+               - 示例：前文写“标志物CYFRA21-1高”，后文建议“择期复查标志物”，则提取结果必须是“标志物CYFRA21-1”或“CYFRA21-1”，严禁仅提取“标志物”。
+            5. **完整保留修饰语与代号**：如果检查项目带有具体的定语修饰、英文缩写或数字代号（如“动态心电监测”、“动态血压监测(ABPM或HBPM)”、“CYFRA21-1”），请完整合并提取，绝对不要截断。
+            
+            # 输出格式
+            请仅输出合法的 JSON 格式，不要包含任何额外的解释性文字（如 Markdown 的 ```json 标签等，只需纯 JSON 文本）。JSON 结构如下：
+            {{
+              "recommended_exams": [
+                "项目名称1",
+                "项目名称2"
+              ]
+            }}
+            
+            # 待处理文本：
+            {final_conclusion}
+        """
         try:
             # 1) 优先走 LLM 结构化提取：在长文本场景下比纯关键词更稳健。
             raw = await self._llm_service.chat(
                 [
-                    {"role": "system", "content": "你只输出合法JSON，不要解释。"},
+                    # {"role": "system", "content": "你只输出合法JSON，不要解释。"},
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0.0,
                 response_format={"type": "json_object"},
-                timeout_seconds=8.0,
+                timeout_seconds=120.0,
             )
+            logger.info(
+                "health quadrant stage duration stage=service.exam.q3_llm_request duration_ms=%s trace_id=%s study_id=%s status=success",
+                int((time.perf_counter() - llm_request_started_at) * 1000),
+                normalized_trace_id,
+                normalized_study_id,
+            )
+            logger.info(
+                "health quadrant deep screening llm raw received raw_length=%s raw_preview=%s",
+                len(raw),
+                raw[:240],
+            )
+            parse_started_at = time.perf_counter()
             parsed = json_loads_safe(raw)
-            items = parsed.get("items") if isinstance(parsed, dict) else []
+            items = parsed.get("recommended_exams") if isinstance(parsed, dict) else []
             if isinstance(items, list):
-                return [item.strip() for item in items if isinstance(item, str) and item.strip()]
+                normalized_items = [item.strip() for item in items if isinstance(item, str) and item.strip()]
+                logger.info(
+                    "health quadrant stage duration stage=service.exam.q3_llm_parse duration_ms=%s trace_id=%s study_id=%s parsed_count=%s",
+                    int((time.perf_counter() - parse_started_at) * 1000),
+                    normalized_trace_id,
+                    normalized_study_id,
+                    len(normalized_items),
+                )
+                logger.info(
+                    "health quadrant deep screening llm parsed items_count=%s items_preview=%s",
+                    len(normalized_items),
+                    normalized_items,
+                )
+                return normalized_items
+            logger.info(
+                "health quadrant stage duration stage=service.exam.q3_llm_parse duration_ms=%s trace_id=%s study_id=%s parsed_count=0",
+                int((time.perf_counter() - parse_started_at) * 1000),
+                normalized_trace_id,
+                normalized_study_id,
+            )
+            logger.warning(
+                "health quadrant deep screening llm parsed but recommended_exams is not list parsed_type=%s",
+                type(parsed).__name__,
+            )
         except Exception as exc:
             # 2) LLM 异常不外抛：提取失败不能阻塞整个四象限主链路。
-            logger.warning("extract deep screening by llm failed error=%s", exc)
+            logger.info(
+                "health quadrant stage duration stage=service.exam.q3_llm_request duration_ms=%s trace_id=%s study_id=%s status=failed",
+                int((time.perf_counter() - llm_request_started_at) * 1000),
+                normalized_trace_id,
+                normalized_study_id,
+            )
+            logger.warning(
+                "extract deep screening by llm failed error_type=%s error=%r",
+                type(exc).__name__,
+                exc,
+                exc_info=True,
+            )
+            return []
 
-        # 降级策略：按常见标点切分，抽取包含“复查/进一步/筛查”的短语，避免空结果。
-        fallback_tokens = (
-            final_conclusion.replace("。", "；")
-            .replace("，", "；")
-            .replace(",", "；")
-            .split("；")
-        )
-        result = []
-        for token in fallback_tokens:
-            text = token.strip()
-            if not text:
-                continue
-            if "复查" in text or "进一步" in text or "筛查" in text:
-                result.append(text)
-        return result
+        logger.info("health quadrant deep screening llm returned empty items")
+        return []
 
     async def _map_doctor_conclusion_items_to_standard(self, *, items: list[str]) -> list[str]:
         """将终检意见抽取项映射到标准体检项目名。
@@ -569,22 +835,20 @@ WHERE study_id = %s
         if not normalized_items:
             return []
 
-        conn_params = build_business_mysql_conn_params()
-        pool: aiomysql.Pool | None = None
         mapped_lookup: dict[str, str] = {}
         try:
-            pool = await aiomysql.create_pool(minsize=1, maxsize=2, **conn_params)
+            pool = await self._mysql_pools.get_business_pool()
             async with pool.acquire() as conn:
                 async with conn.cursor(aiomysql.DictCursor) as cursor:
                     # 使用 IN 批量查询，避免逐条 round trip 放大数据库压力。
                     placeholders = ",".join(["%s"] * len(normalized_items))
                     await cursor.execute(
                         f"""
-SELECT raw_exam_name, mapped_exam_name
-FROM lz_doctor_conclusion_exam_mapping
-WHERE is_active = 1
-  AND raw_exam_name IN ({placeholders})
-ORDER BY id ASC
+                        SELECT raw_exam_name, mapped_exam_name
+                        FROM lz_doctor_conclusion_exam_mapping
+                        WHERE is_active = 1
+                          AND raw_exam_name IN ({placeholders})
+                        ORDER BY id ASC
                         """,
                         tuple(normalized_items),
                     )
@@ -598,12 +862,8 @@ ORDER BY id ASC
         except Exception as exc:
             logger.warning("map doctor conclusion items failed count=%s error=%s", len(normalized_items), exc)
             return normalized_items
-        finally:
-            if pool is not None:
-                pool.close()
-                await pool.wait_closed()
 
-        return [mapped_lookup.get(item, item) for item in normalized_items]
+        return [mapped_lookup.get(item, item) for item in normalized_items if item in mapped_lookup]
 
     async def _query_q4_mass_spec_projects(self, *, chief_complaint_items: list[str]) -> list[str]:
         """按主诉模糊匹配 pathway，召回第四象限候选项目。
@@ -627,10 +887,8 @@ ORDER BY id ASC
         if not normalized_complaints:
             return []
 
-        conn_params = build_business_mysql_conn_params()
-        pool: aiomysql.Pool | None = None
         try:
-            pool = await aiomysql.create_pool(minsize=1, maxsize=2, **conn_params)
+            pool = await self._mysql_pools.get_business_pool()
             async with pool.acquire() as conn:
                 async with conn.cursor(aiomysql.DictCursor) as cursor:
                     # 每条主诉都能触发召回，符合已确认的“任一主诉命中即召回”策略。
@@ -639,13 +897,13 @@ ORDER BY id ASC
                     params.insert(0, f"%{_Q4_MASS_SPEC_KEYWORD}%")
                     await cursor.execute(
                         f"""
-SELECT DISTINCT n.exam_name
-FROM lz_clinical_pathway p
-JOIN lz_physicalexam_node n ON n.pathway_id = p.pathway_id
-WHERE n.exam_type = 'FUNCTIONAL'
-  AND n.exam_name LIKE %s
-  AND ({like_clauses})
-ORDER BY n.exam_name ASC
+                        SELECT DISTINCT n.exam_name
+                        FROM lz_clinical_pathway p
+                        JOIN lz_physicalexam_node n ON n.pathway_id = p.pathway_id
+                        WHERE n.exam_type = 'FUNCTIONAL'
+                          AND n.exam_name LIKE %s
+                          AND ({like_clauses})
+                        ORDER BY n.exam_name ASC
                         """,
                         tuple(params),
                     )
@@ -658,10 +916,6 @@ ORDER BY n.exam_name ASC
                 exc,
             )
             return []
-        finally:
-            if pool is not None:
-                pool.close()
-                await pool.wait_closed()
 
 
 def _normalize_single_exam_items(items: list[dict[str, Any]]) -> list[dict[str, str]]:
@@ -673,18 +927,25 @@ def _normalize_single_exam_items(items: list[dict[str, Any]]) -> list[dict[str, 
     """
 
     normalized: list[dict[str, str]] = []
-    seen: set[tuple[str, str]] = set()
+    seen: set[tuple[str, str, str]] = set()
     for raw in items:
         item_id = _normalize_text(raw.get("itemId") if isinstance(raw, dict) else None) or ""
         item_text = _normalize_text(raw.get("itemText") if isinstance(raw, dict) else None) or ""
-        if not item_id and not item_text:
+        abnormal_indicator = _normalize_text(raw.get("abnormalIndicator") if isinstance(raw, dict) else None) or ""
+        if not item_id and not item_text and not abnormal_indicator:
             continue
-        key = (item_id, item_text)
+        key = (item_id, item_text, abnormal_indicator)
         if key in seen:
             continue
         seen.add(key)
-        normalized.append({"itemId": item_id, "itemText": item_text})
-    normalized.sort(key=lambda x: (x["itemId"], x["itemText"]))
+        normalized.append(
+            {
+                "itemId": item_id,
+                "itemText": item_text,
+                "abnormalIndicator": abnormal_indicator,
+            }
+        )
+    normalized.sort(key=lambda x: (x["itemId"], x["itemText"], x["abnormalIndicator"]))
     return normalized
 
 
@@ -747,8 +1008,8 @@ def _deduplicate_exam_items_by_keys(candidates: list[str], existing_keys: set[st
 def _empty_buckets(defs: list[tuple[str, str]]) -> list[dict[str, Any]]:
     return [
         {
-            "code": code,
-            "name": name,
+            "q_code": code,
+            "q_name": name,
             "abnormalIndicators": [],
             "recommendationPlans": [],
         }
@@ -766,20 +1027,13 @@ def _looks_like_imaging(item_name: str, category: str | None) -> bool:
 
 
 def _finalize_exam_recommendations(buckets: list[dict[str, Any]]) -> None:
-    # 规则解释：每个象限必须同时给“异常指标 + 推荐方案”，保证前端确认页数据完整。
-    buckets[0]["recommendationPlans"] = ["基础异常复查包", "血液与代谢专项复检"]
-    buckets[1]["recommendationPlans"] = ["影像专科复核", "必要时安排增强影像检查"]
-    buckets[2]["recommendationPlans"] = ["终检意见专项深筛包", "医生会诊后追加个性化检查"]
-    buckets[3]["recommendationPlans"] = ["全基因检测", "PET-MR 高端筛查评估"]
+    # 规则解释：保留前序链路已经写入的个性化推荐项，再补默认推荐模板，避免覆盖业务输入。
+    _merge_recommendation_defaults(buckets[3], ["全基因检测", "PET-MR 高端筛查评估"])
     for bucket in buckets:
         bucket["abnormalIndicators"] = _deduplicate_text_list(bucket["abnormalIndicators"])
 
 
 def _finalize_treatment_recommendations(buckets: list[dict[str, Any]]) -> None:
-    buckets[0]["recommendationPlans"] = ["高风险绿色通道", "专家门诊优先+每日指标跟踪"]
-    buckets[1]["recommendationPlans"] = ["专项健康管理方案", "周度跟进+月度复盘"]
-    buckets[2]["recommendationPlans"] = ["生活方式干预", "季度复查+营养补充"]
-    buckets[3]["recommendationPlans"] = ["年度维养计划", "抗衰与健康促进管理"]
     for bucket in buckets:
         bucket["abnormalIndicators"] = _deduplicate_text_list(bucket["abnormalIndicators"])
 
@@ -794,6 +1048,20 @@ def _deduplicate_text_list(values: list[str]) -> list[str]:
         seen.add(text)
         result.append(text)
     return result
+
+
+def _merge_recommendation_defaults(bucket: dict[str, Any], defaults: list[str]) -> None:
+    """合并默认推荐模板，避免覆盖前序计算阶段写入的业务推荐项。"""
+
+    existing = _deduplicate_text_list(list(bucket.get("recommendationPlans") or []))
+    merged = list(existing)
+    existing_set = set(existing)
+    for item in defaults:
+        if item in existing_set:
+            continue
+        merged.append(item)
+        existing_set.add(item)
+    bucket["recommendationPlans"] = merged
 
 
 def _normalize_quadrants_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:

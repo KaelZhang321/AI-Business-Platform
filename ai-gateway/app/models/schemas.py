@@ -103,7 +103,8 @@ class HealthQuadrantSingleExamItem(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     item_id: str | None = Field(None, alias="itemId", description="单项体检条目ID")
-    item_text: str | None = Field(None, alias="itemText", description="单项体检条目文本")
+    item_text: str | None = Field(None, alias="itemText", description="单项体检项目名称")
+    abnormal_indicator: str | None = Field(None, alias="abnormalIndicator", description="单项体检异常指标")
 
 
 class HealthQuadrantRequest(BaseModel):
@@ -149,7 +150,6 @@ class HealthQuadrantConfirmRequest(BaseModel):
         default_factory=list,
         description="主诉文本列表（可选，可多条）",
     )
-    chief_complaint_text: str | None = Field(None, description="单条主诉文本（兼容字段）")
     quadrants: list[HealthQuadrantBucket] = Field(..., min_length=4, max_length=4, description="确认后的四象限结果")
 
 

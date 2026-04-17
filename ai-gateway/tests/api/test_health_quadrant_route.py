@@ -23,6 +23,7 @@ class StubHealthQuadrantService:
         assert len(single_exam_items) == 2
         assert single_exam_items[0]["itemId"] == "A1"
         assert single_exam_items[0]["itemText"] == "维生素D缺乏"
+        assert single_exam_items[0]["abnormalIndicator"] == "维生素D偏低"
         return {
             "quadrants": [
                 {
@@ -91,8 +92,8 @@ def test_health_quadrant_query_route_returns_unified_quadrants(monkeypatch) -> N
             "study_id": "1675218389653693282",
             "quadrant_type": "exam",
             "single_exam_items": [
-                {"itemId": "A1", "itemText": "维生素D缺乏"},
-                {"itemId": "A2", "itemText": "甲状腺结节"},
+                {"itemId": "A1", "itemText": "维生素D缺乏", "abnormalIndicator": "维生素D偏低"},
+                {"itemId": "A2", "itemText": "甲状腺结节", "abnormalIndicator": "结节"},
             ],
             "chief_complaint_items": ["睡眠障碍", "夜间易醒"],
         },
@@ -120,11 +121,10 @@ def test_health_quadrant_confirm_route_persists_payload(monkeypatch) -> None:
             "study_id": "1675218389653693282",
             "quadrant_type": "exam",
             "single_exam_items": [
-                {"itemId": "A1", "itemText": "维生素D缺乏"},
-                {"itemId": "A2", "itemText": "甲状腺结节"},
+                {"itemId": "A1", "itemText": "维生素D缺乏", "abnormalIndicator": "维生素D偏低"},
+                {"itemId": "A2", "itemText": "甲状腺结节", "abnormalIndicator": "结节"},
             ],
             "chief_complaint_items": ["睡眠障碍", "夜间易醒"],
-            "chief_complaint_text": "睡眠障碍",
             "quadrants": [
                 {
                     "q_code": "exam_q1_basic_screening",
