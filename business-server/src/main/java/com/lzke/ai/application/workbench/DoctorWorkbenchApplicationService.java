@@ -6,6 +6,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.lecz.iam.system.employee.service.ISysEmployeeHttpService;
 import com.lecz.iam.system.employee.vo.SysEmployeeVO;
+import com.lecz.iam.system.employee.vo.SysRoleVO;
 import com.lecz.service.tools.core.dto.ResponseDto;
 import com.lecz.service.tools.core.utils.AuthUtil;
 import com.lzke.ai.application.workbench.dto.DoctorCustomerCardCustomizeQueryRequest;
@@ -41,8 +42,10 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 import java.time.Duration;
+import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
+import java.util.stream.Collectors;
 
 /**
  * 医生工作台配置应用服务。
@@ -55,6 +58,7 @@ import java.util.Objects;
 @RequiredArgsConstructor
 public class DoctorWorkbenchApplicationService {
 
+    private static final String DEFAULT_ROLE_APP_CODE = "AI-RND-WORKFLOW";
     private static final String USER_INFO_CACHE_PREFIX = "auth:info:user:";
     private static final Duration USER_INFO_CACHE_TTL = Duration.ofHours(8);
 
@@ -94,6 +98,37 @@ public class DoctorWorkbenchApplicationService {
         }
         return doctorRoleCardConfigMapper.selectList(new LambdaQueryWrapper<DoctorRoleCardConfig>()
                 .eq(DoctorRoleCardConfig::getRoleId, roleId)
+                .eq(DoctorRoleCardConfig::getStatus, "active")
+                .eq(DoctorRoleCardConfig::getVisibleFlag, 1)
+                .orderByDesc(DoctorRoleCardConfig::getUpdatedAt));
+    }
+
+    /**
+     * 查询当前登录员工可用的角色卡片配置。
+     *
+     * <p>会先查询员工在指定应用下的角色，再按角色ID聚合查询启用且可见的卡片配置。
+     *
+     * @param appCode 应用编码，未传时默认 {@value DEFAULT_ROLE_APP_CODE}
+     * @return 当前员工可见卡片配置
+     */
+    public List<DoctorRoleCardConfig> listRoleCardConfigsForCurrentUser(String appCode) {
+        String employeeId = getCurrentEmployeeId();
+        String appCodeValue = StringUtils.hasText(appCode) ? appCode.trim() : DEFAULT_ROLE_APP_CODE;
+        ResponseDto<List<SysRoleVO>> response = sysEmployeeHttpService.getEmployeeRoles(appCodeValue, employeeId);
+        if (response == null || !response.isSuccess() || response.getData() == null || response.getData().isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<String> roleIds = response.getData().stream()
+                .filter(Objects::nonNull)
+                .map(SysRoleVO::getId)
+                .filter(StringUtils::hasText)
+                .distinct()
+                .collect(Collectors.toList());
+        if (roleIds.isEmpty()) {
+            return Collections.emptyList();
+        }
+        return doctorRoleCardConfigMapper.selectList(new LambdaQueryWrapper<DoctorRoleCardConfig>()
+                .in(DoctorRoleCardConfig::getRoleId, roleIds)
                 .eq(DoctorRoleCardConfig::getStatus, "active")
                 .eq(DoctorRoleCardConfig::getVisibleFlag, 1)
                 .orderByDesc(DoctorRoleCardConfig::getUpdatedAt));

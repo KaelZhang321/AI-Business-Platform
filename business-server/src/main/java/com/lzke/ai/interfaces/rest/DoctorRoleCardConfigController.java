@@ -15,6 +15,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -56,6 +57,15 @@ public class DoctorRoleCardConfigController {
             @PathVariable String roleId
     ) {
         return ApiResponse.ok(doctorWorkbenchApplicationService.listRoleCardConfigsByRole(roleId));
+    }
+
+    @Operation(summary = "查询当前登录员工可用卡片", description = "根据当前登录员工角色查询启用且可见的卡片配置")
+    @GetMapping("/mine")
+    public ApiResponse<List<DoctorRoleCardConfig>> listRoleCardConfigsByCurrentUser(
+            @Parameter(description = "应用编码，默认 AI-RND-WORKFLOW")
+            @RequestParam(value = "appCode", required = false) String appCode
+    ) {
+        return ApiResponse.ok(doctorWorkbenchApplicationService.listRoleCardConfigsForCurrentUser(appCode));
     }
 
     @Operation(summary = "新增角色卡片配置", description = "为指定角色新增一张工作台卡片配置")
