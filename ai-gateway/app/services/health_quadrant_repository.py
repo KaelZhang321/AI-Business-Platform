@@ -54,7 +54,8 @@ class HealthQuadrantRepository:
         Args:
             study_id: 体检主单号。
             quadrant_type: 四象限类型（`exam` / `treatment`）。
-            single_exam_items: 规范化后的单项体检列表，每项包含 `itemId/itemText`。
+            single_exam_items: 规范化后的单项体检列表，每项包含
+                `itemId/itemText/abnormalIndicator`。
             chief_complaint_items: 主诉文本列表。
             source_jlrq: ODS `ods_tj_jlb.JLRQ`，用于追踪源数据录入时间变化。
             source_zjrq: ODS `ods_tj_jlb.ZJRQ`，用于追踪终检结果更新时间变化。
@@ -73,7 +74,7 @@ class HealthQuadrantRepository:
         """
 
         # 1) 基于标准化上下文构造签名：把“同请求+同源版本”稳定映射到同一命中键。
-        await self._ensure_table()
+        # await self._ensure_table()
         items_json = _dump_canonical_items_json(single_exam_items)
         context_signature = _build_context_signature(
             study_id=study_id,
@@ -172,7 +173,7 @@ LIMIT 1
         """
 
         # 1) 先构造签名：确保确认写入与查询命中使用同一上下文口径。
-        await self._ensure_table()
+        # await self._ensure_table()
         items_json = _dump_canonical_items_json(single_exam_items)
         complaints_json = _dump_canonical_complaints_json(chief_complaint_items)
         context_signature = _build_context_signature(
@@ -268,7 +269,7 @@ updated_at = CURRENT_TIMESTAMP
         """
 
         # 1) 与查询/确认链路共用同一签名算法，确保草稿与确认在同一上下文维度可追踪。
-        await self._ensure_table()
+        # await self._ensure_table()
         items_json = _dump_canonical_items_json(single_exam_items)
         complaints_json = _dump_canonical_complaints_json(chief_complaint_items)
         context_signature = _build_context_signature(
@@ -356,22 +357,22 @@ updated_at = IF(status='CONFIRMED', updated_at, CURRENT_TIMESTAMP)
             return
 
         ddl = f"""
-CREATE TABLE IF NOT EXISTS {_TABLE_NAME} (
-    id BIGINT PRIMARY KEY AUTO_INCREMENT,
-    study_id VARCHAR(64) NOT NULL,
-    quadrant_type VARCHAR(16) NOT NULL,
-    single_exam_items_json JSON NULL,
-    chief_complaint_items_json JSON NULL,
-    context_signature CHAR(64) NOT NULL,
-    status VARCHAR(16) NOT NULL DEFAULT 'DRAFT',
-    payload_json JSON NOT NULL,
-    confirmed_by VARCHAR(64) NULL,
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    UNIQUE KEY uk_context_signature (context_signature),
-    KEY idx_study_id (study_id, quadrant_type)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-""".strip()
+            CREATE TABLE IF NOT EXISTS {_TABLE_NAME} (
+                id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                study_id VARCHAR(64) NOT NULL,
+                quadrant_type VARCHAR(16) NOT NULL,
+                single_exam_items_json JSON NULL,
+                chief_complaint_items_json JSON NULL,
+                context_signature CHAR(64) NOT NULL,
+                status VARCHAR(16) NOT NULL DEFAULT 'DRAFT',
+                payload_json JSON NOT NULL,
+                confirmed_by VARCHAR(64) NULL,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                UNIQUE KEY uk_context_signature (context_signature),
+                KEY idx_study_id (study_id, quadrant_type)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """.strip()
 
         pool = await self._get_pool()
         async with pool.acquire() as conn:
@@ -411,7 +412,14 @@ def _dump_canonical_items_json(single_exam_items: list[dict[str, str]]) -> str:
     for item in single_exam_items:
         item_id = _normalize_nullable_text(item.get("itemId"))
         item_text = _normalize_nullable_text(item.get("itemText"))
-        canonical_items.append({"itemId": item_id or "", "itemText": item_text or ""})
+        abnormal_indicator = _normalize_nullable_text(item.get("abnormalIndicator"))
+        canonical_items.append(
+            {
+                "itemId": item_id or "",
+                "itemText": item_text or "",
+                "abnormalIndicator": abnormal_indicator or "",
+            }
+        )
     return _stable_json_dumps(canonical_items)
 
 

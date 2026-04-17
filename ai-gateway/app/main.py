@@ -6,7 +6,6 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 import sys
 
-import httpx
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -14,7 +13,7 @@ from fastapi.responses import JSONResponse
 from app.api.routes import bi, chat, knowledge, query
 from app.api.routes.api_query import router as api_query_router
 from app.api.routes.catalog_governance import router as catalog_governance_router
-from app.api.routes.health_quadrant import router as health_quadrant_router
+from app.api.routes.health_quadrant import get_health_quadrant_service, router as health_quadrant_router
 from app.core.config import settings
 from app.core.error_codes import BusinessError, ErrorCode
 from app.models.schemas import HealthResponse
@@ -23,6 +22,7 @@ from app.services.api_catalog.business_intents import (
     get_business_intent_catalog_service,
 )
 from app.services.identity_vault import IdentityVault
+from app.services.model_runtime_config_service import close_model_runtime_config_service
 from app.services.rag_service import RAGService
 
 logger = logging.getLogger(__name__)
@@ -206,6 +206,13 @@ async def lifespan(app: FastAPI):
     # 将共享服务实例挂载到 app.state，供 route 层按需获取
     app.state.rag_service = RAGService()
     await get_business_intent_catalog_service().warmup()
+    # 健康四象限依赖三套数据库。启动期预热连接池可降低首个请求的冷启动时延。
+    health_quadrant_service = get_health_quadrant_service()
+    try:
+        await health_quadrant_service.warmup()
+        logger.info("HealthQuadrantService 连接池预热完成")
+    except Exception as exc:
+        logger.warning("HealthQuadrantService 连接池预热失败: %s", exc)
 
     # ── 启动缓存失效监听器（S5-6 + S5-11 语义缓存联动）────
     cache_task = None
@@ -261,6 +268,20 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.warning("关闭 Business Intent Catalog 失败: %s", exc)
 
+    # Health Quadrant 多数据源连接池
+    try:
+        await get_health_quadrant_service().close()
+        logger.info("HealthQuadrantService 已关闭")
+    except Exception as exc:
+        logger.warning("关闭 HealthQuadrantService 失败: %s", exc)
+
+    # Runtime 模型配置服务（MySQL 连接池）
+    try:
+        await close_model_runtime_config_service()
+        logger.info("ModelRuntimeConfigService 已关闭")
+    except Exception as exc:
+        logger.warning("关闭 ModelRuntimeConfigService 失败: %s", exc)
+
     # Elasticsearch
     if es_client:
         try:
@@ -279,11 +300,11 @@ async def lifespan(app: FastAPI):
         logger.warning("断开 Milvus 连接失败: %s", exc)
 
     # Ollama httpx client
-    try:
-        await ollama_client.aclose()
-        logger.info("Ollama HTTP 客户端已关闭")
-    except Exception as exc:
-        logger.warning("关闭 Ollama HTTP 客户端失败: %s", exc)
+    # try:
+    #     await ollama_client.aclose()
+    #     logger.info("Ollama HTTP 客户端已关闭")
+    # except Exception as exc:
+    #     logger.warning("关闭 Ollama HTTP 客户端失败: %s", exc)
 
     # Meeting BI aiomysql 连接池
     try:
