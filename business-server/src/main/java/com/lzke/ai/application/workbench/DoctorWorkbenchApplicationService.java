@@ -2,6 +2,11 @@ package com.lzke.ai.application.workbench;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.lecz.iam.system.employee.service.ISysEmployeeHttpService;
+import com.lecz.iam.system.employee.vo.SysEmployeeVO;
+import com.lecz.service.tools.core.dto.ResponseDto;
 import com.lecz.service.tools.core.utils.AuthUtil;
 import com.lzke.ai.application.workbench.dto.DoctorCustomerCardCustomizeQueryRequest;
 import com.lzke.ai.application.workbench.dto.DoctorCustomerCardCustomizeRequest;
@@ -19,11 +24,17 @@ import com.lzke.ai.infrastructure.persistence.mapper.DoctorCustomerNoteMapper;
 import com.lzke.ai.infrastructure.persistence.mapper.DoctorRoleCardConfigMapper;
 import com.lzke.ai.interfaces.dto.PageResult;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.BeanWrapper;
+import org.springframework.beans.PropertyAccessorFactory;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
+import java.time.Duration;
 import java.util.List;
+import java.util.Objects;
 
 /**
  * 医生工作台配置应用服务。
@@ -31,13 +42,20 @@ import java.util.List;
  * <p>统一维护角色卡片、客户定制卡片和客户便签三类配置，
  * 方便前端一个模块完成医生工作台能力搭建。
  */
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class DoctorWorkbenchApplicationService {
 
+    private static final String USER_INFO_CACHE_PREFIX = "auth:info:user:";
+    private static final Duration USER_INFO_CACHE_TTL = Duration.ofHours(8);
+
     private final DoctorRoleCardConfigMapper doctorRoleCardConfigMapper;
     private final DoctorCustomerCardCustomizeMapper doctorCustomerCardCustomizeMapper;
     private final DoctorCustomerNoteMapper doctorCustomerNoteMapper;
+    private final ISysEmployeeHttpService sysEmployeeHttpService;
+    private final ObjectMapper objectMapper;
+    private final StringRedisTemplate stringRedisTemplate;
 
     public PageResult<DoctorRoleCardConfig> listRoleCardConfigs(DoctorRoleCardConfigQueryRequest request) {
         DoctorRoleCardConfigQueryRequest query = request == null ? new DoctorRoleCardConfigQueryRequest() : request;
@@ -289,7 +307,7 @@ public class DoctorWorkbenchApplicationService {
 
     private void copyCustomerCardCustomize(DoctorCustomerCardCustomize entity, DoctorCustomerCardCustomizeRequest request) {
         entity.setEmployeeId(getCurrentEmployeeId());
-        entity.setEmployeeName(trimToNull(request.getEmployeeName()));
+        entity.setEmployeeName(getCurrentEmployeeName());
         entity.setCustomerIdCard(trimToNull(request.getCustomerIdCard()));
         entity.setFavoriteName(trimToNull(request.getFavoriteName()));
         entity.setCardKey(trimToNull(request.getCardKey()));
@@ -298,24 +316,16 @@ public class DoctorWorkbenchApplicationService {
         entity.setSortOrder(defaultInt(request.getSortOrder()));
         entity.setStatus(StringUtils.hasText(request.getStatus()) ? request.getStatus().trim() : "active");
         entity.setRemark(trimToNull(request.getRemark()));
-        entity.setCreatedBy(trimToNull(request.getCreatedBy()));
-        entity.setCreatedByName(trimToNull(request.getCreatedByName()));
-        entity.setUpdatedBy(trimToNull(request.getUpdatedBy()));
-        entity.setUpdatedByName(trimToNull(request.getUpdatedByName()));
     }
 
     private void copyCustomerNote(DoctorCustomerNote entity, DoctorCustomerNoteRequest request) {
         entity.setEmployeeId(getCurrentEmployeeId());
-        entity.setEmployeeName(trimToNull(request.getEmployeeName()));
+        entity.setEmployeeName(getCurrentEmployeeName());
         entity.setCustomerIdCard(trimToNull(request.getCustomerIdCard()));
         entity.setNoteContent(trimToNull(request.getNoteContent()));
         entity.setSortOrder(defaultInt(request.getSortOrder()));
         entity.setStatus(StringUtils.hasText(request.getStatus()) ? request.getStatus().trim() : "active");
         entity.setRemark(trimToNull(request.getRemark()));
-        entity.setCreatedBy(trimToNull(request.getCreatedBy()));
-        entity.setCreatedByName(trimToNull(request.getCreatedByName()));
-        entity.setUpdatedBy(trimToNull(request.getUpdatedBy()));
-        entity.setUpdatedByName(trimToNull(request.getUpdatedByName()));
     }
 
     private String trimToNull(String value) {
@@ -335,5 +345,56 @@ public class DoctorWorkbenchApplicationService {
             throw new BusinessException(ErrorCode.UNAUTHORIZED, "未获取到当前登录员工信息");
         }
         return String.valueOf(currentUserId);
+    }
+
+    private String getCurrentEmployeeName() {
+        SysEmployeeVO employee = getCurrentEmployeeVO();
+        if (employee == null) {
+            return null;
+        }
+        BeanWrapper beanWrapper = PropertyAccessorFactory.forBeanPropertyAccess(employee);
+        return trimToNull(readStringProperty(beanWrapper, "realName", "name", "employeeName", "nickName", "nickname"));
+    }
+
+    private SysEmployeeVO getCurrentEmployeeVO() {
+        String userId = getCurrentEmployeeId();
+        String employeeStr = stringRedisTemplate.opsForValue().get(USER_INFO_CACHE_PREFIX + userId);
+        if (StringUtils.hasText(employeeStr)) {
+            try {
+                return objectMapper.readValue(employeeStr, SysEmployeeVO.class);
+            } catch (JsonProcessingException e) {
+                log.warn("用户信息从 Redis 反序列化失败, userId={}", userId, e);
+            }
+        }
+        ResponseDto<SysEmployeeVO> response = sysEmployeeHttpService.getById(Long.parseLong(userId));
+        if (response != null && response.isSuccess() && response.getData() != null) {
+            cacheUserInfo(userId, response.getData());
+            return response.getData();
+        }
+        return null;
+    }
+
+    private void cacheUserInfo(String userId, SysEmployeeVO employee) {
+        try {
+            stringRedisTemplate.opsForValue().set(
+                    USER_INFO_CACHE_PREFIX + userId,
+                    objectMapper.writeValueAsString(employee),
+                    USER_INFO_CACHE_TTL
+            );
+        } catch (JsonProcessingException ex) {
+            log.warn("用户信息写入 Redis 失败, userId={}", userId, ex);
+        }
+    }
+
+    private String readStringProperty(BeanWrapper beanWrapper, String... propertyNames) {
+        for (String propertyName : propertyNames) {
+            if (beanWrapper.isReadableProperty(propertyName)) {
+                Object value = beanWrapper.getPropertyValue(propertyName);
+                if (value != null) {
+                    return Objects.toString(value, null);
+                }
+            }
+        }
+        return null;
     }
 }

@@ -10,10 +10,6 @@ import lombok.Data;
 @Schema(description = "医生客户定制卡片保存请求")
 public class DoctorCustomerCardCustomizeRequest {
 
-    @Schema(description = "登录员工ID", requiredMode = Schema.RequiredMode.REQUIRED)
-    private String employeeId;
-    @Schema(description = "登录员工名称")
-    private String employeeName;
     @Schema(description = "客户身份证号", requiredMode = Schema.RequiredMode.REQUIRED)
     private String customerIdCard;
     @Schema(description = "收藏名称", requiredMode = Schema.RequiredMode.REQUIRED)
@@ -30,12 +26,4 @@ public class DoctorCustomerCardCustomizeRequest {
     private String status;
     @Schema(description = "备注")
     private String remark;
-    @Schema(description = "创建人ID")
-    private String createdBy;
-    @Schema(description = "创建人名称")
-    private String createdByName;
-    @Schema(description = "更新人ID")
-    private String updatedBy;
-    @Schema(description = "更新人名称")
-    private String updatedByName;
 }

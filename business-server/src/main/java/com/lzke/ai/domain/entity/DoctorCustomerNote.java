@@ -35,14 +35,6 @@ public class DoctorCustomerNote {
     private String status;
     @Schema(description = "备注")
     private String remark;
-    @Schema(description = "创建人ID")
-    private String createdBy;
-    @Schema(description = "创建人名称")
-    private String createdByName;
-    @Schema(description = "更新人ID")
-    private String updatedBy;
-    @Schema(description = "更新人名称")
-    private String updatedByName;
 
     @TableField(fill = FieldFill.INSERT)
     @Schema(description = "创建时间")
