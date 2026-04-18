@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Request
 
+from app.core.error_codes import BusinessError, ErrorCode
 from app.models.schemas import (
     HealthQuadrantConfirmRequest,
     HealthQuadrantConfirmEnvelopeResponse,
@@ -17,11 +18,30 @@ from app.models.schemas import (
     HealthQuadrantRequest,
     HealthQuadrantResponse,
 )
-from app.services.health_quadrant_service import HealthQuadrantService
+from app.services.health_quadrant_service import HealthQuadrantService, HealthQuadrantServiceError
 
 router = APIRouter(prefix="/health-quadrant", tags=["健康四象限"])
 health_quadrant_service = HealthQuadrantService()
 logger = logging.getLogger(__name__)
+
+
+def _raise_route_business_error(exc: HealthQuadrantServiceError) -> None:
+    """将服务层错误统一映射为可观测的业务错误码。
+
+    功能：
+        `/health-quadrant` 依赖多个外部系统（ODS、DW、LLM、MySQL），服务层抛出的
+        `HealthQuadrantServiceError` 语义较宽。路由层在这里做最小化分类，保证前端拿到
+        稳定错误码，同时保留错误文本用于定位。
+    """
+
+    message = str(exc)
+    if "quadrant_type" in message:
+        raise BusinessError(ErrorCode.BAD_REQUEST, message) from exc
+    if "triage_failed" in message or "safety_failed" in message:
+        raise BusinessError(ErrorCode.LLM_CALL_FAILED, message) from exc
+    if "match_failed" in message or "source" in message:
+        raise BusinessError(ErrorCode.EXTERNAL_SERVICE_ERROR, message) from exc
+    raise BusinessError(ErrorCode.INTERNAL_ERROR, message) from exc
 
 
 def get_health_quadrant_service() -> HealthQuadrantService:
@@ -82,6 +102,23 @@ async def build_health_quadrant(request: HealthQuadrantRequest, raw_request: Req
                 ],
             ),
         )
+    except HealthQuadrantServiceError as exc:
+        logger.warning(
+            "health quadrant route query failed trace_id=%s study_id=%s quadrant_type=%s error=%s",
+            trace_id,
+            request.study_id,
+            request.quadrant_type,
+            exc,
+        )
+        _raise_route_business_error(exc)
+    except Exception as exc:
+        logger.exception(
+            "health quadrant route query unexpected error trace_id=%s study_id=%s quadrant_type=%s",
+            trace_id,
+            request.study_id,
+            request.quadrant_type,
+        )
+        raise BusinessError(ErrorCode.INTERNAL_ERROR, "健康四象限查询失败") from exc
     finally:
         duration_ms = int((time.perf_counter() - route_started_at) * 1000)
         logger.info(
@@ -136,6 +173,23 @@ async def confirm_health_quadrant(
             message="ok",
             data=HealthQuadrantConfirmResponse(success=True),
         )
+    except HealthQuadrantServiceError as exc:
+        logger.warning(
+            "health quadrant route confirm failed trace_id=%s study_id=%s quadrant_type=%s error=%s",
+            trace_id,
+            request.study_id,
+            request.quadrant_type,
+            exc,
+        )
+        _raise_route_business_error(exc)
+    except Exception as exc:
+        logger.exception(
+            "health quadrant route confirm unexpected error trace_id=%s study_id=%s quadrant_type=%s",
+            trace_id,
+            request.study_id,
+            request.quadrant_type,
+        )
+        raise BusinessError(ErrorCode.INTERNAL_ERROR, "健康四象限确认失败") from exc
     finally:
         duration_ms = int((time.perf_counter() - route_started_at) * 1000)
         logger.info(

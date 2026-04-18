@@ -203,9 +203,11 @@ confirmed_by = VALUES(confirmed_by),
 updated_at = CURRENT_TIMESTAMP
 """.strip()
 
+        conn = None
         try:
             pool = await self._get_pool()
-            async with pool.acquire() as conn:
+            async with pool.acquire() as acquired_conn:
+                conn = acquired_conn
                 async with conn.cursor() as cursor:
                     await cursor.execute(
                         sql,
@@ -221,6 +223,18 @@ updated_at = CURRENT_TIMESTAMP
                     )
                 await conn.commit()
         except Exception as exc:
+            if conn is not None:
+                try:
+                    # 写事务失败后显式回滚，避免连接复用时残留脏事务状态。
+                    await conn.rollback()
+                except Exception as rollback_exc:
+                    logger.warning(
+                        "health quadrant repository rollback failed in confirmed upsert study_id=%s quadrant_type=%s error=%s",
+                        study_id,
+                        quadrant_type,
+                        rollback_exc,
+                        exc_info=True,
+                    )
             logger.exception(
                 "health quadrant repository write failed trace_id=%s study_id=%s quadrant_type=%s",
                 trace_id,
@@ -300,9 +314,11 @@ status = IF(status='CONFIRMED', status, VALUES(status)),
 updated_at = IF(status='CONFIRMED', updated_at, CURRENT_TIMESTAMP)
 """.strip()
 
+        conn = None
         try:
             pool = await self._get_pool()
-            async with pool.acquire() as conn:
+            async with pool.acquire() as acquired_conn:
+                conn = acquired_conn
                 async with conn.cursor() as cursor:
                     await cursor.execute(
                         sql,
@@ -317,6 +333,18 @@ updated_at = IF(status='CONFIRMED', updated_at, CURRENT_TIMESTAMP)
                     )
                 await conn.commit()
         except Exception as exc:
+            if conn is not None:
+                try:
+                    # 草稿写入失败同样需要回滚，防止后续同连接执行异常。
+                    await conn.rollback()
+                except Exception as rollback_exc:
+                    logger.warning(
+                        "health quadrant repository rollback failed in draft upsert study_id=%s quadrant_type=%s error=%s",
+                        study_id,
+                        quadrant_type,
+                        rollback_exc,
+                        exc_info=True,
+                    )
             logger.exception(
                 "health quadrant repository upsert draft failed trace_id=%s study_id=%s quadrant_type=%s",
                 trace_id,

@@ -38,7 +38,7 @@ class HealthQuadrantTreatmentRepository:
 
         Returns:
             候选项目数组，每条包含：
-            `project_name/package_version/priority_level/sort_order/quadrant/belong_system/trigger_item/contraindications/match_source`。
+            `project_name/package_version/quadrant/belong_system/trigger_item/contraindications/match_source`。
 
         Raises:
             HealthQuadrantTreatmentRepositoryError: 当数据库查询失败时抛出。
@@ -48,19 +48,31 @@ class HealthQuadrantTreatmentRepository:
             return []
 
         results: list[dict[str, Any]] = []
+        seen: set[tuple[str, str, str, str]] = set()
         try:
             pool = await self._mysql_pools.get_business_pool()
             async with pool.acquire() as conn:
                 async with conn.cursor(aiomysql.DictCursor) as cursor:
                     for item in triage_items:
-                        results.extend(
-                            await self._query_one_triage_item(
-                                cursor=cursor,
-                                belong_system=str(getattr(item, "belong_system", "")),
-                                trigger_item=str(getattr(item, "item_name", "")),
-                                quadrant=str(getattr(item, "quadrant", "")),
-                            )
+                        rows = await self._query_one_triage_item(
+                            cursor=cursor,
+                            belong_system=str(getattr(item, "belong_system", "")),
+                            trigger_item=str(getattr(item, "item_name", "")),
+                            quadrant=str(getattr(item, "quadrant", "")),
                         )
+                        for row in rows:
+                            dedupe_key = (
+                                str(row.get("project_name") or "").strip(),
+                                str(row.get("package_version") or "").strip(),
+                                str(row.get("quadrant") or "").strip(),
+                                str(row.get("belong_system") or "").strip(),
+                            )
+                            if not dedupe_key[0]:
+                                continue
+                            if dedupe_key in seen:
+                                continue
+                            seen.add(dedupe_key)
+                            results.append(row)
         except Exception as exc:
             logger.error("health quadrant treatment repository query failed error=%s", exc, exc_info=True)
             raise HealthQuadrantTreatmentRepositoryError(f"治疗知识库召回失败: {exc}") from exc
@@ -93,46 +105,28 @@ class HealthQuadrantTreatmentRepository:
             用 UNION ALL 保留来源并在 Python 侧做去重，便于后续调试召回质量。
         """
 
-        if not belong_system or not trigger_item:
+        if not belong_system:
             return []
+
         sql = f"""
-SELECT
-  t.project_name,
-  t.package_version,
-  t.contraindications,
-  'indicator_name' AS match_source
-FROM {_TABLE_NAME} t
-WHERE t.status = 'active'
-  AND (t.system_name = %s
-  OR t.indicator_name = %s)
-UNION ALL
-SELECT
-  t.project_name,
-  t.package_version,
-  t.contraindications,
-  'indications_like' AS match_source
-FROM {_TABLE_NAME} t
-WHERE t.status = 'active'
-  AND (t.system_name = %s
-  OR t.indications LIKE %s)
-""".strip()
-        await cursor.execute(
-            sql,
-            (
-                belong_system,
-                trigger_item,
-                belong_system,
-                f"%{trigger_item}%",
-            ),
-        )
+        SELECT DISTINCT
+          t.project_name,
+          t.package_version,
+          t.core_effect, 
+	      t.indications,
+          t.contraindications
+        FROM {_TABLE_NAME} t
+        WHERE t.status = 'active'
+          AND t.system_name = %s
+        """.strip()
+        await cursor.execute(sql, belong_system)
         rows = await cursor.fetchall()
 
         deduped: list[dict[str, Any]] = []
-        seen: set[tuple[str, str, str]] = set()
+        seen: set[tuple[str, str]] = set()
         for row in rows:
             project_name = str(row.get("project_name") or "").strip()
             package_version = str(row.get("package_version") or "").strip() or "-"
-            match_source = str(row.get("match_source") or "unknown").strip()
             if not project_name:
                 continue
             key = (project_name, package_version)
@@ -143,10 +137,11 @@ WHERE t.status = 'active'
                 {
                     "project_name": project_name,
                     "package_version": package_version,
-                    "contraindications": row.get("contraindications"),
+                    "core_effect": row.get("core_effect") or "",
+                    "indications": row.get("indications") or "",
+                    "contraindications": row.get("contraindications") or "",
                     "quadrant": quadrant,
-                    "belong_system": belong_system,
-                    "trigger_item": trigger_item
+                    "belong_system": belong_system
                 }
             )
         return deduped
