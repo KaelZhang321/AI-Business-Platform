@@ -4,7 +4,6 @@ import pytest
 
 from app.services.health_quadrant_service import (
     HealthQuadrantService,
-    HealthQuadrantServiceError,
     _TreatmentTriageItem,
 )
 
@@ -294,7 +293,7 @@ async def test_query_quadrants_exam_q3_mapping_and_q4_like_recall_are_deduplicat
 
 
 @pytest.mark.asyncio
-async def test_query_quadrants_treatment_three_stage_success(monkeypatch) -> None:
+async def test_query_quadrants_treatment_single_pass_success(monkeypatch) -> None:
     repo = StubRepository(cached=None)
     treatment_repo = StubTreatmentRepository(
         rows=[
@@ -302,19 +301,13 @@ async def test_query_quadrants_treatment_three_stage_success(monkeypatch) -> Non
                 "project_name": "冠脉风险高级评估",
                 "package_version": "v1",
                 "contraindications": "",
-                "quadrant": "RED",
                 "belong_system": "心脑血管",
-                "trigger_item": "胸闷",
-                "match_source": "indicator_name",
             },
             {
                 "project_name": "代谢专项管理",
                 "package_version": "v2",
                 "contraindications": "",
-                "quadrant": "ORANGE",
                 "belong_system": "内分泌系统",
-                "trigger_item": "血糖升高",
-                "match_source": "indicator_name",
             },
         ]
     )
@@ -324,17 +317,17 @@ async def test_query_quadrants_treatment_three_stage_success(monkeypatch) -> Non
               "triage_results":[
                 {"item_name":"胸闷","value_or_desc":"胸闷持续","quadrant":"RED","belong_system":"心脑血管","reason":"高风险"},
                 {"item_name":"血糖","value_or_desc":"血糖升高","quadrant":"ORANGE","belong_system":"内分泌系统","reason":"需干预"}
-              ]
-            }""",
-            """{
+              ],
               "safety_checks":[
-                {"candidate_id":"冠脉风险高级评估||v1||RED","project_name":"冠脉风险高级评估","reason":"无明显禁忌","is_contraindicated":false}
-              ]
-            }""",
-            """{
-              "safety_checks":[
-                {"candidate_id":"代谢专项管理||v2||ORANGE","project_name":"代谢专项管理","reason":"存在禁忌","is_contraindicated":true}
-              ]
+                {"project_name":"冠脉风险高级评估 (v1)","reason":"无明显禁忌","is_contraindicated":false},
+                {"project_name":"代谢专项管理 (v2)","reason":"存在禁忌","is_contraindicated":true}
+              ],
+              "sorted_recommendations":{
+                "RED":[{"project_name":"冠脉风险高级评估 (v1)","tier":"第一顺位","recommendation_reason":"匹配主诉"}],
+                "ORANGE":[{"project_name":"代谢专项管理 (v2)","tier":"第二顺位","recommendation_reason":"匹配异常"}],
+                "BLUE":[],
+                "GREEN":[]
+              }
             }""",
         ]
     )
@@ -366,12 +359,22 @@ async def test_query_quadrants_treatment_three_stage_success(monkeypatch) -> Non
     assert quadrants[0]["recommendationPlans"] == ["冠脉风险高级评估 (v1)"]
     assert quadrants[1]["recommendationPlans"] == []
     assert repo.draft_payload is not None
+    assert llm.calls == 1
 
 
 @pytest.mark.asyncio
-async def test_query_quadrants_treatment_triage_top_level_failure(monkeypatch) -> None:
+async def test_query_quadrants_treatment_single_pass_fallback_and_skip_draft(monkeypatch) -> None:
     repo = StubRepository(cached=None)
-    treatment_repo = StubTreatmentRepository(rows=[])
+    treatment_repo = StubTreatmentRepository(
+        rows=[
+            {
+                "project_name": "冠脉风险高级评估",
+                "package_version": "v1",
+                "contraindications": "",
+                "belong_system": "心脑血管",
+            }
+        ]
+    )
     llm = StubLLM(responses=["not json"])
     service = HealthQuadrantService(repository=repo, llm_service=llm, treatment_repository=treatment_repo)
 
@@ -386,20 +389,21 @@ async def test_query_quadrants_treatment_triage_top_level_failure(monkeypatch) -
         }
 
     monkeypatch.setattr(service, "_load_source_data", stub_load_source_data)
-    with pytest.raises(HealthQuadrantServiceError, match="triage_failed"):
-        await service.query_quadrants(
-            sex="男",
-            age=None,
-            study_id="2512160009",
-            quadrant_type="treatment",
-            single_exam_items=[],
-            chief_complaint_text="胸闷",
-            trace_id="trace-001",
-        )
+    result = await service.query_quadrants(
+        sex="男",
+        age=None,
+        study_id="2512160009",
+        quadrant_type="treatment",
+        single_exam_items=[],
+        chief_complaint_text="胸闷",
+        trace_id="trace-001",
+    )
+    assert result["quadrants"][3]["abnormalIndicators"] == ["本次智能分析未完成，请稍后重试"]
+    assert repo.draft_payload is None
 
 
 @pytest.mark.asyncio
-async def test_query_quadrants_treatment_safety_top_level_failure(monkeypatch) -> None:
+async def test_query_quadrants_treatment_single_pass_retry_once_success(monkeypatch) -> None:
     repo = StubRepository(cached=None)
     treatment_repo = StubTreatmentRepository(
         rows=[
@@ -407,21 +411,27 @@ async def test_query_quadrants_treatment_safety_top_level_failure(monkeypatch) -
                 "project_name": "冠脉风险高级评估",
                 "package_version": "v1",
                 "contraindications": "",
-                "quadrant": "RED",
                 "belong_system": "心脑血管",
-                "trigger_item": "胸闷",
-                "match_source": "indicator_name",
             }
         ]
     )
     llm = StubLLM(
         responses=[
+            "not json",
             """{
               "triage_results":[
                 {"item_name":"胸闷","value_or_desc":"胸闷持续","quadrant":"RED","belong_system":"心脑血管","reason":"高风险"}
-              ]
+              ],
+              "safety_checks":[
+                {"project_name":"冠脉风险高级评估 (v1)","reason":"无明显禁忌","is_contraindicated":false}
+              ],
+              "sorted_recommendations":{
+                "RED":[{"project_name":"冠脉风险高级评估 (v1)","tier":"第一顺位","recommendation_reason":"匹配主诉"}],
+                "ORANGE":[],
+                "BLUE":[],
+                "GREEN":[]
+              }
             }""",
-            "not json",
         ]
     )
     service = HealthQuadrantService(repository=repo, llm_service=llm, treatment_repository=treatment_repo)
@@ -437,16 +447,17 @@ async def test_query_quadrants_treatment_safety_top_level_failure(monkeypatch) -
         }
 
     monkeypatch.setattr(service, "_load_source_data", stub_load_source_data)
-    with pytest.raises(HealthQuadrantServiceError, match="safety_failed"):
-        await service.query_quadrants(
-            sex="男",
-            age=None,
-            study_id="2512160009",
-            quadrant_type="treatment",
-            single_exam_items=[],
-            chief_complaint_text="胸闷",
-            trace_id="trace-001",
-        )
+    result = await service.query_quadrants(
+        sex="男",
+        age=None,
+        study_id="2512160009",
+        quadrant_type="treatment",
+        single_exam_items=[],
+        chief_complaint_text="胸闷",
+        trace_id="trace-001",
+    )
+    assert result["quadrants"][0]["recommendationPlans"] == ["冠脉风险高级评估 (v1)"]
+    assert llm.calls == 2
 
 
 @pytest.mark.asyncio
@@ -458,10 +469,7 @@ async def test_query_quadrants_treatment_row_level_drop_and_empty_after_safety(m
                 "project_name": "冠脉风险高级评估",
                 "package_version": "v1",
                 "contraindications": "",
-                "quadrant": "RED",
                 "belong_system": "心脑血管",
-                "trigger_item": "胸闷",
-                "match_source": "indicator_name",
             }
         ]
     )
@@ -471,13 +479,17 @@ async def test_query_quadrants_treatment_row_level_drop_and_empty_after_safety(m
               "triage_results":[
                 {"item_name":"胸闷","value_or_desc":"胸闷持续","quadrant":"RED","belong_system":"心脑血管","reason":"高风险"},
                 {"item_name":"坏数据","value_or_desc":"","quadrant":"BLUE","belong_system":"未知系统","reason":"无效"}
-              ]
-            }""",
-            """{
+              ],
               "safety_checks":[
-                {"candidate_id":"冠脉风险高级评估||v1||RED","project_name":"冠脉风险高级评估","reason":"禁忌","is_contraindicated":true},
-                {"candidate_id":"","project_name":"坏数据","reason":"无效","is_contraindicated":"no"}
-              ]
+                {"project_name":"冠脉风险高级评估 (v1)","reason":"禁忌","is_contraindicated":true},
+                {"project_name":"坏数据","reason":"无效","is_contraindicated":"no"}
+              ],
+              "sorted_recommendations":{
+                "RED":[{"project_name":"冠脉风险高级评估 (v1)","tier":"第一顺位","recommendation_reason":"高危优先"}],
+                "ORANGE":[],
+                "BLUE":[],
+                "GREEN":[]
+              }
             }""",
         ]
     )
@@ -517,37 +529,25 @@ async def test_query_quadrants_treatment_safety_limit_top3_per_quadrant(monkeypa
                 "project_name": "红区项目A",
                 "package_version": "v1",
                 "contraindications": "",
-                "quadrant": "RED",
                 "belong_system": "心脑血管",
-                "trigger_item": "胸闷",
-                "match_source": "indicator_name",
             },
             {
                 "project_name": "红区项目B",
                 "package_version": "v1",
                 "contraindications": "",
-                "quadrant": "RED",
                 "belong_system": "心脑血管",
-                "trigger_item": "胸闷",
-                "match_source": "indicator_name",
             },
             {
                 "project_name": "红区项目C",
                 "package_version": "v1",
                 "contraindications": "",
-                "quadrant": "RED",
                 "belong_system": "心脑血管",
-                "trigger_item": "胸闷",
-                "match_source": "indicator_name",
             },
             {
                 "project_name": "红区项目D",
                 "package_version": "v1",
                 "contraindications": "",
-                "quadrant": "RED",
                 "belong_system": "心脑血管",
-                "trigger_item": "胸闷",
-                "match_source": "indicator_name",
             },
         ]
     )
@@ -556,15 +556,24 @@ async def test_query_quadrants_treatment_safety_limit_top3_per_quadrant(monkeypa
             """{
               "triage_results":[
                 {"item_name":"胸闷","value_or_desc":"胸闷持续","quadrant":"RED","belong_system":"心脑血管","reason":"高风险"}
-              ]
-            }""",
-            """{
+              ],
               "safety_checks":[
-                {"candidate_id":"红区项目A||v1||RED","project_name":"红区项目A","reason":"可用","is_contraindicated":false},
-                {"candidate_id":"红区项目B||v1||RED","project_name":"红区项目B","reason":"可用","is_contraindicated":false},
-                {"candidate_id":"红区项目C||v1||RED","project_name":"红区项目C","reason":"可用","is_contraindicated":false},
-                {"candidate_id":"红区项目D||v1||RED","project_name":"红区项目D","reason":"可用","is_contraindicated":false}
-              ]
+                {"project_name":"红区项目A (v1)","reason":"可用","is_contraindicated":false},
+                {"project_name":"红区项目B (v1)","reason":"可用","is_contraindicated":false},
+                {"project_name":"红区项目C (v1)","reason":"可用","is_contraindicated":false},
+                {"project_name":"红区项目D (v1)","reason":"可用","is_contraindicated":false}
+              ],
+              "sorted_recommendations":{
+                "RED":[
+                  {"project_name":"红区项目A (v1)","tier":"第一顺位","recommendation_reason":"1"},
+                  {"project_name":"红区项目B (v1)","tier":"第一顺位","recommendation_reason":"2"},
+                  {"project_name":"红区项目C (v1)","tier":"第二顺位","recommendation_reason":"3"},
+                  {"project_name":"红区项目D (v1)","tier":"第三顺位","recommendation_reason":"4"}
+                ],
+                "ORANGE":[],
+                "BLUE":[],
+                "GREEN":[]
+              }
             }""",
         ]
     )
@@ -607,10 +616,7 @@ async def test_query_quadrants_treatment_triage_accepts_nested_items_key(monkeyp
                 "project_name": "冠脉风险高级评估",
                 "package_version": "v1",
                 "contraindications": "",
-                "quadrant": "RED",
                 "belong_system": "心脑血管",
-                "trigger_item": "胸闷",
-                "match_source": "indicator_name",
             }
         ]
     )
@@ -621,12 +627,16 @@ async def test_query_quadrants_treatment_triage_accepts_nested_items_key(monkeyp
                 "items":[
                   {"item_name":"胸闷","value_or_desc":"胸闷持续","quadrant":"RED","belong_system":"心脑血管","reason":"高风险"}
                 ]
-              }
-            }""",
-            """{
+              },
               "safety_checks":[
-                {"project_name":"冠脉风险高级评估","reason":"无明显禁忌","is_contraindicated":false}
-              ]
+                {"project_name":"冠脉风险高级评估 (v1)","reason":"无明显禁忌","is_contraindicated":false}
+              ],
+              "sorted_recommendations":{
+                "RED":[{"project_name":"冠脉风险高级评估 (v1)","tier":"第一顺位","recommendation_reason":"匹配主诉"}],
+                "ORANGE":[],
+                "BLUE":[],
+                "GREEN":[]
+              }
             }""",
         ]
     )
@@ -657,7 +667,7 @@ async def test_query_quadrants_treatment_triage_accepts_nested_items_key(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_query_quadrants_treatment_safety_uses_quadrant_specific_abnormal_text(monkeypatch) -> None:
+async def test_query_quadrants_treatment_cross_quadrant_dedup(monkeypatch) -> None:
     repo = StubRepository(cached=None)
     treatment_repo = StubTreatmentRepository(
         rows=[
@@ -665,19 +675,13 @@ async def test_query_quadrants_treatment_safety_uses_quadrant_specific_abnormal_
                 "project_name": "红区项目A",
                 "package_version": "v1",
                 "contraindications": "",
-                "quadrant": "RED",
                 "belong_system": "心脑血管",
-                "trigger_item": "胸闷",
-                "match_source": "indicator_name",
             },
             {
                 "project_name": "橙区项目A",
                 "package_version": "v1",
                 "contraindications": "",
-                "quadrant": "ORANGE",
                 "belong_system": "内分泌系统",
-                "trigger_item": "血糖",
-                "match_source": "indicator_name",
             },
         ]
     )
@@ -699,17 +703,20 @@ async def test_query_quadrants_treatment_safety_uses_quadrant_specific_abnormal_
               "triage_results":[
                 {"item_name":"胸闷","value_or_desc":"胸闷持续","quadrant":"RED","belong_system":"心脑血管","reason":"高风险"},
                 {"item_name":"血糖","value_or_desc":"血糖升高","quadrant":"ORANGE","belong_system":"内分泌系统","reason":"需干预"}
-              ]
-            }""",
-            """{
+              ],
               "safety_checks":[
-                {"candidate_id":"红区项目A||v1||RED","project_name":"红区项目A","reason":"可用","is_contraindicated":false}
-              ]
-            }""",
-            """{
-              "safety_checks":[
-                {"candidate_id":"橙区项目A||v1||ORANGE","project_name":"橙区项目A","reason":"可用","is_contraindicated":false}
-              ]
+                {"project_name":"红区项目A (v1)","reason":"可用","is_contraindicated":false},
+                {"project_name":"橙区项目A (v1)","reason":"可用","is_contraindicated":false}
+              ],
+              "sorted_recommendations":{
+                "RED":[{"project_name":"红区项目A (v1)","tier":"第一顺位","recommendation_reason":"高危优先"}],
+                "ORANGE":[
+                  {"project_name":"红区项目A (v1)","tier":"第一顺位","recommendation_reason":"重复项"},
+                  {"project_name":"橙区项目A (v1)","tier":"第二顺位","recommendation_reason":"次优"}
+                ],
+                "BLUE":[],
+                "GREEN":[]
+              }
             }""",
         ]
     )
@@ -738,8 +745,4 @@ async def test_query_quadrants_treatment_safety_uses_quadrant_specific_abnormal_
 
     assert result["quadrants"][0]["recommendationPlans"] == ["红区项目A (v1)"]
     assert result["quadrants"][1]["recommendationPlans"] == ["橙区项目A (v1)"]
-
-    # 第 1 次为 triage，后续为并发 safety 请求；验证每个 safety prompt 仅包含本象限异常文本。
-    safety_prompts = llm.prompts[1:]
-    assert any("胸闷持续" in prompt and "血糖升高" not in prompt for prompt in safety_prompts)
-    assert any("血糖升高" in prompt and "胸闷持续" not in prompt for prompt in safety_prompts)
+    assert llm.calls == 1

@@ -45,7 +45,8 @@ class HealthQuadrantTreatmentRepository:
         """
 
         if not triage_items:
-            return []
+            # 单次 LLM 方案：空 triage 输入代表“读取全量 active 项目池”，由上层一次模型调用统一做分诊和过滤。
+            return await self._query_all_active_candidates()
 
         results: list[dict[str, Any]] = []
         seen: set[tuple[str, str, str, str]] = set()
@@ -77,6 +78,59 @@ class HealthQuadrantTreatmentRepository:
             logger.error("health quadrant treatment repository query failed error=%s", exc, exc_info=True)
             raise HealthQuadrantTreatmentRepositoryError(f"治疗知识库召回失败: {exc}") from exc
         return results
+
+    async def _query_all_active_candidates(self) -> list[dict[str, Any]]:
+        """查询全量 active 治疗项目。
+
+        功能：
+            该查询仅返回模型提示词所需的核心字段，避免把无关字段带入提示词导致 token 浪费。
+        """
+
+        try:
+            pool = await self._mysql_pools.get_business_pool()
+            async with pool.acquire() as conn:
+                async with conn.cursor(aiomysql.DictCursor) as cursor:
+                    await cursor.execute(
+                        f"""
+                        SELECT DISTINCT
+                          t.project_name,
+                          t.package_version,
+                          t.system_name AS belong_system,
+                          t.core_effect,
+                          t.indications,
+                          t.contraindications
+                        FROM {_TABLE_NAME} t
+                        WHERE t.status = 'active'
+                        ORDER BY t.project_name ASC, t.package_version ASC
+                        """
+                    )
+                    rows = await cursor.fetchall()
+        except Exception as exc:
+            logger.error("health quadrant treatment repository load all active failed error=%s", exc, exc_info=True)
+            raise HealthQuadrantTreatmentRepositoryError(f"治疗知识库全量查询失败: {exc}") from exc
+
+        deduped: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+        for row in rows:
+            project_name = str(row.get("project_name") or "").strip()
+            package_version = str(row.get("package_version") or "").strip() or "-"
+            if not project_name:
+                continue
+            key = (project_name, package_version)
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(
+                {
+                    "project_name": project_name,
+                    "package_version": package_version,
+                    "core_effect": row.get("core_effect") or "",
+                    "indications": row.get("indications") or "",
+                    "contraindications": row.get("contraindications") or "",
+                    "belong_system": str(row.get("belong_system") or "").strip(),
+                }
+            )
+        return deduped
 
     async def close(self) -> None:
         """关闭内部持有的连接池。

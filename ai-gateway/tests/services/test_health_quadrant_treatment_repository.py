@@ -10,10 +10,11 @@ from app.services.health_quadrant_treatment_repository import HealthQuadrantTrea
 class FakeCursor:
     def __init__(self, rows: list[dict]) -> None:
         self._rows = rows
-        self.executed: list[tuple[str, str]] = []
+        self.executed: list[tuple[str, tuple | None]] = []
 
-    async def execute(self, sql: str, belong_system: str) -> None:
-        self.executed.append((sql, belong_system))
+    async def execute(self, sql: str, params=None) -> None:
+        normalized_params = params if isinstance(params, tuple) else (params,) if params is not None else None
+        self.executed.append((sql, normalized_params))
 
     async def fetchall(self) -> list[dict]:
         return list(self._rows)
@@ -134,3 +135,40 @@ async def test_match_candidates_deduplicates_rows_across_triage_items() -> None:
     assert all(row["quadrant"] == "RED" for row in rows)
     assert all(row["belong_system"] == "心脑血管" for row in rows)
 
+
+@pytest.mark.asyncio
+async def test_match_candidates_without_triage_items_returns_all_active_pool() -> None:
+    cursor = FakeCursor(
+        rows=[
+            {
+                "project_name": "冠脉风险高级评估",
+                "package_version": "v1",
+                "belong_system": "心脑血管",
+                "core_effect": "核心作用",
+                "indications": "适应症",
+                "contraindications": "禁忌",
+            },
+            {
+                "project_name": "冠脉风险高级评估",
+                "package_version": "v1",
+                "belong_system": "心脑血管",
+                "core_effect": "重复行",
+                "indications": "重复",
+                "contraindications": "重复",
+            },
+            {
+                "project_name": "代谢专项管理",
+                "package_version": "v2",
+                "belong_system": "内分泌系统",
+                "core_effect": "代谢",
+                "indications": "血糖升高",
+                "contraindications": "",
+            },
+        ]
+    )
+    repo = HealthQuadrantTreatmentRepository(mysql_pools=FakeMySQLPools(cursor))
+
+    rows = await repo.match_candidates(triage_items=[])
+
+    assert len(rows) == 2
+    assert {row["project_name"] for row in rows} == {"冠脉风险高级评估", "代谢专项管理"}
