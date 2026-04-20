@@ -11,6 +11,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -95,6 +97,7 @@ import lombok.RequiredArgsConstructor;
 public class UiBuilderApplicationService {
 
     private static final Set<String> OPEN_API_METHODS = Set.of("get", "post", "put", "delete", "patch");
+    private static final Pattern MARKDOWN_JSON_BLOCK_PATTERN = Pattern.compile("```(?:json|JSON)?\\s*([\\s\\S]*?)```");
     private static final String EMPTY_FIELD_ORCHESTRATION = """
             {"fieldConfig":{"ignore":[],"passthrough":[],"groups":[],"render":[]}}
             """;
@@ -996,6 +999,7 @@ public class UiBuilderApplicationService {
         ensureCardCodeUnique(request.getCode(), null);
         UiCard card = new UiCard();
         applyCardRequest(card, request);
+        card.setId(request.getCode()); // 卡片 ID 与卡片编码保持一致，便于前端使用
         uiCardMapper.insert(card);
         return card;
     }
@@ -1932,7 +1936,97 @@ public class UiBuilderApplicationService {
             return examplesNode.fields().next().getValue().path("value");
         }
         JsonNode resolvedSchema = resolveSchemaNode(rootDocument, mediaNode.path("schema"), new HashSet<>());
+        JsonNode markdownExample = extractJsonExampleFromDescriptions(operationNode, responseNode, mediaNode);
+        if (markdownExample != null) {
+            return alignResponseExampleWithSchema(markdownExample, resolvedSchema);
+        }
         return buildExampleFromSchema(resolvedSchema);
+    }
+
+    private JsonNode extractJsonExampleFromDescriptions(JsonNode... nodes) {
+        for (JsonNode node : nodes) {
+            if (node == null || node.isMissingNode() || node.isNull()) {
+                continue;
+            }
+            JsonNode example = extractJsonExampleFromText(node.path("description").asText(null));
+            if (example != null) {
+                return example;
+            }
+        }
+        return null;
+    }
+
+    private JsonNode extractJsonExampleFromText(String text) {
+        if (!StringUtils.hasText(text)) {
+            return null;
+        }
+        Matcher matcher = MARKDOWN_JSON_BLOCK_PATTERN.matcher(text);
+        while (matcher.find()) {
+            String candidate = matcher.group(1);
+            if (!StringUtils.hasText(candidate)) {
+                continue;
+            }
+            try {
+                return objectMapper.readTree(candidate.trim());
+            } catch (JsonProcessingException ignored) {
+                // Some generators put prose in fenced blocks; keep looking for the first valid JSON block.
+            }
+        }
+        return null;
+    }
+
+    private JsonNode alignResponseExampleWithSchema(JsonNode example, JsonNode resolvedSchema) {
+        if (example == null || resolvedSchema == null || !resolvedSchema.path("properties").isObject()) {
+            return example;
+        }
+        JsonNode resultSchema = resolvedSchema.path("properties").path("result");
+        if (resultSchema.isMissingNode() || example.has("result")) {
+            return example;
+        }
+        if (!looksLikeResultPayload(example, resultSchema)) {
+            return example;
+        }
+
+        JsonNode wrapperExample = buildExampleFromSchema(resolvedSchema);
+        ObjectNode wrapper = wrapperExample != null && wrapperExample.isObject()
+                ? (ObjectNode) wrapperExample
+                : objectMapper.createObjectNode();
+        if ("array".equals(resultSchema.path("type").asText(null))) {
+            if (example.isArray()) {
+                wrapper.set("result", example);
+            } else {
+                ArrayNode resultItems = objectMapper.createArrayNode();
+                resultItems.add(example);
+                wrapper.set("result", resultItems);
+            }
+        } else {
+            wrapper.set("result", example);
+        }
+        return wrapper;
+    }
+
+    private boolean looksLikeResultPayload(JsonNode example, JsonNode resultSchema) {
+        if (example == null || resultSchema == null || example.isMissingNode() || resultSchema.isMissingNode()) {
+            return false;
+        }
+        if ("array".equals(resultSchema.path("type").asText(null))) {
+            JsonNode itemsSchema = resultSchema.path("items");
+            if (example.isArray()) {
+                return example.isEmpty() || looksLikeResultPayload(example.get(0), itemsSchema);
+            }
+            return looksLikeResultPayload(example, itemsSchema);
+        }
+        JsonNode propertiesNode = resultSchema.path("properties");
+        if (!example.isObject() || !propertiesNode.isObject()) {
+            return false;
+        }
+        Iterator<String> fieldNames = example.fieldNames();
+        while (fieldNames.hasNext()) {
+            if (propertiesNode.has(fieldNames.next())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
