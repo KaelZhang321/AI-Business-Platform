@@ -20,6 +20,9 @@ import com.lzke.ai.application.exam.dto.PatientExamPatientQueryRequest;
 import com.lzke.ai.application.exam.dto.PatientExamResultItemResponse;
 import com.lzke.ai.application.exam.dto.PatientExamResultQueryRequest;
 import com.lzke.ai.application.exam.dto.PatientExamStatsResponse;
+import com.lzke.ai.application.exam.dto.PatientHisItemResultQueryRequest;
+import com.lzke.ai.application.exam.dto.PatientHisItemResultResponse;
+import com.lzke.ai.application.exam.dto.PatientHisReportItemResponse;
 import com.lzke.ai.application.exam.dto.PatientExamSessionQueryRequest;
 import com.lzke.ai.application.exam.dto.PatientExamSessionResponse;
 import com.lzke.ai.application.exam.dto.PatientExamSessionRowResponse;
@@ -108,6 +111,90 @@ public class PatientExamApplicationService {
                 patientExamOdsMapper.countDistinctPatientsByExamTimeRange(startOfLastWeek, startOfThisWeek)
         );
         return response;
+    }
+
+    /**
+     * 按身份证号查询 HIS 单项检查结果。
+     *
+     * <p>先通过 HIS 客户表定位病历号，再合并返回 LIS 检验结果和 PACS 影像结果。
+     */
+    public List<PatientHisItemResultResponse> listHisItemResults(PatientHisItemResultQueryRequest request) {
+        if (request == null || !StringUtils.hasText(request.getIdCard())) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "身份证号不能为空");
+        }
+        List<PatientHisItemResultResponse> rows = patientExamOdsMapper.selectHisItemResultsByIdCard(
+                request.getIdCard().trim(),
+                LocalDateTime.now().minusYears(DEFAULT_BATCH_QUERY_YEARS)
+        );
+        return groupHisItemResults(rows);
+    }
+
+    private List<PatientHisItemResultResponse> groupHisItemResults(List<PatientHisItemResultResponse> rows) {
+        if (rows == null || rows.isEmpty()) {
+            return Collections.emptyList();
+        }
+
+        List<PatientHisItemResultResponse> result = new ArrayList<>();
+        Map<String, PatientHisItemResultResponse> lisGroupMap = new LinkedHashMap<>();
+        for (PatientHisItemResultResponse row : rows) {
+            if (!"LIS".equalsIgnoreCase(row.getResultType())) {
+                row.setItems(Collections.emptyList());
+                result.add(row);
+                continue;
+            }
+
+            String groupKey = String.join("::",
+                    nullToEmpty(row.getTestNo()),
+                    nullToEmpty(row.getItemCode())
+            );
+            PatientHisItemResultResponse group = lisGroupMap.get(groupKey);
+            if (group == null) {
+                group = buildLisGroup(row);
+                lisGroupMap.put(groupKey, group);
+                result.add(group);
+            }
+            group.getItems().add(toHisReportItem(row));
+        }
+        return result;
+    }
+
+    private PatientHisItemResultResponse buildLisGroup(PatientHisItemResultResponse row) {
+        PatientHisItemResultResponse group = new PatientHisItemResultResponse();
+        group.setPatientNo(row.getPatientNo());
+        group.setPatientName(row.getPatientName());
+        group.setGenderName(row.getGenderName());
+        group.setBirthdayDate(row.getBirthdayDate());
+        group.setAge(row.getAge());
+        group.setIdCard(row.getIdCard());
+        group.setResultType(row.getResultType());
+        group.setSourceType(row.getSourceType());
+        group.setTestNo(row.getTestNo());
+        group.setItemCode(row.getItemCode());
+        group.setItemName(row.getItemName());
+        group.setRequestedTime(row.getRequestedTime());
+        group.setReportTime(row.getReportTime());
+        group.setCompanyCode(row.getCompanyCode());
+        group.setCompanyName(row.getCompanyName());
+        group.setItems(new ArrayList<>());
+        return group;
+    }
+
+    private PatientHisReportItemResponse toHisReportItem(PatientHisItemResultResponse row) {
+        PatientHisReportItemResponse item = new PatientHisReportItemResponse();
+        item.setReportItemCode(row.getReportItemCode());
+        item.setReportItemName(row.getReportItemName());
+        item.setResultValue(row.getResultValue());
+        item.setPrintContext(row.getPrintContext());
+        item.setUnit(row.getUnit());
+        item.setAbnormalIndicator(row.getAbnormalIndicator());
+        item.setRequestedTime(row.getRequestedTime());
+        item.setReportTime(row.getReportTime());
+        item.setUniqueId(row.getUniqueId());
+        return item;
+    }
+
+    private String nullToEmpty(String value) {
+        return value == null ? "" : value;
     }
 
     /**
