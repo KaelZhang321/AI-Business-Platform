@@ -9,6 +9,8 @@ import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Data;
 
 import java.time.OffsetDateTime;
+import java.util.List;
+import java.util.Map;
 
 /**
  * 医生角色卡片配置。
@@ -29,6 +31,9 @@ public class DoctorRoleCardConfig {
     private String roleName;
     @Schema(description = "卡片配置JSON")
     private String cardSchemaJson;
+    @TableField(exist = false)
+    @Schema(description = "卡片关联接口关系，key为cardId")
+    private Map<String, List<UiCardEndpointRelation>> cardEndpointRelations;
     @Schema(description = "是否展示：1展示，0隐藏")
     private Integer visibleFlag;
     @Schema(description = "状态，例如 active / inactive")

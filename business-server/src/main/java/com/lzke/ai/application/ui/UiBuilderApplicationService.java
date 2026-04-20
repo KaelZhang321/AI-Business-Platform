@@ -999,6 +999,7 @@ public class UiBuilderApplicationService {
         ensureCardCodeUnique(request.getCode(), null);
         UiCard card = new UiCard();
         applyCardRequest(card, request);
+        card.setId(request.getCode()); // 卡片 ID 与卡片编码保持一致，便于前端使用
         uiCardMapper.insert(card);
         return card;
     }

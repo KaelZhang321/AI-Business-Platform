@@ -2,6 +2,7 @@ package com.lzke.ai.application.workbench;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.lecz.iam.system.employee.service.ISysEmployeeHttpService;
@@ -24,6 +25,10 @@ import com.lzke.ai.domain.entity.DoctorCardGroupRelation;
 import com.lzke.ai.domain.entity.DoctorCustomerCardCustomize;
 import com.lzke.ai.domain.entity.DoctorCustomerNote;
 import com.lzke.ai.domain.entity.DoctorRoleCardConfig;
+import com.lzke.ai.domain.entity.UiApiEndpoint;
+import com.lzke.ai.domain.entity.UiApiSource;
+import com.lzke.ai.domain.entity.UiApiTag;
+import com.lzke.ai.domain.entity.UiCardEndpointRelation;
 import com.lzke.ai.exception.BusinessException;
 import com.lzke.ai.exception.ErrorCode;
 import com.lzke.ai.infrastructure.persistence.mapper.DoctorCardGroupMapper;
@@ -31,6 +36,10 @@ import com.lzke.ai.infrastructure.persistence.mapper.DoctorCardGroupRelationMapp
 import com.lzke.ai.infrastructure.persistence.mapper.DoctorCustomerCardCustomizeMapper;
 import com.lzke.ai.infrastructure.persistence.mapper.DoctorCustomerNoteMapper;
 import com.lzke.ai.infrastructure.persistence.mapper.DoctorRoleCardConfigMapper;
+import com.lzke.ai.infrastructure.persistence.mapper.UiApiEndpointMapper;
+import com.lzke.ai.infrastructure.persistence.mapper.UiApiSourceMapper;
+import com.lzke.ai.infrastructure.persistence.mapper.UiApiTagMapper;
+import com.lzke.ai.infrastructure.persistence.mapper.UiCardEndpointRelationMapper;
 import com.lzke.ai.interfaces.dto.PageResult;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -42,15 +51,21 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
  * 医生工作台配置应用服务。
  *
- * <p>统一维护角色卡片、客户定制卡片和客户便签三类配置，
+ * <p>
+ * 统一维护角色卡片、客户定制卡片和客户便签三类配置，
  * 方便前端一个模块完成医生工作台能力搭建。
  */
 @Slf4j
@@ -67,6 +82,10 @@ public class DoctorWorkbenchApplicationService {
     private final DoctorRoleCardConfigMapper doctorRoleCardConfigMapper;
     private final DoctorCustomerCardCustomizeMapper doctorCustomerCardCustomizeMapper;
     private final DoctorCustomerNoteMapper doctorCustomerNoteMapper;
+    private final UiCardEndpointRelationMapper uiCardEndpointRelationMapper;
+    private final UiApiEndpointMapper uiApiEndpointMapper;
+    private final UiApiSourceMapper uiApiSourceMapper;
+    private final UiApiTagMapper uiApiTagMapper;
     private final ISysEmployeeHttpService sysEmployeeHttpService;
     private final ObjectMapper objectMapper;
     private final StringRedisTemplate stringRedisTemplate;
@@ -106,7 +125,8 @@ public class DoctorWorkbenchApplicationService {
     /**
      * 查询当前登录员工可用的角色卡片配置。
      *
-     * <p>会先查询员工在指定应用下的角色，再按角色ID聚合查询启用且可见的卡片配置。 
+     * <p>
+     * 会先查询员工在指定应用下的角色，再按角色ID聚合查询启用且可见的卡片配置。
      *
      * @param appCode 应用编码，未传时默认 {@value DEFAULT_ROLE_APP_CODE}
      * @return 当前员工可见卡片配置
@@ -127,11 +147,144 @@ public class DoctorWorkbenchApplicationService {
         if (roleIds.isEmpty()) {
             return Collections.emptyList();
         }
-        return doctorRoleCardConfigMapper.selectList(new LambdaQueryWrapper<DoctorRoleCardConfig>()
-                .in(DoctorRoleCardConfig::getRoleId, roleIds)
-                .eq(DoctorRoleCardConfig::getStatus, "active")
-                .eq(DoctorRoleCardConfig::getVisibleFlag, 1)
-                .orderByDesc(DoctorRoleCardConfig::getUpdatedAt));
+        List<DoctorRoleCardConfig> configs = doctorRoleCardConfigMapper
+                .selectList(new LambdaQueryWrapper<DoctorRoleCardConfig>()
+                        .in(DoctorRoleCardConfig::getRoleId, roleIds)
+                        .eq(DoctorRoleCardConfig::getStatus, "active")
+                        .eq(DoctorRoleCardConfig::getVisibleFlag, 1)
+                        .orderByDesc(DoctorRoleCardConfig::getUpdatedAt));
+        attachCardEndpointRelations(configs);
+        return configs;
+    }
+
+    private void attachCardEndpointRelations(List<DoctorRoleCardConfig> configs) {
+        if (configs == null || configs.isEmpty()) {
+            return;
+        }
+
+        List<List<String>> configCardIds = new ArrayList<>();
+        List<String> allCardIds = new ArrayList<>();
+        Set<String> seenCardIds = new HashSet<>();
+        for (DoctorRoleCardConfig config : configs) {
+            List<String> cardIds = parseCardIds(config.getCardSchemaJson());
+            configCardIds.add(cardIds);
+            for (String cardId : cardIds) {
+                if (seenCardIds.add(cardId)) {
+                    allCardIds.add(cardId);
+                }
+            }
+        }
+        if (allCardIds.isEmpty()) {
+            configs.forEach(config -> config.setCardEndpointRelations(Collections.emptyMap()));
+            return;
+        }
+
+        List<UiCardEndpointRelation> relations = uiCardEndpointRelationMapper
+                .selectList(new LambdaQueryWrapper<UiCardEndpointRelation>()
+                        .in(UiCardEndpointRelation::getCardId, allCardIds)
+                        .orderByAsc(UiCardEndpointRelation::getCardId)
+                        .orderByAsc(UiCardEndpointRelation::getSortOrder)
+                        .orderByDesc(UiCardEndpointRelation::getCreatedAt));
+        // attachCardEndpointDetails(relations);
+
+        Map<String, List<UiCardEndpointRelation>> relationMap = new LinkedHashMap<>();
+        for (UiCardEndpointRelation relation : relations) {
+            if (!StringUtils.hasText(relation.getCardId())) {
+                continue;
+            }
+            relationMap.computeIfAbsent(relation.getCardId(), key -> new ArrayList<>()).add(relation);
+        }
+
+        for (int i = 0; i < configs.size(); i++) {
+            Map<String, List<UiCardEndpointRelation>> orderedRelations = new LinkedHashMap<>();
+            for (String cardId : configCardIds.get(i)) {
+                orderedRelations.put(cardId, relationMap.getOrDefault(cardId, Collections.emptyList()));
+            }
+            configs.get(i).setCardEndpointRelations(orderedRelations);
+        }
+    }
+
+    private List<String> parseCardIds(String cardSchemaJson) {
+        if (!StringUtils.hasText(cardSchemaJson)) {
+            return Collections.emptyList();
+        }
+        try {
+            List<String> cardIds = objectMapper.readValue(cardSchemaJson, new TypeReference<List<String>>() {
+            });
+            return cardIds.stream()
+                    .filter(StringUtils::hasText)
+                    .map(String::trim)
+                    .distinct()
+                    .toList();
+        } catch (JsonProcessingException ex) {
+            log.warn("解析医生角色卡片配置card_schema_json失败: {}", cardSchemaJson, ex);
+            return Collections.emptyList();
+        }
+    }
+
+    private void attachCardEndpointDetails(List<UiCardEndpointRelation> relations) {
+        if (relations == null || relations.isEmpty()) {
+            return;
+        }
+        List<String> endpointIds = relations.stream()
+                .map(UiCardEndpointRelation::getEndpointId)
+                .filter(StringUtils::hasText)
+                .distinct()
+                .toList();
+        if (endpointIds.isEmpty()) {
+            return;
+        }
+
+        List<UiApiEndpoint> endpoints = uiApiEndpointMapper.selectList(new LambdaQueryWrapper<UiApiEndpoint>()
+                .in(UiApiEndpoint::getId, endpointIds));
+        Map<String, UiApiEndpoint> endpointById = new LinkedHashMap<>();
+        Set<String> sourceIds = new HashSet<>();
+        Set<String> tagIds = new HashSet<>();
+        for (UiApiEndpoint endpoint : endpoints) {
+            endpointById.put(endpoint.getId(), endpoint);
+            if (StringUtils.hasText(endpoint.getSourceId())) {
+                sourceIds.add(endpoint.getSourceId());
+            }
+            if (StringUtils.hasText(endpoint.getTagId())) {
+                tagIds.add(endpoint.getTagId());
+            }
+        }
+
+        Map<String, UiApiSource> sourceById = new LinkedHashMap<>();
+        if (!sourceIds.isEmpty()) {
+            List<UiApiSource> sources = uiApiSourceMapper.selectList(new LambdaQueryWrapper<UiApiSource>()
+                    .in(UiApiSource::getId, sourceIds));
+            for (UiApiSource source : sources) {
+                sourceById.put(source.getId(), source);
+            }
+        }
+
+        Map<String, UiApiTag> tagById = new LinkedHashMap<>();
+        if (!tagIds.isEmpty()) {
+            List<UiApiTag> tags = uiApiTagMapper.selectList(new LambdaQueryWrapper<UiApiTag>()
+                    .in(UiApiTag::getId, tagIds));
+            for (UiApiTag tag : tags) {
+                tagById.put(tag.getId(), tag);
+            }
+        }
+
+        for (UiCardEndpointRelation relation : relations) {
+            UiApiEndpoint endpoint = endpointById.get(relation.getEndpointId());
+            if (endpoint == null) {
+                continue;
+            }
+            relation.setEndpointName(endpoint.getName());
+            relation.setEndpointPath(endpoint.getPath());
+            relation.setEndpointMethod(endpoint.getMethod());
+            relation.setEndpointStatus(endpoint.getStatus());
+            relation.setSourceId(endpoint.getSourceId());
+
+            UiApiSource source = sourceById.get(endpoint.getSourceId());
+            relation.setSourceName(source != null ? source.getName() : null);
+
+            UiApiTag tag = tagById.get(endpoint.getTagId());
+            relation.setTagName(tag != null ? tag.getName() : null);
+        }
     }
 
     @Transactional
@@ -146,10 +299,11 @@ public class DoctorWorkbenchApplicationService {
     @Transactional
     public DoctorRoleCardConfig updateRoleCardConfig(String id, DoctorRoleCardConfigRequest request) {
         validateRoleCardConfigRequest(request);
-        DoctorRoleCardConfig entity = getRoleCardConfig(id);
-        copyRoleCardConfig(entity, request);
-        doctorRoleCardConfigMapper.updateById(entity);
-        return getRoleCardConfig(id);
+
+        leCardConfig entity = getRoleCardConfig(id);
+        CardConfig(entity, request);
+        leCardConfigMapper.updateById(entity);
+        etRoleCardConfig(id);
     }
 
     @Transactional
@@ -177,10 +331,12 @@ public class DoctorWorkbenchApplicationService {
         if (entity == null) {
             throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "未找到医生工作台卡片分组: " + id);
         }
-        return entity;
-    }
+                
+                        ntity;
+                        
+                        
+                        al
 
-    @Transactional
     public DoctorCardGroup createCardGroup(DoctorCardGroupRequest request) {
         validateCardGroupRequest(request);
         DoctorCardGroup entity = new DoctorCardGroup();
@@ -208,11 +364,13 @@ public class DoctorWorkbenchApplicationService {
     }
 
     public PageResult<DoctorCardGroupRelation> listCardGroupRelations(DoctorCardGroupRelationQueryRequest request) {
-        DoctorCardGroupRelationQueryRequest query = request == null ? new DoctorCardGroupRelationQueryRequest() : request;
+        DoctorCardGroupRelationQueryRequest query = request == null ? new DoctorCardGroupRelationQueryRequest()
+                : request;
         Page<DoctorCardGroupRelation> page = new Page<>(query.getPage(), query.getSize());
         LambdaQueryWrapper<DoctorCardGroupRelation> wrapper = new LambdaQueryWrapper<DoctorCardGroupRelation>()
                 .eq(StringUtils.hasText(query.getGroupId()), DoctorCardGroupRelation::getGroupId, query.getGroupId())
-                .eq(StringUtils.hasText(query.getCardConfigId()), DoctorCardGroupRelation::getCardConfigId, query.getCardConfigId())
+                .eq(StringUtils.hasText(query.getCardConfigId()), DoctorCardGroupRelation::getCardConfigId,
+                        query.getCardConfigId())
                 .eq(StringUtils.hasText(query.getStatus()), DoctorCardGroupRelation::getStatus, query.getStatus())
                 .eq(query.getVisibleFlag() != null, DoctorCardGroupRelation::getVisibleFlag, query.getVisibleFlag())
                 .orderByAsc(DoctorCardGroupRelation::getCardSort)
@@ -266,14 +424,18 @@ public class DoctorWorkbenchApplicationService {
         }
     }
 
-    public PageResult<DoctorCustomerCardCustomize> listCustomerCardCustomizes(DoctorCustomerCardCustomizeQueryRequest request) {
-        DoctorCustomerCardCustomizeQueryRequest query = request == null ? new DoctorCustomerCardCustomizeQueryRequest() : request;
+    public PageResult<DoctorCustomerCardCustomize> listCustomerCardCustomizes(
+            DoctorCustomerCardCustomizeQueryRequest request) {
+        DoctorCustomerCardCustomizeQueryRequest query = request == null ? new DoctorCustomerCardCustomizeQueryRequest()
+                : request;
         String currentEmployeeId = getCurrentEmployeeId();
         Page<DoctorCustomerCardCustomize> page = new Page<>(query.getPage(), query.getSize());
         LambdaQueryWrapper<DoctorCustomerCardCustomize> wrapper = new LambdaQueryWrapper<DoctorCustomerCardCustomize>()
                 .eq(DoctorCustomerCardCustomize::getEmployeeId, currentEmployeeId)
-                .eq(StringUtils.hasText(query.getCustomerIdCard()), DoctorCustomerCardCustomize::getCustomerIdCard, query.getCustomerIdCard())
-                .like(StringUtils.hasText(query.getFavoriteName()), DoctorCustomerCardCustomize::getFavoriteName, query.getFavoriteName())
+                .eq(StringUtils.hasText(query.getCustomerIdCard()), DoctorCustomerCardCustomize::getCustomerIdCard,
+                        query.getCustomerIdCard())
+                .like(StringUtils.hasText(query.getFavoriteName()), DoctorCustomerCardCustomize::getFavoriteName,
+                        query.getFavoriteName())
                 .eq(StringUtils.hasText(query.getStatus()), DoctorCustomerCardCustomize::getStatus, query.getStatus())
                 .orderByDesc(DoctorCustomerCardCustomize::getUpdatedAt);
         Page<DoctorCustomerCardCustomize> result = doctorCustomerCardCustomizeMapper.selectPage(page, wrapper);
@@ -310,7 +472,8 @@ public class DoctorWorkbenchApplicationService {
     }
 
     @Transactional
-    public DoctorCustomerCardCustomize updateCustomerCardCustomize(String id, DoctorCustomerCardCustomizeRequest request) {
+    public DoctorCustomerCardCustomize updateCustomerCardCustomize(String id,
+            DoctorCustomerCardCustomizeRequest request) {
         validateCustomerCardCustomizeRequest(request);
         DoctorCustomerCardCustomize entity = getCustomerCardCustomize(id);
         copyCustomerCardCustomize(entity, request);
@@ -331,7 +494,8 @@ public class DoctorWorkbenchApplicationService {
         Page<DoctorCustomerNote> page = new Page<>(query.getPage(), query.getSize());
         LambdaQueryWrapper<DoctorCustomerNote> wrapper = new LambdaQueryWrapper<DoctorCustomerNote>()
                 .eq(DoctorCustomerNote::getEmployeeId, currentEmployeeId)
-                .eq(StringUtils.hasText(query.getCustomerIdCard()), DoctorCustomerNote::getCustomerIdCard, query.getCustomerIdCard())
+                .eq(StringUtils.hasText(query.getCustomerIdCard()), DoctorCustomerNote::getCustomerIdCard,
+                        query.getCustomerIdCard())
                 .like(StringUtils.hasText(query.getKeyword()), DoctorCustomerNote::getNoteContent, query.getKeyword())
                 .eq(StringUtils.hasText(query.getStatus()), DoctorCustomerNote::getStatus, query.getStatus())
                 .orderByAsc(DoctorCustomerNote::getSortOrder)
@@ -358,10 +522,12 @@ public class DoctorWorkbenchApplicationService {
                 .eq(DoctorCustomerNote::getCustomerIdCard, customerIdCard)
                 .eq(DoctorCustomerNote::getStatus, "active")
                 .orderByAsc(DoctorCustomerNote::getSortOrder)
+
                 .orderByDesc(DoctorCustomerNote::getUpdatedAt));
     }
 
     @Transactional
+
     public DoctorCustomerNote createCustomerNote(DoctorCustomerNoteRequest request) {
         validateCustomerNoteRequest(request);
         DoctorCustomerNote entity = new DoctorCustomerNote();
@@ -416,13 +582,17 @@ public class DoctorWorkbenchApplicationService {
     private void validateCustomerNoteRequest(DoctorCustomerNoteRequest request) {
         if (request == null) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "客户便签请求不能为空");
+
         }
+
         if (!StringUtils.hasText(request.getCustomerIdCard())) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "customerIdCard不能为空");
         }
         if (!StringUtils.hasText(request.getNoteContent())) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "noteContent不能为空");
+
         }
+
     }
 
     private void validateCardGroupRequest(DoctorCardGroupRequest request) {
@@ -460,6 +630,7 @@ public class DoctorWorkbenchApplicationService {
         entity.setCreatedBy(trimToNull(request.getCreatedBy()));
         entity.setCreatedByName(trimToNull(request.getCreatedByName()));
         entity.setUpdatedBy(trimToNull(request.getUpdatedBy()));
+
         entity.setUpdatedByName(trimToNull(request.getUpdatedByName()));
     }
 
@@ -490,7 +661,8 @@ public class DoctorWorkbenchApplicationService {
         entity.setRemark(trimToNull(request.getRemark()));
     }
 
-    private void copyCustomerCardCustomize(DoctorCustomerCardCustomize entity, DoctorCustomerCardCustomizeRequest request) {
+    private void copyCustomerCardCustomize(DoctorCustomerCardCustomize entity,
+            DoctorCustomerCardCustomizeRequest request) {
         entity.setEmployeeId(getCurrentEmployeeId());
         entity.setEmployeeName(getCurrentEmployeeName());
         entity.setCustomerIdCard(trimToNull(request.getCustomerIdCard()));
@@ -561,8 +733,7 @@ public class DoctorWorkbenchApplicationService {
             stringRedisTemplate.opsForValue().set(
                     USER_INFO_CACHE_PREFIX + userId,
                     objectMapper.writeValueAsString(employee),
-                    USER_INFO_CACHE_TTL
-            );
+                    USER_INFO_CACHE_TTL);
         } catch (JsonProcessingException ex) {
             log.warn("用户信息写入 Redis 失败, userId={}", userId, ex);
         }
