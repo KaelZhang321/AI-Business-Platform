@@ -88,9 +88,9 @@ class _TreatmentTriageItem:
     @property
     def dedupe_key(self) -> str:
         """用于同指标冲突裁决的稳定键。"""
-        if self.value_or_desc.startswith(self.item_name):
-            return self.value_or_desc
-        return f"{self.item_name} + {self.value_or_desc}"
+        if self.value_or_desc is None or len(self.value_or_desc.strip()) == 0 or self.value_or_desc in self.item_name:
+            return self.item_name
+        return f"{self.item_name}：{self.value_or_desc}"
 
 
 @dataclass(frozen=True)
@@ -1596,7 +1596,7 @@ def _build_treatment_single_pass_prompt(
         # 核心执行步骤与规则（必须严格按顺序执行）
 
         ### 第一阶段：患者状态评估与分诊（Triage）
-        仔细分析患者的【异常检查指标】和【主诉/症状】，将每一项独立异常映射到对应的医学系统和风险象限。
+        仔细分析患者的【异常检查指标】和【主诉/症状】，将每一项独立的异常指标映射到对应的医学系统和风险象限，不要遗漏异常指标。
         1. **风险象限标准（取高原则）**：
            - 【RED】红色高风险区（急治/救命）：危急重症、即刻心脑血管意外风险、急性靶器官损伤或疑似恶性肿瘤。
            - 【ORANGE】橙色较高风险区（干预/治病）：疾病持续进展期、明显异常（如重度代谢异常、明显结节）、需专项重点干预。
@@ -1604,9 +1604,13 @@ def _build_treatment_single_pass_prompt(
            - 【GREEN】绿色低风险区（维养/抗衰）：无明显病理性异常，健康巩固与主动抗衰。
         2. **医学系统归属**：必须从以下列表中选择（消化系统、呼吸系统、内分泌系统、心脑血管、泌尿生殖、骨骼运动、神经系统、免疫系统、专科项目）。
         3. **禁止臆测**：仅基于输入数据评级，每一项异常独立生成记录。
-        4. 原子化拆分（绝对禁止合并打包）：必须将输入中的每一项具体异常、每一个独立指标严格拆分为单独的记录！
+        4. 原子化拆分（绝对禁止合并打包）：必须将输入中的每一项独立异常指标严格拆分为单独的记录！
         - ❌ 严禁合并：绝不允许使用“及”、“和”、“综合征”或“等多项”进行概括组合。
         - ✅ 正确拆分：心电图若有3个具体异常，必须输出3条独立对象；食物不耐受若有11项，必须逐一输出11条独立对象（如：“麦芽特异性IgG抗体1级”、“小米特异性IgG抗体1级”），绝不能输出“多项食物不耐受”。
+        5. 字段精简与去重（绝对禁止语义重复）：当提取影像学、心电图等【定性结论】（如“左室舒张功能改变”、“V1呈rSr'型”）时，如果名称本身已经完整表达了异常情况，请将其填入 `item_name`，并将 `value_or_desc` 严格置为空字符串 `""`。
+        - ❌ 错误做法：`item_name`: "V1呈rSr'型", `value_or_desc`: "V1呈rSr'型"（导致重复拼凑）
+        - ✅ 正确做法（定性）：`item_name`: "心电图V1呈rSr'型", `value_or_desc`: ""
+        - ✅ 正确做法（定量）：`item_name`: "二尖瓣反流", `value_or_desc`: "微量"
 
         ### 第二阶段：禁忌症安全审查（Safety Gatekeeper）
         以“生命至上，宁错杀不放过”为绝对底线，对【候选项目池】中的每一个项目进行独立审查。
@@ -1620,7 +1624,6 @@ def _build_treatment_single_pass_prompt(
           1. **第一顺位（核心首选）**：其适应症/功效**高度靶向**患者【当前最急迫主诉】或【该象限最危急指标】。
           2. **第二顺位（常规优选）**：对应常规异常指标，非最急迫诉求。
           3. **第三顺位（对症备选）**：能较好改善患者主诉症状。
-          4. **第四顺位（常规备选）**：其他关联项目。
         - **完整输出**：完成排序后，输出每个象限内**所有**符合条件的安全项目，不做数量截断。若该象限无安全匹配项目，输出空列表 `[]`。
 
         # 输出格式限制
@@ -1628,18 +1631,17 @@ def _build_treatment_single_pass_prompt(
         {{
           "triage_results": [
             {{
-              "item_name": "异常指标或主诉名称",
-              "value_or_desc": "完整的指标数值或症状描述（没有具体数值时，该项可以为空）",
+              "item_name": "提炼核心指标或症状名称（如：'二尖瓣反流'、'心电图碎裂QRS波'）",
+              "value_or_desc": "具体的数值、程度或描述（如：'微量'、'53次/分'）。若 item_name 已完整表达，此项必须留空 \"\"，严禁与 item_name 语义重复！",
               "quadrant": "RED / ORANGE / BLUE / GREEN",
-              "belong_system": "归属医学系统",
-              "reason": "评级与归属的医学理由（限50字）"
+              "belong_system": "归属医学系统"
             }}
           ],
           "sorted_recommendations": {{
             "RED": [
               {{
                  "project_name": "项目名称",
-                 "tier": "第一顺位 / 第二顺位 / 第三顺位 / 第四顺位",
+                 "tier": "第一顺位 / 第二顺位 / 第三顺位",
                  "recommendation_reason": "结合主诉、分诊结果和核心功效，给出顺位判定及推荐理由（限50字）"
               }}
             ],
@@ -1681,7 +1683,7 @@ def _parse_treatment_triage_row(raw: Any) -> _TreatmentTriageItem | None:
     quadrant = _normalize_text(raw.get("quadrant"))
     belong_system = _normalize_text(raw.get("belong_system"))
     reason = _normalize_text(raw.get("reason")) or ""
-    if not item_name or not value_or_desc or not quadrant or not belong_system:
+    if not item_name or not quadrant or not belong_system:
         return None
     normalized_quadrant = quadrant.upper()
     if normalized_quadrant not in _TREATMENT_QUADRANT_TO_INDEX:
@@ -1745,7 +1747,7 @@ def _build_treatment_quadrant_buckets_from_triage(
     buckets = _empty_buckets(_TREATMENT_BUCKETS)
     for item in triage_items:
         bucket = buckets[_TREATMENT_QUADRANT_TO_INDEX[item.quadrant]]
-        bucket["abnormalIndicators"].append(item.item_name + item.value_or_desc)
+        bucket["abnormalIndicators"].append(item.dedupe_key)
     return buckets
 
 

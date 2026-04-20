@@ -10,7 +10,7 @@ import aiomysql
 from app.services.health_quadrant_mysql_pools import HealthQuadrantMySQLPools
 
 logger = logging.getLogger(__name__)
-_TABLE_NAME = "function_medicine_ai_mapping"
+_TABLE_NAME = "function_medicine_ai_mapping_copy1"
 
 
 class HealthQuadrantTreatmentRepositoryError(RuntimeError):
