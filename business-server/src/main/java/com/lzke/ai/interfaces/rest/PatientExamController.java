@@ -3,6 +3,7 @@ package com.lzke.ai.interfaces.rest;
 import java.util.List;
 
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -14,7 +15,6 @@ import com.lzke.ai.application.exam.dto.MyCustomerListQueryRequest;
 import com.lzke.ai.application.exam.dto.MyPatientListItemResponse;
 import com.lzke.ai.application.exam.dto.MyPatientListQueryRequest;
 import com.lzke.ai.application.exam.dto.PatientExamBatchResultQueryRequest;
-import com.lzke.ai.application.exam.dto.PatientExamCleanedResultQueryRequest;
 import com.lzke.ai.application.exam.dto.PatientExamCleanedResultResponse;
 import com.lzke.ai.application.exam.dto.PatientExamDepartmentResponse;
 import com.lzke.ai.application.exam.dto.PatientExamPatientInfoResponse;
@@ -31,6 +31,7 @@ import com.lzke.ai.interfaces.dto.PageResult;
 import com.lzke.ai.security.AesECBEncryptUtils;
 
 import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -172,11 +173,12 @@ public class PatientExamController {
             summary = "查询单个体检清洗结果",
             description = "根据studyId查询体检结果，并通过L1RuleCleaner清洗itemName后返回扁平指标结构"
     )
-    @PostMapping("/cleaned-result/query")
+    @GetMapping("/{studyId}/cleaned-result")
     public ApiResponse<PatientExamCleanedResultResponse> getCleanedExamResult(
-            @Valid @RequestBody PatientExamCleanedResultQueryRequest request
+    		@Parameter(description = "根据studyId查询体检结果", required = true)
+    		@PathVariable String studyId
     ) {
-        return ApiResponse.ok(patientExamApplicationService.getCleanedExamResult(request));
+        return ApiResponse.ok(patientExamApplicationService.getCleanedExamResult(studyId));
     }
 
     /**

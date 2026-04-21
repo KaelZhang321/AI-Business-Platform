@@ -2,6 +2,8 @@ package com.lzke.ai.service;
 
 import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -73,6 +75,20 @@ public final class L1RuleCleaner {
     }
 
     /**
+     * Load dictionary CSV streams once. This works both in IDE and packaged jar runtime.
+     */
+    public static void initializeOnce(InputStream standardDictInputStream, InputStream aliasDictInputStream) throws IOException {
+        if (defaultLookupProvider != null) {
+            return;
+        }
+        synchronized (L1RuleCleaner.class) {
+            if (defaultLookupProvider == null) {
+                defaultLookupProvider = loadFromCsv(standardDictInputStream, aliasDictInputStream);
+            }
+        }
+    }
+
+    /**
      * Force reload dictionary CSV files. Use this only for admin refresh or tests.
      */
     public static synchronized void reload(Path standardDictPath, Path aliasDictPath) throws IOException {
@@ -94,7 +110,19 @@ public final class L1RuleCleaner {
     public static MapLookupProvider loadFromCsv(Path standardDictPath, Path aliasDictPath) throws IOException {
         List<Map<String, String>> standardRows = readCsv(standardDictPath);
         List<Map<String, String>> aliasRows = readCsv(aliasDictPath);
+        return buildLookupProvider(standardRows, aliasRows);
+    }
 
+    public static MapLookupProvider loadFromCsv(InputStream standardDictInputStream, InputStream aliasDictInputStream) throws IOException {
+        List<Map<String, String>> standardRows = readCsv(standardDictInputStream);
+        List<Map<String, String>> aliasRows = readCsv(aliasDictInputStream);
+        return buildLookupProvider(standardRows, aliasRows);
+    }
+
+    private static MapLookupProvider buildLookupProvider(
+        List<Map<String, String>> standardRows,
+        List<Map<String, String>> aliasRows
+    ) {
         Map<String, LookupPayload> codeToPayload = new HashMap<String, LookupPayload>();
         MapLookupProvider provider = new MapLookupProvider();
 
@@ -337,27 +365,37 @@ public final class L1RuleCleaner {
     }
 
     private static List<Map<String, String>> readCsv(Path path) throws IOException {
-        List<Map<String, String>> rows = new ArrayList<Map<String, String>>();
         try (BufferedReader reader = Files.newBufferedReader(path, StandardCharsets.UTF_8)) {
-            String headerLine = reader.readLine();
-            if (headerLine == null) {
-                return rows;
-            }
+            return readCsv(reader);
+        }
+    }
 
-            List<String> headers = parseCsvLine(removeBom(headerLine));
-            String line;
-            while ((line = reader.readLine()) != null) {
-                if (line.trim().isEmpty()) {
-                    continue;
-                }
-                List<String> values = parseCsvLine(line);
-                Map<String, String> row = new HashMap<String, String>();
-                for (int i = 0; i < headers.size(); i++) {
-                    String value = i < values.size() ? values.get(i) : "";
-                    row.put(headers.get(i), value);
-                }
-                rows.add(row);
+    private static List<Map<String, String>> readCsv(InputStream inputStream) throws IOException {
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream, StandardCharsets.UTF_8))) {
+            return readCsv(reader);
+        }
+    }
+
+    private static List<Map<String, String>> readCsv(BufferedReader reader) throws IOException {
+        List<Map<String, String>> rows = new ArrayList<Map<String, String>>();
+        String headerLine = reader.readLine();
+        if (headerLine == null) {
+            return rows;
+        }
+
+        List<String> headers = parseCsvLine(removeBom(headerLine));
+        String line;
+        while ((line = reader.readLine()) != null) {
+            if (line.trim().isEmpty()) {
+                continue;
             }
+            List<String> values = parseCsvLine(line);
+            Map<String, String> row = new HashMap<String, String>();
+            for (int i = 0; i < headers.size(); i++) {
+                String value = i < values.size() ? values.get(i) : "";
+                row.put(headers.get(i), value);
+            }
+            rows.add(row);
         }
         return rows;
     }

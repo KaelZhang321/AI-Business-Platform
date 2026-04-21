@@ -465,14 +465,14 @@ public class PatientExamApplicationService {
     /**
      * 查询单个体检并按 L1 规则清洗指标名称。
      */
-    public PatientExamCleanedResultResponse getCleanedExamResult(PatientExamCleanedResultQueryRequest request) {
-        if (request == null || !StringUtils.hasText(request.getStudyId())) {
+    public PatientExamCleanedResultResponse getCleanedExamResult(String studyId) {
+        if (!StringUtils.hasText(studyId)) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "studyId不能为空");
         }
 
-        PatientExamSessionRowResponse sessionRow = patientExamOdsMapper.selectPatientExamSessionByStudyId(request.getStudyId());
+        PatientExamSessionRowResponse sessionRow = patientExamOdsMapper.selectPatientExamSessionByStudyId(studyId);
         if (sessionRow == null) {
-            throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "未找到对应体检记录: " + request.getStudyId());
+            throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "未找到对应体检记录: " + studyId);
         }
 
         List<PatientExamDepartmentTable> tables = patientExamOdsMapper.selectDepartmentTables(null);
@@ -480,7 +480,7 @@ public class PatientExamApplicationService {
         List<PatientExamResultItemResponse> detailRows = resolvedTables.isEmpty()
                 ? Collections.emptyList()
                 : patientExamOdsMapper.selectPatientExamDepartmentItems(
-                        Collections.singletonList(request.getStudyId()),
+                        Collections.singletonList(studyId),
                         resolvedTables
                 );
         return buildCleanedExamResult(sessionRow, detailRows);
