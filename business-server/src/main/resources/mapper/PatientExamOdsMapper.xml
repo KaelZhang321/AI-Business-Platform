@@ -64,6 +64,7 @@
         <if test="request.endTime != null and request.endTime != ''">
             and coalesce(p.`JCRQ`, p.`JDRQ`, l.`JLRQ`, p.`UpDateTime`) &lt;= #{request.endTime}
         </if>
+         and p.`YCXM` is not null
     </sql>
 
     <sql id="patientExamSelectColumns">
@@ -155,6 +156,106 @@
         left join ods_tj_jcxx p on p.`SFZH` = src.plain_id_card
         left join ods_tj_jlb l on l.`StudyID` = p.`ID`
         group by src.encrypted_id_card
+    </select>
+
+    <select id="selectHisItemResultsByIdCard" resultType="com.lzke.ai.application.exam.dto.PatientHisItemResultResponse">
+        select
+            patientNo,
+            patientName,
+            genderName,
+            birthdayDate,
+            age,
+            idCard,
+            resultType,
+            sourceType,
+            testNo,
+            itemCode,
+            itemName,
+            reportItemCode,
+            reportItemName,
+            resultValue,
+            printContext,
+            unit,
+            abnormalIndicator,
+            requestedTime,
+            reportTime,
+            deviceType,
+            deviceName,
+            studyStatusName,
+            reportAdvice,
+            companyCode,
+            companyName,
+            uniqueId
+        from (
+            select
+                convert(cast(c.`MED_RECORD_CODE` as char) using utf8mb4) collate utf8mb4_unicode_ci as patientNo,
+                convert(cast(c.`CUSTOMER_NAME` as char) using utf8mb4) collate utf8mb4_unicode_ci as patientName,
+                convert(cast(coalesce(l.`gender_name`, c.`GENDER_NAME`) as char) using utf8mb4) collate utf8mb4_unicode_ci as genderName,
+                date_format(coalesce(l.`birthdaydate`, c.`BIRTHDAYDATE`), '%Y-%m-%d') as birthdayDate,
+                l.`age` as age,
+                convert(cast(c.`Certification_NUM` as char) using utf8mb4) collate utf8mb4_unicode_ci as idCard,
+                cast('LIS' as char character set utf8mb4) collate utf8mb4_unicode_ci as resultType,
+                convert(cast(l.`source_type` as char) using utf8mb4) collate utf8mb4_unicode_ci as sourceType,
+                convert(cast(l.`test_no` as char) using utf8mb4) collate utf8mb4_unicode_ci as testNo,
+                convert(cast(l.`item_name_code` as char) using utf8mb4) collate utf8mb4_unicode_ci as itemCode,
+                convert(cast(l.`item_name` as char) using utf8mb4) collate utf8mb4_unicode_ci as itemName,
+                convert(cast(l.`report_item_code` as char) using utf8mb4) collate utf8mb4_unicode_ci as reportItemCode,
+                convert(cast(l.`report_item_name` as char) using utf8mb4) collate utf8mb4_unicode_ci as reportItemName,
+                convert(cast(l.`result` as char) using utf8mb4) collate utf8mb4_unicode_ci as resultValue,
+                convert(cast(l.`print_context` as char) using utf8mb4) collate utf8mb4_unicode_ci as printContext,
+                convert(cast(l.`units` as char) using utf8mb4) collate utf8mb4_unicode_ci as unit,
+                convert(cast(l.`abnormal_indicator` as char) using utf8mb4) collate utf8mb4_unicode_ci as abnormalIndicator,
+                date_format(l.`requested_date_time`, '%Y-%m-%d %H:%i:%s') as requestedTime,
+                date_format(l.`results_rpt_date_time`, '%Y-%m-%d %H:%i:%s') as reportTime,
+                cast(null as char character set utf8mb4) collate utf8mb4_unicode_ci as deviceType,
+                cast(null as char character set utf8mb4) collate utf8mb4_unicode_ci as deviceName,
+                cast(null as char character set utf8mb4) collate utf8mb4_unicode_ci as studyStatusName,
+                cast(null as char character set utf8mb4) collate utf8mb4_unicode_ci as reportAdvice,
+                convert(cast(l.`company_id` as char) using utf8mb4) collate utf8mb4_unicode_ci as companyCode,
+                convert(cast(l.`company_name` as char) using utf8mb4) collate utf8mb4_unicode_ci as companyName,
+                convert(cast(l.`unique_id` as char) using utf8mb4) collate utf8mb4_unicode_ci as uniqueId,
+                date_format(coalesce(l.`results_rpt_date_time`, l.`requested_date_time`), '%Y-%m-%d %H:%i:%s') as sortTime
+            from ods_his_zt_customer c
+            inner join ods_his_zt_lisresult l on l.`patient_id` = c.`MED_RECORD_CODE`
+            where c.`Certification_NUM` = #{idCard}
+              and coalesce(l.`results_rpt_date_time`, l.`requested_date_time`) &gt;= #{reportStartTime} and l.source_type = '门诊'
+
+            union all
+
+            select
+                convert(cast(c.`MED_RECORD_CODE` as char) using utf8mb4) collate utf8mb4_unicode_ci as patientNo,
+                convert(cast(c.`CUSTOMER_NAME` as char) using utf8mb4) collate utf8mb4_unicode_ci as patientName,
+                convert(cast(c.`GENDER_NAME` as char) using utf8mb4) collate utf8mb4_unicode_ci as genderName,
+                date_format(c.`BIRTHDAYDATE`, '%Y-%m-%d') as birthdayDate,
+                timestampdiff(year, c.`BIRTHDAYDATE`, curdate()) as age,
+                convert(cast(c.`Certification_NUM` as char) using utf8mb4) collate utf8mb4_unicode_ci as idCard,
+                cast('PACS' as char character set utf8mb4) collate utf8mb4_unicode_ci as resultType,
+                cast(null as char character set utf8mb4) collate utf8mb4_unicode_ci as sourceType,
+                cast(null as char character set utf8mb4) collate utf8mb4_unicode_ci as testNo,
+                convert(cast(p.`itemcode` as char) using utf8mb4) collate utf8mb4_unicode_ci as itemCode,
+                convert(cast(p.`studyscription` as char) using utf8mb4) collate utf8mb4_unicode_ci as itemName,
+                convert(cast(p.`itemcode` as char) using utf8mb4) collate utf8mb4_unicode_ci as reportItemCode,
+                convert(cast(p.`studyscription` as char) using utf8mb4) collate utf8mb4_unicode_ci as reportItemName,
+                convert(cast(nullif(concat_ws('\n', nullif(p.`reportdescribe`, ''), nullif(p.`reportdiagnose`, '')), '') as char) using utf8mb4) collate utf8mb4_unicode_ci as resultValue,
+                cast(null as char character set utf8mb4) collate utf8mb4_unicode_ci as printContext,
+                cast(null as char character set utf8mb4) collate utf8mb4_unicode_ci as unit,
+                cast(null as char character set utf8mb4) collate utf8mb4_unicode_ci as abnormalIndicator,
+                date_format(p.`studytime`, '%Y-%m-%d %H:%i:%s') as requestedTime,
+                date_format(p.`operatetime`, '%Y-%m-%d %H:%i:%s') as reportTime,
+                convert(cast(p.`devicetype` as char) using utf8mb4) collate utf8mb4_unicode_ci as deviceType,
+                convert(cast(p.`devicename` as char) using utf8mb4) collate utf8mb4_unicode_ci as deviceName,
+                convert(cast(p.`studystatusname` as char) using utf8mb4) collate utf8mb4_unicode_ci as studyStatusName,
+                convert(cast(p.`reportadvice` as char) using utf8mb4) collate utf8mb4_unicode_ci as reportAdvice,
+                convert(cast(p.`company_code` as char) using utf8mb4) collate utf8mb4_unicode_ci as companyCode,
+                cast(null as char character set utf8mb4) collate utf8mb4_unicode_ci as companyName,
+                convert(cast(p.`UniqueID` as char) using utf8mb4) collate utf8mb4_unicode_ci as uniqueId,
+                date_format(coalesce(p.`operatetime`, p.`studytime`), '%Y-%m-%d %H:%i:%s') as sortTime
+            from ods_his_zt_customer c
+            inner join ods_his_zt_pacsresult p on p.`infeepatientid` = c.`MED_RECORD_CODE`
+            where c.`Certification_NUM` = #{idCard}
+              and coalesce(p.`operatetime`, p.`studytime`) &gt;= #{reportStartTime}
+        ) his_item_result
+        order by sortTime desc, uniqueId desc
     </select>
 
     <select id="countDistinctPatientsByExamTimeRange" resultType="long">

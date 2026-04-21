@@ -6,6 +6,7 @@ import com.lzke.ai.application.exam.dto.MyCustomerLatestExamDateResponse;
 import com.lzke.ai.application.exam.dto.MyPatientListItemResponse;
 import com.lzke.ai.application.exam.dto.MyPatientListQueryRequest;
 import com.lzke.ai.application.exam.dto.PatientExamDepartmentTable;
+import com.lzke.ai.application.exam.dto.PatientHisItemResultResponse;
 import com.lzke.ai.application.exam.dto.PatientExamPatientInfoResponse;
 import com.lzke.ai.application.exam.dto.PatientExamPatientQueryRequest;
 import com.lzke.ai.application.exam.dto.PatientExamResultItemResponse;
@@ -80,6 +81,14 @@ public interface PatientExamOdsMapper {
      * <p>上游客户列表返回的是加密身份证，这里在数据库侧先解密，再关联体检主表聚合最近体检时间。
      */
     List<MyCustomerLatestExamDateResponse> selectLatestExamDatesByEncryptedIdCards(@Param("encryptedIdCards") List<String> encryptedIdCards);
+
+    /**
+     * 按身份证号查询患者 HIS 单项结果，合并 LIS 与 PACS。
+     */
+    List<PatientHisItemResultResponse> selectHisItemResultsByIdCard(
+            @Param("idCard") String idCard,
+            @Param("reportStartTime") LocalDateTime reportStartTime
+    );
 
     /**
      * 统计指定时间范围内有体检记录的客户数量。

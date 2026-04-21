@@ -299,11 +299,10 @@ public class DoctorWorkbenchApplicationService {
     @Transactional
     public DoctorRoleCardConfig updateRoleCardConfig(String id, DoctorRoleCardConfigRequest request) {
         validateRoleCardConfigRequest(request);
-
-        leCardConfig entity = getRoleCardConfig(id);
-        CardConfig(entity, request);
-        leCardConfigMapper.updateById(entity);
-        etRoleCardConfig(id);
+        DoctorRoleCardConfig entity = getRoleCardConfig(id);
+        copyRoleCardConfig(entity, request);
+        doctorRoleCardConfigMapper.updateById(entity);
+        return getRoleCardConfig(id);
     }
 
     @Transactional
@@ -331,11 +330,8 @@ public class DoctorWorkbenchApplicationService {
         if (entity == null) {
             throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "未找到医生工作台卡片分组: " + id);
         }
-                
-                        ntity;
-                        
-                        
-                        al
+        return entity;
+    }
 
     public DoctorCardGroup createCardGroup(DoctorCardGroupRequest request) {
         validateCardGroupRequest(request);
