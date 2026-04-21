@@ -5,14 +5,16 @@ import type { SavedLayout } from './types';
 
 interface EditableLayoutTagProps {
   layout: SavedLayout;
-  onRename: (id: string, newName: string) => void;
+  onRename: (id: string, newName: string) => Promise<void> | void;
   onApply: (id: string) => void;
-  onDelete: (id: string) => void;
+  onDelete: (id: string) => Promise<void> | void;
 }
 
 export const EditableLayoutTag: React.FC<EditableLayoutTagProps> = ({ layout, onRename, onApply, onDelete }) => {
   const [isEditing, setIsEditing] = useState(false);
   const [name, setName] = useState(layout.name);
+  const [isSaving, setIsSaving] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   const x = useMotionValue(0);
   const y = useMotionValue(0);
@@ -40,13 +42,42 @@ export const EditableLayoutTag: React.FC<EditableLayoutTagProps> = ({ layout, on
     y.set(0);
   };
 
-  const handleSave = () => {
-    if (name.trim()) {
-      onRename(layout.id, name.trim());
-    } else {
-      setName(layout.name);
+  const handleSave = async () => {
+    if (isSaving) {
+      return;
     }
-    setIsEditing(false);
+
+    const targetName = name.trim();
+    if (!targetName) {
+      setName(layout.name);
+      setIsEditing(false);
+      return;
+    }
+
+    try {
+      setIsSaving(true);
+      await onRename(layout.id, targetName);
+      setIsEditing(false);
+      setName(targetName);
+    } catch {
+      setName(layout.name);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleDelete = async (event: React.MouseEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+    if (isDeleting) {
+      return;
+    }
+
+    try {
+      setIsDeleting(true);
+      await onDelete(layout.id);
+    } finally {
+      setIsDeleting(false);
+    }
   };
 
   if (isEditing) {
@@ -54,13 +85,27 @@ export const EditableLayoutTag: React.FC<EditableLayoutTagProps> = ({ layout, on
       <div className="flex items-center space-x-1 rounded-xl border border-blue-300 bg-white px-3 py-1.5 dark:bg-slate-800">
         <input
           autoFocus
+          disabled={isSaving}
           value={name}
           onChange={(e) => setName(e.target.value)}
-          onBlur={handleSave}
-          onKeyDown={(e) => e.key === 'Enter' && handleSave()}
+          onBlur={() => {
+            void handleSave();
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              void handleSave();
+            }
+          }}
           className="w-24 bg-transparent text-xs text-slate-900 outline-none dark:text-white"
         />
-        <button onClick={handleSave} className="text-blue-500 hover:text-blue-600">
+        <button
+          disabled={isSaving}
+          onClick={() => {
+            void handleSave();
+          }}
+          className="text-blue-500 hover:text-blue-600 disabled:opacity-50 disabled:cursor-not-allowed"
+        >
           <Check className="h-3 w-3" />
         </button>
       </div>
@@ -95,11 +140,11 @@ export const EditableLayoutTag: React.FC<EditableLayoutTagProps> = ({ layout, on
           <Pencil className="h-3.5 w-3.5" />
         </button>
         <button
+          disabled={isDeleting}
           onClick={(e) => {
-            e.stopPropagation();
-            onDelete(layout.id);
+            void handleDelete(e);
           }}
-          className="opacity-0 transition-opacity group-hover:opacity-100 text-rose-400 hover:text-rose-600 dark:text-rose-300 dark:hover:text-rose-100"
+          className="opacity-0 transition-opacity group-hover:opacity-100 text-rose-400 hover:text-rose-600 dark:text-rose-300 dark:hover:text-rose-100 disabled:opacity-40 disabled:cursor-not-allowed"
           title="删除布局"
         >
           <Trash2 className="h-3.5 w-3.5" />

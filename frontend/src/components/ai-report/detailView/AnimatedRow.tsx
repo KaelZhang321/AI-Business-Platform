@@ -7,6 +7,13 @@ interface AnimatedRowProps {
 }
 
 export const AnimatedRow: React.FC<AnimatedRowProps> = ({ customer, onViewDetails }) => {
+  const teacherText = [customer.mainTeacherName, customer.subTeacherName].filter(Boolean).join(' / ');
+  const summaryParts = [customer.typeName, customer.storeName].filter(Boolean);
+  if (teacherText) {
+    summaryParts.push(`带教: ${teacherText}`);
+  }
+  const summaryText = summaryParts.length > 0 ? summaryParts.join(' · ') : customer.keyAbnormal;
+
   return (
     <div className="grid grid-cols-12 gap-4 items-center border-b border-slate-50 dark:border-slate-800/50 last:border-none hover:bg-slate-50/50 dark:hover:bg-slate-800/50 transition-colors py-4 px-2 rounded-lg">
       <div className="col-span-2 font-bold text-slate-800 dark:text-slate-200">{customer.name}</div>
@@ -14,7 +21,7 @@ export const AnimatedRow: React.FC<AnimatedRowProps> = ({ customer, onViewDetail
         {customer.gender} / {customer.age}岁
       </div>
       <div className="col-span-2 text-slate-600 dark:text-slate-400">{customer.lastCheckDate}</div>
-      <div className="col-span-2">
+      {/* <div className="col-span-2">
         <span
           className={`px-3 py-1 rounded-full text-xs font-medium ${
             customer.aiJudgment === '重点关注'
@@ -28,8 +35,8 @@ export const AnimatedRow: React.FC<AnimatedRowProps> = ({ customer, onViewDetail
         >
           {customer.aiJudgment}
         </span>
-      </div>
-      <div className="col-span-3 text-slate-600 dark:text-slate-400 truncate">{customer.keyAbnormal}</div>
+      </div> */}
+      <div className="col-span-5 text-slate-600 dark:text-slate-400 truncate">{summaryText}</div>
       <div className="col-span-1 text-center">
         <button
           onClick={() => onViewDetails(customer)}

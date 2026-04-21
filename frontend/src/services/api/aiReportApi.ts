@@ -4,6 +4,13 @@ type ApiEnvelope<T> = {
   data?: T
 }
 
+type PatientExamSessionsQueryInput = {
+  mobile?: string
+  idCard?: string
+  patientName?: string
+  [key: string]: unknown
+}
+
 type CustomerListQueryInput = {
   pageNo?: number | string
   pageSize?: number | string
@@ -25,6 +32,14 @@ export const aiReportApi = {
    */
   async getPatientExamListApi(params: any) {
     const response = await apiClient.post<ApiEnvelope<unknown[]>>('/bs/api/v1/patient-exams/results/batch-query', params)
+    return response.data?.data ?? response.data
+  },
+  /**
+   * 查询体检记录
+   * POST /bs/api/v1/patient-exams/sessions/query
+   */
+  async getPatientExamSessionsApi(params: PatientExamSessionsQueryInput) {
+    const response = await apiClient.post<ApiEnvelope<unknown[]>>('/bs/api/v1/patient-exams/sessions/query', params)
     return response.data?.data ?? response.data
   },
   /**

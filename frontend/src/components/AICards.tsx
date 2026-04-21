@@ -3,8 +3,8 @@ import { motion } from 'motion/react';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { Maximize2, Trash2, Edit } from 'lucide-react';
-import { 
-  AssetCard, 
+import {
+  AssetCard,
   IdentityContactCard,
   BasicHealthDataCard,
   HealthStatusMedicalHistoryCard,
@@ -22,11 +22,11 @@ import {
   ExecutionDateCard
 } from './AIComponentManagementView';
 
-export const SortableCard: React.FC<{ 
-  id: string, 
-  title: string, 
-  children: React.ReactNode, 
-  colSpan: number, 
+export const SortableCard: React.FC<{
+  id: string,
+  title: string,
+  children: React.ReactNode,
+  colSpan: number,
   onEnlarge?: () => void,
   onDelete?: () => void
 }> = ({ id, title, children, colSpan, onEnlarge, onDelete }) => {
@@ -59,7 +59,7 @@ export const SortableCard: React.FC<{
       style={style}
       className={`${flexClass} bg-white dark:bg-slate-800 rounded-2xl p-5 shadow-sm border border-slate-200 dark:border-slate-700 flex flex-col ${isDragging ? 'opacity-50 shadow-xl' : ''} transition-all duration-300`}
     >
-      <div 
+      <div
         className="flex justify-between items-center mb-4 pb-3 border-b border-slate-100 dark:border-slate-700/50 cursor-grab active:cursor-grabbing"
         {...attributes}
         {...listeners}
@@ -69,7 +69,7 @@ export const SortableCard: React.FC<{
           <h3 className="font-bold text-slate-800 dark:text-slate-200">{title}</h3>
         </div>
         <div className="flex items-center space-x-1">
-          <button 
+          <button
             onPointerDown={(e) => e.stopPropagation()}
             onClick={onEnlarge}
             className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors cursor-pointer"
@@ -77,7 +77,7 @@ export const SortableCard: React.FC<{
           >
             <Maximize2 className="w-4 h-4" />
           </button>
-          <button 
+          <button
             onPointerDown={(e) => e.stopPropagation()}
             onClick={onDelete}
             className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors cursor-pointer"
@@ -249,16 +249,8 @@ export const CardAction = () => (
 );
 
 export const AI_CARDS_DATA = [
-  { id: 'panorama', title: '客户全景摘要', component: CardPanorama, colSpan: 6 },
-  { id: 'risk', title: '风险处置建议', component: CardRisk, colSpan: 3 },
-  { id: 'objection', title: '异议预判', component: CardObjection, colSpan: 3 },
-  { id: 'renewal', title: '续费建议', component: CardRenewal, colSpan: 4 },
-  { id: 'upsell', title: '升单机会', component: CardUpsell, colSpan: 4 },
-  { id: 'consumption', title: '消费节奏预测', component: CardConsumption, colSpan: 4 },
-  { id: 'insight', title: '客户分层洞察', component: CardInsight, colSpan: 6 },
-  { id: 'action', title: '跟进动作与话术', component: CardAction, colSpan: 6 },
   // Management Cards
-  { id: 'asset', title: '客户资产概览', component: (props: any) => <AssetCard {...props} hideHeader={true} context="workbench" />, colSpan: 4 },
+  // { id: 'asset', title: '客户资产概览', component: (props: any) => <AssetCard {...props} hideHeader={true} context="workbench" />, colSpan: 4 },
   { id: 'identity-contact', title: '身份与联系信息', component: (props: any) => <IdentityContactCard {...props} hideHeader={true} context="workbench" />, colSpan: 4 },
   { id: 'basic-health-data', title: '健康基础数据', component: (props: any) => <BasicHealthDataCard {...props} hideHeader={true} context="workbench" />, colSpan: 4 },
   { id: 'health-status-medical-history', title: '健康状况与医疗史', component: (props: any) => <HealthStatusMedicalHistoryCard {...props} hideHeader={true} context="workbench" />, colSpan: 4 },

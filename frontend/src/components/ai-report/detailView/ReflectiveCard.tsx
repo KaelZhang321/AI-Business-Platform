@@ -13,6 +13,12 @@ export const ReflectiveCard: React.FC<ReflectiveCardProps> = ({ customer, onView
   const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
   const [isHovered, setIsHovered] = useState(false);
   const [rotation, setRotation] = useState({ x: 0, y: 0 });
+  const teacherText = [customer.mainTeacherName, customer.subTeacherName].filter(Boolean).join(' / ');
+  const summaryParts = [customer.typeName, customer.storeName].filter(Boolean);
+  if (teacherText) {
+    summaryParts.push(`带教: ${teacherText}`);
+  }
+  const summaryText = summaryParts.length > 0 ? summaryParts.join(' · ') : customer.keyAbnormal;
 
   const handleMouseMove = (e: React.MouseEvent) => {
     if (!containerRef.current) return;
@@ -91,7 +97,7 @@ export const ReflectiveCard: React.FC<ReflectiveCardProps> = ({ customer, onView
         <div className="flex justify-between items-start mb-4">
           <div className="flex items-center space-x-3">
             <div className="w-10 h-10 rounded-full bg-slate-100 dark:bg-slate-700 flex items-center justify-center text-slate-600 dark:text-slate-300 font-bold text-lg shadow-inner">
-              {customer.name.charAt(0)}
+              {(customer.name || '客').charAt(0)}
             </div>
             <div>
               <h4 className="text-lg font-bold text-slate-900 dark:text-white group-hover:text-brand transition-colors">{customer.name}</h4>
@@ -118,9 +124,9 @@ export const ReflectiveCard: React.FC<ReflectiveCardProps> = ({ customer, onView
         <div className="flex-1 py-4 border-y border-slate-100 dark:border-slate-700/50 my-2 flex flex-col justify-center">
           <div className="flex items-center text-[10px] text-slate-400 uppercase font-bold tracking-wider mb-2">
             <Activity className="w-3 h-3 mr-1 text-brand" />
-            关键异常指标
+            客户摘要
           </div>
-          <p className="text-sm text-slate-600 dark:text-slate-300 line-clamp-3 leading-relaxed">{customer.keyAbnormal}</p>
+          <p className="text-sm text-slate-600 dark:text-slate-300 line-clamp-3 leading-relaxed">{summaryText}</p>
         </div>
 
         <div className="pt-2 flex items-center justify-between mt-auto">

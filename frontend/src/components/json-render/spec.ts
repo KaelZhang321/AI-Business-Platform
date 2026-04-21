@@ -22,11 +22,9 @@ export function buildMultiCardSpec(): Spec {
     state: {},
     elements: {
       'multi-card-root': {
-        type: 'PlannerCard',
+        type: 'PlannerBlankContainer',
         props: {
-          title: '客户多卡片看板',
-          subtitle: '示例：基础信息 / 风险指标 / 跟进计划',
-          headerRightText: 'Multi Card',
+          "minHeight": 160
         },
         children: ['profile-card', 'risk-card', 'followup-card'],
       },

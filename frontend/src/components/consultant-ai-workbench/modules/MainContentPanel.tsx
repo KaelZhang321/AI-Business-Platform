@@ -14,9 +14,9 @@ interface MainContentPanelProps {
   selectedCustomer: CustomerRecord | null;
   currentCustomerLayouts: SavedLayout[];
   constraintsRef: React.RefObject<HTMLDivElement | null>;
-  onRenameLayout: (id: string, newName: string) => void;
+  onRenameLayout: (id: string, newName: string) => Promise<void> | void;
   onApplyLayout: (id: string) => void;
-  onDeleteLayout: (id: string) => void;
+  onDeleteLayout: (id: string) => Promise<void> | void;
   onOpenCustomerModal: () => void;
   onNavigateToComparison: () => void;
   onNavigateToFourQuadrant: () => void;

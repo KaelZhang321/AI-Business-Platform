@@ -13,12 +13,12 @@ export const CustomerRow: React.FC<CustomerRowProps> = ({ customer, onViewDetail
       {customer.gender ?? '--'} / {customer.age ?? '--'}岁
     </div>
     <div className="col-span-2 text-slate-600 dark:text-slate-400">{customer.lastCheckDate || '--'}</div>
-    <div className="col-span-2">
+    {/* <div className="col-span-2">
       <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-medium text-blue-600 dark:bg-blue-500/10 dark:text-blue-400">
         {customer.aiJudgment || '待评估'}
       </span>
-    </div>
-    <div className="col-span-3 truncate text-slate-600 dark:text-slate-400">
+    </div> */}
+    <div className="col-span-5 truncate text-slate-600 dark:text-slate-400">
       {customer.keyAbnormal || customer.phone || customer.idCard || '--'}
     </div>
     <div className="col-span-1 text-center">

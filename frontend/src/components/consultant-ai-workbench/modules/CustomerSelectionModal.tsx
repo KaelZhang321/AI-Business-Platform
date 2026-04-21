@@ -8,8 +8,12 @@ import type { CustomerRecord } from './types';
 interface CustomerSelectionModalProps {
   isOpen: boolean;
   searchTerm: string;
+  isLoadingCustomers?: boolean;
+  isLoadingMoreCustomers?: boolean;
+  hasMoreCustomers?: boolean;
   filteredCustomers: CustomerRecord[];
   onSearchTermChange: (value: string) => void;
+  onLoadMoreCustomers?: () => void;
   onSelectCustomer: (customer: CustomerRecord) => void;
   onClose: () => void;
 }
@@ -17,11 +21,26 @@ interface CustomerSelectionModalProps {
 export const CustomerSelectionModal: React.FC<CustomerSelectionModalProps> = ({
   isOpen,
   searchTerm,
+  isLoadingCustomers = false,
+  isLoadingMoreCustomers = false,
+  hasMoreCustomers = false,
   filteredCustomers,
   onSearchTermChange,
+  onLoadMoreCustomers,
   onSelectCustomer,
   onClose,
 }) => {
+  const handleListScroll = (event: React.UIEvent<HTMLDivElement>) => {
+    if (!onLoadMoreCustomers || isLoadingCustomers || isLoadingMoreCustomers || !hasMoreCustomers) {
+      return;
+    }
+    const target = event.currentTarget;
+    const remain = target.scrollHeight - (target.scrollTop + target.clientHeight);
+    if (remain <= 100) {
+      onLoadMoreCustomers();
+    }
+  };
+
   return (
     <AnimatePresence>
       {isOpen && (
@@ -68,18 +87,23 @@ export const CustomerSelectionModal: React.FC<CustomerSelectionModalProps> = ({
                 <div className="col-span-2 text-left">客户姓名</div>
                 <div className="col-span-2 text-left">性别 / 年龄</div>
                 <div className="col-span-2 text-left">最近体检日期</div>
-                <div className="col-span-2 text-left">AI综合判断</div>
-                <div className="col-span-3 text-left">关键异常指标</div>
+                {/* <div className="col-span-2 text-left">AI综合判断</div> */}
+                <div className="col-span-5 text-left">客户摘要</div>
                 <div className="col-span-1 text-center">操作</div>
               </div>
 
-              <div className="custom-scrollbar flex-1 overflow-y-auto p-6">
-                <AnimatedList className="flex w-full flex-col space-y-2">
-                  {filteredCustomers.map((customer) => (
-                    <CustomerRow key={customer.id} customer={customer} onViewDetails={onSelectCustomer} />
-                  ))}
-                  {filteredCustomers.length === 0 && <div className="py-12 text-center text-slate-500 dark:text-slate-400">没有找到匹配的客户</div>}
-                </AnimatedList>
+              <div onScroll={handleListScroll} className="custom-scrollbar flex-1 overflow-y-auto p-6">
+                {isLoadingCustomers && <div className="py-12 text-center text-slate-500 dark:text-slate-400">客户列表加载中...</div>}
+                {filteredCustomers.map((customer) => (
+                  <CustomerRow key={customer.id} customer={customer} onViewDetails={onSelectCustomer} />
+                ))}
+                {isLoadingMoreCustomers && <div className="py-6 text-center text-slate-500 dark:text-slate-400">正在加载更多客户...</div>}
+                {!isLoadingCustomers && !isLoadingMoreCustomers && !hasMoreCustomers && filteredCustomers.length > 0 && (
+                  <div className="py-6 text-center text-slate-400 dark:text-slate-500">已加载全部客户</div>
+                )}
+                {!isLoadingCustomers && filteredCustomers.length === 0 && (
+                  <div className="py-12 text-center text-slate-500 dark:text-slate-400">没有找到匹配的客户</div>
+                )}
               </div>
             </div>
           </motion.div>

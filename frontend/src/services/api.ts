@@ -33,7 +33,7 @@ function attachToken(config: InternalAxiosRequestConfig) {
     // 统一在请求发出前注入 Bearer token。
     config.headers.CToken = `${token}`;
     config.headers.DeviceId = `pc`;
-    config.headers['X-User-Id'] = `2`;
+    // config.headers['X-User-Id'] = `2`;
   }
   return config;
 }
@@ -51,7 +51,7 @@ async function refreshAccessToken(baseURL: string) {
       headers: {
         CToken: `${refreshToken}`,
         DeviceId: `pc`,
-        'X-User-Id': `2`,
+        // 'X-User-Id': `2`,
       },
     },
   );
@@ -117,5 +117,5 @@ const getBaseUrl = (envUrl?: string) => {
   return base.endsWith('/') ? base.slice(0, -1) : base;
 };
 
-export const apiClient = createClient(getBaseUrl(import.meta.env.VITE_API_BASE_URL), 30_000);
+export const apiClient = createClient(getBaseUrl(import.meta.env.VITE_API_BASE_URL), 300_000);
 export const businessClient = createClient(getBaseUrl(import.meta.env.VITE_BUSINESS_API_URL), 15_000);
