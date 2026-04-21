@@ -32,7 +32,11 @@ class ModelBackend:
 
     def client(self) -> httpx.AsyncClient:
         if self._client is None:
-            self._client = httpx.AsyncClient(base_url=self.base_url, timeout=120)
+            self._client = httpx.AsyncClient(
+                base_url=self.base_url,
+                timeout=120,
+                trust_env=settings.model_router_trust_env,
+            )
         return self._client
 
     async def close(self) -> None:

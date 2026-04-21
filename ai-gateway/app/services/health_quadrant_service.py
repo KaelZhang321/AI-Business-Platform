@@ -814,7 +814,7 @@ class HealthQuadrantService:
 
             # 5) 统一补齐推荐方案与去重，保证确认页字段完整且可直接渲染。
             finalize_started_at = time.perf_counter()
-            _finalize_exam_recommendations(buckets)
+            _finalize_exam_recommendations(chief_complaint_items, buckets)
             logger.info(
                 "health quadrant stage duration stage=service.exam.finalize duration_ms=%s trace_id=%s study_id=%s",
                 int((time.perf_counter() - finalize_started_at) * 1000),
@@ -1532,9 +1532,10 @@ def _looks_like_imaging(item_name: str, category: str | None) -> bool:
     return False
 
 
-def _finalize_exam_recommendations(buckets: list[dict[str, Any]]) -> None:
+def _finalize_exam_recommendations(chief_complaint_text: str, buckets: list[dict[str, Any]]) -> None:
     # 规则解释：保留前序链路已经写入的个性化推荐项，再补默认推荐模板，避免覆盖业务输入。
-    _merge_recommendation_defaults(buckets[3], ["全基因检测", "PET-MR 高端筛查评估"])
+    if len(chief_complaint_text.strip()) > 0:
+        _merge_recommendation_defaults(buckets[3], ["全基因检测"])
     for bucket in buckets:
         bucket["abnormalIndicators"] = _deduplicate_text_list(bucket["abnormalIndicators"])
 

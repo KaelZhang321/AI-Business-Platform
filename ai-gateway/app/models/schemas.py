@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, List, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class IntentType(str, Enum):
@@ -173,156 +173,26 @@ class HealthQuadrantConfirmEnvelopeResponse(BaseModel):
     data: HealthQuadrantConfirmResponse = Field(..., description="确认结果")
 
 
-class ApiQueryMode(str, Enum):
-    """`api_query` 请求模式枚举。"""
-
-    NL = "nl"
-    DIRECT = "direct"
-
-
-class ApiQueryResponseMode(str, Enum):
-    """`/api-query` 响应载荷模式。
-
-    功能：
-        把“整页替换”和“局部补丁”显式收敛为正式契约，避免前端继续通过猜测 `ui_spec`
-        结构去判断当前该整页重绘还是执行 patch。
-    """
-
-    FULL_SPEC = "full_spec"
-    PATCH = "patch"
-
-
-class ApiQueryPatchTrigger(str, Enum):
-    """列表补丁请求的触发来源。"""
-
-    PAGINATION = "pagination"
-    FILTER_SUBMIT = "filter_submit"
-    FILTER_RESET = "filter_reset"
-
-
-class ApiQueryPatchContext(BaseModel):
-    """列表二跳补丁请求的上下文契约。
-
-    功能：
-        Patch 模式下，网关除了要拿到 `api_id + params`，还要知道前端当前是在翻页、
-        改筛选还是重置筛选，以及这次局部更新准备写回哪一段页面结构。否则后端虽然
-        能查到数据，但无法给前端返回稳定的补丁意图。
-
-    返回值约束：
-        - `patch_type` 当前固定为 `list_query`
-        - `mutation_target` 必须来自首跳运行时契约，而不是前端自行捏造页面路径
-    """
-
-    patch_type: Literal["list_query"] = Field("list_query", description="补丁类型，当前固定为列表查询")
-    trigger: ApiQueryPatchTrigger = Field(..., description="触发本次补丁请求的前端交互来源")
-    mutation_target: str = Field(..., min_length=1, description="前端准备局部更新的目标路径")
-
-
-class ApiQueryDirectQuery(BaseModel):
-    """`/api-query` 直达快路载荷。
-
-    功能：
-        承载“前端已经拿到目标接口 ID 与参数”的二跳场景输入，让详情、分页和刷新
-        不必再回到自然语言链路重复消耗 LLM 与 Milvus。
-
-    返回值约束：
-        - `api_id` 必须对应注册表中的稳定接口主键
-        - `params` 即使为空也必须显式传入，避免前后端对“缺省参数”理解不一致
-
-    Edge Cases:
-        - `params={}` 是合法输入，但 `params` 这个键本身不能缺失
-    """
-
-    api_id: str = Field(..., min_length=1, description="目标接口 ID，对应 `ui_api_endpoints.id`")
-    params: dict[str, Any] = Field(..., description="直达模式下的显式接口参数")
-
-
 class ApiQueryRequest(BaseModel):
     """`api_query` 的自然语言请求模型。
 
     功能：
-        同时承载两种入口模式：
-
-        1. `nl`：自然语言主链路，继续走路由、召回、参数提取和规划
-        2. `direct`：二跳快路，前端已知 `api_id + params` 时直接执行只读查询
+        只承载自然语言入口，统一由网关负责路由、召回、参数提取和规划。
 
     返回值约束：
-        - `mode` 缺省时必须按 `nl` 处理，以兼容历史前端
-        - `envs` / `tag_names` 仅在 `nl` 模式下参与 Milvus 标量过滤
-        - `direct` 模式下不要求 `query`，但必须提供 `direct_query`
-        - `response_mode` 缺省时必须按 `full_spec` 处理，以兼容历史前端
-
-    Edge Cases:
-        - `direct` 模式不会因为 `query` 为空而失败；真正的硬校验落在 `direct_query`
-        - 历史请求只传 `query` 时，仍会被完整视作 `nl` 模式
+        - `query` 必填，避免入口协议出现二义性
+        - `envs` / `tag_names` 参与 Milvus 标量过滤
     """
 
-    model_config = ConfigDict(
-        json_schema_extra={
-            "examples": [
-                {
-                    "mode": "nl",
-                    "query": "查询张三客户",
-                    "conversation_id": "conv_001",
-                    "top_k": 3,
-                    "envs": ["prod"],
-                    "tag_names": ["客户管理"],
-                },
-                {
-                    "mode": "direct",
-                    "response_mode": "patch",
-                    "conversation_id": "conv_001",
-                    "direct_query": {
-                        "api_id": "customer_list",
-                        "params": {"ownerId": "E8899", "pageNum": 2, "pageSize": 20},
-                    },
-                    "patch_context": {
-                        "patch_type": "list_query",
-                        "trigger": "pagination",
-                        "mutation_target": "report-table.props.dataSource",
-                    },
-                },
-            ]
-        }
-    )
-
-    mode: ApiQueryMode = Field(ApiQueryMode.NL, description="请求模式：`nl` 或 `direct`")
-    response_mode: ApiQueryResponseMode = Field(
-        ApiQueryResponseMode.FULL_SPEC,
-        description="响应模式：整页 spec 或列表 patch",
-    )
-    query: str | None = Field(None, min_length=1, max_length=500, description="用户自然语言输入")
+    query: str = Field(..., min_length=1, max_length=500, description="用户自然语言输入")
     conversation_id: str | None = Field(None, description="对话 ID（保留，用于未来多轮记忆）")
     top_k: int = Field(3, ge=1, le=5, description="候选接口数量")
     envs: list[str] = Field(default_factory=list, description="可选的环境过滤，如 prod / dev")
     tag_names: list[str] = Field(default_factory=list, description="可选的业务标签过滤，如 合同管理")
-    direct_query: ApiQueryDirectQuery | None = Field(None, description="直达快路模式的显式接口调用信息")
-    patch_context: ApiQueryPatchContext | None = Field(None, description="patch 模式下的前端补丁上下文")
-
-    @model_validator(mode="after")
-    def validate_mode_contract(self) -> ApiQueryRequest:
-        """校验 `nl/direct` 双模式请求契约。
-
-        功能：
-            这里把“入口长什么样”固定在 schema 层，而不是让 route 再手写多套
-            if/else 兜底。这样 OpenAPI、FastAPI 校验和实际实现可以共享同一份事实。
-
-        Raises:
-            ValueError: 当 `mode` 与实际载荷组合不合法时抛出。
-        """
-        if self.mode == ApiQueryMode.DIRECT:
-            if self.direct_query is None:
-                raise ValueError("mode=direct 时必须提供 direct_query")
-            if self.response_mode == ApiQueryResponseMode.PATCH and self.patch_context is None:
-                raise ValueError("response_mode=patch 时必须提供 patch_context")
-            return self
-
-        if self.response_mode == ApiQueryResponseMode.PATCH:
-            raise ValueError("response_mode=patch 时必须配合 mode=direct")
-
-        if not self.query:
-            raise ValueError("mode=nl 时必须提供 query")
-        return self
+    selection_context: dict[str, Any] | None = Field(
+        None,
+        description="user_select 续跑上下文（可选）",
+    )
 
 
 class ApiQueryBusinessIntent(BaseModel):

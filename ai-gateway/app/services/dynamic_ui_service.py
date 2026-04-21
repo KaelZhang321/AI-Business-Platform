@@ -283,11 +283,11 @@ class DynamicUIService:
                     props.update(list_request_fields)
                     context_row_actions = context.get("row_actions")
                     if isinstance(context_row_actions, list) and context_row_actions:
-                        props["rowActions"] = deepcopy(context_row_actions)
+                        props["rowActions"] = self._normalize_row_actions(context_row_actions)
                     elif runtime.detail.enabled and runtime.detail.api_id:
                         props["rowActions"] = [
                             {
-                                "type": runtime.detail.ui_action or "remoteQuery",
+                                "action": runtime.detail.ui_action or "remoteQuery",
                                 "label": "查看详情",
                                 "params": {
                                     "api_id": runtime.detail.api_id,
@@ -809,12 +809,9 @@ class DynamicUIService:
                 "type": "PlannerSelect",
                 "props": {
                     "label": field.name,
+                    "dictCode": field.option_source.dict_code,
                     "value": {"$bindState": field.state_path},
                     "required": field.required,
-                    "options": {
-                        "type": "dict",
-                        "dict_code": field.option_source.dict_code,
-                    },
                 },
             }
 
@@ -1565,12 +1562,12 @@ class DynamicUIService:
         }
         context_row_actions = (context or {}).get("row_actions")
         if isinstance(context_row_actions, list) and context_row_actions:
-            table_props["rowActions"] = context_row_actions
+            table_props["rowActions"] = self._normalize_row_actions(context_row_actions)
         elif runtime and runtime.detail.enabled:
             # 详情动作只下发运行时契约，不在网关 UI 层硬编码具体业务参数。
             table_props["rowActions"] = [
                 {
-                    "type": runtime.detail.ui_action or "remoteQuery",
+                    "action": runtime.detail.ui_action or "remoteQuery",
                     "label": "查看详情",
                     "params": {
                         "api_id": runtime.detail.api_id,
@@ -1769,6 +1766,25 @@ class DynamicUIService:
             "state": state or {},
             "elements": elements,
         }
+
+    @staticmethod
+    def _normalize_row_actions(row_actions: list[Any]) -> list[Any]:
+        """把行动作统一归一到 `action` 字段，并兼容历史 `type` 输入。"""
+
+        normalized_actions: list[Any] = []
+        for row_action in row_actions:
+            if not isinstance(row_action, dict):
+                normalized_actions.append(row_action)
+                continue
+            normalized = deepcopy(row_action)
+            action_name = normalized.get("action")
+            legacy_action = normalized.get("type")
+            if not isinstance(action_name, str) and isinstance(legacy_action, str):
+                normalized["action"] = legacy_action
+            if normalized.get("action"):
+                normalized.pop("type", None)
+            normalized_actions.append(normalized)
+        return normalized_actions
 
     @staticmethod
     def _format_validation_errors(validation: UISpecValidationResult) -> str:

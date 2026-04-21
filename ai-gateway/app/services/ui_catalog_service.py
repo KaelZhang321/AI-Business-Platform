@@ -397,7 +397,7 @@ def _build_builtin_snapshot() -> UICatalogSnapshot:
         "PlannerSelect": UIComponentDefinition(
             code="PlannerSelect",
             name="规划下拉框",
-            description="单选下拉组件，props: label, value, options",
+            description="单选下拉组件，props: label, value, dictCode",
         ),
         "PlannerButton": UIComponentDefinition(
             code="PlannerButton",

@@ -187,6 +187,11 @@ def _get_collection_schema() -> CollectionSchema:
             dtype=DataType.JSON,
             description="模板匹配提示，标记该接口是否适合走预设 ui_page_templates 快速渲染。",
         ),
+        FieldSchema(
+            name="predecessors",
+            dtype=DataType.JSON,
+            description="多前置接口依赖定义，供运行时自动拼接 DAG 步骤。",
+        ),
         # 向量字段
         FieldSchema(
             name="embedding",
@@ -447,6 +452,7 @@ class ApiCatalogIndexer:
             [entry.detail_hint.model_dump()],
             [entry.pagination_hint.model_dump()],
             [entry.template_hint.model_dump()],
+            [entry.predecessors and [item.model_dump() for item in entry.predecessors] or []],
             [embedding],
         ]
         collection.insert(data)

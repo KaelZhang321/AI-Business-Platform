@@ -94,6 +94,10 @@ def _mysql_row() -> dict[str, object]:
         "responseSchema": '{"type":"object","properties":{"data":{"type":"object","properties":{"list":{"type":"array","items":{"type":"object","properties":{"customerId":{"type":"string","description":"客户ID"}}}}}}}}',
         "sampleRequest": '{"page":1}',
         "sampleResponse": '{"data":{"list":[{"customerId":"C001"}]}}',
+        "predecessorSpecs": (
+            '[{"predecessor_api_id":"role_list_v1","required":true,"order":1,'
+            '"param_bindings":[{"target_param":"roleId","source_path":"$.data[*].id","select_mode":"user_select"}]}]'
+        ),
         "operationSafety": "query",
         "endpointStatus": "active",
         "sourceId": "src_1",
@@ -170,6 +174,14 @@ async def test_registry_source_loads_entries_from_mysql_and_appends_builtin_dict
     assert [profile.field_name for profile in customer_entry.response_field_profiles] == ["customerId"]
     assert customer_entry.response_field_profiles[0].json_path == "data.list[].customerId"
     assert customer_entry.response_field_profiles[0].raw_description == "客户ID"
+    assert len(customer_entry.predecessors) == 1
+    predecessor = customer_entry.predecessors[0]
+    assert predecessor.predecessor_api_id == "role_list_v1"
+    assert predecessor.required is True
+    assert predecessor.order == 1
+    assert predecessor.param_bindings[0].target_param == "roleId"
+    assert predecessor.param_bindings[0].source_path == "$.data[*].id"
+    assert predecessor.param_bindings[0].select_mode == "user_select"
 
     dict_entry = entry_by_path["/api/system/dicts"]
     assert dict_entry.id == "system_dicts_v1"
@@ -275,3 +287,44 @@ async def test_registry_source_marks_mutation_entry_for_confirmation(monkeypatch
     assert mutation_entry.request_field_profiles[0].field_name == "roleId"
     assert mutation_entry.request_field_profiles[0].required is True
     assert mutation_entry.request_field_profiles[0].json_path == "body.roleId"
+
+
+@pytest.mark.asyncio
+async def test_registry_source_falls_back_when_predecessor_column_missing(monkeypatch) -> None:
+    capture: dict[str, object] = {}
+
+    class FailingPredecessorCursor(FakeCursor):
+        async def execute(self, sql: str, params=None) -> None:
+            self._capture["sql"] = sql
+            self._capture["params"] = params
+            if "predecessor_specs" in sql.lower() or "predecessorspecs" in sql.lower():
+                raise RuntimeError("1054, Unknown column 'e.predecessor_specs' in 'field list'")
+
+    class FailingPredecessorConnection(FakeConnection):
+        def cursor(self, cursor_cls) -> FakeCursorContext:
+            self._capture["cursor_cls"] = cursor_cls
+            return FakeCursorContext(FailingPredecessorCursor(self._rows, self._capture))
+
+    class FailingPredecessorAcquire(FakeAcquireContext):
+        async def __aenter__(self) -> FailingPredecessorConnection:
+            return FailingPredecessorConnection(self._rows, self._capture)
+
+    class FailingPredecessorPool(FakePool):
+        def acquire(self) -> FailingPredecessorAcquire:
+            return FailingPredecessorAcquire(self._rows, self._capture)
+
+    fake_pool = FailingPredecessorPool([_mysql_row()], capture)
+
+    async def fake_create_pool(**kwargs):
+        return fake_pool
+
+    monkeypatch.setattr(registry_source_module.aiomysql, "create_pool", fake_create_pool)
+
+    source = ApiCatalogRegistrySource()
+    entries = await source.load_entries()
+    await source.close()
+
+    customer_entry = next(entry for entry in entries if entry.id == "ep_1")
+    assert customer_entry.predecessors == []
+    # fallback SQL 应移除 predecessor 字段投影
+    assert "predecessor_specs" not in str(capture["sql"]).lower()

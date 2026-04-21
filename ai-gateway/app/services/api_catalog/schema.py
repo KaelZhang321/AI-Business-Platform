@@ -22,6 +22,29 @@ class ParamSchema(BaseModel):
     required: list[str] = Field(default_factory=list)
 
 
+class ApiCatalogPredecessorParamBinding(BaseModel):
+    """前置接口到目标参数的绑定规则。"""
+
+    target_param: str = Field(..., min_length=1, description="目标接口参数名")
+    source_path: str = Field(..., min_length=1, description="前置接口响应取值路径")
+    select_mode: Literal["single", "first", "user_select", "all"] = Field(
+        "single",
+        description="多值选择策略",
+    )
+
+
+class ApiCatalogPredecessorSpec(BaseModel):
+    """单条前置依赖定义。"""
+
+    predecessor_api_id: str = Field(..., min_length=1, description="前置接口 ID")
+    required: bool = Field(True, description="是否必需前置接口")
+    order: int = Field(100, description="前置执行顺序")
+    param_bindings: list[ApiCatalogPredecessorParamBinding] = Field(
+        default_factory=list,
+        description="参数绑定规则",
+    )
+
+
 class ApiCatalogDetailHint(BaseModel):
     """详情页运行时提示。"""
 
@@ -164,6 +187,10 @@ class ApiCatalogEntry(BaseModel):
     response_field_profiles: list[ApiCatalogFieldProfile] = Field(
         default_factory=list,
         description="响应侧原始字段画像，供字段治理与图同步复用",
+    )
+    predecessors: list[ApiCatalogPredecessorSpec] = Field(
+        default_factory=list,
+        description="前置接口依赖定义（1:N）",
     )
 
     # ---------- 向量（Milvus 回填，入库前不填）----------

@@ -176,7 +176,7 @@ def _get_catalog_index_job_service() -> ApiCatalogIndexJobService:
     return _catalog_index_job_service
 
 
-@router.post("", response_model=ApiQueryResponse, summary="业务接口查询（支持自然语言与直达模式）")
+@router.post("", response_model=ApiQueryResponse, summary="业务接口查询（自然语言模式）")
 async def api_query(
     request_body: ApiQueryRequest,
     request: Request,
@@ -190,7 +190,7 @@ async def api_query(
         “路由只做适配、工作流负责决策”的边界。
 
     Args:
-        request_body: `/api-query` 标准请求体，包含自然语言或 direct 快路参数。
+        request_body: `/api-query` 标准请求体（自然语言输入）。
         request: FastAPI 原始请求对象，用于读取 trace/header 和 request-scoped 用户事实。
         credentials: 透过 `HTTPBearer` 解析出的 Authorization 凭证；缺失时允许匿名读链继续。
 
@@ -228,7 +228,7 @@ async def api_query(
                 node="dispatch",
                 execution_status=None,
             ),
-            payload={"mode": request_body.mode.value},
+            payload={"query_length": len(request_body.query)},
         ),
     )
     return await _get_workflow().run(

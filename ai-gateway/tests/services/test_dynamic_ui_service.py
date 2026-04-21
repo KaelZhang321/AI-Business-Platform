@@ -563,6 +563,8 @@ async def test_rule_query_spec_exposes_runtime_metadata_for_list_components(
     assert table["props"]["queryParams"] == {"ownerId": "E8899", "pageNum": 2, "pageSize": 20}
     assert table["props"]["body"] == {}
     row_action = table["props"]["rowActions"][0]
+    assert row_action["action"] == "remoteQuery"
+    assert "type" not in row_action
     assert row_action["params"]["api"] == "/api/v1/ui-builder/runtime/endpoints/customer_detail/invoke"
     assert row_action["params"]["queryParams"] == {"customerId": {"$bindRow": "customerId"}}
     assert row_action["params"]["body"] == {}

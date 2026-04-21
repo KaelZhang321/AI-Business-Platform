@@ -797,6 +797,7 @@ class TestIndexerSchema:
         assert field_map["api_schema"].dtype == DataType.JSON
         assert field_map["executor_config"].dtype == DataType.JSON
         assert field_map["security_rules"].dtype == DataType.JSON
+        assert field_map["predecessors"].dtype == DataType.JSON
         assert field_map["example_queries"].dtype == DataType.JSON
         assert field_map["operation_safety"].dtype == DataType.VARCHAR
 
@@ -1024,6 +1025,20 @@ class TestRetrieverCompatibility:
                 "detail_hint": {"enabled": False},
                 "pagination_hint": {"enabled": True, "page_param": "pageNum"},
                 "template_hint": {"enabled": False},
+                "predecessors": [
+                    {
+                        "predecessor_api_id": "role_list_v1",
+                        "required": True,
+                        "order": 1,
+                        "param_bindings": [
+                            {
+                                "target_param": "roleId",
+                                "source_path": "$.data[*].id",
+                                "select_mode": "user_select",
+                            }
+                        ],
+                    }
+                ],
             }
         )
 
@@ -1033,6 +1048,8 @@ class TestRetrieverCompatibility:
         assert entry.field_labels["customerId"] == "客户ID"
         assert entry.operation_safety == "query"
         assert entry.requires_confirmation is False
+        assert entry.predecessors[0].predecessor_api_id == "role_list_v1"
+        assert entry.predecessors[0].param_bindings[0].select_mode == "user_select"
 
     def test_build_entry_from_fields_infers_requires_confirmation_for_legacy_mutation_record(self):
         entry = _build_entry_from_fields(

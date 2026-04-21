@@ -132,6 +132,15 @@ def evaluate_binding_expression(expression: str, step_data_by_id: dict[str, Any]
             current_value = current_value.get(field_name)
             continue
 
+        if isinstance(current_value, list):
+            if not current_value:
+                return None
+            first_item = current_value[0]
+            if isinstance(first_item, dict):
+                current_value = first_item.get(field_name)
+                continue
+            return None
+
         return None
 
     if saw_wildcard:

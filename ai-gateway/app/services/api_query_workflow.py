@@ -11,20 +11,21 @@ from langgraph.graph import END, StateGraph
 from app.models.schemas import (
     ApiQueryExecutionPlan,
     ApiQueryExecutionStatus,
-    ApiQueryMode,
-    ApiQueryPatchTrigger,
     ApiQueryRequest,
     ApiQueryResponse,
-    ApiQueryResponseMode,
     ApiQueryRoutingResult,
 )
 from app.services.api_catalog.dag_executor import ApiDagExecutor
 from app.services.api_catalog.dag_planner import ApiDagPlanner, DagPlanValidationError, build_single_step_plan
 from app.services.api_catalog.executor import ApiExecutor
 from app.services.api_catalog.param_extractor import ApiParamExtractor
-from app.services.api_catalog.registry_source import ApiCatalogRegistrySource, ApiCatalogSourceError
+from app.services.api_catalog.registry_source import ApiCatalogRegistrySource
 from app.services.api_catalog.retriever import ApiCatalogRetriever
-from app.services.api_catalog.schema import ApiCatalogEntry, ApiCatalogSearchFilters
+from app.services.api_catalog.schema import (
+    ApiCatalogEntry,
+    ApiCatalogPredecessorSpec,
+    ApiCatalogSearchFilters,
+)
 from app.services.api_query_response_builder import ApiQueryResponseBuilder
 from app.services.api_query_state import (
     ApiQueryDegradeContext,
@@ -44,7 +45,6 @@ from app.services.workflows.types import WorkflowRunContext, WorkflowTraceContex
 logger = logging.getLogger(__name__)
 
 _QUERY_SAFE_METHODS = {"GET", "POST"}
-_PATCH_PAGE_SIZE_MAX = 50
 _DELETE_LOOKUP_PAGE_SIZE = 20
 _DELETE_ENTRY_KEYWORDS = ("delete", "remove", "del", "删除", "移除", "清除", "注销", "作废")
 _DELETE_LOOKUP_SEGMENT_KEYWORDS = ("list", "page", "query", "search", "get", "detail", "info", "select")
@@ -77,6 +77,13 @@ _DELETE_NAME_PATTERNS = (
     ),
 )
 
+_PREDECESSOR_SELECT_MODE_TO_BINDING_TEMPLATE = {
+    "single": "$[{step_id}.data].{source_path}",
+    "first": "$[{step_id}.data].{source_path}",
+    "all": "$[{step_id}.data][*].{source_path}",
+    "user_select": "$[{step_id}.data][*].{source_path}",
+}
+
 
 class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
     """`/api-query` 外层静态工作流。
@@ -85,13 +92,12 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
         把原先堆在 FastAPI route 中的阶段推进逻辑切到 LangGraph 外层 StateGraph 上，同时
         保持现有领域服务不变：
 
-        1. `direct` 与 `nl` 进入同一个 workflow 外壳
+        1. 统一自然语言入口，先路由再召回再规划
         2. 第二、三阶段失败统一回到 `build_response`
         3. 第四阶段通过 `ApiDagExecutor` 兼容门面进入 LangGraph 内层执行子图
 
     Edge Cases:
         - `user_token`、原始 candidates 和原始路由结果只保留在 runtime context
-        - direct 契约错误继续抛 HTTPException，不偷偷回退自然语言链路
         - 若 workflow 结束时没有产出 response，会抛出运行时错误，避免静默返回空体
     """
 
@@ -123,21 +129,19 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
         """构建 `/api-query` 外层静态图。
 
         功能：
-            外层图的职责是把 direct、自然语言、写意图快路和降级出口收敛到一个稳定骨架，
+            外层图的职责是把自然语言主链路、写意图快路和降级出口收敛到一个稳定骨架，
             这样新增阶段节点时只需调整图，不需要再回到 route 层改分支判断。
 
         Returns:
             已注册节点与条件边的 `StateGraph`。
 
         Edge Cases:
-            - direct 快路会跳过 stage2/stage3 路由链，直接进入执行阶段
             - 所有降级路径最终都汇入 `build_response`，避免不同节点直接返回不一致响应
             - mutation/delete 快路不进入执行图，防止读链误触发写接口
         """
 
         graph = StateGraph(ApiQueryState)
         graph.add_node("prepare_request", self._prepare_request)
-        graph.add_node("prepare_direct_plan", self._prepare_direct_plan)
         graph.add_node("route_query", self._route_query)
         graph.add_node("retrieve_candidates", self._retrieve_candidates)
         graph.add_node("build_plan", self._build_plan)
@@ -147,16 +151,7 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
         graph.add_node("build_response", self._build_response)
 
         graph.set_entry_point("prepare_request")
-        graph.add_conditional_edges(
-            "prepare_request",
-            self._route_mode,
-            {
-                "direct": "prepare_direct_plan",
-                "nl": "route_query",
-            },
-        )
-        # direct 模式已经拿到确定的单步计划，因此不再经过 route/retrieve/build_plan。
-        graph.add_edge("prepare_direct_plan", "execute_plan")
+        graph.add_edge("prepare_request", "route_query")
         graph.add_conditional_edges(
             "route_query",
             self._after_route_query,
@@ -242,7 +237,7 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
                     phase="request",
                     node="run",
                 ),
-                payload={"mode": request_body.mode.value, "query": request_query},
+                payload={"query": request_query},
             ),
         )
 
@@ -251,12 +246,17 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
             user_context=user_context,
             user_token=user_token,
             request_body=request_body,
+            selection_context=(
+                dict(request_body.selection_context)
+                if isinstance(request_body.selection_context, dict)
+                else None
+            ),
             log_prefix=log_prefix,
         )
         try:
             final_state = await self.invoke(
                 {
-                    "request_mode": request_body.mode.value,
+                    "request_mode": "nl",
                     "query_text": request_query,
                     "trace_id": trace_id,
                     "interaction_id": interaction_id,
@@ -265,8 +265,6 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
                     "query_domains_hint": [],
                     "business_intent_codes": [],
                     "plan": None,
-                    "response_mode": request_body.response_mode,
-                    "patch_context": request_body.patch_context,
                     "execution_status": None,
                     "error_code": None,
                     "degrade_reason": None,
@@ -292,26 +290,6 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
 
         self._log_node_event(state, node="prepare_request", phase="request")
         return {}
-
-    async def _prepare_direct_plan(self, state: ApiQueryState) -> dict[str, Any]:
-        """`direct` 快路：构造单步执行计划。"""
-
-        self._log_node_event(state, node="prepare_direct_plan", phase="direct")
-        runtime_context = self._get_runtime_context(state)
-        request_body = _require_request_body(runtime_context)
-        plan, step_entries, query_domains, business_intent_codes, direct_query_text = await self._prepare_direct_execution(
-            request_body,
-            trace_id=state["trace_id"],
-            interaction_id=state.get("interaction_id"),
-            conversation_id=state.get("conversation_id"),
-        )
-        runtime_context.step_entries = step_entries
-        return {
-            "plan": plan,
-            "query_text": direct_query_text,
-            "query_domains_hint": query_domains,
-            "business_intent_codes": business_intent_codes,
-        }
 
     async def _route_query(self, state: ApiQueryState) -> dict[str, Any]:
         """第二阶段：轻量路由。
@@ -538,11 +516,11 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
                 interaction_id=state.get("interaction_id"),
                 conversation_id=state.get("conversation_id"),
             )
-            plan = build_single_step_plan(
-                selected_entry,
-                routing_result.params,
-                step_id=_build_step_id(selected_entry),
-                plan_id=f"dag_{state['trace_id'][:8]}",
+            plan = await self._build_single_candidate_plan(
+                state=state,
+                runtime_context=runtime_context,
+                selected_entry=selected_entry,
+                selected_params=dict(routing_result.params),
             )
             return {"plan": plan, "business_intent_codes": planning_intent_codes}
 
@@ -584,11 +562,20 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
                 return {"business_intent_codes": planning_intent_codes}
 
         try:
+            expanded_candidates, predecessor_hints = await self._expand_candidates_with_predecessors(
+                candidates,
+                trace_id=state["trace_id"],
+                interaction_id=state.get("interaction_id"),
+                conversation_id=state.get("conversation_id"),
+            )
+            runtime_context.candidates = expanded_candidates
+            runtime_context.predecessor_hints = predecessor_hints
             plan = await self._planner_getter().build_plan(
                 request_body.query,
-                candidates,
+                expanded_candidates,
                 runtime_context.user_context,
                 route_hint,
+                predecessor_hints=predecessor_hints,
                 trace_id=state["trace_id"],
             )
         except DagPlanValidationError as exc:
@@ -631,6 +618,7 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
             runtime_context.step_entries = self._validate_plan_with_runtime_context(
                 state["plan"],
                 runtime_context.candidates,
+                predecessor_hints=runtime_context.predecessor_hints,
                 subgraph_result=runtime_context.subgraph_result,
                 trace_id=state["trace_id"],
             )
@@ -1070,6 +1058,101 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
         )
         return {}
 
+    async def _build_single_candidate_plan(
+        self,
+        *,
+        state: ApiQueryState,
+        runtime_context: ApiQueryRuntimeContext,
+        selected_entry: ApiCatalogEntry,
+        selected_params: dict[str, Any],
+    ) -> ApiQueryExecutionPlan:
+        """单候选路径下构建含前置步骤的执行计划。"""
+        predecessors = list(selected_entry.predecessors)
+        if not predecessors:
+            return build_single_step_plan(
+                selected_entry,
+                selected_params,
+                step_id=_build_step_id(selected_entry),
+                plan_id=f"dag_{state['trace_id'][:8]}",
+            )
+
+        registry = self._registry_source_getter()
+        predecessor_steps: list[tuple[str, ApiCatalogEntry, dict[str, Any], bool]] = []
+        selected_context = runtime_context.selection_context if isinstance(runtime_context.selection_context, dict) else {}
+        selected_values_by_binding = _parse_user_select_values(selected_context.get("user_select"))
+
+        for predecessor in predecessors:
+            predecessor_entry = await registry.get_entry_by_id(predecessor.predecessor_api_id)
+            if predecessor_entry is None:
+                if predecessor.required:
+                    raise DagPlanValidationError(
+                        "planner_missing_required_predecessor",
+                        f"缺少必需前置接口: {predecessor.predecessor_api_id}",
+                    )
+                continue
+            if predecessor_entry.id == selected_entry.id:
+                raise DagPlanValidationError(
+                    "planner_invalid_predecessor_self_dependency",
+                    f"前置接口不能指向自身: {selected_entry.id}",
+                )
+            self._ensure_query_safe_entry(
+                predecessor_entry,
+                trace_id=state["trace_id"],
+                interaction_id=state.get("interaction_id"),
+                conversation_id=state.get("conversation_id"),
+            )
+
+            predecessor_step_id = _build_step_id(predecessor_entry)
+            if predecessor_step_id not in {item[0] for item in predecessor_steps}:
+                predecessor_steps.append((predecessor_step_id, predecessor_entry, {}, predecessor.required))
+            for binding in predecessor.param_bindings:
+                select_mode = binding.select_mode
+                source_path = _normalize_predecessor_source_path(
+                    binding.source_path,
+                    response_data_path=predecessor_entry.response_data_path,
+                )
+                if not source_path:
+                    continue
+
+                binding_key = f"{predecessor_entry.id}:{binding.target_param}:{source_path}"
+                if select_mode == "user_select" and binding_key in selected_values_by_binding:
+                    selected_params[binding.target_param] = selected_values_by_binding[binding_key]
+                    continue
+
+                expression = _build_predecessor_binding_expression(
+                    step_id=predecessor_step_id,
+                    source_path=source_path,
+                    select_mode=select_mode,
+                )
+                selected_params[binding.target_param] = expression
+
+        from app.models.schemas import ApiQueryPlanStep
+
+        main_step_id = _build_step_id(selected_entry)
+        steps: list[ApiQueryPlanStep] = [
+            ApiQueryPlanStep(
+                step_id=step_id,
+                api_id=entry.id,
+                api_path=entry.path,
+                params=dict(params),
+                depends_on=[],
+            )
+            for step_id, entry, params, _required in predecessor_steps
+        ]
+        steps.append(
+            ApiQueryPlanStep(
+                step_id=main_step_id,
+                api_id=selected_entry.id,
+                api_path=selected_entry.path,
+                params=dict(selected_params),
+                depends_on=[item[0] for item in predecessor_steps],
+            )
+        )
+        return ApiQueryExecutionPlan(
+            plan_id=f"dag_{state['trace_id'][:8]}",
+            steps=steps,
+        )
+
     async def _build_mutation_form(self, state: ApiQueryState) -> dict[str, Any]:
         """mutation 表单快路节点：不执行变更，只生成预填表单响应。
 
@@ -1154,8 +1237,6 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
                 execution_state=runtime_context.execution_state,
                 query_domains_hint=state.get("query_domains_hint", []),
                 business_intent_codes=state.get("business_intent_codes", []),
-                response_mode=state["response_mode"],
-                patch_context=state.get("patch_context"),
             )
 
         self._log_node_event(
@@ -1172,11 +1253,6 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
             "ui_spec": response.ui_spec,
             "plan": response.execution_plan,
         }
-
-    def _route_mode(self, state: ApiQueryState) -> str:
-        """决定进入 `direct` 还是 `nl` 分支。"""
-
-        return "direct" if state["request_mode"] == ApiQueryMode.DIRECT.value else "nl"
 
     def _after_route_query(self, state: ApiQueryState) -> str:
         """第二阶段路由后的去向。"""
@@ -1247,6 +1323,7 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
         plan: ApiQueryExecutionPlan,
         candidates: list[Any],
         *,
+        predecessor_hints: dict[str, list[ApiCatalogPredecessorSpec]] | None,
         subgraph_result,
         trace_id: str,
     ) -> dict[str, ApiCatalogEntry]:
@@ -1262,6 +1339,7 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
             return planner.validate_plan(
                 plan,
                 candidates,
+                predecessor_hints=predecessor_hints,
                 subgraph_result=subgraph_result,
                 trace_id=trace_id,
             )
@@ -1269,6 +1347,60 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
             if "unexpected keyword argument" not in str(exc):
                 raise
             return planner.validate_plan(plan, candidates)
+
+    async def _expand_candidates_with_predecessors(
+        self,
+        candidates: list[Any],
+        *,
+        trace_id: str,
+        interaction_id: str | None,
+        conversation_id: str | None,
+    ) -> tuple[list[Any], dict[str, list[ApiCatalogPredecessorSpec]]]:
+        """扩展多候选集合并补齐 predecessor hints。
+
+        功能：
+            多候选规划前，先把候选接口上的前置依赖补齐为可规划白名单，并输出结构化 hints
+            给 Planner 提示词。required predecessor 缺失时在 Stage 3 直接失败，避免把不完整
+            的图纸交给后续执行阶段。
+        """
+
+        expanded_candidates = list(candidates)
+        seen_api_ids = {candidate.entry.id for candidate in expanded_candidates}
+        predecessor_hints: dict[str, list[ApiCatalogPredecessorSpec]] = {}
+        registry = self._registry_source_getter()
+
+        for candidate in candidates:
+            entry = candidate.entry
+            specs = list(entry.predecessors)
+            if not specs:
+                continue
+            predecessor_hints[entry.id] = specs
+            for spec in specs:
+                if spec.predecessor_api_id in seen_api_ids:
+                    continue
+                predecessor_entry = await registry.get_entry_by_id(spec.predecessor_api_id)
+                if predecessor_entry is None:
+                    if spec.required:
+                        raise DagPlanValidationError(
+                            "planner_missing_required_predecessor",
+                            f"缺少必需前置接口: {spec.predecessor_api_id}",
+                            metadata={
+                                "target_api_id": entry.id,
+                                "required_predecessor_api_id": spec.predecessor_api_id,
+                            },
+                        )
+                    continue
+                self._ensure_query_safe_entry(
+                    predecessor_entry,
+                    trace_id=trace_id,
+                    interaction_id=interaction_id,
+                    conversation_id=conversation_id,
+                )
+                from app.services.api_catalog.schema import ApiCatalogSearchResult
+
+                expanded_candidates.append(ApiCatalogSearchResult(entry=predecessor_entry, score=candidate.score))
+                seen_api_ids.add(predecessor_entry.id)
+        return expanded_candidates, predecessor_hints
 
     def _get_extractor(self) -> ApiParamExtractor:
         """读取当前 extractor 依赖。"""
@@ -1334,84 +1466,6 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
             else None,
         )
 
-    async def _prepare_direct_execution(
-        self,
-        request_body: ApiQueryRequest,
-        *,
-        trace_id: str,
-        interaction_id: str | None,
-        conversation_id: str | None,
-    ) -> tuple[ApiQueryExecutionPlan, dict[str, ApiCatalogEntry], list[str], list[str], str]:
-        """为 `direct` 快路准备单步执行计划。
-
-        功能：
-            direct 模式要求调用方已经明确知道目标 api_id，因此这一层只负责做目录校验、
-            只读安全拦截、参数校验和 patch 附加约束，不再走自然语言路由。
-
-        Returns:
-            单步执行计划、步骤映射、业务域、业务意图和渲染用 query_text。
-
-        Edge Cases:
-            - 目录加载失败会抛 503，明确区分“治理源异常”和“用户传错 api_id”
-            - direct 模式不会偷偷回退自然语言链路，任何契约错误都直接抛 422
-            - patch 模式只允许分页 GET 列表接口，避免前端对任意接口发局部刷新
-        """
-
-        assert request_body.direct_query is not None
-
-        registry_source = self._registry_source_getter()
-        direct_query = request_body.direct_query
-        try:
-            entry = await registry_source.get_entry_by_id(direct_query.api_id)
-        except ApiCatalogSourceError as exc:
-            logger.exception(
-                "%s direct registry lookup failed api_id=%s",
-                _build_api_query_log_prefix(trace_id, interaction_id, conversation_id),
-                direct_query.api_id,
-            )
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=f"[{trace_id}] direct 模式加载接口目录失败：{exc}",
-            ) from exc
-
-        if entry is None:
-            _raise_direct_query_error(
-                trace_id=trace_id,
-                detail=f"direct 模式指定的接口不存在：{direct_query.api_id}",
-            )
-
-        _ensure_active_entry(
-            entry,
-            trace_id=trace_id,
-            interaction_id=interaction_id,
-            conversation_id=conversation_id,
-        )
-        self._ensure_query_safe_entry(entry, trace_id=trace_id, interaction_id=interaction_id, conversation_id=conversation_id)
-        # direct 模式是“强契约调用”，必须先在网关层卡掉未知字段和缺参。
-        validated_params = _validate_direct_query_params(
-            entry,
-            direct_query.params,
-            trace_id=trace_id,
-            interaction_id=interaction_id,
-            conversation_id=conversation_id,
-        )
-        _validate_direct_patch_request(
-            request_body,
-            entry,
-            validated_params,
-            trace_id=trace_id,
-            interaction_id=interaction_id,
-            conversation_id=conversation_id,
-        )
-        plan = build_single_step_plan(
-            entry,
-            validated_params,
-            step_id=_build_step_id(entry),
-            plan_id=f"direct_{trace_id[:8]}",
-        )
-        query_text = request_body.query or _build_direct_query_text(entry, validated_params)
-        return plan, {_build_step_id(entry): entry}, [entry.domain], ["none"], query_text
-
     def _ensure_query_safe_entry(
         self,
         entry: ApiCatalogEntry,
@@ -1424,7 +1478,7 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
 
         功能：
             `/api-query` 的系统边界是“读链安全执行”。这里把 mutation 语义和非 GET/POST
-            查询方法统一拦下，避免 direct 模式绕开路由层的只读护栏。
+            查询方法统一拦下，保证执行阶段不会触发写链路。
 
         Edge Cases:
             - operation_safety 只要是 mutation 就直接 422，不允许 method 侥幸穿透
@@ -1500,10 +1554,7 @@ def _resolve_runtime_user_id(user_context: dict[str, Any]) -> str | None:
 
 def _summarize_request_query(request_body: ApiQueryRequest) -> str:
     """生成适合日志与审计的请求摘要。"""
-
-    if request_body.mode == ApiQueryMode.DIRECT and request_body.direct_query is not None:
-        return f"direct:{request_body.direct_query.api_id}"
-    return (request_body.query or "")[:100]
+    return request_body.query[:100]
 
 
 def _build_retrieval_filters(request_body: ApiQueryRequest) -> ApiCatalogSearchFilters:
@@ -1536,182 +1587,90 @@ def _find_selected_entry(candidates: list[Any], routing_result: ApiQueryRoutingR
     )
 
 
-def _ensure_active_entry(
-    entry: ApiCatalogEntry,
-    *,
-    trace_id: str,
-    interaction_id: str | None,
-    conversation_id: str | None,
-) -> None:
-    """拦截未激活目录项，保持 `direct` 与召回链路的一致安全边界。"""
+def _parse_user_select_values(raw: Any) -> dict[str, Any]:
+    """解析用户选择上下文为绑定键值映射。"""
+    if not isinstance(raw, dict):
+        return {}
+    key = raw.get("key")
+    if isinstance(key, str) and key.strip():
+        return {key.strip(): raw.get("value")}
 
-    if entry.status == "active":
-        return
-    logger.warning(
-        "%s blocked inactive endpoint id=%s status=%s path=%s",
-        _build_api_query_log_prefix(trace_id, interaction_id, conversation_id),
-        entry.id,
-        entry.status,
-        entry.path,
-    )
-    raise HTTPException(
-        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-        detail=f"[{trace_id}] direct 模式仅允许调用激活接口，当前接口状态为 {entry.status}",
-    )
+    values: dict[str, Any] = {}
+    for binding_key, value in raw.items():
+        if not isinstance(binding_key, str):
+            continue
+        normalized_key = binding_key.strip()
+        if not normalized_key:
+            continue
+        values[normalized_key] = value
+    return values
 
 
-def _validate_direct_query_params(
-    entry: ApiCatalogEntry,
-    params: dict[str, Any],
-    *,
-    trace_id: str,
-    interaction_id: str | None,
-    conversation_id: str | None,
-) -> dict[str, Any]:
-    """校验 `direct` 模式的显式参数。
+def _normalize_predecessor_source_path(source_path: str, *, response_data_path: str) -> str:
+    """把 predecessor source_path 转换为绑定表达式可消费格式。
 
-    功能：
-        direct 模式不经过 LLM 提参，因此网关必须对调用方显式提交的字段做硬校验，防止
-        前端把未声明参数、拼写错误或缺参请求直接带到业务系统。
-
-    Returns:
-        通过校验后的参数副本。
-
-    Edge Cases:
-        - 任意未声明字段都会直接 422，避免下游接口出现“静默忽略”的假成功
-        - 必填参数为空字符串、空数组、空对象时同样视为缺失
+    约定：
+        predecessor metadata 的 `source_path` 推荐始终写成相对 `execution_result.data`
+        的路径（如 `$.idCard`）。为了兼容历史元数据，仍支持把原始响应根路径
+        （如 `$.result.records[*].idCard`）自动折算到 `execution_result.data` 语义下。
     """
-
-    declared_fields = set(entry.param_schema.properties.keys())
-    unknown_fields = [field for field in params if field not in declared_fields]
-    if unknown_fields:
-        logger.warning(
-            "%s direct params rejected id=%s unknown_fields=%s",
-            _build_api_query_log_prefix(trace_id, interaction_id, conversation_id),
-            entry.id,
-            unknown_fields,
-        )
-        _raise_direct_query_error(
-            trace_id=trace_id,
-            detail=f"direct 模式存在未声明参数：{', '.join(unknown_fields)}",
-        )
-
-    missing_required_params = _find_missing_required_params(entry, params)
-    if missing_required_params:
-        logger.warning(
-            "%s direct params rejected id=%s missing_required=%s",
-            _build_api_query_log_prefix(trace_id, interaction_id, conversation_id),
-            entry.id,
-            missing_required_params,
-        )
-        _raise_direct_query_error(
-            trace_id=trace_id,
-            detail=f"direct 模式缺少必要参数：{', '.join(missing_required_params)}",
-        )
-    return dict(params)
-
-
-def _validate_direct_patch_request(
-    request_body: ApiQueryRequest,
-    entry: ApiCatalogEntry,
-    params: dict[str, Any],
-    *,
-    trace_id: str,
-    interaction_id: str | None,
-    conversation_id: str | None,
-) -> None:
-    """校验列表 patch 快路的专属约束。
-
-    功能：
-        patch 模式本质上是前端二跳分页/筛选刷新，因此只能作用于“已声明分页能力的 GET
-        列表接口”。这里集中卡掉所有会让 patch 语义失真的请求。
-
-    Edge Cases:
-        - 非分页 GET 列表接口不允许进入 patch 模式，避免前端误把全量刷新当局部 patch
-        - filter submit/reset 必须把页码重置为 1，防止前端在旧页号上查询出错位数据
-        - pageSize 超上限会被硬拦截，避免前端利用 patch 通道放大单次查询负载
-    """
-
-    if request_body.response_mode != ApiQueryResponseMode.PATCH:
-        return
-
-    log_prefix = _build_api_query_log_prefix(trace_id, interaction_id, conversation_id)
-    pagination_hint = entry.pagination_hint
-    if entry.method != "GET" or not pagination_hint.enabled:
-        logger.warning("%s direct patch rejected id=%s reason=unsupported_entry", log_prefix, entry.id)
-        _raise_direct_query_error(
-            trace_id=trace_id,
-            detail="PATCH_MODE_NOT_SUPPORTED: 当前接口不是开启分页能力的只读 GET 列表接口",
-        )
-
-    page_param = pagination_hint.page_param or "pageNum"
-    page_size_param = pagination_hint.page_size_param or "pageSize"
-    missing_pagination_params = [param_name for param_name in (page_param, page_size_param) if param_name not in params]
-    if missing_pagination_params:
-        logger.warning(
-            "%s direct patch rejected id=%s missing_pagination_params=%s",
-            log_prefix,
-            entry.id,
-            missing_pagination_params,
-        )
-        _raise_direct_query_error(
-            trace_id=trace_id,
-            detail=f"PATCH_MODE_NOT_SUPPORTED: patch 模式必须显式提供分页参数：{', '.join(missing_pagination_params)}",
-        )
-
-    page_size_value = params.get(page_size_param)
-    if isinstance(page_size_value, (int, float)) and int(page_size_value) > _PATCH_PAGE_SIZE_MAX:
-        logger.warning(
-            "%s direct patch rejected id=%s page_size=%s over_limit=%s",
-            log_prefix,
-            entry.id,
-            page_size_value,
-            _PATCH_PAGE_SIZE_MAX,
-        )
-        _raise_direct_query_error(
-            trace_id=trace_id,
-            detail=f"patch 模式下 {page_size_param} 不能超过 {_PATCH_PAGE_SIZE_MAX}",
-        )
-
-    patch_context = request_body.patch_context
-    if patch_context is None:
-        return
-
-    if patch_context.trigger in {ApiQueryPatchTrigger.FILTER_SUBMIT, ApiQueryPatchTrigger.FILTER_RESET}:
-        page_value = params.get(page_param)
-        if page_value != 1:
-            logger.warning(
-                "%s direct patch rejected id=%s trigger=%s invalid_page_reset=%s",
-                log_prefix,
-                entry.id,
-                patch_context.trigger.value,
-                page_value,
-            )
-            _raise_direct_query_error(
-                trace_id=trace_id,
-                detail=f"patch 模式下触发 {patch_context.trigger.value} 时必须将 {page_param} 重置为 1",
-            )
-
-
-def _build_direct_query_text(entry: ApiCatalogEntry, params: dict[str, Any]) -> str:
-    """为快路构造稳定的渲染上下文文本。"""
-
-    if not params:
-        return f"直达查询：{entry.description}"
-    return f"直达查询：{entry.description}（参数：{', '.join(sorted(params.keys()))}）"
-
-
-def _raise_direct_query_error(*, trace_id: str, detail: str) -> None:
-    """统一抛出 `direct` 模式的 422 错误。"""
-
-    raise HTTPException(
-        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-        detail=f"[{trace_id}] {detail}",
+    raw = str(source_path or "").strip()
+    if not raw:
+        return ""
+    raw = raw.removeprefix("$").lstrip(".").replace("[]", "[*]")
+    normalized_response_data_path = (
+        str(response_data_path or "").strip().removeprefix("$").lstrip(".").replace("[]", "[*]")
     )
+
+    for prefix in (normalized_response_data_path, "data"):
+        stripped = _strip_predecessor_source_prefix(raw, prefix)
+        if stripped is not None:
+            raw = stripped
+            break
+
+    raw = raw.lstrip(".")
+    if raw.startswith("[*]."):
+        raw = raw[len("[*].") :]
+    elif raw == "[*]":
+        return ""
+    return raw
+
+
+def _build_predecessor_binding_expression(*, step_id: str, source_path: str, select_mode: str) -> str:
+    """构造受限 DAG 绑定表达式。"""
+    normalized_mode = select_mode if select_mode in _PREDECESSOR_SELECT_MODE_TO_BINDING_TEMPLATE else "single"
+    template = _PREDECESSOR_SELECT_MODE_TO_BINDING_TEMPLATE[normalized_mode]
+    return template.format(step_id=step_id, source_path=source_path)
+
+
+def _strip_predecessor_source_prefix(path: str, prefix: str) -> str | None:
+    """剥离 `source_path` 中的上游响应根前缀。"""
+
+    normalized_prefix = str(prefix or "").strip().removeprefix("$").lstrip(".").replace("[]", "[*]")
+    if not normalized_prefix:
+        return None
+
+    if path == normalized_prefix or path == f"{normalized_prefix}[*]":
+        return ""
+
+    dotted_prefix = f"{normalized_prefix}."
+    if path.startswith(dotted_prefix):
+        return path[len(dotted_prefix) :]
+
+    wildcard_prefix = f"{normalized_prefix}[*]."
+    if path.startswith(wildcard_prefix):
+        return path[len(wildcard_prefix) :]
+
+    return None
 
 
 def _find_missing_required_params(entry: ApiCatalogEntry, params: dict[str, Any]) -> list[str]:
-    """找出当前请求缺失的必填参数。"""
+    """找出当前请求缺失的必填参数。
+
+    功能：
+        删除预检和单步计划都需要一套一致的“缺参判定”语义。统一在这里做空值规则，
+        避免不同调用链出现“有的把空字符串算有效、有的当缺失”的分歧。
+    """
 
     missing: list[str] = []
     for field in entry.param_schema.required:
