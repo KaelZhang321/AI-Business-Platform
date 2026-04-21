@@ -14,6 +14,8 @@ import com.lzke.ai.application.exam.dto.MyCustomerListQueryRequest;
 import com.lzke.ai.application.exam.dto.MyPatientListItemResponse;
 import com.lzke.ai.application.exam.dto.MyPatientListQueryRequest;
 import com.lzke.ai.application.exam.dto.PatientExamBatchResultQueryRequest;
+import com.lzke.ai.application.exam.dto.PatientExamCleanedResultQueryRequest;
+import com.lzke.ai.application.exam.dto.PatientExamCleanedResultResponse;
 import com.lzke.ai.application.exam.dto.PatientExamDepartmentResponse;
 import com.lzke.ai.application.exam.dto.PatientExamPatientInfoResponse;
 import com.lzke.ai.application.exam.dto.PatientExamPatientQueryRequest;
@@ -161,6 +163,20 @@ public class PatientExamController {
             @Valid @RequestBody PatientExamResultQueryRequest request
     ) {
         return ApiResponse.ok(patientExamApplicationService.getExamResult(request));
+    }
+
+    /**
+     * 查询单个体检清洗结果。
+     */
+    @Operation(
+            summary = "查询单个体检清洗结果",
+            description = "根据studyId查询体检结果，并通过L1RuleCleaner清洗itemName后返回扁平指标结构"
+    )
+    @PostMapping("/cleaned-result/query")
+    public ApiResponse<PatientExamCleanedResultResponse> getCleanedExamResult(
+            @Valid @RequestBody PatientExamCleanedResultQueryRequest request
+    ) {
+        return ApiResponse.ok(patientExamApplicationService.getCleanedExamResult(request));
     }
 
     /**

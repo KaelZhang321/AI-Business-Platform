@@ -570,9 +570,9 @@ public class DoctorWorkbenchApplicationService {
         if (!StringUtils.hasText(request.getFavoriteName())) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "favoriteName不能为空");
         }
-        if (!StringUtils.hasText(request.getCardJson())) {
-            throw new BusinessException(ErrorCode.BAD_REQUEST, "cardJson不能为空");
-        }
+//        if (!StringUtils.hasText(request.getCardJson())) {
+//            throw new BusinessException(ErrorCode.BAD_REQUEST, "cardJson不能为空");
+//        }
     }
 
     private void validateCustomerNoteRequest(DoctorCustomerNoteRequest request) {

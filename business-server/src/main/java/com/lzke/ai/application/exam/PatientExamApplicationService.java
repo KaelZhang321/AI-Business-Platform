@@ -11,6 +11,10 @@ import com.lzke.ai.application.exam.dto.MyPatientLatestExamDateResponse;
 import com.lzke.ai.application.exam.dto.MyPatientListItemResponse;
 import com.lzke.ai.application.exam.dto.MyPatientListQueryRequest;
 import com.lzke.ai.application.exam.dto.PatientExamBatchResultQueryRequest;
+import com.lzke.ai.application.exam.dto.PatientExamCleanedIndicatorResponse;
+import com.lzke.ai.application.exam.dto.PatientExamCleanedResultQueryRequest;
+import com.lzke.ai.application.exam.dto.PatientExamCleanedResultResponse;
+import com.lzke.ai.application.exam.dto.PatientExamCleanedSummaryResponse;
 import com.lzke.ai.application.exam.dto.PatientExamDepartmentResponse;
 import com.lzke.ai.application.exam.dto.PatientExamDepartmentResultResponse;
 import com.lzke.ai.application.exam.dto.PatientExamDepartmentTable;
@@ -32,6 +36,7 @@ import com.lzke.ai.exception.ErrorCode;
 import com.lzke.ai.application.ui.UiBuilderApplicationService;
 import com.lzke.ai.infrastructure.persistence.mapper.PatientExamOdsMapper;
 import com.lzke.ai.interfaces.dto.PageResult;
+import com.lzke.ai.service.L1RuleCleaner;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -48,6 +53,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.time.DayOfWeek;
 import java.time.LocalDateTime;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
@@ -70,6 +76,8 @@ import java.util.stream.Collectors;
 public class PatientExamApplicationService {
 
     private static final Pattern DEPARTMENT_CODE_PATTERN = Pattern.compile("^[A-Za-z0-9_]+$");
+    private static final Pattern REFERENCE_RANGE_PATTERN = Pattern.compile("(-?\\d+(?:\\.\\d+)?)\\s*(?:-|~|～|至)\\s*(-?\\d+(?:\\.\\d+)?)");
+    private static final Pattern NUMBER_PATTERN = Pattern.compile("-?\\d+(?:\\.\\d+)?");
     private static final int MAX_BATCH_REPORTS = 10;
     private static final int DEFAULT_BATCH_QUERY_YEARS = 3;
     private static final String MY_CUSTOMER_ENDPOINT_ID = "6bbc18329c3dde651603182a651569ab";
@@ -197,6 +205,138 @@ public class PatientExamApplicationService {
         return value == null ? "" : value;
     }
 
+    private PatientExamCleanedResultResponse buildCleanedExamResult(
+            PatientExamSessionRowResponse sessionRow,
+            List<PatientExamResultItemResponse> detailRows
+    ) {
+        List<PatientExamCleanedIndicatorResponse> indicators = new ArrayList<>();
+        Set<String> categories = new LinkedHashSet<>();
+        for (PatientExamResultItemResponse row : detailRows) {
+            if (!StringUtils.hasText(row.getItemName()) && !StringUtils.hasText(row.getResultValue())) {
+                continue;
+            }
+            PatientExamCleanedIndicatorResponse indicator = toCleanedIndicator(row);
+            if (StringUtils.hasText(indicator.getCategory())) {
+                categories.add(indicator.getCategory());
+            }
+            indicators.add(indicator);
+        }
+
+        PatientExamCleanedSummaryResponse summary = new PatientExamCleanedSummaryResponse();
+        summary.setTotalIndicators(indicators.size());
+        summary.setAbnormalCount((int) indicators.stream()
+                .filter(indicator -> Boolean.TRUE.equals(indicator.getAbnormal()))
+                .count());
+        summary.setCategories(new ArrayList<>(categories));
+
+        PatientExamCleanedResultResponse response = new PatientExamCleanedResultResponse();
+        response.setStudyId(sessionRow.getStudyId());
+        response.setPatientName(sessionRow.getPatientName());
+        response.setGender(sessionRow.getGender());
+        response.setExamTime(sessionRow.getExamTime());
+        response.setPackageName(sessionRow.getPackageName());
+        response.setSummary(summary);
+        response.setIndicators(indicators);
+        return response;
+    }
+
+    private PatientExamCleanedIndicatorResponse toCleanedIndicator(PatientExamResultItemResponse row) {
+        L1RuleCleaner.CleanResult cleanResult = L1RuleCleaner.clean(row.getItemName());
+        String category = StringUtils.hasText(cleanResult.getCategory())
+                ? cleanResult.getCategory()
+                : row.getMajorItemName();
+        ReferenceRange referenceRange = parseReferenceRange(row.getReferenceRange());
+        String abnormalDirection = resolveAbnormalDirection(row.getAbnormalFlag());
+        if (!StringUtils.hasText(abnormalDirection)) {
+            abnormalDirection = inferAbnormalDirection(row.getResultValue(), referenceRange);
+        }
+
+        PatientExamCleanedIndicatorResponse indicator = new PatientExamCleanedIndicatorResponse();
+        indicator.setStandardCode(StringUtils.hasText(cleanResult.getStandardCode())
+                ? cleanResult.getStandardCode()
+                : row.getItemCode());
+        indicator.setStandardName(StringUtils.hasText(cleanResult.getStandardName())
+                ? cleanResult.getStandardName()
+                : (StringUtils.hasText(cleanResult.getCleaned()) ? cleanResult.getCleaned() : row.getItemName()));
+        indicator.setCategory(category);
+        indicator.setValue(row.getResultValue());
+        indicator.setUnit(row.getUnit());
+        indicator.setReferenceRange(row.getReferenceRange());
+        indicator.setRefMin(referenceRange.min());
+        indicator.setRefMax(referenceRange.max());
+        indicator.setAbnormal(isAbnormal(row.getAbnormalFlag(), abnormalDirection));
+        indicator.setAbnormalDirection(abnormalDirection);
+        return indicator;
+    }
+
+    private ReferenceRange parseReferenceRange(String value) {
+        if (!StringUtils.hasText(value)) {
+            return new ReferenceRange(null, null);
+        }
+        Matcher matcher = REFERENCE_RANGE_PATTERN.matcher(value.trim());
+        if (!matcher.find()) {
+            return new ReferenceRange(null, null);
+        }
+        return new ReferenceRange(matcher.group(1), matcher.group(2));
+    }
+
+    private boolean isAbnormal(String abnormalFlag, String abnormalDirection) {
+        if (StringUtils.hasText(abnormalDirection)) {
+            return true;
+        }
+        if (!StringUtils.hasText(abnormalFlag)) {
+            return false;
+        }
+        String flag = abnormalFlag.trim();
+        return !"0".equals(flag) && !"N".equalsIgnoreCase(flag) && !"正常".equals(flag);
+    }
+
+    private String resolveAbnormalDirection(String abnormalFlag) {
+        if (!StringUtils.hasText(abnormalFlag)) {
+            return null;
+        }
+        String flag = abnormalFlag.trim();
+        return switch (flag) {
+            case "1", "H", "h", "↑", "高", "偏高" -> "high";
+            case "2", "L", "l", "↓", "低", "偏低" -> "low";
+            default -> null;
+        };
+    }
+
+    private String inferAbnormalDirection(String resultValue, ReferenceRange referenceRange) {
+        Double value = parseFirstNumber(resultValue);
+        Double min = parseFirstNumber(referenceRange.min());
+        Double max = parseFirstNumber(referenceRange.max());
+        if (value == null) {
+            return null;
+        }
+        if (max != null && value > max) {
+            return "high";
+        }
+        if (min != null && value < min) {
+            return "low";
+        }
+        return null;
+    }
+
+    private Double parseFirstNumber(String value) {
+        if (!StringUtils.hasText(value)) {
+            return null;
+        }
+        Matcher matcher = NUMBER_PATTERN.matcher(value.trim());
+        if (!matcher.find()) {
+            return null;
+        }
+        try {
+            return Double.parseDouble(matcher.group());
+        } catch (NumberFormatException ex) {
+            return null;
+        }
+    }
+
+    private record ReferenceRange(String min, String max) {
+    }
+
     /**
      * 查询当前登录员工的患者列表。
      *
@@ -320,6 +460,30 @@ public class PatientExamApplicationService {
                 resolvedTables
         );
         return buildSession(sessionRow, detailRows);
+    }
+
+    /**
+     * 查询单个体检并按 L1 规则清洗指标名称。
+     */
+    public PatientExamCleanedResultResponse getCleanedExamResult(PatientExamCleanedResultQueryRequest request) {
+        if (request == null || !StringUtils.hasText(request.getStudyId())) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "studyId不能为空");
+        }
+
+        PatientExamSessionRowResponse sessionRow = patientExamOdsMapper.selectPatientExamSessionByStudyId(request.getStudyId());
+        if (sessionRow == null) {
+            throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "未找到对应体检记录: " + request.getStudyId());
+        }
+
+        List<PatientExamDepartmentTable> tables = patientExamOdsMapper.selectDepartmentTables(null);
+        List<PatientExamDepartmentTable> resolvedTables = resolveTables(tables);
+        List<PatientExamResultItemResponse> detailRows = resolvedTables.isEmpty()
+                ? Collections.emptyList()
+                : patientExamOdsMapper.selectPatientExamDepartmentItems(
+                        Collections.singletonList(request.getStudyId()),
+                        resolvedTables
+                );
+        return buildCleanedExamResult(sessionRow, detailRows);
     }
 
     /**
