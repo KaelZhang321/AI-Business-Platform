@@ -43,6 +43,9 @@ public class UiCardEndpointRelation {
 
     @TableField(exist = false)
     private String tagName;
+    
+    @TableField(exist = false)
+    private String operationSafety;
 
     @TableField(fill = FieldFill.INSERT)
     private OffsetDateTime createdAt;

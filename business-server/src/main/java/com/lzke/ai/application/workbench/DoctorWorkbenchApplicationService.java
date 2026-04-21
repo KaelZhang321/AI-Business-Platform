@@ -185,7 +185,7 @@ public class DoctorWorkbenchApplicationService {
                         .orderByAsc(UiCardEndpointRelation::getCardId)
                         .orderByAsc(UiCardEndpointRelation::getSortOrder)
                         .orderByDesc(UiCardEndpointRelation::getCreatedAt));
-        // attachCardEndpointDetails(relations);
+         attachCardEndpointDetails(relations);
 
         Map<String, List<UiCardEndpointRelation>> relationMap = new LinkedHashMap<>();
         for (UiCardEndpointRelation relation : relations) {
@@ -250,23 +250,23 @@ public class DoctorWorkbenchApplicationService {
             }
         }
 
-        Map<String, UiApiSource> sourceById = new LinkedHashMap<>();
-        if (!sourceIds.isEmpty()) {
-            List<UiApiSource> sources = uiApiSourceMapper.selectList(new LambdaQueryWrapper<UiApiSource>()
-                    .in(UiApiSource::getId, sourceIds));
-            for (UiApiSource source : sources) {
-                sourceById.put(source.getId(), source);
-            }
-        }
-
-        Map<String, UiApiTag> tagById = new LinkedHashMap<>();
-        if (!tagIds.isEmpty()) {
-            List<UiApiTag> tags = uiApiTagMapper.selectList(new LambdaQueryWrapper<UiApiTag>()
-                    .in(UiApiTag::getId, tagIds));
-            for (UiApiTag tag : tags) {
-                tagById.put(tag.getId(), tag);
-            }
-        }
+//        Map<String, UiApiSource> sourceById = new LinkedHashMap<>();
+//        if (!sourceIds.isEmpty()) {
+//            List<UiApiSource> sources = uiApiSourceMapper.selectList(new LambdaQueryWrapper<UiApiSource>()
+//                    .in(UiApiSource::getId, sourceIds));
+//            for (UiApiSource source : sources) {
+//                sourceById.put(source.getId(), source);
+//            }
+//        }
+//
+//        Map<String, UiApiTag> tagById = new LinkedHashMap<>();
+//        if (!tagIds.isEmpty()) {
+//            List<UiApiTag> tags = uiApiTagMapper.selectList(new LambdaQueryWrapper<UiApiTag>()
+//                    .in(UiApiTag::getId, tagIds));
+//            for (UiApiTag tag : tags) {
+//                tagById.put(tag.getId(), tag);
+//            }
+//        }
 
         for (UiCardEndpointRelation relation : relations) {
             UiApiEndpoint endpoint = endpointById.get(relation.getEndpointId());
@@ -278,12 +278,13 @@ public class DoctorWorkbenchApplicationService {
             relation.setEndpointMethod(endpoint.getMethod());
             relation.setEndpointStatus(endpoint.getStatus());
             relation.setSourceId(endpoint.getSourceId());
+            relation.setOperationSafety(endpoint.getOperationSafety());
 
-            UiApiSource source = sourceById.get(endpoint.getSourceId());
-            relation.setSourceName(source != null ? source.getName() : null);
-
-            UiApiTag tag = tagById.get(endpoint.getTagId());
-            relation.setTagName(tag != null ? tag.getName() : null);
+//            UiApiSource source = sourceById.get(endpoint.getSourceId());
+//            relation.setSourceName(source != null ? source.getName() : null);
+//
+//            UiApiTag tag = tagById.get(endpoint.getTagId());
+//            relation.setTagName(tag != null ? tag.getName() : null);
         }
     }
 
