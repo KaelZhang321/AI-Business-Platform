@@ -11,11 +11,6 @@ import com.lzke.ai.infrastructure.persistence.mapper.UiApiFlowLogMapper;
 import com.lzke.ai.infrastructure.persistence.mapper.UiApiSourceMapper;
 import com.lzke.ai.infrastructure.persistence.mapper.UiApiTagMapper;
 import com.lzke.ai.infrastructure.persistence.mapper.UiApiTestLogMapper;
-import com.lzke.ai.infrastructure.persistence.mapper.UiNodeBindingMapper;
-import com.lzke.ai.infrastructure.persistence.mapper.UiPageMapper;
-import com.lzke.ai.infrastructure.persistence.mapper.UiPageNodeMapper;
-import com.lzke.ai.infrastructure.persistence.mapper.UiProjectMapper;
-import com.lzke.ai.infrastructure.persistence.mapper.UiSpecVersionMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.web.client.RestTemplate;
@@ -45,14 +40,11 @@ class UiBuilderApplicationServiceOpenApiImportTest {
                 mock(UiApiEndpointRoleMapper.class),
                 mock(UiApiFlowLogMapper.class),
                 mock(UiApiTestLogMapper.class),
+                null,
+                null,
                 mock(SemanticFieldDictMapper.class),
                 mock(SemanticFieldAliasMapper.class),
-                mock(SemanticFieldValueMapMapper.class),
-                mock(UiProjectMapper.class),
-                mock(UiPageMapper.class),
-                mock(UiPageNodeMapper.class),
-                mock(UiNodeBindingMapper.class),
-                mock(UiSpecVersionMapper.class)
+                mock(SemanticFieldValueMapMapper.class)
         );
     }
 
@@ -160,6 +152,78 @@ class UiBuilderApplicationServiceOpenApiImportTest {
 
         assertNotNull(example);
         assertEquals("", example.path("id").asText());
+    }
+
+    @Test
+    void extractResponseExample_shouldParseMarkdownJsonBlockAndWrapResultEnvelope() throws Exception {
+        JsonNode rootDocument = objectMapper.readTree("""
+                {
+                  "paths": {
+                    "/dwCustomerArchive/identityContact": {
+                      "post": {
+                        "description": "响应：Result<IdentityContactPdfVO>\\n```json\\n{\\n  \\"customerName\\": \\"张三\\",\\n  \\"gender\\": \\"男\\",\\n  \\"age\\": 36\\n}\\n```",
+                        "responses": {
+                          "200": {
+                            "content": {
+                              "application/json": {
+                                "schema": {
+                                  "$ref": "#/components/schemas/ResultIdentityContactPdfVO"
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "components": {
+                    "schemas": {
+                      "ResultIdentityContactPdfVO": {
+                        "type": "object",
+                        "properties": {
+                          "success": {
+                            "type": "boolean",
+                            "default": true
+                          },
+                          "code": {
+                            "type": "integer",
+                            "default": 0
+                          },
+                          "result": {
+                            "$ref": "#/components/schemas/IdentityContactPdfVO"
+                          }
+                        }
+                      },
+                      "IdentityContactPdfVO": {
+                        "type": "object",
+                        "properties": {
+                          "customerName": {
+                            "type": "string"
+                          },
+                          "gender": {
+                            "type": "string"
+                          },
+                          "age": {
+                            "type": "integer"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+                """);
+
+        JsonNode operationNode = rootDocument.path("paths")
+                .path("/dwCustomerArchive/identityContact")
+                .path("post");
+        JsonNode example = invokePrivateJsonNodeMethod("extractResponseExample", rootDocument, operationNode);
+
+        assertNotNull(example);
+        assertEquals(true, example.path("success").asBoolean());
+        assertEquals(0, example.path("code").asInt());
+        assertEquals("张三", example.path("result").path("customerName").asText());
+        assertEquals("男", example.path("result").path("gender").asText());
+        assertEquals(36, example.path("result").path("age").asInt());
     }
 
     private JsonNode invokeExtractResponseSchema(JsonNode rootDocument, JsonNode operationNode) throws Exception {

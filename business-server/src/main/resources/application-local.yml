@@ -68,6 +68,8 @@ springdoc:
   group-configs:
     - group: "业务API"
       paths-to-match: /api/v1/**
+    - group: "医生工作台"
+      paths-to-match: /bs/api/v1/doctor-workbench/**
     - group: "管理API"
       paths-to-match: /actuator/**
 

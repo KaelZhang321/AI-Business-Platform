@@ -10,13 +10,11 @@ import lombok.Data;
 import java.time.OffsetDateTime;
 
 /**
- * UI Builder 项目实体。
- *
- * <p>对应 `ui_projects`，是页面配置和版本发布的顶层业务容器。
+ * UI Builder 卡片定义。
  */
 @Data
-@TableName("ui_projects")
-public class UiProject {
+@TableName("ui_cards")
+public class UiCard {
 
     @TableId(type = IdType.ASSIGN_UUID)
     private String id;
@@ -24,7 +22,7 @@ public class UiProject {
     private String name;
     private String code;
     private String description;
-    private String category;
+    private String cardType;
     private String status;
     private String createdBy;
 

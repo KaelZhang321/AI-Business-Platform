@@ -10,25 +10,39 @@ import lombok.Data;
 import java.time.OffsetDateTime;
 
 /**
- * UI Builder 节点字段绑定实体。
- *
- * <p>对应 `ui_node_bindings`，保存节点 props 与接口响应字段之间的映射规则。
+ * UI Builder 卡片和接口关联关系。
  */
 @Data
-@TableName("ui_node_bindings")
-public class UiNodeBinding {
+@TableName("ui_card_endpoint_relations")
+public class UiCardEndpointRelation {
 
     @TableId(type = IdType.ASSIGN_UUID)
     private String id;
 
-    private String nodeId;
+    private String cardId;
     private String endpointId;
-    private String bindingType;
-    private String targetProp;
-    private String sourcePath;
-    private String transformScript;
-    private String defaultValue;
-    private Boolean requiredFlag;
+    private Integer sortOrder;
+
+    @TableField(exist = false)
+    private String endpointName;
+
+    @TableField(exist = false)
+    private String endpointPath;
+
+    @TableField(exist = false)
+    private String endpointMethod;
+
+    @TableField(exist = false)
+    private String endpointStatus;
+
+    @TableField(exist = false)
+    private String sourceId;
+
+    @TableField(exist = false)
+    private String sourceName;
+
+    @TableField(exist = false)
+    private String tagName;
 
     @TableField(fill = FieldFill.INSERT)
     private OffsetDateTime createdAt;

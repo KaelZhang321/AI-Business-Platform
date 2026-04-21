@@ -1,19 +1,29 @@
 package com.lzke.ai.interfaces.rest;
 
+import java.util.List;
+
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
 import com.lzke.ai.application.exam.PatientExamApplicationService;
-import com.lzke.ai.application.exam.dto.MyPatientListItemResponse;
-import com.lzke.ai.application.exam.dto.MyPatientListQueryRequest;
 import com.lzke.ai.application.exam.dto.MyCustomerListItemResponse;
 import com.lzke.ai.application.exam.dto.MyCustomerListQueryRequest;
+import com.lzke.ai.application.exam.dto.MyPatientListItemResponse;
+import com.lzke.ai.application.exam.dto.MyPatientListQueryRequest;
 import com.lzke.ai.application.exam.dto.PatientExamBatchResultQueryRequest;
 import com.lzke.ai.application.exam.dto.PatientExamDepartmentResponse;
 import com.lzke.ai.application.exam.dto.PatientExamPatientInfoResponse;
 import com.lzke.ai.application.exam.dto.PatientExamPatientQueryRequest;
 import com.lzke.ai.application.exam.dto.PatientExamResultQueryRequest;
-import com.lzke.ai.application.exam.dto.PatientExamStatsResponse;
 import com.lzke.ai.application.exam.dto.PatientExamSessionQueryRequest;
 import com.lzke.ai.application.exam.dto.PatientExamSessionResponse;
 import com.lzke.ai.application.exam.dto.PatientExamSessionSummaryResponse;
+import com.lzke.ai.application.exam.dto.PatientExamStatsResponse;
+import com.lzke.ai.application.exam.dto.PatientHisItemResultQueryRequest;
+import com.lzke.ai.application.exam.dto.PatientHisItemResultResponse;
 import com.lzke.ai.interfaces.dto.ApiResponse;
 import com.lzke.ai.interfaces.dto.PageResult;
 import com.lzke.ai.security.AesECBEncryptUtils;
@@ -22,13 +32,6 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
-
-import java.util.List;
 
 /**
  * 患者体检结果查询控制器。
@@ -99,6 +102,19 @@ public class PatientExamController {
         return ApiResponse.ok(patientExamApplicationService.getExamStats());
     }
 
+    /**
+     * 查询患者 HIS 单项结果。
+     */
+    @Operation(
+            summary = "查询患者 HIS 单项结果",
+            description = "根据身份证号定位 HIS 病历号，合并返回 LIS 检验结果和 PACS 影像结果列表"
+    )
+    @PostMapping("/his-item-results/query")
+    public ApiResponse<List<PatientHisItemResultResponse>> listHisItemResults(
+            @Valid @RequestBody PatientHisItemResultQueryRequest request
+    ) {
+        return ApiResponse.ok(patientExamApplicationService.listHisItemResults(request));
+    }
     /**
      * 查询患者基础信息。
      */

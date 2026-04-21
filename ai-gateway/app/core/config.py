@@ -15,6 +15,15 @@ class Settings(BaseSettings):
     business_mysql_password: str = Field(default="ai_platform_dev")
     business_mysql_database: str = Field(default="ai_platform_business")
 
+    # Health Quadrant ODS MySQL
+    health_quadrant_ods_mysql_host: str = Field(default="rm-2ze7k76808sos442l.mysql.rds.aliyuncs.com")
+    health_quadrant_ods_mysql_port: int = Field(default=3306)
+    health_quadrant_ods_mysql_user: str = Field(default="pro_platform")
+    health_quadrant_ods_mysql_password: str = Field(default="xxxxxxxxx")
+    health_quadrant_ods_mysql_database: str = Field(default="dc_ods")
+    health_quadrant_mysql_connect_timeout_seconds: float = Field(5.0, ge=0.1, le=60.0)
+    dw_route_url: str = Field(default="http://127.0.0.1:8085/api/v1")
+
     # Redis
     redis_url: str = "redis://:redis_dev@localhost:6379/0"
 
@@ -88,6 +97,10 @@ class Settings(BaseSettings):
     ark_api_key: str = ""
     ark_api_base: str = "https://ark.cn-beijing.volces.com/api/v3"
     ark_default_model: str = "doubao-1-5-pro-32k-250115"
+
+    # Runtime LLM 配置（MySQL 驱动）
+    llm_runtime_config_table: str = "llm_service_backend_config"
+    llm_runtime_config_cache_ttl_seconds: int = Field(60, ge=1, le=3600)
 
     # API Query Stage-2
     api_query_route_timeout_seconds: float = 8.0

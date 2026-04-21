@@ -1,11 +1,30 @@
 package com.lzke.ai.application.ui;
 
+import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.StringUtils;
+import org.springframework.web.client.RestClientException;
+import org.springframework.web.client.RestTemplate;
+
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -17,77 +36,46 @@ import com.lzke.ai.application.dto.SemanticFieldValueMapRequest;
 import com.lzke.ai.application.dto.UiApiEndpointRequest;
 import com.lzke.ai.application.dto.UiApiEndpointRoleBindRequest;
 import com.lzke.ai.application.dto.UiApiInvokeRequest;
-import com.lzke.ai.application.dto.UiJsonRenderInvokeRequest;
-import com.lzke.ai.application.dto.UiJsonRenderInvokeResponse;
-import com.lzke.ai.application.dto.UiJsonRenderSubmitRequest;
-import com.lzke.ai.application.dto.UiJsonRenderSubmitResponse;
 import com.lzke.ai.application.dto.UiApiSourceRequest;
 import com.lzke.ai.application.dto.UiApiTestRequest;
 import com.lzke.ai.application.dto.UiApiTestResponse;
 import com.lzke.ai.application.dto.UiBuilderAuthTypeResponse;
-import com.lzke.ai.application.dto.UiBuilderPageDetailResponse;
 import com.lzke.ai.application.dto.UiBuilderNodeTypeResponse;
 import com.lzke.ai.application.dto.UiBuilderOverviewResponse;
-import com.lzke.ai.application.dto.UiNodeBindingRequest;
+import com.lzke.ai.application.dto.UiCardEndpointBindRequest;
+import com.lzke.ai.application.dto.UiCardRequest;
+import com.lzke.ai.application.dto.UiJsonRenderInvokeRequest;
+import com.lzke.ai.application.dto.UiJsonRenderInvokeResponse;
+import com.lzke.ai.application.dto.UiJsonRenderSubmitRequest;
+import com.lzke.ai.application.dto.UiJsonRenderSubmitResponse;
 import com.lzke.ai.application.dto.UiOpenApiImportRequest;
-import com.lzke.ai.application.dto.UiPageNodeRequest;
-import com.lzke.ai.application.dto.UiPagePreviewResponse;
-import com.lzke.ai.application.dto.UiPageRequest;
-import com.lzke.ai.application.dto.UiProjectRequest;
-import com.lzke.ai.domain.entity.UiApiEndpoint;
-import com.lzke.ai.domain.entity.UiApiEndpointRole;
 import com.lzke.ai.domain.entity.SemanticFieldAlias;
 import com.lzke.ai.domain.entity.SemanticFieldDict;
 import com.lzke.ai.domain.entity.SemanticFieldValueMap;
+import com.lzke.ai.domain.entity.UiApiEndpoint;
+import com.lzke.ai.domain.entity.UiApiEndpointRole;
 import com.lzke.ai.domain.entity.UiApiFlowLog;
 import com.lzke.ai.domain.entity.UiApiSource;
 import com.lzke.ai.domain.entity.UiApiTag;
 import com.lzke.ai.domain.entity.UiApiTestLog;
-import com.lzke.ai.domain.entity.UiNodeBinding;
-import com.lzke.ai.domain.entity.UiPage;
-import com.lzke.ai.domain.entity.UiPageNode;
-import com.lzke.ai.domain.entity.UiProject;
-import com.lzke.ai.domain.entity.UiSpecVersion;
+import com.lzke.ai.domain.entity.UiCard;
+import com.lzke.ai.domain.entity.UiCardEndpointRelation;
 import com.lzke.ai.exception.BusinessException;
 import com.lzke.ai.exception.ErrorCode;
+import com.lzke.ai.infrastructure.persistence.mapper.SemanticFieldAliasMapper;
+import com.lzke.ai.infrastructure.persistence.mapper.SemanticFieldDictMapper;
+import com.lzke.ai.infrastructure.persistence.mapper.SemanticFieldValueMapMapper;
 import com.lzke.ai.infrastructure.persistence.mapper.UiApiEndpointMapper;
 import com.lzke.ai.infrastructure.persistence.mapper.UiApiEndpointRoleMapper;
 import com.lzke.ai.infrastructure.persistence.mapper.UiApiFlowLogMapper;
 import com.lzke.ai.infrastructure.persistence.mapper.UiApiSourceMapper;
 import com.lzke.ai.infrastructure.persistence.mapper.UiApiTagMapper;
 import com.lzke.ai.infrastructure.persistence.mapper.UiApiTestLogMapper;
-import com.lzke.ai.infrastructure.persistence.mapper.UiNodeBindingMapper;
-import com.lzke.ai.infrastructure.persistence.mapper.UiPageMapper;
-import com.lzke.ai.infrastructure.persistence.mapper.UiPageNodeMapper;
-import com.lzke.ai.infrastructure.persistence.mapper.UiProjectMapper;
-import com.lzke.ai.infrastructure.persistence.mapper.UiSpecVersionMapper;
-import com.lzke.ai.infrastructure.persistence.mapper.SemanticFieldAliasMapper;
-import com.lzke.ai.infrastructure.persistence.mapper.SemanticFieldDictMapper;
-import com.lzke.ai.infrastructure.persistence.mapper.SemanticFieldValueMapMapper;
+import com.lzke.ai.infrastructure.persistence.mapper.UiCardEndpointRelationMapper;
+import com.lzke.ai.infrastructure.persistence.mapper.UiCardMapper;
 import com.lzke.ai.interfaces.dto.PageResult;
-import lombok.RequiredArgsConstructor;
-import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
-import org.springframework.util.StringUtils;
-import org.springframework.web.client.RestClientException;
-import org.springframework.web.client.RestTemplate;
 
-import java.net.URLDecoder;
-import java.nio.charset.StandardCharsets;
-import java.time.OffsetDateTime;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.Comparator;
-import java.util.Iterator;
-import java.util.HashSet;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Locale;
-import java.util.Map;
-import java.util.Objects;
-import java.util.Set;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
+import lombok.RequiredArgsConstructor;
 
 /**
  * UI Builder 应用服务。
@@ -95,10 +83,10 @@ import java.util.regex.Pattern;
  * <p>该服务是 UI Builder 模块的“流程编排层”，负责串起以下运行时能力：
  *
  * <ul>
- *     <li>接口源、接口定义、页面、节点、字段绑定的增删改查</li>
+ *     <li>接口源、接口定义、卡片与接口关系的增删改查</li>
  *     <li>OpenAPI 文档导入与接口标准化</li>
  *     <li>接口联调与联调日志记录</li>
- *     <li>页面配置到 json-render spec 的转换与发布</li>
+ *     <li>接口响应到 json-render 的转换与运行时调用</li>
  * </ul>
  *
  * <p>从本次重构开始，静态说明性对象（节点类型、表结构说明、模块流程等）
@@ -109,7 +97,7 @@ import java.util.regex.Pattern;
 public class UiBuilderApplicationService {
 
     private static final Set<String> OPEN_API_METHODS = Set.of("get", "post", "put", "delete", "patch");
-    private static final Pattern ARRAY_SEGMENT_PATTERN = Pattern.compile("([A-Za-z0-9_\\-]+)\\[(\\d+)]");
+    private static final Pattern MARKDOWN_JSON_BLOCK_PATTERN = Pattern.compile("```(?:json|JSON)?\\s*([\\s\\S]*?)```");
     private static final String EMPTY_FIELD_ORCHESTRATION = """
             {"fieldConfig":{"ignore":[],"passthrough":[],"groups":[],"render":[]}}
             """;
@@ -125,14 +113,11 @@ public class UiBuilderApplicationService {
     private final UiApiEndpointRoleMapper uiApiEndpointRoleMapper;
     private final UiApiFlowLogMapper uiApiFlowLogMapper;
     private final UiApiTestLogMapper uiApiTestLogMapper;
+    private final UiCardMapper uiCardMapper;
+    private final UiCardEndpointRelationMapper uiCardEndpointRelationMapper;
     private final SemanticFieldDictMapper semanticFieldDictMapper;
     private final SemanticFieldAliasMapper semanticFieldAliasMapper;
     private final SemanticFieldValueMapMapper semanticFieldValueMapMapper;
-    private final UiProjectMapper uiProjectMapper;
-    private final UiPageMapper uiPageMapper;
-    private final UiPageNodeMapper uiPageNodeMapper;
-    private final UiNodeBindingMapper uiNodeBindingMapper;
-    private final UiSpecVersionMapper uiSpecVersionMapper;
 
     /**
      * 返回 UI Builder 的概览说明。
@@ -497,6 +482,7 @@ public class UiBuilderApplicationService {
         List<UiApiEndpoint> endpoints = listEndpointsBySource(sourceId);
         List<String> endpointIds = endpoints.stream().map(UiApiEndpoint::getId).toList();
         if (!endpointIds.isEmpty()) {
+            uiCardEndpointRelationMapper.delete(new LambdaQueryWrapper<UiCardEndpointRelation>().in(UiCardEndpointRelation::getEndpointId, endpointIds));
             uiApiEndpointRoleMapper.delete(new LambdaQueryWrapper<UiApiEndpointRole>().in(UiApiEndpointRole::getEndpointId, endpointIds));
             uiApiFlowLogMapper.delete(new LambdaQueryWrapper<UiApiFlowLog>().in(UiApiFlowLog::getEndpointId, endpointIds));
             uiApiTestLogMapper.delete(new LambdaQueryWrapper<UiApiTestLog>().in(UiApiTestLog::getEndpointId, endpointIds));
@@ -788,6 +774,7 @@ public class UiBuilderApplicationService {
     @Transactional
     public void deleteEndpoint(String endpointId) {
         requireEndpoint(endpointId);
+        uiCardEndpointRelationMapper.delete(new LambdaQueryWrapper<UiCardEndpointRelation>().eq(UiCardEndpointRelation::getEndpointId, endpointId));
         uiApiEndpointRoleMapper.delete(new LambdaQueryWrapper<UiApiEndpointRole>().eq(UiApiEndpointRole::getEndpointId, endpointId));
         uiApiFlowLogMapper.delete(new LambdaQueryWrapper<UiApiFlowLog>().eq(UiApiFlowLog::getEndpointId, endpointId));
         uiApiTestLogMapper.delete(new LambdaQueryWrapper<UiApiTestLog>().eq(UiApiTestLog::getEndpointId, endpointId));
@@ -986,436 +973,138 @@ public class UiBuilderApplicationService {
     }
 
     /**
-     * 查询项目列表。
-     *
-     * @return 项目列表
+     * 分页查询卡片列表。
      */
-    public List<UiProject> listProjects() {
-        return uiProjectMapper.selectList(new LambdaQueryWrapper<UiProject>()
-                .orderByDesc(UiProject::getUpdatedAt)
-                .orderByDesc(UiProject::getCreatedAt));
-    }
-
-    /**
-     * 分页查询项目列表。
-     *
-     * @param query 分页参数
-     * @return 分页后的项目列表
-     */
-    public PageResult<UiProject> listProjects(PageQuery query) {
-        Page<UiProject> pageParam = buildPage(query);
-        Page<UiProject> result = uiProjectMapper.selectPage(pageParam, new LambdaQueryWrapper<UiProject>()
-                .orderByDesc(UiProject::getUpdatedAt)
-                .orderByDesc(UiProject::getCreatedAt));
+    public PageResult<UiCard> listCards(PageQuery query, String name, String status) {
+        Page<UiCard> pageParam = buildPage(query);
+        LambdaQueryWrapper<UiCard> wrapper = new LambdaQueryWrapper<UiCard>()
+                .orderByDesc(UiCard::getUpdatedAt)
+                .orderByDesc(UiCard::getCreatedAt);
+        if (StringUtils.hasText(name)) {
+            wrapper.and(condition -> condition.like(UiCard::getName, name.trim()).or().like(UiCard::getCode, name.trim()));
+        }
+        if (StringUtils.hasText(status)) {
+            wrapper.eq(UiCard::getStatus, status.trim());
+        }
+        Page<UiCard> result = uiCardMapper.selectPage(pageParam, wrapper);
         return PageResult.of(result.getRecords(), result.getTotal(), query.getPage(), query.getSize());
     }
 
     /**
-     * 创建项目。
-     *
-     * @param request 项目创建请求
-     * @return 持久化后的项目
+     * 创建卡片。
      */
     @Transactional
-    public UiProject createProject(UiProjectRequest request) {
-        validateProjectRequest(request, false);
-        ensureProjectCodeUnique(request.getCode(), null);
-        UiProject project = new UiProject();
-        applyProjectRequest(project, request);
-        uiProjectMapper.insert(project);
-        return project;
+    public UiCard createCard(UiCardRequest request) {
+        validateCardRequest(request, false);
+        ensureCardCodeUnique(request.getCode(), null);
+        UiCard card = new UiCard();
+        applyCardRequest(card, request);
+        card.setId(request.getCode()); // 卡片 ID 与卡片编码保持一致，便于前端使用
+        uiCardMapper.insert(card);
+        return card;
     }
 
     /**
-     * 更新项目。
-     *
-     * @param projectId 项目 ID
-     * @param request 项目更新请求
-     * @return 更新后的项目
+     * 更新卡片。
      */
     @Transactional
-    public UiProject updateProject(String projectId, UiProjectRequest request) {
-        validateProjectRequest(request, true);
-        UiProject project = requireProject(projectId);
-        ensureProjectCodeUnique(request.getCode(), projectId);
-        applyProjectRequest(project, request);
-        uiProjectMapper.updateById(project);
-        return project;
+    public UiCard updateCard(String cardId, UiCardRequest request) {
+        validateCardRequest(request, false);
+        UiCard card = requireCard(cardId);
+        ensureCardCodeUnique(request.getCode(), cardId);
+        applyCardRequest(card, request);
+        uiCardMapper.updateById(card);
+        return card;
     }
 
     /**
-     * 删除项目以及项目下的所有页面、节点、绑定和版本。
-     *
-     * @param projectId 项目 ID
+     * 删除卡片及其接口关系。
      */
     @Transactional
-    public void deleteProject(String projectId) {
-        requireProject(projectId);
-        List<UiPage> pages = listPages(projectId);
-        for (UiPage page : pages) {
-            deletePage(page.getId());
-        }
-        uiProjectMapper.deleteById(projectId);
+    public void deleteCard(String cardId) {
+        requireCard(cardId);
+        uiCardEndpointRelationMapper.delete(new LambdaQueryWrapper<UiCardEndpointRelation>().eq(UiCardEndpointRelation::getCardId, cardId));
+        uiCardMapper.deleteById(cardId);
     }
 
     /**
-     * 查询项目下的页面列表。
-     *
-     * @param projectId 项目 ID
-     * @return 页面列表
+     * 分页查询卡片关联接口。
      */
-    public List<UiPage> listPages(String projectId) {
-        requireProject(projectId);
-        return uiPageMapper.selectList(new LambdaQueryWrapper<UiPage>()
-                .eq(UiPage::getProjectId, projectId)
-                .orderByDesc(UiPage::getUpdatedAt)
-                .orderByDesc(UiPage::getCreatedAt));
-    }
-
-    /**
-     * 分页查询项目下的页面列表。
-     *
-     * @param projectId 项目 ID
-     * @param query 分页参数
-     * @return 分页页面列表
-     */
-    public PageResult<UiPage> listPages(String projectId, PageQuery query) {
-        requireProject(projectId);
-        Page<UiPage> pageParam = buildPage(query);
-        Page<UiPage> result = uiPageMapper.selectPage(pageParam, new LambdaQueryWrapper<UiPage>()
-                .eq(UiPage::getProjectId, projectId)
-                .orderByDesc(UiPage::getUpdatedAt)
-                .orderByDesc(UiPage::getCreatedAt));
+    public PageResult<UiCardEndpointRelation> listCardEndpointRelations(String cardId, PageQuery query) {
+        requireCard(cardId);
+        Page<UiCardEndpointRelation> pageParam = buildPage(query);
+        Page<UiCardEndpointRelation> result = uiCardEndpointRelationMapper.selectPage(pageParam, new LambdaQueryWrapper<UiCardEndpointRelation>()
+                .eq(UiCardEndpointRelation::getCardId, cardId)
+                .orderByAsc(UiCardEndpointRelation::getSortOrder)
+                .orderByDesc(UiCardEndpointRelation::getCreatedAt));
+        attachCardEndpointDetails(result.getRecords());
         return PageResult.of(result.getRecords(), result.getTotal(), query.getPage(), query.getSize());
     }
 
     /**
-     * 创建页面。
-     *
-     * @param projectId 项目 ID
-     * @param request 页面创建请求
-     * @return 新创建的页面
+     * 批量绑定卡片和接口。
      */
     @Transactional
-    public UiPage createPage(String projectId, UiPageRequest request) {
-        requireProject(projectId);
-        validatePageRequest(request, false);
-        ensurePageCodeUnique(request.getCode(), null);
-        UiPage page = new UiPage();
-        page.setProjectId(projectId);
-        applyPageRequest(page, request);
-        uiPageMapper.insert(page);
-        return page;
-    }
+    public List<UiCardEndpointRelation> bindCardEndpointRelations(String cardId, UiCardEndpointBindRequest request) {
+        requireCard(cardId);
+        validateCardEndpointBindRequest(request);
 
-    /**
-     * 查询页面详情。
-     *
-     * <p>该方法会同时返回页面本身、页面下的节点树和节点绑定，
-     * 方便前端一次性拉取工作台所需的完整上下文。
-     *
-     * @param pageId 页面 ID
-     * @return 页面详情对象
-     */
-    public UiBuilderPageDetailResponse getPageDetail(String pageId) {
-        UiPage page = requirePage(pageId);
-        List<UiPageNode> nodes = listNodes(pageId);
-        List<String> nodeIds = nodes.stream().map(UiPageNode::getId).toList();
-        List<UiNodeBinding> bindings = nodeIds.isEmpty()
-                ? List.of()
-                : uiNodeBindingMapper.selectList(new LambdaQueryWrapper<UiNodeBinding>()
-                .in(UiNodeBinding::getNodeId, nodeIds)
-                .orderByAsc(UiNodeBinding::getTargetProp));
-        return new UiBuilderPageDetailResponse(page, nodes, bindings);
-    }
-
-    /**
-     * 更新页面基础信息。
-     *
-     * @param pageId 页面 ID
-     * @param request 页面更新请求
-     * @return 更新后的页面
-     */
-    @Transactional
-    public UiPage updatePage(String pageId, UiPageRequest request) {
-        validatePageRequest(request, true);
-        UiPage page = requirePage(pageId);
-        ensurePageCodeUnique(request.getCode(), pageId);
-        applyPageRequest(page, request);
-        uiPageMapper.updateById(page);
-        return page;
-    }
-
-    /**
-     * 删除页面及其所有派生数据。
-     *
-     * @param pageId 页面 ID
-     */
-    @Transactional
-    public void deletePage(String pageId) {
-        UiPage page = requirePage(pageId);
-        List<UiPageNode> nodes = listNodes(pageId);
-        List<String> nodeIds = nodes.stream().map(UiPageNode::getId).toList();
-        if (!nodeIds.isEmpty()) {
-            uiNodeBindingMapper.delete(new LambdaQueryWrapper<UiNodeBinding>().in(UiNodeBinding::getNodeId, nodeIds));
-            uiPageNodeMapper.delete(new LambdaQueryWrapper<UiPageNode>().in(UiPageNode::getId, nodeIds));
+        List<String> endpointIds = request.getEndpointIds().stream()
+                .map(this::trimToNull)
+                .filter(StringUtils::hasText)
+                .distinct()
+                .toList();
+        if (endpointIds.isEmpty()) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "endpointIds 不能为空");
         }
-        uiSpecVersionMapper.delete(new LambdaQueryWrapper<UiSpecVersion>().eq(UiSpecVersion::getPageId, pageId));
-        uiPageMapper.deleteById(page.getId());
-    }
 
-    /**
-     * 查询页面下的节点列表。
-     *
-     * @param pageId 页面 ID
-     * @return 节点列表
-     */
-    public List<UiPageNode> listNodes(String pageId) {
-        requirePage(pageId);
-        return uiPageNodeMapper.selectList(new LambdaQueryWrapper<UiPageNode>()
-                .eq(UiPageNode::getPageId, pageId)
-                .orderByAsc(UiPageNode::getSortOrder)
-                .orderByAsc(UiPageNode::getCreatedAt));
-    }
-
-    /**
-     * 分页查询页面节点列表。
-     *
-     * <p>控制台对外提供分页列表接口，但内部构建节点树、删除节点后代、
-     * 生成预览 spec 时仍然需要完整节点集合，因此保留了同名的全量方法。
-     *
-     * @param pageId 页面 ID
-     * @param query 分页参数
-     * @return 分页节点列表
-     */
-    public PageResult<UiPageNode> listNodes(String pageId, PageQuery query) {
-        requirePage(pageId);
-        Page<UiPageNode> pageParam = buildPage(query);
-        Page<UiPageNode> result = uiPageNodeMapper.selectPage(pageParam, new LambdaQueryWrapper<UiPageNode>()
-                .eq(UiPageNode::getPageId, pageId)
-                .orderByAsc(UiPageNode::getSortOrder)
-                .orderByAsc(UiPageNode::getCreatedAt));
-        return PageResult.of(result.getRecords(), result.getTotal(), query.getPage(), query.getSize());
-    }
-
-    /**
-     * 创建页面节点。
-     *
-     * <p>如果页面当前还没有根节点，且新节点本身是顶级节点，则会自动把该节点设为页面根节点。
-     *
-     * @param pageId 页面 ID
-     * @param request 节点创建请求
-     * @return 创建后的节点
-     */
-    @Transactional
-    public UiPageNode createNode(String pageId, UiPageNodeRequest request) {
-        requirePage(pageId);
-        validateNodeRequest(request, false);
-        ensureNodeKeyUnique(pageId, request.getNodeKey(), null);
-        UiPageNode node = new UiPageNode();
-        node.setPageId(pageId);
-        applyNodeRequest(node, request);
-        uiPageNodeMapper.insert(node);
-
-        UiPage page = requirePage(pageId);
-        if (!StringUtils.hasText(page.getRootNodeId()) && !StringUtils.hasText(node.getParentId())) {
-            page.setRootNodeId(node.getId());
-            uiPageMapper.updateById(page);
+        if (Boolean.TRUE.equals(request.getReplaceAll())) {
+            uiCardEndpointRelationMapper.delete(new LambdaQueryWrapper<UiCardEndpointRelation>().eq(UiCardEndpointRelation::getCardId, cardId));
         }
-        return node;
-    }
 
-    /**
-     * 更新页面节点。
-     *
-     * @param nodeId 节点 ID
-     * @param request 节点更新请求
-     * @return 更新后的节点
-     */
-    @Transactional
-    public UiPageNode updateNode(String nodeId, UiPageNodeRequest request) {
-        validateNodeRequest(request, true);
-        UiPageNode node = requireNode(nodeId);
-        ensureNodeKeyUnique(node.getPageId(), request.getNodeKey(), nodeId);
-        applyNodeRequest(node, request);
-        uiPageNodeMapper.updateById(node);
-        return node;
-    }
+        Integer maxSortOrder = uiCardEndpointRelationMapper.selectList(new LambdaQueryWrapper<UiCardEndpointRelation>()
+                        .eq(UiCardEndpointRelation::getCardId, cardId)
+                        .orderByDesc(UiCardEndpointRelation::getSortOrder)
+                        .last("limit 1"))
+                .stream()
+                .findFirst()
+                .map(UiCardEndpointRelation::getSortOrder)
+                .orElse(0);
+        int nextSortOrder = maxSortOrder == null ? 1 : maxSortOrder + 1;
 
-    /**
-     * 删除节点及其全部后代节点。
-     *
-     * @param nodeId 节点 ID
-     */
-    @Transactional
-    public void deleteNode(String nodeId) {
-        UiPageNode node = requireNode(nodeId);
-        List<String> descendantIds = collectDescendantIds(node.getPageId(), nodeId);
-        descendantIds.add(nodeId);
-        uiNodeBindingMapper.delete(new LambdaQueryWrapper<UiNodeBinding>().in(UiNodeBinding::getNodeId, descendantIds));
-        uiPageNodeMapper.delete(new LambdaUpdateWrapper<UiPageNode>().in(UiPageNode::getId, descendantIds));
-
-        UiPage page = requirePage(node.getPageId());
-        if (Objects.equals(page.getRootNodeId(), nodeId)) {
-            page.setRootNodeId(findFirstRootNodeId(page.getId()));
-            uiPageMapper.updateById(page);
+        List<UiCardEndpointRelation> relations = new ArrayList<>();
+        for (String endpointId : endpointIds) {
+            UiApiEndpoint endpoint = requireEndpoint(endpointId);
+            UiCardEndpointRelation relation = uiCardEndpointRelationMapper.selectOne(new LambdaQueryWrapper<UiCardEndpointRelation>()
+                    .eq(UiCardEndpointRelation::getCardId, cardId)
+                    .eq(UiCardEndpointRelation::getEndpointId, endpoint.getId())
+                    .last("limit 1"));
+            if (relation == null) {
+                relation = new UiCardEndpointRelation();
+                relation.setCardId(cardId);
+                relation.setEndpointId(endpoint.getId());
+                relation.setSortOrder(nextSortOrder++);
+                uiCardEndpointRelationMapper.insert(relation);
+            }
+            relations.add(relation);
         }
+        attachCardEndpointDetails(relations);
+        return relations;
     }
 
     /**
-     * 查询某个节点下的字段绑定配置。
-     *
-     * @param nodeId 节点 ID
-     * @return 字段绑定列表
-     */
-    public List<UiNodeBinding> listBindings(String nodeId) {
-        requireNode(nodeId);
-        return uiNodeBindingMapper.selectList(new LambdaQueryWrapper<UiNodeBinding>()
-                .eq(UiNodeBinding::getNodeId, nodeId)
-                .orderByAsc(UiNodeBinding::getTargetProp)
-                .orderByAsc(UiNodeBinding::getCreatedAt));
-    }
-
-    /**
-     * 分页查询某个节点下的字段绑定配置。
-     *
-     * @param nodeId 节点 ID
-     * @param query 分页参数
-     * @return 分页绑定列表
-     */
-    public PageResult<UiNodeBinding> listBindings(String nodeId, PageQuery query) {
-        requireNode(nodeId);
-        Page<UiNodeBinding> pageParam = buildPage(query);
-        Page<UiNodeBinding> result = uiNodeBindingMapper.selectPage(pageParam, new LambdaQueryWrapper<UiNodeBinding>()
-                .eq(UiNodeBinding::getNodeId, nodeId)
-                .orderByAsc(UiNodeBinding::getTargetProp)
-                .orderByAsc(UiNodeBinding::getCreatedAt));
-        return PageResult.of(result.getRecords(), result.getTotal(), query.getPage(), query.getSize());
-    }
-
-    /**
-     * 创建字段绑定。
-     *
-     * @param nodeId 节点 ID
-     * @param request 字段绑定请求
-     * @return 创建后的字段绑定
+     * 删除单条卡片-接口关系。
      */
     @Transactional
-    public UiNodeBinding createBinding(String nodeId, UiNodeBindingRequest request) {
-        requireNode(nodeId);
-        validateBindingRequest(request, false);
-        if (StringUtils.hasText(request.getEndpointId())) {
-            requireEndpoint(request.getEndpointId());
+    public void deleteCardEndpointRelation(String cardId, String relationId) {
+        requireCard(cardId);
+        UiCardEndpointRelation relation = requireCardEndpointRelation(relationId);
+        if (!Objects.equals(cardId, relation.getCardId())) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "关系记录不属于当前卡片: " + relationId);
         }
-        UiNodeBinding binding = new UiNodeBinding();
-        binding.setNodeId(nodeId);
-        applyBindingRequest(binding, request);
-        uiNodeBindingMapper.insert(binding);
-        return binding;
+        uiCardEndpointRelationMapper.deleteById(relationId);
     }
 
-    /**
-     * 更新字段绑定。
-     *
-     * @param bindingId 绑定 ID
-     * @param request 绑定更新请求
-     * @return 更新后的绑定
-     */
-    @Transactional
-    public UiNodeBinding updateBinding(String bindingId, UiNodeBindingRequest request) {
-        validateBindingRequest(request, true);
-        UiNodeBinding binding = requireBinding(bindingId);
-        if (StringUtils.hasText(request.getEndpointId())) {
-            requireEndpoint(request.getEndpointId());
-        }
-        applyBindingRequest(binding, request);
-        uiNodeBindingMapper.updateById(binding);
-        return binding;
-    }
-
-    /**
-     * 删除字段绑定。
-     *
-     * @param bindingId 绑定 ID
-     */
-    @Transactional
-    public void deleteBinding(String bindingId) {
-        requireBinding(bindingId);
-        uiNodeBindingMapper.deleteById(bindingId);
-    }
-
-    /**
-     * 根据当前页面配置实时生成预览 spec。
-     *
-     * @param pageId 页面 ID
-     * @return 当前页面的预览结果
-     */
-    public UiPagePreviewResponse previewPage(String pageId) {
-        UiPage page = requirePage(pageId);
-        Map<String, Object> spec = buildSpec(page);
-        return new UiPagePreviewResponse(pageId, StringUtils.hasText(page.getRootNodeId()) ? page.getRootNodeId() : null, spec);
-    }
-
-    /**
-     * 查询页面版本列表。
-     *
-     * @param pageId 页面 ID
-     * @return 发布版本列表
-     */
-    public List<UiSpecVersion> listVersions(String pageId) {
-        requirePage(pageId);
-        return uiSpecVersionMapper.selectList(new LambdaQueryWrapper<UiSpecVersion>()
-                .eq(UiSpecVersion::getPageId, pageId)
-                .orderByDesc(UiSpecVersion::getVersionNo));
-    }
-
-    /**
-     * 分页查询页面版本列表。
-     *
-     * @param pageId 页面 ID
-     * @param query 分页参数
-     * @return 分页版本列表
-     */
-    public PageResult<UiSpecVersion> listVersions(String pageId, PageQuery query) {
-        requirePage(pageId);
-        Page<UiSpecVersion> pageParam = buildPage(query);
-        Page<UiSpecVersion> result = uiSpecVersionMapper.selectPage(pageParam, new LambdaQueryWrapper<UiSpecVersion>()
-                .eq(UiSpecVersion::getPageId, pageId)
-                .orderByDesc(UiSpecVersion::getVersionNo));
-        return PageResult.of(result.getRecords(), result.getTotal(), query.getPage(), query.getSize());
-    }
-
-    /**
-     * 生成并发布新的 spec 版本。
-     *
-     * @param pageId 页面 ID
-     * @param publishedBy 发布人
-     * @return 新创建的版本记录
-     */
-    @Transactional
-    public UiSpecVersion publishPage(String pageId, String publishedBy) {
-        UiPage page = requirePage(pageId);
-        Map<String, Object> spec = buildSpec(page);
-        int nextVersion = listVersions(pageId).stream()
-                .map(UiSpecVersion::getVersionNo)
-                .max(Integer::compareTo)
-                .orElse(0) + 1;
-
-        UiSpecVersion version = new UiSpecVersion();
-        version.setProjectId(page.getProjectId());
-        version.setPageId(page.getId());
-        version.setVersionNo(nextVersion);
-        version.setPublishStatus("published");
-        version.setSpecContent(writeJson(spec));
-        version.setSourceSnapshot(writeJson(getPageDetail(pageId)));
-        version.setPublishedBy(publishedBy);
-        version.setPublishedAt(OffsetDateTime.now());
-        uiSpecVersionMapper.insert(version);
-
-        page.setStatus("published");
-        uiPageMapper.updateById(page);
-        return version;
-    }
 
     /**
      * 解析 OpenAPI 文档来源。
@@ -1544,6 +1233,24 @@ public class UiBuilderApplicationService {
         }
     }
 
+    private void validateCardRequest(UiCardRequest request, boolean allowPartial) {
+        if (request == null) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "卡片请求不能为空");
+        }
+        if (!allowPartial || StringUtils.hasText(request.getName())) {
+            requireText(request.getName(), "卡片名称不能为空");
+        }
+        if (!allowPartial || StringUtils.hasText(request.getCode())) {
+            requireText(request.getCode(), "卡片编码不能为空");
+        }
+    }
+
+    private void validateCardEndpointBindRequest(UiCardEndpointBindRequest request) {
+        if (request == null || request.getEndpointIds() == null || request.getEndpointIds().isEmpty()) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "endpointIds 不能为空");
+        }
+    }
+
     private void validateSemanticFieldDictRequest(SemanticFieldDictRequest request, boolean allowPartial) {
         if (request == null) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "语义字段字典请求不能为空");
@@ -1589,80 +1296,6 @@ public class UiBuilderApplicationService {
         }
     }
 
-    /**
-     * 校验项目请求。
-     *
-     * @param request 请求体
-     * @param allowPartial 是否允许部分字段为空
-     */
-    private void validateProjectRequest(UiProjectRequest request, boolean allowPartial) {
-        if (request == null) {
-            throw new BusinessException(ErrorCode.BAD_REQUEST, "项目请求不能为空");
-        }
-        if (!allowPartial || StringUtils.hasText(request.getName())) {
-            requireText(request.getName(), "项目名称不能为空");
-        }
-        if (!allowPartial || StringUtils.hasText(request.getCode())) {
-            requireText(request.getCode(), "项目编码不能为空");
-        }
-    }
-
-    /**
-     * 校验页面请求。
-     *
-     * @param request 请求体
-     * @param allowPartial 是否允许部分字段为空
-     */
-    private void validatePageRequest(UiPageRequest request, boolean allowPartial) {
-        if (request == null) {
-            throw new BusinessException(ErrorCode.BAD_REQUEST, "页面请求不能为空");
-        }
-        if (!allowPartial || StringUtils.hasText(request.getName())) {
-            requireText(request.getName(), "页面名称不能为空");
-        }
-        if (!allowPartial || StringUtils.hasText(request.getCode())) {
-            requireText(request.getCode(), "页面编码不能为空");
-        }
-    }
-
-    /**
-     * 校验页面节点请求。
-     *
-     * @param request 请求体
-     * @param allowPartial 是否允许部分字段为空
-     */
-    private void validateNodeRequest(UiPageNodeRequest request, boolean allowPartial) {
-        if (request == null) {
-            throw new BusinessException(ErrorCode.BAD_REQUEST, "节点请求不能为空");
-        }
-        if (!allowPartial || StringUtils.hasText(request.getNodeKey())) {
-            requireText(request.getNodeKey(), "nodeKey 不能为空");
-        }
-        if (!allowPartial || StringUtils.hasText(request.getNodeType())) {
-            requireText(request.getNodeType(), "nodeType 不能为空");
-        }
-        if (!allowPartial || StringUtils.hasText(request.getNodeName())) {
-            requireText(request.getNodeName(), "nodeName 不能为空");
-        }
-    }
-
-    /**
-     * 校验字段绑定请求。
-     *
-     * @param request 请求体
-     * @param allowPartial 是否允许部分字段为空
-     */
-    private void validateBindingRequest(UiNodeBindingRequest request, boolean allowPartial) {
-        if (request == null) {
-            throw new BusinessException(ErrorCode.BAD_REQUEST, "字段绑定请求不能为空");
-        }
-        if (!allowPartial || StringUtils.hasText(request.getBindingType())) {
-            requireText(request.getBindingType(), "bindingType 不能为空");
-        }
-        if (!allowPartial || StringUtils.hasText(request.getTargetProp())) {
-            requireText(request.getTargetProp(), "targetProp 不能为空");
-        }
-    }
 
     /**
      * 将接口源请求体写入实体对象。
@@ -1708,20 +1341,17 @@ public class UiBuilderApplicationService {
         endpoint.setStatus(defaultIfBlank(request.getStatus(), "active"));
     }
 
-    /**
-     * 将项目请求体写入实体对象。
-     *
-     * @param project 目标实体
-     * @param request 请求体
-     */
-    private void applyProjectRequest(UiProject project, UiProjectRequest request) {
-        project.setName(request.getName());
-        project.setCode(request.getCode());
-        project.setDescription(request.getDescription());
-        project.setCategory(request.getCategory());
-        project.setStatus(defaultIfBlank(request.getStatus(), "draft"));
-        project.setCreatedBy(request.getCreatedBy());
+    private void applyCardRequest(UiCard card, UiCardRequest request) {
+        card.setName(trimToNull(request.getName()));
+        card.setCode(trimToNull(request.getCode()));
+        card.setDescription(trimToNull(request.getDescription()));
+        card.setCardType(defaultIfBlank(trimToNull(request.getCardType()), "json_render"));
+        card.setStatus(defaultIfBlank(trimToNull(request.getStatus()), "active"));
+        if (!StringUtils.hasText(card.getCreatedBy())) {
+            card.setCreatedBy(trimToNull(request.getCreatedBy()));
+        }
     }
+
 
     private void applySemanticFieldDictRequest(SemanticFieldDict dict, SemanticFieldDictRequest request) {
         dict.setStandardKey(trimToNull(request.getStandardKey()));
@@ -1748,272 +1378,6 @@ public class UiBuilderApplicationService {
         valueMap.setSortOrder(request.getSortOrder() != null ? request.getSortOrder() : 0);
     }
 
-    /**
-     * 将页面请求体写入实体对象。
-     *
-     * @param page 目标实体
-     * @param request 请求体
-     */
-    private void applyPageRequest(UiPage page, UiPageRequest request) {
-        page.setName(request.getName());
-        page.setCode(request.getCode());
-        page.setTitle(request.getTitle());
-        page.setRoutePath(request.getRoutePath());
-        if (StringUtils.hasText(request.getRootNodeId())) {
-            page.setRootNodeId(request.getRootNodeId());
-        }
-        page.setLayoutType(defaultIfBlank(request.getLayoutType(), "page"));
-        page.setStatus(defaultIfBlank(request.getStatus(), "draft"));
-    }
-
-    /**
-     * 将节点请求体写入实体对象。
-     *
-     * @param node 目标实体
-     * @param request 请求体
-     */
-    private void applyNodeRequest(UiPageNode node, UiPageNodeRequest request) {
-        node.setParentId(request.getParentId());
-        node.setNodeKey(request.getNodeKey());
-        node.setNodeType(request.getNodeType());
-        node.setNodeName(request.getNodeName());
-        node.setSortOrder(request.getSortOrder() != null ? request.getSortOrder() : 0);
-        node.setSlotName(defaultIfBlank(request.getSlotName(), "default"));
-        node.setPropsConfig(defaultIfBlank(request.getPropsConfig(), "{}"));
-        node.setStyleConfig(defaultIfBlank(request.getStyleConfig(), "{}"));
-        node.setStatus(defaultIfBlank(request.getStatus(), "active"));
-    }
-
-    /**
-     * 将字段绑定请求体写入实体对象。
-     *
-     * @param binding 目标实体
-     * @param request 请求体
-     */
-    private void applyBindingRequest(UiNodeBinding binding, UiNodeBindingRequest request) {
-        binding.setEndpointId(request.getEndpointId());
-        binding.setBindingType(defaultIfBlank(request.getBindingType(), "static"));
-        binding.setTargetProp(request.getTargetProp());
-        binding.setSourcePath(request.getSourcePath());
-        binding.setTransformScript(request.getTransformScript());
-        binding.setDefaultValue(request.getDefaultValue());
-        binding.setRequiredFlag(Boolean.TRUE.equals(request.getRequiredFlag()));
-    }
-
-    /**
-     * 根据页面配置组装 json-render spec。
-     *
-     * <p>生成规则：
-     *
-     * <ol>
-     *     <li>查询页面下全部节点并按 parentId / sortOrder 组织层级</li>
-     *     <li>读取每个节点的静态 props</li>
-     *     <li>应用字段绑定，把接口样例响应映射到目标属性</li>
-     *     <li>按 json-render 规范输出 root + elements 扁平结构</li>
-     * </ol>
-     *
-     * @param page 页面实体
-     * @return 标准 json-render spec
-     */
-    private Map<String, Object> buildSpec(UiPage page) {
-        List<UiPageNode> nodes = listNodes(page.getId());
-        if (nodes.isEmpty()) {
-            throw new BusinessException(ErrorCode.BAD_REQUEST, "页面下还没有节点，无法生成 spec");
-        }
-
-        Map<String, UiPageNode> nodeById = new LinkedHashMap<>();
-        for (UiPageNode node : nodes) {
-            nodeById.put(node.getId(), node);
-        }
-        String rootNodeId = StringUtils.hasText(page.getRootNodeId()) ? page.getRootNodeId() : findFirstRootNodeId(page.getId());
-        if (!StringUtils.hasText(rootNodeId) || !nodeById.containsKey(rootNodeId)) {
-            throw new BusinessException(ErrorCode.BAD_REQUEST, "页面根节点不存在，无法生成 spec");
-        }
-
-        Map<String, List<UiPageNode>> childrenByParentId = new LinkedHashMap<>();
-        for (UiPageNode node : nodes) {
-            childrenByParentId.computeIfAbsent(node.getParentId(), key -> new ArrayList<>()).add(node);
-        }
-        childrenByParentId.values().forEach(childNodes -> childNodes.sort(Comparator.comparing(UiPageNode::getSortOrder).thenComparing(UiPageNode::getCreatedAt)));
-
-        List<String> nodeIds = nodes.stream().map(UiPageNode::getId).toList();
-        List<UiNodeBinding> bindings = nodeIds.isEmpty()
-                ? List.of()
-                : uiNodeBindingMapper.selectList(new LambdaQueryWrapper<UiNodeBinding>().in(UiNodeBinding::getNodeId, nodeIds));
-        Map<String, List<UiNodeBinding>> bindingsByNodeId = new LinkedHashMap<>();
-        for (UiNodeBinding binding : bindings) {
-            bindingsByNodeId.computeIfAbsent(binding.getNodeId(), key -> new ArrayList<>()).add(binding);
-        }
-
-        Map<String, Object> elements = new LinkedHashMap<>();
-        for (UiPageNode node : nodes) {
-            Map<String, Object> props = readMap(node.getPropsConfig());
-            applyBindings(props, bindingsByNodeId.getOrDefault(node.getId(), List.of()));
-
-            List<String> childKeys = childrenByParentId.getOrDefault(node.getId(), List.of()).stream()
-                    .map(UiPageNode::getNodeKey)
-                    .toList();
-
-            Map<String, Object> element = new LinkedHashMap<>();
-            element.put("type", node.getNodeType());
-            element.put("props", props);
-            element.put("children", new ArrayList<>(childKeys));
-            elements.put(node.getNodeKey(), element);
-        }
-
-        Map<String, Object> spec = new LinkedHashMap<>();
-        spec.put("root", nodeById.get(rootNodeId).getNodeKey());
-        spec.put("elements", elements);
-        return spec;
-    }
-
-    /**
-     * 将字段绑定结果应用到节点 props。
-     *
-     * <p>绑定的值默认来自接口样例响应，若未提取到有效值，则回退到 defaultValue。
-     *
-     * @param props 节点当前 props
-     * @param bindings 节点字段绑定列表
-     */
-    private void applyBindings(Map<String, Object> props, List<UiNodeBinding> bindings) {
-        for (UiNodeBinding binding : bindings) {
-            Object value = null;
-            if (StringUtils.hasText(binding.getEndpointId()) && StringUtils.hasText(binding.getSourcePath())) {
-                UiApiEndpoint endpoint = requireEndpoint(binding.getEndpointId());
-                JsonNode sample = readJsonTree(defaultIfBlank(endpoint.getSampleResponse(), "{}"), "接口样例响应解析失败");
-                JsonNode extracted = extractJsonPath(sample, binding.getSourcePath());
-                if (extracted != null && !extracted.isMissingNode() && !extracted.isNull()) {
-                    value = objectMapper.convertValue(extracted, Object.class);
-                }
-            }
-            if (value == null && StringUtils.hasText(binding.getDefaultValue())) {
-                value = parsePossiblyJson(binding.getDefaultValue());
-            }
-            value = transformValue(value, binding, props);
-            setNestedProperty(props, binding.getTargetProp(), value);
-        }
-    }
-
-    /**
-     * 对绑定结果执行内置转换器。
-     *
-     * @param value 原始绑定值
-     * @param binding 绑定定义
-     * @param props 当前 props
-     * @return 转换后的值
-     */
-    private Object transformValue(Object value, UiNodeBinding binding, Map<String, Object> props) {
-        if (!StringUtils.hasText(binding.getTransformScript()) || value == null) {
-            return value;
-        }
-        return switch (binding.getTransformScript()) {
-            case "tableRows" -> transformTableRows(value, props);
-            default -> value;
-        };
-    }
-
-    /**
-     * 将对象数组转换成 Table 组件需要的二维数组。
-     *
-     * <p>当前会读取 props.columns 中的列顺序，并按列名从对象数组中逐行提取值。
-     *
-     * @param value 原始对象数组
-     * @param props 节点 props
-     * @return Table 组件可直接消费的二维数组
-     */
-    private Object transformTableRows(Object value, Map<String, Object> props) {
-        if (!(value instanceof List<?> items)) {
-            return value;
-        }
-        Object columnsObj = props.get("columns");
-        if (!(columnsObj instanceof List<?> columns)) {
-            return value;
-        }
-        List<List<Object>> rows = new ArrayList<>();
-        for (Object item : items) {
-            if (!(item instanceof Map<?, ?> mapItem)) {
-                continue;
-            }
-            List<Object> row = new ArrayList<>();
-            for (Object column : columns) {
-                row.add(mapItem.get(String.valueOf(column)));
-            }
-            rows.add(row);
-        }
-        return rows;
-    }
-
-    /**
-     * 从接口样例响应中提取 JSONPath 对应的节点。
-     *
-     * <p>当前实现支持简单路径、数组下标和 `[*]` 列表节点。
-     *
-     * @param root 根 JSON 节点
-     * @param jsonPath JSONPath 表达式
-     * @return 提取到的 JSON 节点
-     */
-    private JsonNode extractJsonPath(JsonNode root, String jsonPath) {
-        if (!StringUtils.hasText(jsonPath) || "$".equals(jsonPath.trim())) {
-            return root;
-        }
-        String normalized = jsonPath.trim();
-        if (normalized.startsWith("$.")) {
-            normalized = normalized.substring(2);
-        } else if (normalized.startsWith("$")) {
-            normalized = normalized.substring(1);
-        }
-        if (!StringUtils.hasText(normalized)) {
-            return root;
-        }
-
-        JsonNode current = root;
-        for (String token : normalized.split("\\.")) {
-            if (current == null || current.isMissingNode()) {
-                return null;
-            }
-            if (token.endsWith("[*]")) {
-                String fieldName = token.substring(0, token.length() - 3);
-                current = current.path(fieldName);
-                continue;
-            }
-            Matcher matcher = ARRAY_SEGMENT_PATTERN.matcher(token);
-            if (matcher.matches()) {
-                current = current.path(matcher.group(1));
-                current = current.path(Integer.parseInt(matcher.group(2)));
-            } else {
-                current = current.path(token);
-            }
-        }
-        return current;
-    }
-
-    /**
-     * 把绑定值写入嵌套属性路径。
-     *
-     * <p>例如 `option.series` 会被展开成多层 Map 结构。
-     *
-     * @param root 根 props
-     * @param path 目标属性路径
-     * @param value 待写入的值
-     */
-    private void setNestedProperty(Map<String, Object> root, String path, Object value) {
-        if (!StringUtils.hasText(path)) {
-            return;
-        }
-        String[] segments = path.split("\\.");
-        Map<String, Object> current = root;
-        for (int i = 0; i < segments.length - 1; i++) {
-            Object child = current.get(segments[i]);
-            if (!(child instanceof Map<?, ?>)) {
-                child = new LinkedHashMap<String, Object>();
-                current.put(segments[i], child);
-            }
-            @SuppressWarnings("unchecked")
-            Map<String, Object> next = (Map<String, Object>) child;
-            current = next;
-        }
-        current.put(segments[segments.length - 1], value);
-    }
 
     /**
      * 校验运行时调用目标是否允许被真实执行。
@@ -2155,6 +1519,71 @@ public class UiBuilderApplicationService {
         }
     }
 
+    private void attachCardEndpointDetails(List<UiCardEndpointRelation> relations) {
+        if (relations == null || relations.isEmpty()) {
+            return;
+        }
+        List<String> endpointIds = relations.stream()
+                .map(UiCardEndpointRelation::getEndpointId)
+                .filter(StringUtils::hasText)
+                .distinct()
+                .toList();
+        if (endpointIds.isEmpty()) {
+            return;
+        }
+
+        List<UiApiEndpoint> endpoints = uiApiEndpointMapper.selectList(new LambdaQueryWrapper<UiApiEndpoint>()
+                .in(UiApiEndpoint::getId, endpointIds));
+        Map<String, UiApiEndpoint> endpointById = new LinkedHashMap<>();
+        Set<String> sourceIds = new HashSet<>();
+        Set<String> tagIds = new HashSet<>();
+        for (UiApiEndpoint endpoint : endpoints) {
+            endpointById.put(endpoint.getId(), endpoint);
+            if (StringUtils.hasText(endpoint.getSourceId())) {
+                sourceIds.add(endpoint.getSourceId());
+            }
+            if (StringUtils.hasText(endpoint.getTagId())) {
+                tagIds.add(endpoint.getTagId());
+            }
+        }
+
+        Map<String, UiApiSource> sourceById = new LinkedHashMap<>();
+        if (!sourceIds.isEmpty()) {
+            List<UiApiSource> sources = uiApiSourceMapper.selectList(new LambdaQueryWrapper<UiApiSource>()
+                    .in(UiApiSource::getId, sourceIds));
+            for (UiApiSource source : sources) {
+                sourceById.put(source.getId(), source);
+            }
+        }
+
+        Map<String, UiApiTag> tagById = new LinkedHashMap<>();
+        if (!tagIds.isEmpty()) {
+            List<UiApiTag> tags = uiApiTagMapper.selectList(new LambdaQueryWrapper<UiApiTag>()
+                    .in(UiApiTag::getId, tagIds));
+            for (UiApiTag tag : tags) {
+                tagById.put(tag.getId(), tag);
+            }
+        }
+
+        for (UiCardEndpointRelation relation : relations) {
+            UiApiEndpoint endpoint = endpointById.get(relation.getEndpointId());
+            if (endpoint == null) {
+                continue;
+            }
+            relation.setEndpointName(endpoint.getName());
+            relation.setEndpointPath(endpoint.getPath());
+            relation.setEndpointMethod(endpoint.getMethod());
+            relation.setEndpointStatus(endpoint.getStatus());
+            relation.setSourceId(endpoint.getSourceId());
+
+            UiApiSource source = sourceById.get(endpoint.getSourceId());
+            relation.setSourceName(source != null ? source.getName() : null);
+
+            UiApiTag tag = tagById.get(endpoint.getTagId());
+            relation.setTagName(tag != null ? tag.getName() : null);
+        }
+    }
+
     /**
      * 为接口角色关系补充接口侧信息。
      *
@@ -2273,6 +1702,22 @@ public class UiBuilderApplicationService {
         return relation;
     }
 
+    private UiCard requireCard(String cardId) {
+        UiCard card = uiCardMapper.selectById(cardId);
+        if (card == null) {
+            throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "卡片不存在: " + cardId);
+        }
+        return card;
+    }
+
+    private UiCardEndpointRelation requireCardEndpointRelation(String relationId) {
+        UiCardEndpointRelation relation = uiCardEndpointRelationMapper.selectById(relationId);
+        if (relation == null) {
+            throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "卡片接口关系不存在: " + relationId);
+        }
+        return relation;
+    }
+
     private SemanticFieldDict requireSemanticFieldDict(Long dictId) {
         SemanticFieldDict dict = semanticFieldDictMapper.selectById(dictId);
         if (dict == null) {
@@ -2323,37 +1768,6 @@ public class UiBuilderApplicationService {
         return tag;
     }
 
-    private UiProject requireProject(String projectId) {
-        UiProject project = uiProjectMapper.selectById(projectId);
-        if (project == null) {
-            throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "项目不存在: " + projectId);
-        }
-        return project;
-    }
-
-    private UiPage requirePage(String pageId) {
-        UiPage page = uiPageMapper.selectById(pageId);
-        if (page == null) {
-            throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "页面不存在: " + pageId);
-        }
-        return page;
-    }
-
-    private UiPageNode requireNode(String nodeId) {
-        UiPageNode node = uiPageNodeMapper.selectById(nodeId);
-        if (node == null) {
-            throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "节点不存在: " + nodeId);
-        }
-        return node;
-    }
-
-    private UiNodeBinding requireBinding(String bindingId) {
-        UiNodeBinding binding = uiNodeBindingMapper.selectById(bindingId);
-        if (binding == null) {
-            throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "字段绑定不存在: " + bindingId);
-        }
-        return binding;
-    }
 
     private void ensureSourceCodeUnique(String code, String excludeId) {
         QueryWrapper<UiApiSource> wrapper = new QueryWrapper<>();
@@ -2377,38 +1791,18 @@ public class UiBuilderApplicationService {
         }
     }
 
-    private void ensureProjectCodeUnique(String code, String excludeId) {
-        QueryWrapper<UiProject> wrapper = new QueryWrapper<>();
+
+    private void ensureCardCodeUnique(String code, String excludeId) {
+        QueryWrapper<UiCard> wrapper = new QueryWrapper<>();
         wrapper.eq("code", code);
         if (StringUtils.hasText(excludeId)) {
             wrapper.ne("id", excludeId);
         }
-        if (uiProjectMapper.selectCount(wrapper) > 0) {
-            throw new BusinessException(ErrorCode.DUPLICATE_ENTRY, "项目编码已存在: " + code);
+        if (uiCardMapper.selectCount(wrapper) > 0) {
+            throw new BusinessException(ErrorCode.DUPLICATE_ENTRY, "卡片编码已存在: " + code);
         }
     }
 
-    private void ensurePageCodeUnique(String code, String excludeId) {
-        QueryWrapper<UiPage> wrapper = new QueryWrapper<>();
-        wrapper.eq("code", code);
-        if (StringUtils.hasText(excludeId)) {
-            wrapper.ne("id", excludeId);
-        }
-        if (uiPageMapper.selectCount(wrapper) > 0) {
-            throw new BusinessException(ErrorCode.DUPLICATE_ENTRY, "页面编码已存在: " + code);
-        }
-    }
-
-    private void ensureNodeKeyUnique(String pageId, String nodeKey, String excludeId) {
-        QueryWrapper<UiPageNode> wrapper = new QueryWrapper<>();
-        wrapper.eq("page_id", pageId).eq("node_key", nodeKey);
-        if (StringUtils.hasText(excludeId)) {
-            wrapper.ne("id", excludeId);
-        }
-        if (uiPageNodeMapper.selectCount(wrapper) > 0) {
-            throw new BusinessException(ErrorCode.DUPLICATE_ENTRY, "页面节点 key 已存在: " + nodeKey);
-        }
-    }
 
     private UiApiEndpoint findEndpointBySourceAndMethodPath(String sourceId, String method, String path) {
         return uiApiEndpointMapper.selectOne(new LambdaQueryWrapper<UiApiEndpoint>()
@@ -2418,33 +1812,6 @@ public class UiBuilderApplicationService {
                 .last("limit 1"));
     }
 
-    private List<String> collectDescendantIds(String pageId, String nodeId) {
-        List<UiPageNode> nodes = listNodes(pageId);
-        Map<String, List<String>> childIdsByParent = new LinkedHashMap<>();
-        for (UiPageNode node : nodes) {
-            if (StringUtils.hasText(node.getParentId())) {
-                childIdsByParent.computeIfAbsent(node.getParentId(), key -> new ArrayList<>()).add(node.getId());
-            }
-        }
-        List<String> result = new ArrayList<>();
-        collectDescendantIds(nodeId, childIdsByParent, result);
-        return result;
-    }
-
-    private void collectDescendantIds(String parentId, Map<String, List<String>> childIdsByParent, List<String> result) {
-        for (String childId : childIdsByParent.getOrDefault(parentId, List.of())) {
-            result.add(childId);
-            collectDescendantIds(childId, childIdsByParent, result);
-        }
-    }
-
-    private String findFirstRootNodeId(String pageId) {
-        return listNodes(pageId).stream()
-                .filter(node -> !StringUtils.hasText(node.getParentId()))
-                .min(Comparator.comparing(UiPageNode::getSortOrder).thenComparing(UiPageNode::getCreatedAt))
-                .map(UiPageNode::getId)
-                .orElse(null);
-    }
 
     /**
      * 提取并展开请求 schema。
@@ -2569,7 +1936,97 @@ public class UiBuilderApplicationService {
             return examplesNode.fields().next().getValue().path("value");
         }
         JsonNode resolvedSchema = resolveSchemaNode(rootDocument, mediaNode.path("schema"), new HashSet<>());
+        JsonNode markdownExample = extractJsonExampleFromDescriptions(operationNode, responseNode, mediaNode);
+        if (markdownExample != null) {
+            return alignResponseExampleWithSchema(markdownExample, resolvedSchema);
+        }
         return buildExampleFromSchema(resolvedSchema);
+    }
+
+    private JsonNode extractJsonExampleFromDescriptions(JsonNode... nodes) {
+        for (JsonNode node : nodes) {
+            if (node == null || node.isMissingNode() || node.isNull()) {
+                continue;
+            }
+            JsonNode example = extractJsonExampleFromText(node.path("description").asText(null));
+            if (example != null) {
+                return example;
+            }
+        }
+        return null;
+    }
+
+    private JsonNode extractJsonExampleFromText(String text) {
+        if (!StringUtils.hasText(text)) {
+            return null;
+        }
+        Matcher matcher = MARKDOWN_JSON_BLOCK_PATTERN.matcher(text);
+        while (matcher.find()) {
+            String candidate = matcher.group(1);
+            if (!StringUtils.hasText(candidate)) {
+                continue;
+            }
+            try {
+                return objectMapper.readTree(candidate.trim());
+            } catch (JsonProcessingException ignored) {
+                // Some generators put prose in fenced blocks; keep looking for the first valid JSON block.
+            }
+        }
+        return null;
+    }
+
+    private JsonNode alignResponseExampleWithSchema(JsonNode example, JsonNode resolvedSchema) {
+        if (example == null || resolvedSchema == null || !resolvedSchema.path("properties").isObject()) {
+            return example;
+        }
+        JsonNode resultSchema = resolvedSchema.path("properties").path("result");
+        if (resultSchema.isMissingNode() || example.has("result")) {
+            return example;
+        }
+        if (!looksLikeResultPayload(example, resultSchema)) {
+            return example;
+        }
+
+        JsonNode wrapperExample = buildExampleFromSchema(resolvedSchema);
+        ObjectNode wrapper = wrapperExample != null && wrapperExample.isObject()
+                ? (ObjectNode) wrapperExample
+                : objectMapper.createObjectNode();
+        if ("array".equals(resultSchema.path("type").asText(null))) {
+            if (example.isArray()) {
+                wrapper.set("result", example);
+            } else {
+                ArrayNode resultItems = objectMapper.createArrayNode();
+                resultItems.add(example);
+                wrapper.set("result", resultItems);
+            }
+        } else {
+            wrapper.set("result", example);
+        }
+        return wrapper;
+    }
+
+    private boolean looksLikeResultPayload(JsonNode example, JsonNode resultSchema) {
+        if (example == null || resultSchema == null || example.isMissingNode() || resultSchema.isMissingNode()) {
+            return false;
+        }
+        if ("array".equals(resultSchema.path("type").asText(null))) {
+            JsonNode itemsSchema = resultSchema.path("items");
+            if (example.isArray()) {
+                return example.isEmpty() || looksLikeResultPayload(example.get(0), itemsSchema);
+            }
+            return looksLikeResultPayload(example, itemsSchema);
+        }
+        JsonNode propertiesNode = resultSchema.path("properties");
+        if (!example.isObject() || !propertiesNode.isObject()) {
+            return false;
+        }
+        Iterator<String> fieldNames = example.fieldNames();
+        while (fieldNames.hasNext()) {
+            if (propertiesNode.has(fieldNames.next())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -3050,16 +2507,6 @@ public class UiBuilderApplicationService {
         return iterator.hasNext() ? iterator.next().getValue() : null;
     }
 
-    private Map<String, Object> readMap(String json) {
-        if (!StringUtils.hasText(json)) {
-            return new LinkedHashMap<>();
-        }
-        try {
-            return objectMapper.readValue(json, new TypeReference<>() {});
-        } catch (JsonProcessingException ex) {
-            return new LinkedHashMap<>();
-        }
-    }
 
     private JsonNode readJsonTree(String json, String errorMessage) {
         try {

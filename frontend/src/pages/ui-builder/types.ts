@@ -169,6 +169,34 @@ export interface UiApiEndpointRole {
   tagName?: string | null
 }
 
+export interface UiCard {
+  id: string
+  name: string
+  code: string
+  description?: string | null
+  cardType?: string | null
+  status?: string | null
+  createdBy?: string | null
+  createdAt?: string | null
+  updatedAt?: string | null
+}
+
+export interface UiCardEndpointRelation {
+  id: string
+  cardId: string
+  endpointId: string
+  sortOrder?: number | null
+  endpointName?: string | null
+  endpointPath?: string | null
+  endpointMethod?: string | null
+  endpointStatus?: string | null
+  sourceId?: string | null
+  sourceName?: string | null
+  tagName?: string | null
+  createdAt?: string | null
+  updatedAt?: string | null
+}
+
 export interface UiApiTestLog {
   id: string
   endpointId: string
@@ -401,6 +429,20 @@ export interface UiApiTestRequest {
   queryParams?: Record<string, unknown>
   body?: unknown
   createdBy?: string
+}
+
+export interface UiCardRequest {
+  name: string
+  code: string
+  description?: string
+  cardType?: string
+  status?: string
+  createdBy?: string
+}
+
+export interface UiCardEndpointBindRequest {
+  endpointIds: string[]
+  replaceAll?: boolean
 }
 
 export interface SemanticFieldDictRequest {

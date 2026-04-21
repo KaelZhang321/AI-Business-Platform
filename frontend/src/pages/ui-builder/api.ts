@@ -17,6 +17,10 @@ import type {
   UiApiEndpointRoleBindRequest,
   UiApiFlowLog,
   UiApiInvokeRequest,
+  UiCard,
+  UiCardEndpointBindRequest,
+  UiCardEndpointRelation,
+  UiCardRequest,
   UiJsonRenderInvokeRequest,
   UiJsonRenderInvokeResponse,
   UiJsonRenderSubmitRequest,
@@ -209,6 +213,38 @@ export const uiBuilderApi = {
   },
   deleteEndpointRoleRelation(relationId: string) {
     return unwrap<void>(businessClient.delete(`/api/v1/ui-builder/endpoint-role-relations/${relationId}`))
+  },
+  listCards(
+    query?: PageQuery,
+    filters?: { name?: string; status?: string },
+  ) {
+    return unwrap<PageResult<UiCard>>(businessClient.get('/api/v1/ui-builder/cards', {
+      params: {
+        ...buildPageParams(query),
+        ...(filters?.name ? { name: filters.name } : {}),
+        ...(filters?.status ? { status: filters.status } : {}),
+      },
+    }))
+  },
+  createCard(payload: UiCardRequest) {
+    return unwrap<UiCard>(businessClient.post('/api/v1/ui-builder/cards', payload))
+  },
+  updateCard(cardId: string, payload: UiCardRequest) {
+    return unwrap<UiCard>(businessClient.put(`/api/v1/ui-builder/cards/${cardId}`, payload))
+  },
+  deleteCard(cardId: string) {
+    return unwrap<void>(businessClient.delete(`/api/v1/ui-builder/cards/${cardId}`))
+  },
+  listCardEndpointRelations(cardId: string, query?: PageQuery) {
+    return unwrap<PageResult<UiCardEndpointRelation>>(businessClient.get(`/api/v1/ui-builder/cards/${cardId}/endpoint-relations`, {
+      params: buildPageParams(query),
+    }))
+  },
+  bindCardEndpointRelations(cardId: string, payload: UiCardEndpointBindRequest) {
+    return unwrap<UiCardEndpointRelation[]>(businessClient.post(`/api/v1/ui-builder/cards/${cardId}/endpoint-relations`, payload))
+  },
+  deleteCardEndpointRelation(cardId: string, relationId: string) {
+    return unwrap<void>(businessClient.delete(`/api/v1/ui-builder/cards/${cardId}/endpoint-relations/${relationId}`))
   },
   listProjects(query?: PageQuery) {
     return unwrap<PageResult<UiProject>>(businessClient.get('/api/v1/ui-builder/projects', { params: buildPageParams(query) }))

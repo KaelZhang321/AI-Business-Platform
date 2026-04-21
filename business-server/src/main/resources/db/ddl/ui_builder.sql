@@ -1,5 +1,5 @@
 -- UI Builder / JSON Render 配置中心
--- 用途：存储接口源、接口定义、页面节点、字段绑定和最终生成的 json-render spec
+-- 用途：存储接口源、接口定义、语义字典、运行日志、卡片和卡片接口关系
 
 CREATE TABLE IF NOT EXISTS ui_api_sources (
     id              VARCHAR(64) PRIMARY KEY COMMENT '主键',
@@ -147,82 +147,34 @@ CREATE TABLE IF NOT EXISTS ui_api_flow_logs (
     KEY idx_ui_api_flow_logs_status_created (invoke_status, created_at)
 ) COMMENT='UI Builder 运行时接口调用日志';
 
-CREATE TABLE IF NOT EXISTS ui_projects (
+DROP TABLE IF EXISTS ui_spec_versions;
+DROP TABLE IF EXISTS ui_node_bindings;
+DROP TABLE IF EXISTS ui_page_nodes;
+DROP TABLE IF EXISTS ui_pages;
+DROP TABLE IF EXISTS ui_projects;
+
+CREATE TABLE IF NOT EXISTS ui_cards (
     id           VARCHAR(64) PRIMARY KEY COMMENT '主键',
-    name         VARCHAR(128) NOT NULL COMMENT '项目名称',
-    code         VARCHAR(64) NOT NULL COMMENT '项目编码',
-    description  VARCHAR(255) NULL COMMENT '项目说明',
-    category     VARCHAR(64) NULL COMMENT '项目分类',
-    status       VARCHAR(32) NOT NULL DEFAULT 'draft' COMMENT '状态',
+    name         VARCHAR(128) NOT NULL COMMENT '卡片名称',
+    code         VARCHAR(64) NOT NULL COMMENT '卡片编码',
+    description  VARCHAR(255) NULL COMMENT '卡片说明',
+    card_type    VARCHAR(32) NOT NULL DEFAULT 'json_render' COMMENT '卡片类型',
+    status       VARCHAR(32) NOT NULL DEFAULT 'active' COMMENT '状态',
     created_by   VARCHAR(64) NULL COMMENT '创建人',
     created_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     updated_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
-    UNIQUE KEY uk_ui_projects_code (code),
-    KEY idx_ui_projects_status (status)
-) COMMENT='UI Builder 项目';
+    UNIQUE KEY uk_ui_cards_code (code),
+    KEY idx_ui_cards_status (status)
+) COMMENT='UI Builder 卡片定义';
 
-CREATE TABLE IF NOT EXISTS ui_pages (
-    id            VARCHAR(64) PRIMARY KEY COMMENT '主键',
-    project_id    VARCHAR(64) NOT NULL COMMENT '所属项目ID',
-    name          VARCHAR(128) NOT NULL COMMENT '页面名称',
-    code          VARCHAR(64) NOT NULL COMMENT '页面编码',
-    title         VARCHAR(128) NULL COMMENT '页面标题',
-    route_path    VARCHAR(128) NULL COMMENT '前端访问路径',
-    root_node_id  VARCHAR(64) NULL COMMENT '根节点ID',
-    layout_type   VARCHAR(32) NOT NULL DEFAULT 'page' COMMENT '布局类型',
-    status        VARCHAR(32) NOT NULL DEFAULT 'draft' COMMENT '状态',
-    created_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
-    updated_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
-    UNIQUE KEY uk_ui_pages_code (code),
-    KEY idx_ui_pages_project (project_id)
-) COMMENT='UI Builder 页面';
-
-CREATE TABLE IF NOT EXISTS ui_page_nodes (
-    id            VARCHAR(64) PRIMARY KEY COMMENT '主键',
-    page_id        VARCHAR(64) NOT NULL COMMENT '页面ID',
-    parent_id      VARCHAR(64) NULL COMMENT '父节点ID',
-    node_key       VARCHAR(64) NOT NULL COMMENT '最终spec中的element key',
-    node_type      VARCHAR(32) NOT NULL COMMENT '节点类型',
-    node_name      VARCHAR(128) NOT NULL COMMENT '节点名称',
-    sort_order     INT NOT NULL DEFAULT 0 COMMENT '排序号',
-    slot_name      VARCHAR(32) NOT NULL DEFAULT 'default' COMMENT '槽位',
-    props_config   JSON NULL COMMENT '静态props配置',
-    style_config   JSON NULL COMMENT '样式配置',
-    status         VARCHAR(32) NOT NULL DEFAULT 'active' COMMENT '状态',
-    created_at     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
-    updated_at     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
-    UNIQUE KEY uk_ui_page_nodes_page_key (page_id, node_key),
-    KEY idx_ui_page_nodes_parent_sort (parent_id, sort_order),
-    KEY idx_ui_page_nodes_page_type (page_id, node_type)
-) COMMENT='UI Builder 页面节点';
-
-CREATE TABLE IF NOT EXISTS ui_node_bindings (
-    id               VARCHAR(64) PRIMARY KEY COMMENT '主键',
-    node_id           VARCHAR(64) NOT NULL COMMENT '节点ID',
-    endpoint_id       VARCHAR(64) NULL COMMENT '接口ID',
-    binding_type      VARCHAR(32) NOT NULL DEFAULT 'static' COMMENT '绑定类型',
-    target_prop       VARCHAR(128) NOT NULL COMMENT '目标属性路径，如 value、option.series',
-    source_path       VARCHAR(255) NULL COMMENT '来源路径，如 $.data.totalRevenue',
-    transform_script  TEXT NULL COMMENT '转换脚本/表达式',
-    default_value     JSON NULL COMMENT '默认值',
-    required_flag     TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否必填',
-    created_at        TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
-    updated_at        TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
-    KEY idx_ui_node_bindings_node (node_id),
-    KEY idx_ui_node_bindings_endpoint (endpoint_id)
-) COMMENT='UI Builder 节点字段绑定';
-
-CREATE TABLE IF NOT EXISTS ui_spec_versions (
-    id              VARCHAR(64) PRIMARY KEY COMMENT '主键',
-    project_id       VARCHAR(64) NOT NULL COMMENT '项目ID',
-    page_id          VARCHAR(64) NOT NULL COMMENT '页面ID',
-    version_no       INT NOT NULL COMMENT '版本号',
-    publish_status   VARCHAR(32) NOT NULL DEFAULT 'draft' COMMENT '发布状态',
-    spec_content     JSON NOT NULL COMMENT '最终 json-render spec',
-    source_snapshot  JSON NULL COMMENT '生成时的配置快照',
-    published_by     VARCHAR(64) NULL COMMENT '发布人',
-    published_at     TIMESTAMP NULL COMMENT '发布时间',
-    created_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
-    UNIQUE KEY uk_ui_spec_versions_page_version (page_id, version_no),
-    KEY idx_ui_spec_versions_project_page (project_id, page_id)
-) COMMENT='UI Builder 生成版本';
+CREATE TABLE IF NOT EXISTS ui_card_endpoint_relations (
+    id           VARCHAR(64) PRIMARY KEY COMMENT '主键',
+    card_id      VARCHAR(64) NOT NULL COMMENT '卡片ID',
+    endpoint_id  VARCHAR(64) NOT NULL COMMENT '接口定义ID',
+    sort_order   INT NOT NULL DEFAULT 0 COMMENT '排序',
+    created_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    updated_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    UNIQUE KEY uk_ui_card_endpoint_relation (card_id, endpoint_id),
+    KEY idx_ui_card_endpoint_relations_card_sort (card_id, sort_order),
+    KEY idx_ui_card_endpoint_relations_endpoint (endpoint_id)
+) COMMENT='UI Builder 卡片接口关系';

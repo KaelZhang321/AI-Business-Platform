@@ -1,6 +1,7 @@
 package com.lzke.ai.controller;
 
 import java.time.Duration;
+import java.util.List;
 import java.util.Map;
 
 import org.apache.commons.lang3.StringUtils;
@@ -24,9 +25,11 @@ import com.lecz.iam.system.employee.dto.SysRoleQueryDTO;
 import com.lecz.iam.system.employee.dto.SysTokenRefreshDTO;
 import com.lecz.iam.system.employee.service.ISysEmployeeHttpService;
 import com.lecz.iam.system.employee.service.ISysLoginHttpService;
+import com.lecz.iam.system.employee.service.ISysMenuHttpService;
 import com.lecz.iam.system.employee.service.ISysRoleHttpService;
 import com.lecz.iam.system.employee.vo.SysEmployeeVO;
 import com.lecz.iam.system.employee.vo.SysLoginResultVO;
+import com.lecz.iam.system.employee.vo.SysMenuVO;
 import com.lecz.iam.system.employee.vo.SysRoleVO;
 import com.lecz.service.tools.core.dto.PageResponse;
 import com.lecz.service.tools.core.dto.ResponseDto;
@@ -70,6 +73,8 @@ public class AuthController {
     private final ISysEmployeeHttpService sysEmployeeHttpService;
 
     private final ISysRoleHttpService sysRoleHttpService;
+    
+    private final ISysMenuHttpService sysMenuHttpService;
     
     @Value("${forest.variables.oa.appCode}")
     private String appCode;
@@ -220,6 +225,13 @@ public class AuthController {
         } catch (Exception e) {
             throw new BusinessException(ErrorCode.TOKEN_EXPIRED, "refresh token 已过期或无效");
         } 
-     }
+     } 
+    
+    //获取当前用户的菜单
+    @GetMapping("/getEmployeeMenus")
+    @ResponseStatus(HttpStatus.OK)
+    public ResponseDto<List<SysMenuVO>> getEmployeeMenus() {
+		return sysMenuHttpService.getEmployeeMenus(appCode);
+	}
     
 }

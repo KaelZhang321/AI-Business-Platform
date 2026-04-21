@@ -1,12 +1,12 @@
 package com.lzke.ai.infrastructure.persistence.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
-import com.lzke.ai.domain.entity.UiNodeBinding;
+import com.lzke.ai.domain.entity.DoctorCustomerNote;
 import org.apache.ibatis.annotations.Mapper;
 
 /**
- * UI Builder 节点字段绑定 Mapper。
+ * 医生客户便签 Mapper。
  */
 @Mapper
-public interface UiNodeBindingMapper extends BaseMapper<UiNodeBinding> {
+public interface DoctorCustomerNoteMapper extends BaseMapper<DoctorCustomerNote> {
 }
