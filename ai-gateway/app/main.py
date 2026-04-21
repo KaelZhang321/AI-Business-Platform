@@ -6,7 +6,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 import sys
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -327,10 +327,40 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def options_fallback_middleware(request: Request, call_next):
+    """兜底处理非标准裸 OPTIONS，避免前端误调导致 405。
+
+    功能：
+        浏览器标准预检（携带 `Access-Control-Request-Method`）应继续交给
+        `CORSMiddleware` 处理；仅当调用方发送裸 OPTIONS 且目标为 `/api/` 路径时，
+        由网关直接回 200，避免把“方法不允许”暴露给前端联调流程。
+    """
+
+    if request.method != "OPTIONS":
+        return await call_next(request)
+    if not request.url.path.startswith("/api/"):
+        return await call_next(request)
+    if request.headers.get("access-control-request-method"):
+        return await call_next(request)
+
+    allow_headers = request.headers.get("access-control-request-headers", "content-type,authorization,ctoken,deviceid")
+    origin = request.headers.get("origin")
+    headers = {
+        "Access-Control-Allow-Origin": origin if origin else "*",
+        "Access-Control-Allow-Methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
+        "Access-Control-Allow-Headers": allow_headers,
+        "Access-Control-Max-Age": "600",
+    }
+    if origin:
+        headers["Vary"] = "Origin"
+    return Response(status_code=200, headers=headers)
 
 
 @app.middleware("http")
@@ -400,7 +430,6 @@ from prometheus_client import (  # noqa: E402
     generate_latest,
     CONTENT_TYPE_LATEST,
 )
-from starlette.responses import Response  # noqa: E402
 
 REQUEST_COUNT = Counter("ai_gateway_requests_total", "Total requests", ["method", "endpoint", "status"])
 REQUEST_LATENCY = Histogram("ai_gateway_request_latency_seconds", "Request latency", ["endpoint"])
