@@ -2,8 +2,8 @@ package com.lzke.ai.application.workbench;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
-import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.lecz.iam.system.employee.service.ISysEmployeeHttpService;
 import com.lecz.iam.system.employee.vo.SysEmployeeVO;
@@ -217,7 +217,7 @@ public class DoctorWorkbenchApplicationService {
                     .distinct()
                     .toList();
         } catch (JsonProcessingException ex) {
-            log.warn("解析医生角色卡片配置card_schema_json失败: {}", cardSchemaJson, ex);
+            log.warn("解析医生工作台卡片JSON失败: {}", cardSchemaJson, ex);
             return Collections.emptyList();
         }
     }
@@ -436,7 +436,55 @@ public class DoctorWorkbenchApplicationService {
                 .eq(StringUtils.hasText(query.getStatus()), DoctorCustomerCardCustomize::getStatus, query.getStatus())
                 .orderByDesc(DoctorCustomerCardCustomize::getUpdatedAt);
         Page<DoctorCustomerCardCustomize> result = doctorCustomerCardCustomizeMapper.selectPage(page, wrapper);
+        attachCustomerCardEndpointRelations(result.getRecords());
         return PageResult.of(result.getRecords(), result.getTotal(), (int) result.getCurrent(), (int) result.getSize());
+    }
+
+    private void attachCustomerCardEndpointRelations(List<DoctorCustomerCardCustomize> customizes) {
+        if (customizes == null || customizes.isEmpty()) {
+            return;
+        }
+
+        List<List<String>> customizeCardIds = new ArrayList<>();
+        List<String> allCardIds = new ArrayList<>();
+        Set<String> seenCardIds = new HashSet<>();
+        for (DoctorCustomerCardCustomize customize : customizes) {
+            List<String> cardIds = parseCardIds(customize.getCardJson());
+            customizeCardIds.add(cardIds);
+            for (String cardId : cardIds) {
+                if (seenCardIds.add(cardId)) {
+                    allCardIds.add(cardId);
+                }
+            }
+        }
+        if (allCardIds.isEmpty()) {
+            customizes.forEach(customize -> customize.setCardEndpointRelations(Collections.emptyMap()));
+            return;
+        }
+
+        List<UiCardEndpointRelation> relations = uiCardEndpointRelationMapper
+                .selectList(new LambdaQueryWrapper<UiCardEndpointRelation>()
+                        .in(UiCardEndpointRelation::getCardId, allCardIds)
+                        .orderByAsc(UiCardEndpointRelation::getCardId)
+                        .orderByAsc(UiCardEndpointRelation::getSortOrder)
+                        .orderByDesc(UiCardEndpointRelation::getCreatedAt));
+        attachCardEndpointDetails(relations);
+
+        Map<String, List<UiCardEndpointRelation>> relationMap = new LinkedHashMap<>();
+        for (UiCardEndpointRelation relation : relations) {
+            if (!StringUtils.hasText(relation.getCardId())) {
+                continue;
+            }
+            relationMap.computeIfAbsent(relation.getCardId(), key -> new ArrayList<>()).add(relation);
+        }
+
+        for (int i = 0; i < customizes.size(); i++) {
+            Map<String, List<UiCardEndpointRelation>> orderedRelations = new LinkedHashMap<>();
+            for (String cardId : customizeCardIds.get(i)) {
+                orderedRelations.put(cardId, relationMap.getOrDefault(cardId, Collections.emptyList()));
+            }
+            customizes.get(i).setCardEndpointRelations(orderedRelations);
+        }
     }
 
     public DoctorCustomerCardCustomize getCustomerCardCustomize(String id) {
@@ -444,6 +492,7 @@ public class DoctorWorkbenchApplicationService {
         if (entity == null) {
             throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "未找到医生客户定制卡片: " + id);
         }
+        attachCustomerCardEndpointRelations(Collections.singletonList(entity));
         return entity;
     }
 
@@ -452,11 +501,14 @@ public class DoctorWorkbenchApplicationService {
         if (!StringUtils.hasText(customerIdCard)) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "customerIdCard不能为空");
         }
-        return doctorCustomerCardCustomizeMapper.selectList(new LambdaQueryWrapper<DoctorCustomerCardCustomize>()
-                .eq(DoctorCustomerCardCustomize::getEmployeeId, currentEmployeeId)
-                .eq(DoctorCustomerCardCustomize::getCustomerIdCard, customerIdCard)
-                .eq(DoctorCustomerCardCustomize::getStatus, "active")
-                .orderByDesc(DoctorCustomerCardCustomize::getUpdatedAt));
+        List<DoctorCustomerCardCustomize> customizes = doctorCustomerCardCustomizeMapper
+                .selectList(new LambdaQueryWrapper<DoctorCustomerCardCustomize>()
+                        .eq(DoctorCustomerCardCustomize::getEmployeeId, currentEmployeeId)
+                        .eq(DoctorCustomerCardCustomize::getCustomerIdCard, customerIdCard)
+                        .eq(DoctorCustomerCardCustomize::getStatus, "active")
+                        .orderByDesc(DoctorCustomerCardCustomize::getUpdatedAt));
+        attachCustomerCardEndpointRelations(customizes);
+        return customizes;
     }
 
     @Transactional
