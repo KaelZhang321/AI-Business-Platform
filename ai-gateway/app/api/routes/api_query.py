@@ -36,6 +36,7 @@ from app.models.schemas import (
     ApiQueryRuntimeMetadataResponse,
     ApiQueryUIRuntime,
 )
+from app.core.config import settings
 from app.services.api_catalog.business_intents import get_business_intent_catalog_service
 from app.services.api_catalog.dag_planner import ApiDagPlanner
 from app.services.api_catalog.executor import ApiExecutor
@@ -78,7 +79,21 @@ def _get_services() -> tuple[ApiCatalogRetriever, ApiParamExtractor, ApiExecutor
 
     global _retriever, _extractor, _executor, _dynamic_ui, _snapshot_service
     if _retriever is None:
-        _retriever = ApiCatalogHybridRetriever()
+        # 本期开关：关闭图谱时直接走纯向量召回，避免进入 Neo4j 相关分支。
+        if settings.api_catalog_graph_enabled or settings.api_catalog_graph_validation_enabled:
+            _retriever = ApiCatalogHybridRetriever()
+            logger.info(
+                "api_query retriever mode=hybrid graph_enabled=%s graph_validation_enabled=%s",
+                settings.api_catalog_graph_enabled,
+                settings.api_catalog_graph_validation_enabled,
+            )
+        else:
+            _retriever = ApiCatalogRetriever()
+            logger.info(
+                "api_query retriever mode=plain graph_enabled=%s graph_validation_enabled=%s",
+                settings.api_catalog_graph_enabled,
+                settings.api_catalog_graph_validation_enabled,
+            )
     if _extractor is None:
         _extractor = ApiParamExtractor(llm_service=_get_api_query_llm_service())
     if _executor is None:

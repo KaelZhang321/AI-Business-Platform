@@ -144,10 +144,7 @@ class HealthQuadrantConfirmRequest(BaseModel):
         default_factory=list,
         description="单项体检条目列表（可选，可多条）",
     )
-    chief_complaint_items: list[str] = Field(
-        default_factory=list,
-        description="主诉文本列表（可选，可多条）",
-    )
+    chief_complaint_text: str | None = Field(None, description="主诉文本列表（可选，可多条）")
     quadrants: list[HealthQuadrantBucket] = Field(..., min_length=4, max_length=4, description="确认后的四象限结果")
 
 

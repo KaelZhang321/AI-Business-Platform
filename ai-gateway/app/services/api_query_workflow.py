@@ -318,6 +318,7 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
             trace_id=state["trace_id"],
         )
         runtime_context.route_hint = route_hint
+        self._log_routing_intent_summary(state, route_hint)
         updates: dict[str, Any] = {
             "route_hint_summary": summarize_route_hint(route_hint),
             "query_domains_hint": list(route_hint.query_domains),
@@ -374,6 +375,7 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
         )
         runtime_context.candidates = candidates
         runtime_context.subgraph_result = self._get_subgraph_result_for_trace(state["trace_id"])
+        self._log_retrieved_candidates(state, candidates)
         if candidates:
             return {"candidate_ids": [candidate.entry.id for candidate in candidates]}
 
@@ -522,6 +524,7 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
                 selected_entry=selected_entry,
                 selected_params=dict(routing_result.params),
             )
+            self._log_planner_dag_summary(state, plan)
             return {"plan": plan, "business_intent_codes": planning_intent_codes}
 
         # 多候选 + 写意图时，优先尝试确认页/表单快路。
@@ -595,6 +598,7 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
                 "degrade_stage": "stage3",
             }
 
+        self._log_planner_dag_summary(state, plan)
         return {"plan": plan, "business_intent_codes": planning_intent_codes}
 
     async def _validate_plan(self, state: ApiQueryState) -> dict[str, Any]:
@@ -623,6 +627,7 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
                 trace_id=state["trace_id"],
             )
         except DagPlanValidationError as exc:
+            self._log_validate_plan_failure(state, runtime_context, exc)
             write_intent_code = _resolve_write_intent_code(list(state.get("business_intent_codes", [])))
             if write_intent_code == "deleteCustomer":
                 delete_preview_context = await self._try_build_delete_preview_context(
@@ -1435,6 +1440,169 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
                     node=node,
                     execution_status=execution_status,
                 ),
+            ),
+        )
+
+    def _log_routing_intent_summary(self, state: ApiQueryState, route_hint: ApiQueryRoutingResult) -> None:
+        """输出路由阶段识别结果摘要。"""
+
+        logger.info(
+            "%s",
+            format_workflow_observability_log(
+                "api_query route intent summary",
+                observability_fields=self._build_observability_fields(
+                    trace_id=state["trace_id"],
+                    interaction_id=state.get("interaction_id"),
+                    conversation_id=state.get("conversation_id"),
+                    phase="stage2",
+                    node="route_query_summary",
+                ),
+                payload={
+                    "query_domains": list(route_hint.query_domains),
+                    "business_intent_codes": list(route_hint.business_intents),
+                    "route_status": route_hint.route_status,
+                },
+            ),
+        )
+
+    def _log_retrieved_candidates(self, state: ApiQueryState, candidates: list[Any]) -> None:
+        """输出召回接口摘要。"""
+
+        candidate_items: list[dict[str, Any]] = []
+        for candidate in candidates:
+            entry = getattr(candidate, "entry", None)
+            if entry is None:
+                continue
+            candidate_items.append(
+                {
+                    "api_id": entry.id,
+                    "api_path": entry.path,
+                    "domain": entry.domain,
+                    "method": entry.method,
+                    "score": getattr(candidate, "score", None),
+                }
+            )
+
+        logger.info(
+            "%s",
+            format_workflow_observability_log(
+                "api_query retrieved candidates",
+                observability_fields=self._build_observability_fields(
+                    trace_id=state["trace_id"],
+                    interaction_id=state.get("interaction_id"),
+                    conversation_id=state.get("conversation_id"),
+                    phase="stage2",
+                    node="retrieve_candidates_summary",
+                ),
+                payload={
+                    "candidate_count": len(candidate_items),
+                    "candidates": candidate_items,
+                },
+            ),
+        )
+
+    def _log_planner_dag_summary(self, state: ApiQueryState, plan: ApiQueryExecutionPlan) -> None:
+        """输出 Planner 产出的 DAG 依赖图摘要。"""
+
+        dag_edges: list[dict[str, Any]] = [
+            {
+                "step_id": step.step_id,
+                "api_id": step.api_id,
+                "api_path": step.api_path,
+                "depends_on": list(step.depends_on),
+            }
+            for step in plan.steps
+        ]
+
+        logger.info(
+            "%s",
+            format_workflow_observability_log(
+                "api_query planner dag summary",
+                observability_fields=self._build_observability_fields(
+                    trace_id=state["trace_id"],
+                    interaction_id=state.get("interaction_id"),
+                    conversation_id=state.get("conversation_id"),
+                    phase="stage3",
+                    node="build_plan_summary",
+                ),
+                payload={
+                    "plan_id": plan.plan_id,
+                    "step_count": len(plan.steps),
+                    "steps": dag_edges,
+                },
+            ),
+        )
+
+    def _log_validate_plan_failure(
+        self,
+        state: ApiQueryState,
+        runtime_context: ApiQueryRuntimeContext,
+        exc: DagPlanValidationError,
+    ) -> None:
+        """输出 Stage 3 validate 失败的定位日志。"""
+
+        plan = state.get("plan")
+        plan_steps = []
+        if isinstance(plan, ApiQueryExecutionPlan):
+            plan_steps = [
+                {
+                    "step_id": step.step_id,
+                    "api_id": step.api_id,
+                    "api_path": step.api_path,
+                    "depends_on": list(step.depends_on),
+                    "param_keys": sorted(step.params.keys()),
+                }
+                for step in plan.steps
+            ]
+
+        candidate_items: list[dict[str, Any]] = []
+        for candidate in runtime_context.candidates:
+            entry = getattr(candidate, "entry", None)
+            if entry is None:
+                continue
+            candidate_items.append(
+                {
+                    "api_id": entry.id,
+                    "api_path": entry.path,
+                    "method": entry.method,
+                    "domain": entry.domain,
+                    "operation_safety": entry.operation_safety,
+                }
+            )
+
+        subgraph = runtime_context.subgraph_result
+        subgraph_summary = {
+            "available": subgraph is not None,
+            "graph_degraded": bool(subgraph.graph_degraded) if subgraph is not None else None,
+            "degraded_reason": subgraph.degraded_reason if subgraph is not None else None,
+            "anchor_api_ids": list(subgraph.anchor_api_ids) if subgraph is not None else [],
+            "support_api_ids": list(subgraph.support_api_ids) if subgraph is not None else [],
+            "field_path_count": len(subgraph.field_paths) if subgraph is not None else 0,
+        }
+
+        logger.warning(
+            "%s",
+            format_workflow_observability_log(
+                "api_query stage3 validate failure",
+                observability_fields=self._build_observability_fields(
+                    trace_id=state["trace_id"],
+                    interaction_id=state.get("interaction_id"),
+                    conversation_id=state.get("conversation_id"),
+                    phase="stage3",
+                    node="validate_plan_failure",
+                ),
+                payload={
+                    "error_code": exc.code,
+                    "error_message": exc.message,
+                    "error_metadata": exc.metadata,
+                    "query_domains_hint": list(state.get("query_domains_hint", [])),
+                    "business_intent_codes": list(state.get("business_intent_codes", [])),
+                    "plan_step_count": len(plan_steps),
+                    "plan_steps": plan_steps,
+                    "candidate_count": len(candidate_items),
+                    "candidates": candidate_items,
+                    "subgraph": subgraph_summary,
+                },
             ),
         )
 

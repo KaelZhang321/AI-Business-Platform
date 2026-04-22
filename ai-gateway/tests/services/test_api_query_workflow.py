@@ -494,6 +494,47 @@ async def test_workflow_runs_nl_path_and_returns_success() -> None:
 
 
 @pytest.mark.asyncio
+async def test_workflow_logs_route_candidates_and_dag_summary(caplog) -> None:
+    entry = _build_entry()
+    retriever = StubRetriever([entry])
+    extractor = StubExtractor(entry, {"customerId": "C001"}, business_intents=["query_business_data"])
+    executor = StubExecutor(
+        ApiQueryExecutionResult(
+            status=ApiQueryExecutionStatus.SUCCESS,
+            data=[{"customerId": "C001", "customerName": "张三"}],
+            total=1,
+        )
+    )
+    planner = StubPlanner(step_entries={f"step_{entry.id}": entry})
+    workflow = _build_workflow(
+        retriever=retriever,
+        extractor=extractor,
+        executor=executor,
+        planner=planner,
+        registry_source=StubRegistrySource(entry),
+        ui_result=UISpecBuildResult(spec=_build_flat_spec(), frozen=False),
+    )
+
+    with caplog.at_level("INFO", logger="app.services.api_query_workflow"):
+        response = await workflow.run(
+            ApiQueryRequest.model_validate({"query": "查询张三客户"}),
+            trace_id="trace-log-summary-001",
+            interaction_id=None,
+            conversation_id=None,
+            user_context={"userId": "U001"},
+            user_token=None,
+        )
+
+    assert response.execution_status == ApiQueryExecutionStatus.SUCCESS
+    assert "api_query route intent summary" in caplog.text
+    assert "api_query retrieved candidates" in caplog.text
+    assert "api_query planner dag summary" in caplog.text
+    assert "query_business_data" in caplog.text
+    assert entry.id in caplog.text
+    assert f"dag_{'trace-lo'}" in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_workflow_multi_candidate_passes_predecessor_hints_to_planner() -> None:
     predecessor_entry = ApiCatalogEntry(
         id="role_list_v1",

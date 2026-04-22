@@ -417,6 +417,24 @@ class ApiQueryExecutionGraph:
             }
             entry = runtime.step_entries[step.step_id]
             resolved_params, empty_bindings = _resolve_step_params(step.params, step_data_by_id)
+            logger.info(
+                "%s",
+                format_workflow_observability_log(
+                    "api_query execution step started",
+                    observability_fields=_build_execution_observability_fields(
+                        runtime,
+                        phase="stage4",
+                        node=step.step_id,
+                        execution_status=None,
+                    ),
+                    payload={
+                        "api_id": step.api_id or entry.id,
+                        "api_path": step.api_path or entry.path,
+                        "depends_on": list(step.depends_on),
+                        "param_keys": sorted(resolved_params.keys()),
+                    },
+                ),
+            )
 
             # 1. 先做空上游短路，避免把无意义参数继续打到业务系统。
             if empty_bindings:
@@ -525,6 +543,24 @@ class ApiQueryExecutionGraph:
                 step_timeout_seconds=runtime.step_timeout_seconds,
                 interaction_id=runtime.interaction_id,
                 conversation_id=runtime.conversation_id,
+            )
+            logger.info(
+                "%s",
+                format_workflow_observability_log(
+                    "api_query execution step finished",
+                    observability_fields=_build_execution_observability_fields(
+                        runtime,
+                        phase="stage4",
+                        node=step.step_id,
+                        execution_status=execution_result.status.value,
+                    ),
+                    payload={
+                        "api_id": step.api_id or entry.id,
+                        "api_path": step.api_path or entry.path,
+                        "status": execution_result.status.value,
+                        "error_code": execution_result.error_code,
+                    },
+                ),
             )
             execution_result.meta.setdefault("planner_step_id", step.step_id)
             execution_result.meta.setdefault("depends_on", list(step.depends_on))
