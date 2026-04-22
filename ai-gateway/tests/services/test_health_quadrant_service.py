@@ -99,10 +99,10 @@ async def test_query_quadrants_returns_cached_when_hit(monkeypatch) -> None:
     repo = StubRepository(
         cached={
             "quadrants": [
-                {"q_code": "q1", "q_name": "一", "abnormalIndicators": ["A"], "recommendationPlans": ["R"]},
-                {"q_code": "q2", "q_name": "二", "abnormalIndicators": ["B"], "recommendationPlans": ["R"]},
-                {"q_code": "q3", "q_name": "三", "abnormalIndicators": ["C"], "recommendationPlans": ["R"]},
-                {"q_code": "q4", "q_name": "四", "abnormalIndicators": ["D"], "recommendationPlans": ["R"]},
+                {"q_code": "q1", "q_name": "一", "abnormal_indicators": ["A"], "recommendation_plans": ["R"]},
+                {"q_code": "q2", "q_name": "二", "abnormal_indicators": ["B"], "recommendation_plans": ["R"]},
+                {"q_code": "q3", "q_name": "三", "abnormal_indicators": ["C"], "recommendation_plans": ["R"]},
+                {"q_code": "q4", "q_name": "四", "abnormal_indicators": ["D"], "recommendation_plans": ["R"]},
             ]
         }
     )
@@ -180,12 +180,12 @@ async def test_query_quadrants_exam_uses_one_two_item_split(monkeypatch) -> None
     assert result["fromCache"] is False
     quadrants = result["quadrants"]
     assert len(quadrants) == 4
-    assert "偏高" in quadrants[0]["abnormalIndicators"]
-    assert "结节" in quadrants[1]["abnormalIndicators"]
-    assert "血脂" in quadrants[0]["recommendationPlans"]
-    assert "肺部CT" in quadrants[1]["recommendationPlans"]
-    assert "维生素" in quadrants[2]["recommendationPlans"]
-    assert "维生素D偏低" in quadrants[2]["abnormalIndicators"]
+    assert "偏高" in quadrants[0]["abnormal_indicators"]
+    assert "结节" in quadrants[1]["abnormal_indicators"]
+    assert "血脂" in quadrants[0]["recommendation_plans"]
+    assert "肺部CT" in quadrants[1]["recommendation_plans"]
+    assert "维生素" in quadrants[2]["recommendation_plans"]
+    assert "维生素D偏低" in quadrants[2]["abnormal_indicators"]
     assert repo.draft_payload is not None
     assert repo.draft_payload["quadrant_type"] == "exam"
     assert repo.draft_payload["source_jlrq"] == "2026-04-15 10:00:00"
@@ -217,10 +217,10 @@ async def test_confirm_quadrants_persists_with_multi_items() -> None:
         ],
         chief_complaint_text="睡眠障碍，夜间易醒",
         quadrants=[
-            {"q_code": "q1", "q_name": "一", "abnormalIndicators": ["A"], "recommendationPlans": ["R"]},
-            {"q_code": "q2", "q_name": "二", "abnormalIndicators": ["B"], "recommendationPlans": ["R"]},
-            {"q_code": "q3", "q_name": "三", "abnormalIndicators": ["C"], "recommendationPlans": ["R"]},
-            {"q_code": "q4", "q_name": "四", "abnormalIndicators": ["D"], "recommendationPlans": ["R"]},
+            {"q_code": "q1", "q_name": "一", "abnormal_indicators": ["A"], "recommendation_plans": ["R"]},
+            {"q_code": "q2", "q_name": "二", "abnormal_indicators": ["B"], "recommendation_plans": ["R"]},
+            {"q_code": "q3", "q_name": "三", "abnormal_indicators": ["C"], "recommendation_plans": ["R"]},
+            {"q_code": "q4", "q_name": "四", "abnormal_indicators": ["D"], "recommendation_plans": ["R"]},
         ],
         confirmed_by="hello",
         trace_id="trace-001",
@@ -287,9 +287,9 @@ async def test_query_quadrants_exam_q3_mapping_and_q4_like_recall_are_deduplicat
 
     quadrants = result["quadrants"]
     # Q1/Q2 已占用“血脂”“肺部CT”，Q3 应仅保留新增标准项。
-    assert quadrants[2]["recommendationPlans"] == ["甲状腺超声"]
+    assert quadrants[2]["recommendation_plans"] == ["甲状腺超声"]
     # Q4 召回包含“血脂”会被去重，最终只保留新增质谱项目。
-    assert quadrants[3]["recommendationPlans"] == ["高级代谢质谱", "全基因检测", "PET-MR 高端筛查评估"]
+    assert quadrants[3]["recommendation_plans"] == ["高级代谢质谱", "全基因检测", "PET-MR 高端筛查评估"]
 
 
 @pytest.mark.asyncio
@@ -356,8 +356,8 @@ async def test_query_quadrants_treatment_single_pass_success(monkeypatch) -> Non
     )
     assert result["fromCache"] is False
     quadrants = result["quadrants"]
-    assert quadrants[0]["recommendationPlans"] == ["冠脉风险高级评估 (v1)"]
-    assert quadrants[1]["recommendationPlans"] == []
+    assert quadrants[0]["recommendation_plans"] == ["冠脉风险高级评估 (v1)"]
+    assert quadrants[1]["recommendation_plans"] == []
     assert repo.draft_payload is not None
     assert llm.calls == 1
 
@@ -398,7 +398,7 @@ async def test_query_quadrants_treatment_single_pass_fallback_and_skip_draft(mon
         chief_complaint_text="胸闷",
         trace_id="trace-001",
     )
-    assert result["quadrants"][3]["abnormalIndicators"] == ["本次智能分析未完成，请稍后重试"]
+    assert result["quadrants"][3]["abnormal_indicators"] == ["本次智能分析未完成，请稍后重试"]
     assert repo.draft_payload is None
 
 
@@ -456,7 +456,7 @@ async def test_query_quadrants_treatment_single_pass_retry_once_success(monkeypa
         chief_complaint_text="胸闷",
         trace_id="trace-001",
     )
-    assert result["quadrants"][0]["recommendationPlans"] == ["冠脉风险高级评估 (v1)"]
+    assert result["quadrants"][0]["recommendation_plans"] == ["冠脉风险高级评估 (v1)"]
     assert llm.calls == 2
 
 
@@ -516,8 +516,8 @@ async def test_query_quadrants_treatment_row_level_drop_and_empty_after_safety(m
         trace_id="trace-001",
     )
     quadrants = result["quadrants"]
-    assert quadrants[0]["recommendationPlans"] == []
-    assert quadrants[3]["abnormalIndicators"] == ["无安全可推荐项目"]
+    assert quadrants[0]["recommendation_plans"] == []
+    assert quadrants[3]["abnormal_indicators"] == ["无安全可推荐项目"]
 
 
 @pytest.mark.asyncio
@@ -600,7 +600,7 @@ async def test_query_quadrants_treatment_safety_limit_top3_per_quadrant(monkeypa
         trace_id="trace-001",
     )
     quadrants = result["quadrants"]
-    assert quadrants[0]["recommendationPlans"] == [
+    assert quadrants[0]["recommendation_plans"] == [
         "红区项目A (v1)",
         "红区项目B (v1)",
         "红区项目C (v1)",
@@ -663,7 +663,7 @@ async def test_query_quadrants_treatment_triage_accepts_nested_items_key(monkeyp
         trace_id="trace-001",
     )
 
-    assert result["quadrants"][0]["recommendationPlans"] == ["冠脉风险高级评估 (v1)"]
+    assert result["quadrants"][0]["recommendation_plans"] == ["冠脉风险高级评估 (v1)"]
 
 
 @pytest.mark.asyncio
@@ -743,6 +743,6 @@ async def test_query_quadrants_treatment_cross_quadrant_dedup(monkeypatch) -> No
         trace_id="trace-001",
     )
 
-    assert result["quadrants"][0]["recommendationPlans"] == ["红区项目A (v1)"]
-    assert result["quadrants"][1]["recommendationPlans"] == ["橙区项目A (v1)"]
+    assert result["quadrants"][0]["recommendation_plans"] == ["红区项目A (v1)"]
+    assert result["quadrants"][1]["recommendation_plans"] == ["橙区项目A (v1)"]
     assert llm.calls == 1

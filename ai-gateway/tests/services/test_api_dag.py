@@ -70,6 +70,82 @@ def test_validate_plan_rejects_cycle() -> None:
     assert exc_info.value.code == "planner_cycle_detected"
 
 
+def test_validate_plan_normalizes_zero_index_binding() -> None:
+    planner = ApiDagPlanner()
+    customer_entry = _make_entry(entry_id="customer_info", path="/api/customer/info")
+    stored_plan_entry = _make_entry(
+        entry_id="stored_plan",
+        path="/api/customer/stored-plan",
+        required=["encryptedIdCard"],
+    )
+    candidates = [
+        ApiCatalogSearchResult(entry=customer_entry, score=0.95),
+        ApiCatalogSearchResult(entry=stored_plan_entry, score=0.9),
+    ]
+    plan = ApiQueryExecutionPlan(
+        plan_id="dag_zero_index_binding",
+        steps=[
+            ApiQueryPlanStep(
+                step_id="step_customer_info",
+                api_id="customer_info",
+                api_path="/api/customer/info",
+                params={"customerInfo": "刘海坚"},
+                depends_on=[],
+            ),
+            ApiQueryPlanStep(
+                step_id="step_stored_plan",
+                api_id="stored_plan",
+                api_path="/api/customer/stored-plan",
+                params={"encryptedIdCard": "$[step_customer_info.data][0].idCard"},
+                depends_on=["step_customer_info"],
+            ),
+        ],
+    )
+
+    step_entries = planner.validate_plan(plan, candidates)
+
+    assert step_entries["step_stored_plan"].id == "stored_plan"
+    assert plan.steps[1].params["encryptedIdCard"] == "$[step_customer_info.data].idCard"
+
+
+def test_validate_plan_rejects_non_zero_index_binding() -> None:
+    planner = ApiDagPlanner()
+    customer_entry = _make_entry(entry_id="customer_info", path="/api/customer/info")
+    stored_plan_entry = _make_entry(
+        entry_id="stored_plan",
+        path="/api/customer/stored-plan",
+        required=["encryptedIdCard"],
+    )
+    candidates = [
+        ApiCatalogSearchResult(entry=customer_entry, score=0.95),
+        ApiCatalogSearchResult(entry=stored_plan_entry, score=0.9),
+    ]
+    plan = ApiQueryExecutionPlan(
+        plan_id="dag_non_zero_index_binding",
+        steps=[
+            ApiQueryPlanStep(
+                step_id="step_customer_info",
+                api_id="customer_info",
+                api_path="/api/customer/info",
+                params={"customerInfo": "刘海坚"},
+                depends_on=[],
+            ),
+            ApiQueryPlanStep(
+                step_id="step_stored_plan",
+                api_id="stored_plan",
+                api_path="/api/customer/stored-plan",
+                params={"encryptedIdCard": "$[step_customer_info.data][1].idCard"},
+                depends_on=["step_customer_info"],
+            ),
+        ],
+    )
+
+    with pytest.raises(DagPlanValidationError) as exc_info:
+        planner.validate_plan(plan, candidates)
+
+    assert exc_info.value.code == "planner_binding_syntax_invalid"
+
+
 def test_validate_plan_rejects_mutation_entry() -> None:
     planner = ApiDagPlanner()
     unsafe_entry = ApiCatalogEntry(

@@ -95,8 +95,8 @@ async def build_health_quadrant(request: HealthQuadrantRequest, raw_request: Req
                     HealthQuadrantBucket(
                         q_code=bucket.get("q_code") or bucket.get("code") or "",
                         q_name=bucket.get("q_name") or bucket.get("name") or "",
-                        abnormal_indicators=bucket["abnormalIndicators"],
-                        recommendation_plans=bucket["recommendationPlans"],
+                        abnormal_indicators=bucket["abnormal_indicators"],
+                        recommendation_plans=bucket["recommendation_plans"],
                     )
                     for bucket in result["quadrants"]
                 ],

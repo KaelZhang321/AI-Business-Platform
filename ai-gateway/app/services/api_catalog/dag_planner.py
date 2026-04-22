@@ -23,7 +23,7 @@ from pydantic import ValidationError
 
 from app.core.config import settings
 from app.models.schemas import ApiQueryExecutionPlan, ApiQueryPlanStep, ApiQueryRoutingResult
-from app.services.api_catalog.dag_bindings import DagBindingSyntaxError, collect_binding_step_ids
+from app.services.api_catalog.dag_bindings import DagBindingSyntaxError, collect_binding_step_ids, is_dag_binding
 from app.services.api_catalog.graph_models import ApiCatalogSubgraphResult
 from app.services.api_catalog.graph_plan_validator import GraphPlanValidationError, GraphPlanValidator
 from app.services.api_catalog.schema import (
@@ -206,6 +206,15 @@ class ApiDagPlanner:
                 raise DagPlanValidationError(
                     "planner_missing_dependency",
                     f"步骤 {step.step_id} 依赖了不存在的前置步骤: {missing_dependencies}",
+                )
+
+            normalized_binding_count = _normalize_zero_index_bindings_in_step_params(step)
+            if normalized_binding_count > 0:
+                logger.info(
+                    "stage3 planner binding normalized trace_id=%s step_id=%s normalized_count=%s",
+                    trace_id or "-",
+                    step.step_id,
+                    normalized_binding_count,
                 )
 
             try:
@@ -532,6 +541,42 @@ def _build_predecessor_hints_payload(
             for spec in specs
         ]
     return payload
+
+
+def _normalize_zero_index_bindings_in_step_params(step: ApiQueryPlanStep) -> int:
+    """把绑定表达式中的 `[0]` 归一化为受限语法可接受形式。"""
+    normalized_params, normalized_count = _normalize_zero_index_bindings(step.params)
+    if normalized_count > 0:
+        step.params = normalized_params
+    return normalized_count
+
+
+def _normalize_zero_index_bindings(payload: Any) -> tuple[Any, int]:
+    """递归归一化参数载荷中的绑定表达式。"""
+    if isinstance(payload, dict):
+        normalized_payload: dict[str, Any] = {}
+        total = 0
+        for key, value in payload.items():
+            normalized_value, count = _normalize_zero_index_bindings(value)
+            normalized_payload[key] = normalized_value
+            total += count
+        return normalized_payload, total
+
+    if isinstance(payload, list):
+        normalized_items: list[Any] = []
+        total = 0
+        for item in payload:
+            normalized_item, count = _normalize_zero_index_bindings(item)
+            normalized_items.append(normalized_item)
+            total += count
+        return normalized_items, total
+
+    if isinstance(payload, str) and is_dag_binding(payload):
+        normalized = payload.replace("[0]", "")
+        if normalized != payload:
+            return normalized, 1
+
+    return payload, 0
 
 
 def _validate_required_predecessors(

@@ -30,7 +30,3 @@ services:
           cpus: "1"
           memory: 512M
 
-networks:
-  default:
-    external: true
-    name: ai-platform-net

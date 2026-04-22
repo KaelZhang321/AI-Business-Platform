@@ -198,6 +198,7 @@ INSERT INTO {_TABLE_NAME}(
 )
 VALUES(%s, %s, %s, %s, %s, 'CONFIRMED', %s, %s)
 ON DUPLICATE KEY UPDATE
+payload_json = VALUES(payload_json),
 status = 'CONFIRMED',
 confirmed_by = VALUES(confirmed_by),
 updated_at = CURRENT_TIMESTAMP
