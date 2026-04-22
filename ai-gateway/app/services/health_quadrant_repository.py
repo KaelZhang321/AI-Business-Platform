@@ -190,7 +190,7 @@ INSERT INTO {_TABLE_NAME}(
     study_id,
     quadrant_type,
     single_exam_items_json,
-    chief_complaint_items_json,
+    chief_complaint_text,
     context_signature,
     status,
     payload_json,
