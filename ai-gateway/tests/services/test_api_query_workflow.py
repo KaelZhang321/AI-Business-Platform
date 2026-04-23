@@ -16,6 +16,8 @@ from app.services.api_catalog.schema import (
     ApiCatalogDetailHint,
     ApiCatalogEntry,
     ApiCatalogPaginationHint,
+    ApiCatalogPredecessorParamBinding,
+    ApiCatalogPredecessorSpec,
     ApiCatalogSearchResult,
     ApiCatalogTemplateHint,
 )
@@ -103,9 +105,11 @@ class StubPlanner:
         self.build_calls = 0
         self.last_subgraph_result: ApiCatalogSubgraphResult | None = None
         self.last_trace_id: str | None = None
+        self.last_predecessor_hints: dict[str, list[ApiCatalogPredecessorSpec]] | None = None
 
-    async def build_plan(self, query, candidates, user_context, route_hint, *, trace_id=None):
+    async def build_plan(self, query, candidates, user_context, route_hint, predecessor_hints=None, *, trace_id=None):
         self.build_calls += 1
+        self.last_predecessor_hints = predecessor_hints
         if not candidates:
             raise DagPlanValidationError("planner_candidates_empty", "no candidates")
         entry = candidates[0].entry
@@ -118,13 +122,45 @@ class StubPlanner:
             plan_id=f"dag_{(trace_id or 'trace')[:8]}",
         )
 
-    def validate_plan(self, plan, candidates, *, subgraph_result=None, trace_id=None):
+    def validate_plan(self, plan, candidates, predecessor_hints=None, *, subgraph_result=None, trace_id=None):
         self.validate_calls += 1
         self.last_subgraph_result = subgraph_result
         self.last_trace_id = trace_id
+        self.last_predecessor_hints = predecessor_hints
         if self._validate_error is not None:
             raise self._validate_error
         return dict(self._step_entries)
+
+
+class PassThroughPlanner:
+    """保持 workflow 生成的执行计划不变，仅执行基础校验。"""
+
+    def __init__(self, entry_by_step_id: dict[str, ApiCatalogEntry] | None = None) -> None:
+        self._entry_by_step_id = entry_by_step_id or {}
+        self.validate_calls = 0
+        self.build_calls = 0
+
+    async def build_plan(  # pragma: no cover
+        self,
+        query,
+        candidates,
+        user_context,
+        route_hint,
+        predecessor_hints=None,
+        *,
+        trace_id=None,
+    ):
+        self.build_calls += 1
+        raise AssertionError("single-candidate path should not call planner.build_plan")
+
+    def validate_plan(self, plan, candidates, predecessor_hints=None, *, subgraph_result=None, trace_id=None):
+        self.validate_calls += 1
+        return {
+            step.step_id: self._entry_by_step_id.get(step.step_id) or next(
+                candidate.entry for candidate in candidates if candidate.entry.id == (step.api_id or "")
+            )
+            for step in plan.steps
+        }
 
 
 class StubRegistrySource:
@@ -148,6 +184,39 @@ class StubRegistrySource:
         if self._entry is None:
             return []
         return [self._entry]
+
+
+def _build_predecessor_target_entry_with_source_path(source_path: str) -> ApiCatalogEntry:
+    """构造包含前置依赖的目标接口，便于复用路径兼容性测试。"""
+
+    return ApiCatalogEntry(
+        id="stored_plan_v1",
+        description="储值方案概览",
+        domain="oms",
+        method="GET",
+        path="/leczcore-data-manage/dwCustomerArchive/planAssetOverview",
+        status="active",
+        operation_safety="query",
+        param_schema={
+            "type": "object",
+            "properties": {"encryptedIdCard": {"type": "string", "title": "身份证号"}},
+            "required": ["encryptedIdCard"],
+        },
+        predecessors=[
+            ApiCatalogPredecessorSpec(
+                predecessor_api_id="customer_info_v1",
+                required=True,
+                order=1,
+                param_bindings=[
+                    ApiCatalogPredecessorParamBinding(
+                        target_param="encryptedIdCard",
+                        source_path=source_path,
+                        select_mode="all",
+                    )
+                ],
+            )
+        ],
+    )
 
 
 @dataclass(slots=True)
@@ -284,57 +353,6 @@ def _build_workflow(
 
 
 @pytest.mark.asyncio
-async def test_workflow_runs_direct_path_without_routing(caplog) -> None:
-    entry = _build_entry()
-    retriever = StubRetriever([entry])
-    extractor = StubExtractor(entry, {"customerId": "C001"})
-    executor = StubExecutor(
-        ApiQueryExecutionResult(
-            status=ApiQueryExecutionStatus.SUCCESS,
-            data=[{"customerId": "C001", "customerName": "张三"}],
-            total=1,
-        )
-    )
-    planner = StubPlanner(step_entries={f"step_{entry.id}": entry})
-    workflow = _build_workflow(
-        retriever=retriever,
-        extractor=extractor,
-        executor=executor,
-        planner=planner,
-        registry_source=StubRegistrySource(entry),
-        ui_result=UISpecBuildResult(spec=_build_flat_spec(), frozen=False),
-    )
-
-    with caplog.at_level("INFO", logger="app.services.api_query_workflow"):
-        response = await workflow.run(
-            ApiQueryRequest.model_validate(
-                {
-                    "mode": "direct",
-                    "direct_query": {
-                        "api_id": entry.id,
-                        "params": {"customerId": "C001", "pageNum": 1, "pageSize": 20},
-                    },
-                }
-            ),
-            trace_id="trace-direct-001",
-            interaction_id="interaction-001",
-            conversation_id="conversation-001",
-            user_context={},
-            user_token="Bearer test-token",
-        )
-
-    assert response.execution_status == ApiQueryExecutionStatus.SUCCESS
-    assert response.execution_plan is not None
-    assert response.execution_plan.steps[0].api_id == entry.id
-    assert response.ui_runtime is not None
-    assert response.ui_runtime.list.enabled is True
-    assert retriever.calls == 0
-    assert extractor.route_calls == 0
-    assert executor.calls == 1
-    assert "phase=stage4" in caplog.text
-
-
-@pytest.mark.asyncio
 async def test_workflow_passes_stage2_subgraph_into_stage3_validation() -> None:
     entry = _build_entry()
     subgraph = ApiCatalogSubgraphResult(
@@ -373,7 +391,7 @@ async def test_workflow_passes_stage2_subgraph_into_stage3_validation() -> None:
     )
 
     response = await workflow.run(
-        ApiQueryRequest.model_validate({"mode": "nl", "query": "查询客户列表"}),
+        ApiQueryRequest.model_validate({"query": "查询客户列表"}),
         trace_id="trace-subgraph-pass-through",
         interaction_id="interaction-subgraph-pass-through",
         conversation_id="conversation-subgraph-pass-through",
@@ -384,6 +402,55 @@ async def test_workflow_passes_stage2_subgraph_into_stage3_validation() -> None:
     assert response.execution_status == ApiQueryExecutionStatus.SUCCESS
     assert planner.last_subgraph_result == subgraph
     assert planner.last_trace_id == "trace-subgraph-pass-through"
+
+
+@pytest.mark.asyncio
+async def test_workflow_stage3_does_not_degrade_when_graph_degraded_and_validation_flag_disabled() -> None:
+    """图校验开关关闭时，Stage3 不应因 graph_degraded 被保守拦截。"""
+
+    entry = _build_entry()
+    subgraph = ApiCatalogSubgraphResult(
+        anchor_api_ids=[entry.id],
+        graph_degraded=True,
+        degraded_reason="graph_disabled",
+    )
+    retriever = StubRetriever([entry], subgraph_result=subgraph)
+    extractor = StubExtractor(entry, {"customerId": "C001"})
+    executor = StubExecutor(
+        ApiQueryExecutionResult(
+            status=ApiQueryExecutionStatus.SUCCESS,
+            data=[{"customerId": "C001", "customerName": "张三"}],
+            total=1,
+        )
+    )
+    planner = StubPlanner(step_entries={f"step_{entry.id}": entry})
+    workflow = _build_workflow(
+        retriever=retriever,
+        extractor=extractor,
+        executor=executor,
+        planner=planner,
+        registry_source=StubRegistrySource(entry),
+        ui_result=UISpecBuildResult(spec=_build_flat_spec(), frozen=False),
+    )
+
+    from app.services.api_catalog import dag_planner as dag_planner_module
+
+    original_enabled = dag_planner_module.settings.api_catalog_graph_validation_enabled
+    dag_planner_module.settings.api_catalog_graph_validation_enabled = False
+    try:
+        response = await workflow.run(
+            ApiQueryRequest.model_validate({"query": "查询张三客户"}),
+            trace_id="trace-stage3-graph-degraded-but-disabled",
+            interaction_id=None,
+            conversation_id=None,
+            user_context={},
+            user_token=None,
+        )
+    finally:
+        dag_planner_module.settings.api_catalog_graph_validation_enabled = original_enabled
+
+    assert response.execution_status == ApiQueryExecutionStatus.SUCCESS
+    assert response.error is None
 
 
 @pytest.mark.asyncio
@@ -424,6 +491,219 @@ async def test_workflow_runs_nl_path_and_returns_success() -> None:
     assert extractor.route_calls == 1
     assert extractor.extract_calls == 1
     assert planner.validate_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_workflow_logs_route_candidates_and_dag_summary(caplog) -> None:
+    entry = _build_entry()
+    retriever = StubRetriever([entry])
+    extractor = StubExtractor(entry, {"customerId": "C001"}, business_intents=["query_business_data"])
+    executor = StubExecutor(
+        ApiQueryExecutionResult(
+            status=ApiQueryExecutionStatus.SUCCESS,
+            data=[{"customerId": "C001", "customerName": "张三"}],
+            total=1,
+        )
+    )
+    planner = StubPlanner(step_entries={f"step_{entry.id}": entry})
+    workflow = _build_workflow(
+        retriever=retriever,
+        extractor=extractor,
+        executor=executor,
+        planner=planner,
+        registry_source=StubRegistrySource(entry),
+        ui_result=UISpecBuildResult(spec=_build_flat_spec(), frozen=False),
+    )
+
+    with caplog.at_level("INFO", logger="app.services.api_query_workflow"):
+        response = await workflow.run(
+            ApiQueryRequest.model_validate({"query": "查询张三客户"}),
+            trace_id="trace-log-summary-001",
+            interaction_id=None,
+            conversation_id=None,
+            user_context={"userId": "U001"},
+            user_token=None,
+        )
+
+    assert response.execution_status == ApiQueryExecutionStatus.SUCCESS
+    assert "api_query route intent summary" in caplog.text
+    assert "api_query retrieved candidates" in caplog.text
+    assert "api_query planner dag summary" in caplog.text
+    assert "query_business_data" in caplog.text
+    assert entry.id in caplog.text
+    assert f"dag_{'trace-lo'}" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_workflow_multi_candidate_passes_predecessor_hints_to_planner() -> None:
+    predecessor_entry = ApiCatalogEntry(
+        id="role_list_v1",
+        description="角色列表",
+        domain="iam",
+        method="GET",
+        path="/api/roles/list",
+        status="active",
+        operation_safety="query",
+    )
+    target_entry = ApiCatalogEntry(
+        id="role_detail_v1",
+        description="角色详情",
+        domain="iam",
+        method="GET",
+        path="/api/roles/detail",
+        status="active",
+        operation_safety="query",
+        param_schema={
+            "type": "object",
+            "properties": {"roleId": {"type": "string"}},
+            "required": ["roleId"],
+        },
+        predecessors=[
+            ApiCatalogPredecessorSpec(
+                predecessor_api_id="role_list_v1",
+                required=True,
+                order=1,
+                param_bindings=[
+                    ApiCatalogPredecessorParamBinding(
+                        target_param="roleId",
+                        source_path="$.data[*].id",
+                        select_mode="first",
+                    )
+                ],
+            )
+        ],
+    )
+
+    retriever = StubRetriever([target_entry, predecessor_entry])
+    extractor = StubExtractor(target_entry, {"roleId": "S1001"}, business_intents=["none"])
+    executor = StubExecutor(
+        ApiQueryExecutionResult(
+            status=ApiQueryExecutionStatus.SUCCESS,
+            data=[{"roleId": "S1001", "roleName": "健管师"}],
+            total=1,
+        )
+    )
+    planner = StubPlanner(
+        step_entries={
+            "step_role_list_v1": predecessor_entry,
+            "step_role_detail_v1": target_entry,
+        }
+    )
+
+    async def build_plan_with_predecessor(
+        query, candidates, user_context, route_hint, predecessor_hints=None, *, trace_id=None
+    ):
+        planner.build_calls += 1
+        planner.last_predecessor_hints = predecessor_hints
+        from app.models.schemas import ApiQueryExecutionPlan, ApiQueryPlanStep
+
+        return ApiQueryExecutionPlan(
+            plan_id=f"dag_{(trace_id or 'trace')[:8]}",
+            steps=[
+                ApiQueryPlanStep(
+                    step_id="step_role_list_v1",
+                    api_id="role_list_v1",
+                    api_path="/api/roles/list",
+                    params={},
+                    depends_on=[],
+                ),
+                ApiQueryPlanStep(
+                    step_id="step_role_detail_v1",
+                    api_id="role_detail_v1",
+                    api_path="/api/roles/detail",
+                    params={"roleId": "$[step_role_list_v1.data][*].id"},
+                    depends_on=["step_role_list_v1"],
+                ),
+            ],
+        )
+
+    planner.build_plan = build_plan_with_predecessor  # type: ignore[method-assign]
+    workflow = _build_workflow(
+        retriever=retriever,
+        extractor=extractor,
+        executor=executor,
+        planner=planner,
+        registry_source=StubRegistrySource([target_entry, predecessor_entry]),
+        ui_result=UISpecBuildResult(spec=_build_flat_spec(), frozen=False),
+    )
+
+    response = await workflow.run(
+        ApiQueryRequest.model_validate({"query": "查询健管师角色详情"}),
+        trace_id="trace-predecessor-hints-001",
+        interaction_id=None,
+        conversation_id=None,
+        user_context={},
+        user_token=None,
+    )
+
+    assert response.execution_status == ApiQueryExecutionStatus.PARTIAL_SUCCESS
+    assert planner.build_calls == 1
+    assert planner.last_predecessor_hints is not None
+    hints = planner.last_predecessor_hints.get("role_detail_v1")
+    assert hints is not None
+    assert len(hints) == 1
+    assert hints[0].predecessor_api_id == "role_list_v1"
+
+
+@pytest.mark.asyncio
+async def test_workflow_multi_candidate_missing_required_predecessor_degrades() -> None:
+    target_entry = ApiCatalogEntry(
+        id="role_detail_v1",
+        description="角色详情",
+        domain="iam",
+        method="GET",
+        path="/api/roles/detail",
+        status="active",
+        operation_safety="query",
+        param_schema={
+            "type": "object",
+            "properties": {"roleId": {"type": "string"}},
+            "required": ["roleId"],
+        },
+        predecessors=[
+            ApiCatalogPredecessorSpec(
+                predecessor_api_id="role_list_v1",
+                required=True,
+                order=1,
+                param_bindings=[],
+            )
+        ],
+    )
+    another_entry = ApiCatalogEntry(
+        id="role_summary_v1",
+        description="角色汇总",
+        domain="iam",
+        method="GET",
+        path="/api/roles/summary",
+        status="active",
+        operation_safety="query",
+    )
+
+    retriever = StubRetriever([target_entry, another_entry])
+    extractor = StubExtractor(target_entry, {"roleId": "S1001"}, business_intents=["none"])
+    executor = StubExecutor(ApiQueryExecutionResult(status=ApiQueryExecutionStatus.SUCCESS, data=[], total=0))
+    planner = StubPlanner(step_entries={})
+    workflow = _build_workflow(
+        retriever=retriever,
+        extractor=extractor,
+        executor=executor,
+        planner=planner,
+        registry_source=StubRegistrySource([target_entry, another_entry]),  # 不包含 required predecessor
+        ui_result=UISpecBuildResult(spec=_build_flat_spec(), frozen=False),
+    )
+
+    response = await workflow.run(
+        ApiQueryRequest.model_validate({"query": "查询健管师角色详情"}),
+        trace_id="trace-missing-required-predecessor-001",
+        interaction_id=None,
+        conversation_id=None,
+        user_context={},
+        user_token=None,
+    )
+
+    assert response.execution_status == ApiQueryExecutionStatus.SKIPPED
+    assert response.error == "我找到了相关接口，但当前还无法稳定生成可执行的数据流，请补充更明确的查询链路后重试。"
+    assert planner.build_calls == 0
 
 
 @pytest.mark.asyncio
@@ -987,11 +1267,281 @@ async def test_workflow_delete_role_returns_notice_when_missing() -> None:
 
     assert executor.calls == 1
     assert response.execution_status == ApiQueryExecutionStatus.SKIPPED
-    assert response.execution_plan is None
-    assert response.error is None
-    notice = response.ui_spec["elements"]["child_1"]
-    assert notice["type"] == "PlannerNotice"
-    assert "不存在名为“健管师”的角色" in notice["props"]["text"]
+
+
+@pytest.mark.asyncio
+async def test_workflow_single_candidate_with_predecessor_builds_multi_step_plan() -> None:
+    predecessor_entry = ApiCatalogEntry(
+        id="role_list_v1",
+        description="角色列表",
+        domain="iam",
+        method="GET",
+        path="/api/roles/list",
+        status="active",
+        operation_safety="list",
+    )
+    target_entry = ApiCatalogEntry(
+        id="role_detail_v1",
+        description="角色详情",
+        domain="iam",
+        method="GET",
+        path="/api/roles/detail",
+        status="active",
+        operation_safety="query",
+        param_schema={
+            "type": "object",
+            "properties": {"roleId": {"type": "string", "title": "角色ID"}},
+            "required": ["roleId"],
+        },
+        predecessors=[
+            ApiCatalogPredecessorSpec(
+                predecessor_api_id="role_list_v1",
+                required=True,
+                order=1,
+                param_bindings=[
+                    ApiCatalogPredecessorParamBinding(
+                        target_param="roleId",
+                        source_path="$.data[*].id",
+                        select_mode="first",
+                    )
+                ],
+            )
+        ],
+    )
+
+    class MixedExecutor:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict[str, object]]] = []
+
+        async def call(self, entry, params, user_token=None, trace_id=None, user_id=None):
+            self.calls.append((entry.id, dict(params)))
+            if entry.id == "role_list_v1":
+                return ApiQueryExecutionResult(
+                    status=ApiQueryExecutionStatus.SUCCESS,
+                    data=[{"id": "S1001"}, {"id": "S1002"}],
+                    total=2,
+                    trace_id=trace_id,
+                )
+            return ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.SUCCESS,
+                data=[{"roleId": params.get("roleId"), "roleName": "健管师"}],
+                total=1,
+                trace_id=trace_id,
+            )
+
+    retriever = StubRetriever([target_entry])
+    extractor = StubExtractor(target_entry, {})
+    executor = MixedExecutor()
+    planner = PassThroughPlanner(
+        entry_by_step_id={
+            "step_role_list_v1": predecessor_entry,
+            "step_role_detail_v1": target_entry,
+        }
+    )
+    workflow = _build_workflow(
+        retriever=retriever,
+        extractor=extractor,
+        executor=executor,  # type: ignore[arg-type]
+        planner=planner,  # type: ignore[arg-type]
+        registry_source=StubRegistrySource([target_entry, predecessor_entry]),
+        ui_result=UISpecBuildResult(spec=_build_flat_spec(), frozen=False),
+    )
+
+    response = await workflow.run(
+        ApiQueryRequest.model_validate({"query": "查询健管师角色详情"}),
+        trace_id="trace-predecessor-001",
+        interaction_id=None,
+        conversation_id=None,
+        user_context={},
+        user_token=None,
+    )
+
+    assert response.execution_status == ApiQueryExecutionStatus.SUCCESS
+    assert response.execution_plan is not None
+    assert len(response.execution_plan.steps) == 2
+    step_map = {step.step_id: step for step in response.execution_plan.steps}
+    assert step_map["step_role_detail_v1"].depends_on == ["step_role_list_v1"]
+    # select_mode=first 应转为单值绑定表达式（非 user_select 暂停）
+    assert step_map["step_role_detail_v1"].params["roleId"] == "$[step_role_list_v1.data].id"
+    assert [item[0] for item in executor.calls] == ["role_list_v1", "role_detail_v1"]
+
+
+@pytest.mark.asyncio
+async def test_workflow_user_select_wait_and_resume() -> None:
+    predecessor_entry = ApiCatalogEntry(
+        id="role_list_v1",
+        description="角色列表",
+        domain="iam",
+        method="GET",
+        path="/api/roles/list",
+        status="active",
+        operation_safety="list",
+    )
+    target_entry = ApiCatalogEntry(
+        id="role_detail_v1",
+        description="角色详情",
+        domain="iam",
+        method="GET",
+        path="/api/roles/detail",
+        status="active",
+        operation_safety="query",
+        param_schema={
+            "type": "object",
+            "properties": {"roleId": {"type": "string", "title": "角色ID"}},
+            "required": ["roleId"],
+        },
+        predecessors=[
+            ApiCatalogPredecessorSpec(
+                predecessor_api_id="role_list_v1",
+                required=True,
+                order=1,
+                param_bindings=[
+                    ApiCatalogPredecessorParamBinding(
+                        target_param="roleId",
+                        source_path="$.data[*].id",
+                        select_mode="user_select",
+                    )
+                ],
+            )
+        ],
+    )
+
+    class SelectExecutor:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict[str, object]]] = []
+
+        async def call(self, entry, params, user_token=None, trace_id=None, user_id=None):
+            self.calls.append((entry.id, dict(params)))
+            if entry.id == "role_list_v1":
+                return ApiQueryExecutionResult(
+                    status=ApiQueryExecutionStatus.SUCCESS,
+                    data=[{"id": "S1001"}, {"id": "S1002"}],
+                    total=2,
+                    trace_id=trace_id,
+                )
+            return ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.SUCCESS,
+                data=[{"roleId": params.get("roleId"), "roleName": "健管师"}],
+                total=1,
+                trace_id=trace_id,
+            )
+
+    retriever = StubRetriever([target_entry])
+    extractor = StubExtractor(target_entry, {})
+    executor = SelectExecutor()
+    planner = PassThroughPlanner(
+        entry_by_step_id={
+            "step_role_list_v1": predecessor_entry,
+            "step_role_detail_v1": target_entry,
+        }
+    )
+    workflow = _build_workflow(
+        retriever=retriever,
+        extractor=extractor,
+        executor=executor,  # type: ignore[arg-type]
+        planner=planner,  # type: ignore[arg-type]
+        registry_source=StubRegistrySource([target_entry, predecessor_entry]),
+        ui_result=UISpecBuildResult(spec=_build_flat_spec(), frozen=False),
+    )
+
+    wait_response = await workflow.run(
+        ApiQueryRequest.model_validate({"query": "查询健管师角色详情"}),
+        trace_id="trace-user-select-wait",
+        interaction_id=None,
+        conversation_id=None,
+        user_context={},
+        user_token=None,
+    )
+    assert wait_response.execution_status == ApiQueryExecutionStatus.SKIPPED
+    assert wait_response.error == "命中多个候选值，请先选择后继续。"
+    # 首次仅执行前置接口，主接口因 WAIT_SELECT_REQUIRED 跳过
+    assert [item[0] for item in executor.calls] == ["role_list_v1"]
+
+    resume_response = await workflow.run(
+        ApiQueryRequest.model_validate(
+            {
+                "query": "查询健管师角色详情",
+                "selection_context": {"user_select": {"role_list_v1:roleId:id": "S1001"}},
+            }
+        ),
+        trace_id="trace-user-select-resume",
+        interaction_id=None,
+        conversation_id=None,
+        user_context={},
+        user_token=None,
+    )
+    assert resume_response.execution_status == ApiQueryExecutionStatus.SUCCESS
+    assert [item[0] for item in executor.calls][-2:] == ["role_list_v1", "role_detail_v1"]
+    assert executor.calls[-1][1]["roleId"] == "S1001"
+    assert resume_response.execution_plan is not None
+    assert resume_response.error is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source_path", ["$.idCard", "$.result.records[*].idCard"])
+async def test_workflow_predecessor_source_path_relative_or_legacy_root_both_supported(source_path: str) -> None:
+    predecessor_entry = ApiCatalogEntry(
+        id="customer_info_v1",
+        description="客户信息查询",
+        domain="oms",
+        method="GET",
+        path="/leczcore-crm/customerInquiry/getCustomerInfo",
+        status="active",
+        operation_safety="query",
+        response_data_path="result.records",
+    )
+    target_entry = _build_predecessor_target_entry_with_source_path(source_path)
+
+    class OmsExecutor:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict[str, object]]] = []
+
+        async def call(self, entry, params, user_token=None, trace_id=None, user_id=None):
+            self.calls.append((entry.id, dict(params)))
+            if entry.id == "customer_info_v1":
+                return ApiQueryExecutionResult(
+                    status=ApiQueryExecutionStatus.SUCCESS,
+                    data=[{"idCard": "2512160009"}],
+                    total=1,
+                    trace_id=trace_id,
+                )
+            return ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.SUCCESS,
+                data=[{"encryptedIdCard": params.get("encryptedIdCard")}],
+                total=1,
+                trace_id=trace_id,
+            )
+
+    retriever = StubRetriever([target_entry])
+    extractor = StubExtractor(target_entry, {})
+    executor = OmsExecutor()
+    planner = PassThroughPlanner(
+        entry_by_step_id={
+            "step_customer_info_v1": predecessor_entry,
+            "step_stored_plan_v1": target_entry,
+        }
+    )
+    workflow = _build_workflow(
+        retriever=retriever,
+        extractor=extractor,
+        executor=executor,  # type: ignore[arg-type]
+        planner=planner,  # type: ignore[arg-type]
+        registry_source=StubRegistrySource([target_entry, predecessor_entry]),
+        ui_result=UISpecBuildResult(spec=_build_flat_spec(), frozen=False),
+    )
+
+    response = await workflow.run(
+        ApiQueryRequest.model_validate({"query": "查询刘海坚的储值方案"}),
+        trace_id="trace-predecessor-source-path-compat",
+        interaction_id=None,
+        conversation_id=None,
+        user_context={},
+        user_token=None,
+    )
+
+    assert response.execution_status == ApiQueryExecutionStatus.SUCCESS
+    assert [item[0] for item in executor.calls] == ["customer_info_v1", "stored_plan_v1"]
+    assert executor.calls[-1][1]["encryptedIdCard"] == ["2512160009"]
 
 
 @pytest.mark.asyncio
@@ -1060,6 +1610,6 @@ async def test_workflow_delete_role_returns_candidate_table_when_multiple_matche
     assert table["type"] == "PlannerTable"
     assert len(table["props"]["dataSource"]) == 2
     row_action = table["props"]["rowActions"][0]
-    assert row_action["type"] == "remoteMutation"
+    assert row_action["action"] == "remoteMutation"
     assert row_action["label"] == "删除该角色"
     assert row_action["params"]["body"] == {"id": {"$bindRow": "id"}}

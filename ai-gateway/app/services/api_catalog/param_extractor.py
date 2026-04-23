@@ -457,22 +457,22 @@ JSON 结构必须包含：
 
 # Few-Shot Examples
 User: 帮我查一下王总的联系方式。
-Assistant: {{"query_domains":["CRM"],"business_intents":["none"],"is_multi_domain":false,"reasoning":"仅需要查询外部客户联系人，无任何数据修改意图。"}}
+Assistant: {{"query_domains":["OMS"],"business_intents":["none"],"is_multi_domain":false,"reasoning":"仅需要查询外部客户联系人，无任何数据修改意图。"}}
 
 User: 查一下华东区销售部有哪些人，顺便看看他们名下各自有多少大客户。
-Assistant: {{"query_domains":["IAM","CRM"],"business_intents":["none"],"is_multi_domain":true,"reasoning":"查询内部部门人员与其名下客户，属于跨域纯查询。"}}
+Assistant: {{"query_domains":["IAM","OMS"],"business_intents":["none"],"is_multi_domain":true,"reasoning":"查询内部部门人员与其名下客户，属于跨域纯查询。"}}
 
 User: 帮我调出客户C001的档案，然后把他的下月核心目标更新为每周3次有氧。
-Assistant: {{"query_domains":["CRM"],"business_intents":["saveToServer"],"is_multi_domain":false,"reasoning":"需要先查询客户档案，再准备保存更新后的业务目标。"}}
+Assistant: {{"query_domains":["OMS"],"business_intents":["saveToServer"],"is_multi_domain":false,"reasoning":"需要先查询客户档案，再准备保存更新后的业务目标。"}}
 
 User: 看看我名下有哪些无效的公海线索，直接把那个叫测试公司的记录删掉。
-Assistant: {{"query_domains":["CRM"],"business_intents":["deleteCustomer"],"is_multi_domain":false,"reasoning":"查询线索属于CRM，且包含明确删除客户记录的意图。"}}
+Assistant: {{"query_domains":["OMS"],"business_intents":["deleteCustomer"],"is_multi_domain":false,"reasoning":"查询线索属于CRM，且包含明确删除客户记录的意图。"}}
 
 User: 帮我订一张明天上午飞北京的头等舱机票。
 Assistant: {{"query_domains":["unknown"],"business_intents":["none"],"is_multi_domain":false,"reasoning":"当前请求不属于已知业务域。"}}
 
 输出格式：
-{{"query_domains":["crm"],"business_intents":["none"],"is_multi_domain":false,"reasoning":"..."}}"""
+{{"query_domains":["oms"],"business_intents":["none"],"is_multi_domain":false,"reasoning":"..."}}"""
 
 
 def _build_route_and_extract_prompt(
@@ -543,6 +543,11 @@ def _validate_params(params: dict[str, Any], entry: ApiCatalogEntry) -> dict[str
         validated[key] = _coerce_type(value, prop_type)
 
     return validated
+
+
+def _parse_json(raw_text: str) -> dict[str, Any]:
+    """兼容旧测试/调用方的 JSON 解析入口。"""
+    return parse_dirty_json_object(raw_text)
 
 
 def _coerce_type(value: Any, expected_type: str) -> Any:

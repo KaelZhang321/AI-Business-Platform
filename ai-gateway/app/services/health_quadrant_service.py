@@ -721,16 +721,16 @@ class HealthQuadrantService:
 
                 # 1. 非影像异常归第一象限；影像异常归第二象限，符合“1+X”基础筛查语义。
                 if one_item and category != '影像类':
-                    buckets[0]["abnormalIndicators"].append(abnormal_item)
-                    buckets[0]["recommendationPlans"].append(one_item)
+                    buckets[0]["abnormal_indicators"].append(abnormal_item)
+                    buckets[0]["recommendation_plans"].append(one_item)
                 if two_item or (one_item and category == '影像类'):
                     imaging_name = two_item or one_item or ""
-                    buckets[1]["abnormalIndicators"].append(abnormal_item)
-                    buckets[1]["recommendationPlans"].append(imaging_name)
+                    buckets[1]["abnormal_indicators"].append(abnormal_item)
+                    buckets[1]["recommendation_plans"].append(imaging_name)
 
             # 对第一、二象限的推荐方案去重
-            buckets[0]["recommendationPlans"] = list(_build_exam_dedup_keys(buckets[0]["recommendationPlans"]))
-            buckets[1]["recommendationPlans"] = list(_build_exam_dedup_keys(buckets[1]["recommendationPlans"]))
+            buckets[0]["recommendation_plans"] = list(_build_exam_dedup_keys(buckets[0]["recommendation_plans"]))
+            buckets[1]["recommendation_plans"] = list(_build_exam_dedup_keys(buckets[1]["recommendation_plans"]))
             logger.info(
                 "health quadrant stage duration stage=service.exam.q1_q2_build duration_ms=%s trace_id=%s study_id=%s",
                 int((time.perf_counter() - q1_q2_started_at) * 1000),
@@ -740,7 +740,7 @@ class HealthQuadrantService:
 
             # 2) 先建立 Q1/Q2 去重基线：后续 Q3/Q4 只补“新增价值项”，避免重复展示。
             existing_exam_keys = _build_exam_dedup_keys(
-                buckets[0]["recommendationPlans"] + buckets[1]["recommendationPlans"]
+                buckets[0]["recommendation_plans"] + buckets[1]["recommendation_plans"]
             )
 
             # 3) 第三象限：终检意见抽取 -> 标准化映射 -> 与 Q1/Q2 去重。
@@ -763,9 +763,9 @@ class HealthQuadrantService:
             q3_items = _deduplicate_exam_items_by_keys(mapped_items or extracted_items, existing_exam_keys)
             if q3_items:
                 # 终检意见抽取项属于第三象限“专项深度筛查”。
-                buckets[2]["recommendationPlans"].extend(q3_items)
+                buckets[2]["recommendation_plans"].extend(q3_items)
 
-            # 单项体检是结构化人工补充输入：项目名进入 recommendationPlans，异常描述进入 abnormalIndicators。
+            # 单项体检是结构化人工补充输入：项目名进入 recommendation_plans，异常描述进入 abnormal_indicators。
             single_plan_seen: set[str] = set()
             for item in single_exam_items:
                 item_text = _normalize_text(item.get("itemText"))
@@ -775,11 +775,11 @@ class HealthQuadrantService:
                 if not item_key or item_key in existing_exam_keys or item_key in single_plan_seen:
                     continue
                 single_plan_seen.add(item_key)
-                buckets[2]["recommendationPlans"].append(item_text)
+                buckets[2]["recommendation_plans"].append(item_text)
 
                 abnormal_indicator = _normalize_text(item.get("abnormalIndicator"))
                 if abnormal_indicator:
-                    buckets[2]["abnormalIndicators"].append(abnormal_indicator)
+                    buckets[2]["abnormal_indicators"].append(abnormal_indicator)
             if single_plan_seen:
                 existing_exam_keys.update(single_plan_seen)
             logger.info(
@@ -787,7 +787,7 @@ class HealthQuadrantService:
                 int((time.perf_counter() - q3_merge_started_at) * 1000),
                 normalized_trace_id,
                 normalized_study_id,
-                len(buckets[2]["recommendationPlans"]),
+                len(buckets[2]["recommendation_plans"]),
                 len(single_plan_seen),
             )
 
@@ -800,8 +800,8 @@ class HealthQuadrantService:
             q4_candidates = await self._query_q4_mass_spec_projects(chief_complaint_items=chief_complaint_items)
             q4_items = _deduplicate_exam_items_by_keys(q4_candidates, existing_exam_keys)
             if q4_items:
-                buckets[3]["abnormalIndicators"].extend(chief_complaint_items)
-                buckets[3]["recommendationPlans"].extend(q4_items)
+                buckets[3]["abnormal_indicators"].extend(chief_complaint_items)
+                buckets[3]["recommendation_plans"].extend(q4_items)
                 existing_exam_keys.update(_build_exam_dedup_keys(q4_items))
             logger.info(
                 "health quadrant stage duration stage=service.exam.q4_recall duration_ms=%s trace_id=%s study_id=%s q4_candidate_count=%s q4_result_count=%s",
@@ -814,7 +814,7 @@ class HealthQuadrantService:
 
             # 5) 统一补齐推荐方案与去重，保证确认页字段完整且可直接渲染。
             finalize_started_at = time.perf_counter()
-            _finalize_exam_recommendations(buckets)
+            _finalize_exam_recommendations(chief_complaint_items, buckets)
             logger.info(
                 "health quadrant stage duration stage=service.exam.finalize duration_ms=%s trace_id=%s study_id=%s",
                 int((time.perf_counter() - finalize_started_at) * 1000),
@@ -1516,8 +1516,8 @@ def _empty_buckets(defs: list[tuple[str, str]]) -> list[dict[str, Any]]:
         {
             "q_code": code,
             "q_name": name,
-            "abnormalIndicators": [],
-            "recommendationPlans": [],
+            "abnormal_indicators": [],
+            "recommendation_plans": [],
         }
         for code, name in defs
     ]
@@ -1532,17 +1532,18 @@ def _looks_like_imaging(item_name: str, category: str | None) -> bool:
     return False
 
 
-def _finalize_exam_recommendations(buckets: list[dict[str, Any]]) -> None:
+def _finalize_exam_recommendations(chief_complaint_text: str, buckets: list[dict[str, Any]]) -> None:
     # 规则解释：保留前序链路已经写入的个性化推荐项，再补默认推荐模板，避免覆盖业务输入。
-    _merge_recommendation_defaults(buckets[3], ["全基因检测", "PET-MR 高端筛查评估"])
+    if len(chief_complaint_text.strip()) > 0:
+        _merge_recommendation_defaults(buckets[3], ["全基因检测"])
     for bucket in buckets:
-        bucket["abnormalIndicators"] = _deduplicate_text_list(bucket["abnormalIndicators"])
+        bucket["abnormal_indicators"] = _deduplicate_text_list(bucket["abnormal_indicators"])
 
 
 def _finalize_treatment_recommendations(buckets: list[dict[str, Any]]) -> None:
     for bucket in buckets:
-        bucket["abnormalIndicators"] = _deduplicate_text_list(bucket["abnormalIndicators"])
-        bucket["recommendationPlans"] = _deduplicate_text_list(bucket["recommendationPlans"])
+        bucket["abnormal_indicators"] = _deduplicate_text_list(bucket["abnormal_indicators"])
+        bucket["recommendation_plans"] = _deduplicate_text_list(bucket["recommendation_plans"])
 
 
 def _build_treatment_triage_inputs(
@@ -1747,7 +1748,7 @@ def _build_treatment_quadrant_buckets_from_triage(
     buckets = _empty_buckets(_TREATMENT_BUCKETS)
     for item in triage_items:
         bucket = buckets[_TREATMENT_QUADRANT_TO_INDEX[item.quadrant]]
-        bucket["abnormalIndicators"].append(item.dedupe_key)
+        bucket["abnormal_indicators"].append(item.dedupe_key)
     return buckets
 
 
@@ -1764,9 +1765,9 @@ def _build_treatment_quadrant_buckets(
         bucket = buckets[bucket_index]
         for project_name in selected_recommendations_by_quadrant.get(quadrant, []):
             if project_name:
-                bucket["recommendationPlans"].append(project_name)
-    if not any(bucket["recommendationPlans"] for bucket in buckets):
-        buckets[-1]["abnormalIndicators"].append(_normalize_text(fallback_message) or _TREATMENT_EMPTY_MESSAGE)
+                bucket["recommendation_plans"].append(project_name)
+    if not any(bucket["recommendation_plans"] for bucket in buckets):
+        buckets[-1]["abnormal_indicators"].append(_normalize_text(fallback_message) or _TREATMENT_EMPTY_MESSAGE)
     return buckets
 
 
@@ -1826,7 +1827,7 @@ def _deduplicate_text_list(values: list[str]) -> list[str]:
 def _merge_recommendation_defaults(bucket: dict[str, Any], defaults: list[str]) -> None:
     """合并默认推荐模板，避免覆盖前序计算阶段写入的业务推荐项。"""
 
-    existing = _deduplicate_text_list(list(bucket.get("recommendationPlans") or []))
+    existing = _deduplicate_text_list(list(bucket.get("recommendation_plans") or []))
     merged = list(existing)
     existing_set = set(existing)
     for item in defaults:
@@ -1834,7 +1835,7 @@ def _merge_recommendation_defaults(bucket: dict[str, Any], defaults: list[str]) 
             continue
         merged.append(item)
         existing_set.add(item)
-    bucket["recommendationPlans"] = merged
+    bucket["recommendation_plans"] = merged
 
 
 def _normalize_quadrants_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1853,8 +1854,8 @@ def _normalize_quadrants_payload(payload: dict[str, Any]) -> list[dict[str, Any]
                 # 兼容新旧字段：新契约使用 q_code/q_name，旧缓存可能仍是 code/name。
                 "q_code": str(item.get("q_code") or item.get("code") or ""),
                 "q_name": str(item.get("q_name") or item.get("name") or ""),
-                "abnormalIndicators": _deduplicate_text_list(list(item.get("abnormalIndicators") or [])),
-                "recommendationPlans": _deduplicate_text_list(list(item.get("recommendationPlans") or [])),
+                "abnormal_indicators": _deduplicate_text_list(list(item.get("abnormal_indicators") or [])),
+                "recommendation_plans": _deduplicate_text_list(list(item.get("recommendation_plans") or [])),
             }
         )
     return normalized

@@ -286,6 +286,7 @@ class ApiQueryExecutionGraph:
         aggregate_status = final_state.get("aggregate_status") or _summarize_execution_records(
             records_by_step_id,
             execution_order,
+            plan=plan,
         )
         error_summary = _build_error_summary(records_by_step_id, execution_order)
         anchor_step_id = _select_anchor_step_id(records_by_step_id, execution_order)
@@ -416,6 +417,24 @@ class ApiQueryExecutionGraph:
             }
             entry = runtime.step_entries[step.step_id]
             resolved_params, empty_bindings = _resolve_step_params(step.params, step_data_by_id)
+            logger.info(
+                "%s",
+                format_workflow_observability_log(
+                    "api_query execution step started",
+                    observability_fields=_build_execution_observability_fields(
+                        runtime,
+                        phase="stage4",
+                        node=step.step_id,
+                        execution_status=None,
+                    ),
+                    payload={
+                        "api_id": step.api_id or entry.id,
+                        "api_path": step.api_path or entry.path,
+                        "depends_on": list(step.depends_on),
+                        "param_keys": sorted(resolved_params.keys()),
+                    },
+                ),
+            )
 
             # 1. 先做空上游短路，避免把无意义参数继续打到业务系统。
             if empty_bindings:
@@ -454,6 +473,35 @@ class ApiQueryExecutionGraph:
 
             # 缺参短路发生在真正发起 HTTP 调用前，避免把“参数不成立”污染成下游错误。
             missing_required_params = _find_missing_required_params(entry, resolved_params)
+            wait_select_result = _build_wait_select_required_result(
+                trace_id=runtime.trace_id,
+                step=step,
+                depends_on_records=upstream_records,
+            )
+            if wait_select_result is not None:
+                logger.info(
+                    "%s",
+                    format_workflow_observability_log(
+                        "api_query execution step skipped",
+                        observability_fields=_build_execution_observability_fields(
+                            runtime,
+                            phase="stage4",
+                            node=step.step_id,
+                            execution_status=ApiQueryExecutionStatus.SKIPPED.value,
+                        ),
+                        payload={"reason": "wait_select_required"},
+                    ),
+                )
+                return {
+                    "records_by_step_id": {
+                        step.step_id: DagStepExecutionRecord(
+                            step=step,
+                            entry=entry,
+                            resolved_params=resolved_params,
+                            execution_result=wait_select_result,
+                        )
+                    }
+                }
             if missing_required_params:
                 logger.info(
                     "%s",
@@ -496,6 +544,24 @@ class ApiQueryExecutionGraph:
                 interaction_id=runtime.interaction_id,
                 conversation_id=runtime.conversation_id,
             )
+            logger.info(
+                "%s",
+                format_workflow_observability_log(
+                    "api_query execution step finished",
+                    observability_fields=_build_execution_observability_fields(
+                        runtime,
+                        phase="stage4",
+                        node=step.step_id,
+                        execution_status=execution_result.status.value,
+                    ),
+                    payload={
+                        "api_id": step.api_id or entry.id,
+                        "api_path": step.api_path or entry.path,
+                        "status": execution_result.status.value,
+                        "error_code": execution_result.error_code,
+                    },
+                ),
+            )
             execution_result.meta.setdefault("planner_step_id", step.step_id)
             execution_result.meta.setdefault("depends_on", list(step.depends_on))
             execution_result.meta.setdefault("resolved_params", resolved_params)
@@ -525,7 +591,7 @@ class ApiQueryExecutionGraph:
                 for step_id in execution_order
                 if (record := records_by_step_id.get(step_id)) and record.execution_result.error
             ],
-            "aggregate_status": _summarize_execution_records(records_by_step_id, execution_order),
+            "aggregate_status": _summarize_execution_records(records_by_step_id, execution_order, plan=plan),
         }
 
 
@@ -937,6 +1003,71 @@ def _build_missing_param_skip_result(
     )
 
 
+def _build_wait_select_required_result(
+    *,
+    trace_id: str,
+    step: ApiQueryPlanStep,
+    depends_on_records: dict[str, DagStepExecutionRecord],
+) -> ApiQueryExecutionResult | None:
+    """当存在数组上游绑定且缺少用户选择时，返回等待选择态。"""
+    from app.services.api_catalog.dag_bindings import parse_binding_expression
+
+    options_by_binding: dict[str, list[Any]] = {}
+    for param_name, raw_value in step.params.items():
+        if not is_dag_binding(raw_value):
+            continue
+        expression = str(raw_value)
+        if "[*]" not in expression:
+            continue
+        try:
+            parsed = parse_binding_expression(expression)
+        except Exception:
+            continue
+        upstream_record = depends_on_records.get(parsed.step_id)
+        if upstream_record is None:
+            continue
+        extracted = evaluate_binding_expression(expression, {parsed.step_id: upstream_record.execution_result.data})
+        if not isinstance(extracted, list):
+            continue
+        normalized_options = [item for item in extracted if item not in (None, "")]
+        if len(normalized_options) <= 1:
+            continue
+        source_path = _extract_binding_source_path(expression)
+        binding_key = f"{upstream_record.entry.id}:{param_name}:{source_path}"
+        options_by_binding[binding_key] = normalized_options
+
+    if not options_by_binding:
+        return None
+
+    return ApiQueryExecutionResult(
+        status=ApiQueryExecutionStatus.SKIPPED,
+        data=[],
+        total=0,
+        error="命中多个候选值，请先选择后继续。",
+        error_code="WAIT_SELECT_REQUIRED",
+        trace_id=trace_id,
+        skipped_reason="wait_select_required",
+        meta={
+            "planner_step_id": step.step_id,
+            "depends_on": list(step.depends_on),
+            "pause_type": "WAIT_SELECT",
+            "selection_mode": "single",
+            "options_by_binding": options_by_binding,
+        },
+    )
+
+
+def _extract_binding_source_path(expression: str) -> str:
+    """从受限绑定表达式中提取 source_path。"""
+    marker = ".data]"
+    if marker not in expression:
+        return ""
+    source = expression.split(marker, 1)[1]
+    source = source.replace("[*]", "")
+    source = source.lstrip(".")
+    return source
+
+
 def _is_empty_binding_value(value: Any) -> bool:
     """判断绑定结果是否为空。"""
 
@@ -972,6 +1103,8 @@ def _build_execution_order(
 def _summarize_execution_records(
     records_by_step_id: dict[str, DagStepExecutionRecord],
     execution_order: list[str],
+    *,
+    plan: ApiQueryExecutionPlan | None = None,
 ) -> ApiQueryExecutionStatus:
     """把执行图结果折叠成对外主状态。"""
 
@@ -987,6 +1120,8 @@ def _summarize_execution_records(
     has_error = any(status == ApiQueryExecutionStatus.ERROR for status in statuses)
     has_skipped = any(status == ApiQueryExecutionStatus.SKIPPED for status in statuses)
 
+    if plan is not None and _has_wait_select_required(records_by_step_id, execution_order, plan):
+        return ApiQueryExecutionStatus.SKIPPED
     if has_success and (has_error or has_skipped):
         return ApiQueryExecutionStatus.PARTIAL_SUCCESS
     if has_success:
@@ -996,6 +1131,28 @@ def _summarize_execution_records(
     if any(status == ApiQueryExecutionStatus.EMPTY for status in statuses):
         return ApiQueryExecutionStatus.EMPTY
     return ApiQueryExecutionStatus.SKIPPED
+
+
+def _has_wait_select_required(
+    records_by_step_id: dict[str, DagStepExecutionRecord],
+    execution_order: list[str],
+    plan: ApiQueryExecutionPlan,
+) -> bool:
+    """判断是否命中了 user_select 的等待态。"""
+    step_map = {step.step_id: step for step in plan.steps}
+    for step_id in execution_order:
+        record = records_by_step_id.get(step_id)
+        if record is None:
+            continue
+        result = record.execution_result
+        if result.status != ApiQueryExecutionStatus.SKIPPED:
+            continue
+        if result.error_code != "WAIT_SELECT_REQUIRED":
+            continue
+        depends_on = step_map.get(step_id).depends_on if step_map.get(step_id) else []
+        if any(dep in records_by_step_id for dep in depends_on):
+            return True
+    return False
 
 
 def _build_error_summary(

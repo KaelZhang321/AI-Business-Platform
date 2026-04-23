@@ -6,18 +6,20 @@ from typing import Any, Literal, TypedDict
 from pydantic import BaseModel, Field
 
 from app.models.schemas import (
-    ApiQueryPatchContext,
     ApiQueryExecutionPlan,
     ApiQueryExecutionStatus,
     ApiQueryRequest,
     ApiQueryResponse,
-    ApiQueryResponseMode,
     ApiQueryRoutingResult,
     ApiQueryUIRuntime,
 )
 from app.services.api_catalog.dag_executor import DagStepExecutionRecord
 from app.services.api_catalog.graph_models import ApiCatalogSubgraphResult
-from app.services.api_catalog.schema import ApiCatalogEntry, ApiCatalogSearchFilters
+from app.services.api_catalog.schema import (
+    ApiCatalogEntry,
+    ApiCatalogPredecessorSpec,
+    ApiCatalogSearchFilters,
+)
 
 
 class ApiQueryRouteHintSummary(BaseModel):
@@ -55,8 +57,6 @@ class ApiQueryState(TypedDict, total=False):
     business_intent_codes: list[str]
     plan: ApiQueryExecutionPlan | None
     execution_status: ApiQueryExecutionStatus | None
-    response_mode: ApiQueryResponseMode
-    patch_context: ApiQueryPatchContext | None
     error_code: str | None
     degrade_reason: str | None
     degrade_stage: str | None
@@ -175,12 +175,14 @@ class ApiQueryRuntimeContext:
     candidates: list[Any] = field(default_factory=list)
     subgraph_result: ApiCatalogSubgraphResult | None = None
     step_entries: dict[str, ApiCatalogEntry] = field(default_factory=dict)
+    predecessor_hints: dict[str, list[ApiCatalogPredecessorSpec]] = field(default_factory=dict)
     route_hint: ApiQueryRoutingResult | None = None
     request_body: ApiQueryRequest | None = None
     degrade_context: ApiQueryDegradeContext | None = None
     execution_state: ApiQueryExecutionState | None = None
     mutation_form_context: ApiQueryMutationFormContext | None = None
     delete_preview_context: ApiQueryDeletePreviewContext | None = None
+    selection_context: dict[str, Any] | None = None
     log_prefix: str = ""
 
 

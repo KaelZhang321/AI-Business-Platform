@@ -333,3 +333,73 @@ async def test_execution_graph_folds_runtime_exception_into_synthetic_report() -
     assert result.report.execution_order == ["step_customers"]
     assert record.error_code == "EXECUTION_GRAPH_RUN_FAILED"
     assert record.meta["graph_failed"] is True
+
+
+@pytest.mark.asyncio
+async def test_execution_graph_wait_select_required_skips_downstream() -> None:
+    predecessor_entry = _make_entry(entry_id="roles", path="/api/iam/roles")
+    target_entry = _make_entry(
+        entry_id="role_detail",
+        path="/api/iam/roles/detail",
+        required=["role_id"],
+    )
+    plan = ApiQueryExecutionPlan(
+        plan_id="dag_wait_select",
+        steps=[
+            ApiQueryPlanStep(
+                step_id="step_roles",
+                api_id="roles",
+                api_path=predecessor_entry.path,
+                params={"keyword": "健管师"},
+                depends_on=[],
+            ),
+            ApiQueryPlanStep(
+                step_id="step_role_detail",
+                api_id="role_detail",
+                api_path=target_entry.path,
+                params={"role_id": "$[step_roles.data][*].id"},
+                depends_on=["step_roles"],
+            ),
+        ],
+    )
+
+    class StubExecutor:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        async def call(self, entry, params, user_token=None, trace_id=None, user_id=None):
+            self.calls.append(entry.id)
+            if entry.id == "roles":
+                return ApiQueryExecutionResult(
+                    status=ApiQueryExecutionStatus.SUCCESS,
+                    data=[{"id": "S1001"}, {"id": "S1002"}],
+                    total=2,
+                    trace_id=trace_id,
+                )
+            return ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.SUCCESS,
+                data={"id": "S1001", "name": "健管师"},
+                total=1,
+                trace_id=trace_id,
+            )
+
+    stub_executor = StubExecutor()
+    graph = ApiQueryExecutionGraph(stub_executor)
+    result = await graph.run(
+        plan,
+        {
+            "step_roles": predecessor_entry,
+            "step_role_detail": target_entry,
+        },
+        user_token=None,
+        trace_id="trace-execution-wait-select",
+    )
+
+    assert stub_executor.calls == ["roles"]
+    assert result.aggregate_status == ApiQueryExecutionStatus.SKIPPED
+    downstream_result = result.report.records_by_step_id["step_role_detail"].execution_result
+    assert downstream_result.status == ApiQueryExecutionStatus.SKIPPED
+    assert downstream_result.error_code == "WAIT_SELECT_REQUIRED"
+    assert downstream_result.meta["pause_type"] == "WAIT_SELECT"
+    options = downstream_result.meta["options_by_binding"]
+    assert options["roles:role_id:id"] == ["S1001", "S1002"]

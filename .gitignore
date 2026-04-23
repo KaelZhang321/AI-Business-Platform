@@ -49,6 +49,7 @@ docker/.env
 # === Environment ===
 .env.local
 .env.*.local
+*.env
 
 # === Logs ===
 *.log
@@ -60,3 +61,5 @@ htmlcov/
 .coverage
 .gitnexus
 .claude
+.planning/*
+.omx/

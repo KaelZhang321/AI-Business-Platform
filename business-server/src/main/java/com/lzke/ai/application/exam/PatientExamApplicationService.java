@@ -11,6 +11,12 @@ import com.lzke.ai.application.exam.dto.MyPatientLatestExamDateResponse;
 import com.lzke.ai.application.exam.dto.MyPatientListItemResponse;
 import com.lzke.ai.application.exam.dto.MyPatientListQueryRequest;
 import com.lzke.ai.application.exam.dto.PatientExamBatchResultQueryRequest;
+import com.lzke.ai.application.exam.dto.PatientExamCleanedIndicatorResponse;
+import com.lzke.ai.application.exam.dto.PatientExamCleanedResultQueryRequest;
+import com.lzke.ai.application.exam.dto.PatientExamCleanedResultResponse;
+import com.lzke.ai.application.exam.dto.PatientExamCleanedSummaryResponse;
+import com.lzke.ai.application.exam.dto.PatientExamComparisonItemResponse;
+import com.lzke.ai.application.exam.dto.PatientExamComparisonResponse;
 import com.lzke.ai.application.exam.dto.PatientExamDepartmentResponse;
 import com.lzke.ai.application.exam.dto.PatientExamDepartmentResultResponse;
 import com.lzke.ai.application.exam.dto.PatientExamDepartmentTable;
@@ -32,6 +38,7 @@ import com.lzke.ai.exception.ErrorCode;
 import com.lzke.ai.application.ui.UiBuilderApplicationService;
 import com.lzke.ai.infrastructure.persistence.mapper.PatientExamOdsMapper;
 import com.lzke.ai.interfaces.dto.PageResult;
+import com.lzke.ai.service.L1RuleCleaner;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -48,6 +55,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.time.DayOfWeek;
 import java.time.LocalDateTime;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
@@ -70,6 +78,10 @@ import java.util.stream.Collectors;
 public class PatientExamApplicationService {
 
     private static final Pattern DEPARTMENT_CODE_PATTERN = Pattern.compile("^[A-Za-z0-9_]+$");
+    private static final Pattern REFERENCE_RANGE_PATTERN = Pattern.compile("(-?\\d+(?:\\.\\d+)?)\\s*(?:-|~|～|至)\\s*(-?\\d+(?:\\.\\d+)?)");
+    private static final Pattern NUMBER_PATTERN = Pattern.compile("-?\\d+(?:\\.\\d+)?");
+    private static final Set<String> TEXT_SOURCE_TABLES = Set.of("ods_tj_usb", "ods_tj_jlb");
+    private static final List<String> TEXT_ITEM_KEYWORDS = List.of("超声", "结论", "所见", "描述", "提示", "检查", "影像", "PACS");
     private static final int MAX_BATCH_REPORTS = 10;
     private static final int DEFAULT_BATCH_QUERY_YEARS = 3;
     private static final String MY_CUSTOMER_ENDPOINT_ID = "6bbc18329c3dde651603182a651569ab";
@@ -197,6 +209,160 @@ public class PatientExamApplicationService {
         return value == null ? "" : value;
     }
 
+    private PatientExamCleanedResultResponse buildCleanedExamResult(
+            PatientExamSessionRowResponse sessionRow,
+            List<PatientExamResultItemResponse> detailRows
+    ) {
+        List<PatientExamCleanedIndicatorResponse> indicators = new ArrayList<>();
+        Set<String> categories = new LinkedHashSet<>();
+        for (PatientExamResultItemResponse row : detailRows) {
+            if (!StringUtils.hasText(row.getItemName()) && !StringUtils.hasText(row.getResultValue())) {
+                continue;
+            }
+            PatientExamCleanedIndicatorResponse indicator = toCleanedIndicator(row);
+            if (StringUtils.hasText(indicator.getCategory())) {
+                categories.add(indicator.getCategory());
+            }
+            indicators.add(indicator);
+        }
+
+        PatientExamCleanedSummaryResponse summary = new PatientExamCleanedSummaryResponse();
+        summary.setTotalIndicators(indicators.size());
+        summary.setAbnormalCount((int) indicators.stream()
+                .filter(indicator -> Boolean.TRUE.equals(indicator.getAbnormal()))
+                .count());
+        summary.setCategories(new ArrayList<>(categories));
+
+        PatientExamCleanedResultResponse response = new PatientExamCleanedResultResponse();
+        response.setStudyId(sessionRow.getStudyId());
+        response.setPatientName(sessionRow.getPatientName());
+        response.setGender(sessionRow.getGender());
+        response.setExamTime(sessionRow.getExamTime());
+        response.setPackageName(sessionRow.getPackageName());
+        response.setSummary(summary);
+        response.setIndicators(indicators);
+        return response;
+    }
+
+    private PatientExamCleanedIndicatorResponse toCleanedIndicator(PatientExamResultItemResponse row) {
+        L1RuleCleaner.CleanResult cleanResult = L1RuleCleaner.clean(row.getItemName());
+        String category = StringUtils.hasText(cleanResult.getCategory())
+                ? cleanResult.getCategory()
+                : row.getMajorItemName();
+        ReferenceRange referenceRange = parseReferenceRange(row.getReferenceRange());
+        String abnormalDirection = resolveAbnormalDirection(row.getAbnormalFlag());
+        if (!StringUtils.hasText(abnormalDirection)) {
+            abnormalDirection = inferAbnormalDirection(row.getResultValue(), referenceRange);
+        }
+
+        PatientExamCleanedIndicatorResponse indicator = new PatientExamCleanedIndicatorResponse();
+        indicator.setStandardCode(StringUtils.hasText(cleanResult.getStandardCode())
+                ? cleanResult.getStandardCode()
+                : row.getItemCode());
+        indicator.setStandardName(StringUtils.hasText(cleanResult.getStandardName())
+                ? cleanResult.getStandardName()
+                : (StringUtils.hasText(cleanResult.getCleaned()) ? cleanResult.getCleaned() : row.getItemName()));
+        indicator.setCategory(category);
+        indicator.setValue(row.getResultValue());
+        indicator.setUnit(row.getUnit());
+        indicator.setReferenceRange(row.getReferenceRange());
+        indicator.setRefMin(referenceRange.min());
+        indicator.setRefMax(referenceRange.max());
+        indicator.setAbnormal(isAbnormal(row.getAbnormalFlag(), abnormalDirection));
+        indicator.setAbnormalDirection(abnormalDirection);
+        return indicator;
+    }
+
+    private ReferenceRange parseReferenceRange(String value) {
+        if (!StringUtils.hasText(value)) {
+            return new ReferenceRange(null, null);
+        }
+        Matcher matcher = REFERENCE_RANGE_PATTERN.matcher(value.trim());
+        if (!matcher.find()) {
+            return new ReferenceRange(null, null);
+        }
+        return new ReferenceRange(matcher.group(1), matcher.group(2));
+    }
+
+    private boolean isAbnormal(String abnormalFlag, String abnormalDirection) {
+        if (StringUtils.hasText(abnormalDirection)) {
+            return true;
+        }
+        if (!StringUtils.hasText(abnormalFlag)) {
+            return false;
+        }
+        String flag = abnormalFlag.trim();
+        return !"0".equals(flag) && !"N".equalsIgnoreCase(flag) && !"正常".equals(flag);
+    }
+
+    private String resolveAbnormalDirection(String abnormalFlag) {
+        if (!StringUtils.hasText(abnormalFlag)) {
+            return null;
+        }
+        String flag = abnormalFlag.trim();
+        return switch (flag) {
+            case "1", "H", "h", "↑", "高", "偏高" -> "high";
+            case "2", "L", "l", "↓", "低", "偏低" -> "low";
+            default -> null;
+        };
+    }
+
+    private String inferAbnormalDirection(String resultValue, ReferenceRange referenceRange) {
+        Double value = parseFirstNumber(resultValue);
+        Double min = parseFirstNumber(referenceRange.min());
+        Double max = parseFirstNumber(referenceRange.max());
+        if (value == null) {
+            return null;
+        }
+        if (max != null && value > max) {
+            return "high";
+        }
+        if (min != null && value < min) {
+            return "low";
+        }
+        return null;
+    }
+
+    private Double parseFirstNumber(String value) {
+        if (!StringUtils.hasText(value)) {
+            return null;
+        }
+        Matcher matcher = NUMBER_PATTERN.matcher(value.trim());
+        if (!matcher.find()) {
+            return null;
+        }
+        try {
+            return Double.parseDouble(matcher.group());
+        } catch (NumberFormatException ex) {
+            return null;
+        }
+    }
+
+    private Double safeFloat(String value) {
+        if (!StringUtils.hasText(value)) {
+            return null;
+        }
+        try {
+            double number = Double.parseDouble(value.trim());
+            return Double.isNaN(number) ? null : number;
+        } catch (NumberFormatException ex) {
+            return null;
+        }
+    }
+
+    private record ReferenceRange(String min, String max) {
+    }
+
+    private static class ComparisonBucket {
+        private String standardCode;
+        private String standardName;
+        private String category;
+        private String unit;
+        private final Map<String, Object> values = new LinkedHashMap<>();
+        private Double refMin;
+        private Double refMax;
+    }
+
     /**
      * 查询当前登录员工的患者列表。
      *
@@ -320,6 +486,226 @@ public class PatientExamApplicationService {
                 resolvedTables
         );
         return buildSession(sessionRow, detailRows);
+    }
+
+    /**
+     * 查询单个体检并按 L1 规则清洗指标名称。
+     */
+    public PatientExamCleanedResultResponse getCleanedExamResult(String studyId) {
+        if (!StringUtils.hasText(studyId)) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "studyId不能为空");
+        }
+
+        PatientExamSessionRowResponse sessionRow = patientExamOdsMapper.selectPatientExamSessionByStudyId(studyId);
+        if (sessionRow == null) {
+            throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "未找到对应体检记录: " + studyId);
+        }
+
+        List<PatientExamDepartmentTable> tables = patientExamOdsMapper.selectDepartmentTables(null);
+        List<PatientExamDepartmentTable> resolvedTables = resolveTables(tables);
+        List<PatientExamResultItemResponse> detailRows = resolvedTables.isEmpty()
+                ? Collections.emptyList()
+                : patientExamOdsMapper.selectPatientExamDepartmentItems(
+                        Collections.singletonList(studyId),
+                        resolvedTables
+                );
+        return buildCleanedExamResult(sessionRow, detailRows);
+    }
+
+    /**
+     * 按患者身份证号纵向对比多次体检指标。
+     *
+     * <p>实现逻辑对齐 zbqx 的 {@code /patient/{sfzh}/comparison}：
+     * numeric 模式对比数值指标，text 模式对比影像/结论类文本指标。
+     */
+    public PatientExamComparisonResponse getPatientComparison(String idCard, String category, String mode) {
+        if (!StringUtils.hasText(idCard)) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "身份证号不能为空");
+        }
+        String normalizedMode = StringUtils.hasText(mode) ? mode.trim().toLowerCase(Locale.ROOT) : "numeric";
+        if (!"numeric".equals(normalizedMode) && !"text".equals(normalizedMode)) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "mode只支持numeric或text");
+        }
+
+        PatientExamBatchResultQueryRequest request = new PatientExamBatchResultQueryRequest();
+        request.setIdCard(idCard.trim());
+        List<PatientExamSessionResponse> sessions = getBatchExamResults(request);
+        if (sessions.isEmpty()) {
+            throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "未找到该患者体检记录");
+        }
+
+        Map<String, ComparisonBucket> merged = new LinkedHashMap<>();
+        Set<String> examDates = new LinkedHashSet<>();
+        for (PatientExamSessionResponse session : sessions) {
+            String examDate = toExamDate(session.getExamTime());
+            if (!StringUtils.hasText(examDate) || session.getDepartments() == null) {
+                continue;
+            }
+
+            for (PatientExamDepartmentResultResponse department : session.getDepartments()) {
+                if (department.getItems() == null) {
+                    continue;
+                }
+                for (PatientExamItemResultResponse item : department.getItems()) {
+                    mergeComparisonItem(merged, examDates, examDate, department, item, category, normalizedMode);
+                }
+            }
+        }
+
+        List<String> sortedDates = new ArrayList<>(examDates);
+        Collections.sort(sortedDates);
+
+        PatientExamComparisonResponse response = new PatientExamComparisonResponse();
+        response.setPatientId(maskIdCard(idCard.trim()));
+        response.setMode(normalizedMode);
+        response.setExamDates(sortedDates);
+        response.setComparisons(buildComparisonItems(merged, sortedDates, normalizedMode));
+        return response;
+    }
+
+    private void mergeComparisonItem(
+            Map<String, ComparisonBucket> merged,
+            Set<String> examDates,
+            String examDate,
+            PatientExamDepartmentResultResponse department,
+            PatientExamItemResultResponse item,
+            String category,
+            String mode
+    ) {
+        String itemName = item.getItemName();
+        L1RuleCleaner.CleanResult cleanResult = L1RuleCleaner.clean(itemName);
+        String code = StringUtils.hasText(cleanResult.getStandardCode()) ? cleanResult.getStandardCode() : nullToEmpty(item.getItemCode());
+        String name = StringUtils.hasText(cleanResult.getStandardName()) ? cleanResult.getStandardName() : cleanResult.getCleaned();
+        String itemCategory = nullToEmpty(cleanResult.getCategory());
+
+        if (StringUtils.hasText(category) && !category.trim().equals(itemCategory)) {
+            return;
+        }
+        examDates.add(examDate);
+
+        boolean textModeRow = isTextModeRow(department, item);
+        if ("text".equals(mode)) {
+            if (!textModeRow) {
+                return;
+            }
+            String textValue = normalizeTextValue(item.getResultValue());
+            if (!StringUtils.hasText(textValue)) {
+                return;
+            }
+            ComparisonBucket bucket = merged.computeIfAbsent(code, key -> {
+                ComparisonBucket created = new ComparisonBucket();
+                created.standardCode = code;
+                created.standardName = name;
+                created.category = StringUtils.hasText(itemCategory) ? itemCategory : "影像/结论";
+                created.unit = "";
+                return created;
+            });
+            bucket.values.put(examDate, textValue);
+            return;
+        }
+
+        if (textModeRow) {
+            return;
+        }
+        Double numeric = safeFloat(item.getResultValue());
+        ComparisonBucket bucket = merged.computeIfAbsent(code, key -> {
+            ReferenceRange referenceRange = parseReferenceRange(item.getReferenceRange());
+            ComparisonBucket created = new ComparisonBucket();
+            created.standardCode = code;
+            created.standardName = name;
+            created.category = itemCategory;
+            created.unit = nullToEmpty(item.getUnit());
+            created.refMin = safeFloat(referenceRange.min());
+            created.refMax = safeFloat(referenceRange.max());
+            return created;
+        });
+        bucket.values.put(examDate, numeric);
+    }
+
+    private List<PatientExamComparisonItemResponse> buildComparisonItems(
+            Map<String, ComparisonBucket> merged,
+            List<String> sortedDates,
+            String mode
+    ) {
+        List<PatientExamComparisonItemResponse> comparisons = new ArrayList<>();
+        for (ComparisonBucket bucket : merged.values()) {
+            PatientExamComparisonItemResponse item = new PatientExamComparisonItemResponse();
+            item.setStandardCode(bucket.standardCode);
+            item.setStandardName(bucket.standardName);
+            item.setCategory(bucket.category);
+            item.setUnit(bucket.unit);
+            item.setValues(bucket.values);
+            item.setTrend(resolveComparisonTrend(bucket.values, sortedDates, mode));
+            item.setRefMin(bucket.refMin);
+            item.setRefMax(bucket.refMax);
+            comparisons.add(item);
+        }
+        return comparisons;
+    }
+
+    private String resolveComparisonTrend(Map<String, Object> values, List<String> sortedDates, String mode) {
+        if ("text".equals(mode)) {
+            List<Object> orderedValues = sortedDates.stream()
+                    .filter(values::containsKey)
+                    .map(values::get)
+                    .toList();
+            if (orderedValues.size() < 2) {
+                return "";
+            }
+            Object previous = orderedValues.get(orderedValues.size() - 2);
+            Object current = orderedValues.get(orderedValues.size() - 1);
+            return Objects.equals(previous, current) && current != null ? "一致" : "变化";
+        }
+
+        if (sortedDates.size() < 2) {
+            return "";
+        }
+        Object previous = values.get(sortedDates.get(sortedDates.size() - 2));
+        Object current = values.get(sortedDates.get(sortedDates.size() - 1));
+        if (!(previous instanceof Number previousNumber) || !(current instanceof Number currentNumber)) {
+            return "";
+        }
+        int compare = Double.compare(currentNumber.doubleValue(), previousNumber.doubleValue());
+        if (compare > 0) {
+            return "↑";
+        }
+        if (compare < 0) {
+            return "↓";
+        }
+        return "=";
+    }
+
+    private boolean isTextModeRow(PatientExamDepartmentResultResponse department, PatientExamItemResultResponse item) {
+        String sourceTable = nullToEmpty(department.getSourceTable()).toLowerCase(Locale.ROOT);
+        if (TEXT_SOURCE_TABLES.contains(sourceTable)) {
+            return true;
+        }
+        String itemName = nullToEmpty(item.getItemName());
+        String itemNameEn = nullToEmpty(item.getItemNameEn());
+        if (TEXT_ITEM_KEYWORDS.stream().anyMatch(keyword -> itemName.contains(keyword) || itemNameEn.contains(keyword))) {
+            return true;
+        }
+        String rawValue = nullToEmpty(item.getResultValue()).trim();
+        return StringUtils.hasText(rawValue) && safeFloat(rawValue) == null;
+    }
+
+    private String normalizeTextValue(String value) {
+        return nullToEmpty(value).trim().replaceAll("\\s+", " ");
+    }
+
+    private String toExamDate(String examTime) {
+        if (!StringUtils.hasText(examTime)) {
+            return null;
+        }
+        String trimmed = examTime.trim();
+        return trimmed.length() >= 10 ? trimmed.substring(0, 10) : trimmed;
+    }
+
+    private String maskIdCard(String idCard) {
+        if (!StringUtils.hasText(idCard) || idCard.length() <= 8) {
+            return idCard;
+        }
+        return idCard.substring(0, 4) + "****" + idCard.substring(idCard.length() - 4);
     }
 
     /**

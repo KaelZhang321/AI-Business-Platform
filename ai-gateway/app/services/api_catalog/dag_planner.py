@@ -23,10 +23,14 @@ from pydantic import ValidationError
 
 from app.core.config import settings
 from app.models.schemas import ApiQueryExecutionPlan, ApiQueryPlanStep, ApiQueryRoutingResult
-from app.services.api_catalog.dag_bindings import DagBindingSyntaxError, collect_binding_step_ids
+from app.services.api_catalog.dag_bindings import DagBindingSyntaxError, collect_binding_step_ids, is_dag_binding
 from app.services.api_catalog.graph_models import ApiCatalogSubgraphResult
 from app.services.api_catalog.graph_plan_validator import GraphPlanValidationError, GraphPlanValidator
-from app.services.api_catalog.schema import ApiCatalogEntry, ApiCatalogSearchResult
+from app.services.api_catalog.schema import (
+    ApiCatalogEntry,
+    ApiCatalogPredecessorSpec,
+    ApiCatalogSearchResult,
+)
 from app.utils.json_utils import parse_dirty_json_object, summarize_log_text
 
 logger = logging.getLogger(__name__)
@@ -84,6 +88,7 @@ class ApiDagPlanner:
         candidates: list[ApiCatalogSearchResult],
         user_context: dict[str, Any] | None,
         route_hint: ApiQueryRoutingResult,
+        predecessor_hints: dict[str, list[ApiCatalogPredecessorSpec]] | None = None,
         *,
         trace_id: str | None = None,
     ) -> ApiQueryExecutionPlan:
@@ -108,7 +113,13 @@ class ApiDagPlanner:
         if not candidates:
             raise DagPlanValidationError("planner_candidates_empty", "缺少可规划的候选接口。")
 
-        prompt = _build_planner_prompt(query, candidates, user_context, route_hint)
+        prompt = _build_planner_prompt(
+            query,
+            candidates,
+            user_context,
+            route_hint,
+            predecessor_hints=predecessor_hints,
+        )
         raw_payload = await self._call_llm_json(prompt, trace_id=trace_id)
         if not raw_payload:
             logger.warning(
@@ -133,6 +144,7 @@ class ApiDagPlanner:
         self,
         plan: ApiQueryExecutionPlan,
         candidates: list[ApiCatalogSearchResult],
+        predecessor_hints: dict[str, list[ApiCatalogPredecessorSpec]] | None = None,
         *,
         subgraph_result: ApiCatalogSubgraphResult | None = None,
         trace_id: str | None = None,
@@ -196,6 +208,15 @@ class ApiDagPlanner:
                     f"步骤 {step.step_id} 依赖了不存在的前置步骤: {missing_dependencies}",
                 )
 
+            normalized_binding_count = _normalize_zero_index_bindings_in_step_params(step)
+            if normalized_binding_count > 0:
+                logger.info(
+                    "stage3 planner binding normalized trace_id=%s step_id=%s normalized_count=%s",
+                    trace_id or "-",
+                    step.step_id,
+                    normalized_binding_count,
+                )
+
             try:
                 binding_dependencies = collect_binding_step_ids(step.params)
             except DagBindingSyntaxError as exc:
@@ -214,19 +235,26 @@ class ApiDagPlanner:
             step_entries[step.step_id] = entry
             dependency_graph[step.step_id] = set(step.depends_on)
 
+        # _validate_required_predecessors(
+        #     plan,
+        #     step_entries=step_entries,
+        #     predecessor_hints=predecessor_hints or {},
+        # )
+
         try:
             tuple(TopologicalSorter(dependency_graph).static_order())
         except CycleError as exc:
             raise DagPlanValidationError("planner_cycle_detected", "Planner 生成的 DAG 存在循环依赖。") from exc
 
-        try:
-            self._graph_plan_validator.validate_plan(
-                plan=plan,
-                step_entries=step_entries,
-                subgraph_result=subgraph_result,
-            )
-        except GraphPlanValidationError as exc:
-            raise DagPlanValidationError(exc.code, exc.message, metadata=exc.metadata) from exc
+        if settings.api_catalog_graph_validation_enabled:
+            try:
+                self._graph_plan_validator.validate_plan(
+                    plan=plan,
+                    step_entries=step_entries,
+                    subgraph_result=subgraph_result,
+                )
+            except GraphPlanValidationError as exc:
+                raise DagPlanValidationError(exc.code, exc.message, metadata=exc.metadata) from exc
 
         return step_entries
 
@@ -310,19 +338,47 @@ def build_single_step_plan(
 def _build_allowed_entries_by_path(candidates: list[ApiCatalogSearchResult]) -> dict[str, ApiCatalogEntry]:
     """按路径整理候选接口，作为第三阶段白名单来源。"""
     allowed_entries: dict[str, ApiCatalogEntry] = {}
-    for candidate in candidates:
+    allowed_entries_by_id = _build_allowed_entries_by_id(candidates)
+    for entry in allowed_entries_by_id.values():
         # 这里故意保留“第一次命中的条目”，因为候选集已经按召回顺序排好，
         # 后续校验阶段只需要知道某条路径是否合法，不需要再次重排。
-        allowed_entries.setdefault(candidate.entry.path, candidate.entry)
+        allowed_entries.setdefault(entry.path, entry)
     return allowed_entries
 
 
 def _build_allowed_entries_by_id(candidates: list[ApiCatalogSearchResult]) -> dict[str, ApiCatalogEntry]:
-    """按接口 ID 整理候选接口，避免同一路径不同方法时发生歧义。"""
+    """按接口 ID 整理候选接口，并把伴生接口解析为 `ApiCatalogEntry` 后并入白名单。"""
     allowed_entries: dict[str, ApiCatalogEntry] = {}
+
     for candidate in candidates:
-        allowed_entries.setdefault(candidate.entry.id, candidate.entry)
+        if candidate.entry.id not in allowed_entries:
+            allowed_entries[candidate.entry.id] = candidate.entry
     return allowed_entries
+
+
+def _resolve_predecessor_entries(
+    entry: ApiCatalogEntry,
+    entries_by_id: dict[str, ApiCatalogEntry],
+) -> list[ApiCatalogEntry]:
+    """把伴生 predecessor 解析为可直接使用的 `ApiCatalogEntry` 列表。
+
+    功能：
+        兼容两类 predecessor 载荷：
+        1) 旧形态：`ApiCatalogPredecessorSpec`（仅包含 predecessor_api_id）
+        2) 新形态：`ApiCatalogEntry`（已是完整伴生接口对象）
+    """
+    predecessor_entries: list[ApiCatalogEntry] = []
+    for predecessor in entry.predecessors:
+        if isinstance(predecessor, ApiCatalogEntry):
+            predecessor_entries.append(predecessor)
+            continue
+        predecessor_api_id = getattr(predecessor, "predecessor_api_id", None)
+        if not predecessor_api_id:
+            continue
+        predecessor_entry = entries_by_id.get(str(predecessor_api_id))
+        if predecessor_entry is not None:
+            predecessor_entries.append(predecessor_entry)
+    return predecessor_entries
 
 
 def _resolve_allowed_entry(
@@ -349,6 +405,7 @@ def _build_planner_prompt(
     candidates: list[ApiCatalogSearchResult],
     user_context: dict[str, Any] | None,
     route_hint: ApiQueryRoutingResult,
+    predecessor_hints: dict[str, list[ApiCatalogPredecessorSpec]] | None = None,
 ) -> str:
     """构建第三阶段 Planner 提示词。"""
     context_str = json.dumps(user_context or {}, ensure_ascii=False)
@@ -373,67 +430,212 @@ def _build_planner_prompt(
         )
 
     candidate_block = "\n".join(candidate_lines)
+    predecessor_hints_payload = _build_predecessor_hints_payload(predecessor_hints or {})
     return f"""# Role
-你是一个企业级 API 工作流编排引擎 (Planner)。
-你的任务是：根据用户的自然语言请求，以及系统提供的[可用 API 列表]，编排出一个高效的 API 调用执行计划 (DAG)。
-
-用户请求：{query}
-用户上下文：{context_str}
-第二阶段路由提示：{json.dumps(route_hint_payload, ensure_ascii=False)}
-
-# Execution Rules (安全红线)
-1. 绝对禁止使用 `operation_safety != query` 的接口。
-2. 你只能使用以下 `operation_safety=query` 且 `method in [GET, POST]` 的接口来拉取数据。
-3. 你不能编造 API 路径、参数名或步骤 ID。
-
-# Available APIs
-{candidate_block}
-
-# Execution Rules (核心规则)
-1. 最小化调用：只调用对回答用户问题有帮助的 API。
-2. 并发优先：如果多个 API 没有数据依赖，`depends_on` 必须为空数组。
-3. 上下文传递：如果步骤 B 需要步骤 A 的返回结果作为入参，必须使用 JSONPath 绑定。
-4. JSONPath 语法只允许使用：
-   - `$[step_id.data].field`
-   - `$[step_id.data][*].field`
-5. 如果某个参数是从上游步骤提取出来的，该上游步骤必须出现在 `depends_on` 中。
-6. 所有步骤的 `step_id` 必须唯一，且只使用字母、数字、下划线。
-
-# Output Format
-必须返回合法 JSON，结构如下：
-{{
-  "plan_id": "dag_xxx",
-  "steps": [
+    你是一个企业级 API 工作流编排引擎 (Planner)。
+    你的任务是：根据用户的自然语言请求，以及系统提供的[Available APIs]，编排出一个高效的 API 调用执行计划 (DAG)。
+    
+    # Definitions (系统概念定义)
+    1. **Predecessor Hints (上游依赖提示)**: 系统会提供部分 API 的强依赖关系。格式为：`{{"目标_api_id": [依赖说明对象]}}`。
+       - `predecessor_api_id`: 目标 API 必须依赖的上游 API ID。
+       - `required`: 如果为 True，则必须先调用该上游 API。
+       - `param_bindings`: 描述数据流转规则。
+         - `target_param`: 目标 API 需要的入参名。
+         - `source_path`: 从上游 API 响应中提取数据的 JSONPath (如 `$.result.items[*].idCardObfuscated`)。
+    
+    # Execution Rules (安全红线 - 必须绝对遵守)
+    1. 绝对禁止使用 `operation_safety != query` 的接口。
+    2. 你只能使用以下 `operation_safety=query` 且 `method in [GET, POST]` 的接口来拉取数据。
+    3. 你不能编造 API 路径、参数名或步骤 ID。
+    
+    # Execution Rules (编排与推断规则)
+    1. **最小化调用**：只调用对回答用户问题有帮助的 API。
+    2. **并发优先**：如果多个 API 没有数据依赖，`depends_on` 必须为空数组。
+    3. **显式依赖优先 (Hard Constraints)**：
+       - 如果你要使用的目标 API 在 [Companion Predecessor Hints] 中存在记录，且 `required=True`，你**必须**在计划中先编排其对应的 `predecessor_api_id` 步骤。
+       - 目标步骤必须在 `depends_on` 中显式包含上游步骤的 `step_id`。
+       - 目标步骤的 `params` 必须根据提示中的 `target_param` 和 `source_path` 建立参数绑定。
+    4. **隐式依赖推断 (Soft Inference)**：
+       - 如果某个 API 需要必填参数（如 `user_id`），但 [Companion Predecessor Hints] 中**没有**关于该 API 的说明。
+       - 你必须发挥推理能力，从同计划的其他 API 返回值中寻找能提供该参数的接口，建立依赖关系，并自己构造合法的 JSONPath 进行绑定。
+    5. **参数传递语法**：
+       - 动态引用上游步骤数据的固定语法前缀为：`$[step_id.data]`，后面拼接标准的 JSONPath。
+       - 示例（提取单值）：`$[step_id.data].result.id`
+       - 示例（提取数组）：`$[step_id.data].result.items[*].idCardObfuscated`
+    6. 所有步骤的 `step_id` 必须唯一，且只使用字母、数字、下划线。
+    
+    # Output Format
+    必须返回合法的纯 JSON 格式，不包含任何 Markdown 标记。结构如下：
     {{
-      "step_id": "step_1",
-      "api_id": "endpoint_xxx",
-      "api_path": "/api/xxx",
-      "params": {{}},
-      "depends_on": []
+      "plan_id": "dag_xxx",
+      "steps": [
+        {{
+          "step_id": "step_1",
+          "api_id": "endpoint_xxx",
+          "api_path": "/api/xxx",
+          "params": {{"静态参数": "value", "动态参数": "$[上游step_id.data].path..."}},
+          "depends_on": []
+        }}
+      ]
     }}
-  ]
-}}
-
-# Example
-如果先查客户，再根据客户 ID 查订单：
-{{
-  "plan_id": "dag_customer_orders",
-  "steps": [
+    
+    # Example
+    如果用户想“先查客户，再根据客户 ID 查订单”：
     {{
-      "step_id": "step_customers",
-      "api_id": "customer_list",
-      "api_path": "/api/crm/customers",
-      "params": {{"owner_id": "E8899"}},
-      "depends_on": []
-    }},
-    {{
-      "step_id": "step_orders",
-      "api_id": "order_stats",
-      "api_path": "/api/orders/stats",
-      "params": {{"customer_ids": "$[step_customers.data][*].id"}},
-      "depends_on": ["step_customers"]
+      "plan_id": "dag_customer_orders",
+      "steps": [
+        {{
+          "step_id": "step_customers",
+          "api_id": "customer_list",
+          "api_path": "/api/crm/customers",
+          "params": {{"owner_id": "E8899"}},
+          "depends_on": []
+        }},
+        {{
+          "step_id": "step_orders",
+          "api_id": "order_stats",
+          "api_path": "/api/orders/stats",
+          "params": {{"customer_ids": "$[step_customers.data].result.items[*].id"}},
+          "depends_on": ["step_customers"]
+        }}
+      ]
     }}
-  ]
-}}
-"""
+    
+    =========================================
+    # Context & Inputs (本次任务输入)
+    
+    【User Query】: {query}
+    【User Context】: {context_str}
+    【Routing Hints】: {json.dumps(route_hint_payload, ensure_ascii=False)}
+    
+    【Available APIs】
+    {candidate_block}
+    
+    【Companion Predecessor Hints】
+    {json.dumps(predecessor_hints_payload, ensure_ascii=False)}
+    """
 
+
+def _build_predecessor_hints_payload(
+    predecessor_hints: dict[str, list[ApiCatalogPredecessorSpec]],
+) -> dict[str, list[dict[str, Any]]]:
+    """将 predecessor 规则压缩为 prompt 可读的结构化提示。"""
+    payload: dict[str, list[dict[str, Any]]] = {}
+    for target_api_id, specs in predecessor_hints.items():
+        if not specs:
+            continue
+        payload[target_api_id] = [
+            {
+                "predecessor_api_id": spec.predecessor_api_id,
+                "required": spec.required,
+                "order": spec.order,
+                "param_bindings": [
+                    {
+                        "target_param": binding.target_param,
+                        "source_path": binding.source_path,
+                        "select_mode": binding.select_mode,
+                    }
+                    for binding in spec.param_bindings
+                ],
+            }
+            for spec in specs
+        ]
+    return payload
+
+
+def _normalize_zero_index_bindings_in_step_params(step: ApiQueryPlanStep) -> int:
+    """把绑定表达式中的 `[0]` 归一化为受限语法可接受形式。"""
+    normalized_params, normalized_count = _normalize_zero_index_bindings(step.params)
+    if normalized_count > 0:
+        step.params = normalized_params
+    return normalized_count
+
+
+def _normalize_zero_index_bindings(payload: Any) -> tuple[Any, int]:
+    """递归归一化参数载荷中的绑定表达式。"""
+    if isinstance(payload, dict):
+        normalized_payload: dict[str, Any] = {}
+        total = 0
+        for key, value in payload.items():
+            normalized_value, count = _normalize_zero_index_bindings(value)
+            normalized_payload[key] = normalized_value
+            total += count
+        return normalized_payload, total
+
+    if isinstance(payload, list):
+        normalized_items: list[Any] = []
+        total = 0
+        for item in payload:
+            normalized_item, count = _normalize_zero_index_bindings(item)
+            normalized_items.append(normalized_item)
+            total += count
+        return normalized_items, total
+
+    if isinstance(payload, str) and is_dag_binding(payload):
+        normalized = payload.replace("[0]", "")
+        if normalized != payload:
+            return normalized, 1
+
+    return payload, 0
+
+
+def _validate_required_predecessors(
+    plan: ApiQueryExecutionPlan,
+    *,
+    step_entries: dict[str, ApiCatalogEntry],
+    predecessor_hints: dict[str, list[ApiCatalogPredecessorSpec]],
+) -> None:
+    """校验 required predecessor 在计划中的存在、依赖与绑定完整性。"""
+    if not predecessor_hints:
+        return
+
+    step_id_by_api_id: dict[str, str] = {}
+    for step in plan.steps:
+        entry = step_entries.get(step.step_id)
+        if entry is None:
+            continue
+        step_id_by_api_id.setdefault(entry.id, step.step_id)
+
+    for step in plan.steps:
+        entry = step_entries.get(step.step_id)
+        if entry is None:
+            continue
+        required_specs = [spec for spec in predecessor_hints.get(entry.id, []) if spec.required]
+        if not required_specs:
+            continue
+
+        binding_dependencies = collect_binding_step_ids(step.params)
+        for required_spec in required_specs:
+            predecessor_step_id = step_id_by_api_id.get(required_spec.predecessor_api_id)
+            if predecessor_step_id is None:
+                raise DagPlanValidationError(
+                    "planner_missing_required_predecessor",
+                    f"步骤 {step.step_id} 缺少 required predecessor: {required_spec.predecessor_api_id}",
+                    metadata={
+                        "target_api_id": entry.id,
+                        "target_step_id": step.step_id,
+                        "required_predecessor_api_id": required_spec.predecessor_api_id,
+                    },
+                )
+            if predecessor_step_id not in step.depends_on:
+                raise DagPlanValidationError(
+                    "planner_missing_required_predecessor",
+                    f"步骤 {step.step_id} 未声明 required predecessor 依赖: {required_spec.predecessor_api_id}",
+                    metadata={
+                        "target_api_id": entry.id,
+                        "target_step_id": step.step_id,
+                        "required_predecessor_api_id": required_spec.predecessor_api_id,
+                        "required_predecessor_step_id": predecessor_step_id,
+                    },
+                )
+            if predecessor_step_id not in binding_dependencies:
+                raise DagPlanValidationError(
+                    "planner_missing_required_predecessor",
+                    f"步骤 {step.step_id} 缺少来自 required predecessor 的参数绑定: {required_spec.predecessor_api_id}",
+                    metadata={
+                        "target_api_id": entry.id,
+                        "target_step_id": step.step_id,
+                        "required_predecessor_api_id": required_spec.predecessor_api_id,
+                        "required_predecessor_step_id": predecessor_step_id,
+                    },
+                )

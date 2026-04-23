@@ -19,10 +19,12 @@ from app.services.api_catalog.schema import (
     ApiCatalogEntry,
     ApiCatalogFieldProfile,
     ApiCatalogPaginationHint,
+    ApiCatalogPredecessorParamBinding,
+    ApiCatalogPredecessorSpec,
     ApiCatalogTemplateHint,
     ParamSchema,
 )
-from app.utils.json_utils import load_json_object
+from app.utils.json_utils import load_json_object, load_json_value
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +41,7 @@ SELECT
     CAST(e.response_schema AS CHAR) AS responseSchema,
     CAST(e.sample_request AS CHAR) AS sampleRequest,
     CAST(e.sample_response AS CHAR) AS sampleResponse,
+    CAST(e.predecessor_specs AS CHAR) AS predecessorSpecs,
     e.operation_safety AS operationSafety,
     e.status AS endpointStatus,
     s.id AS sourceId,
@@ -122,7 +125,7 @@ class ApiCatalogRegistrySource:
             return builtin_entry
 
         try:
-            rows = await self._fetch_mysql_rows(_API_CATALOG_REGISTRY_SELECT_BY_ID_SQL, (api_id,))
+            rows = await self._fetch_rows_with_predecessor_fallback(_API_CATALOG_REGISTRY_SELECT_BY_ID_SQL, (api_id,))
         except Exception as exc:
             raise ApiCatalogSourceError(f"无法从 MySQL 加载接口 {api_id}: {exc}") from exc
 
@@ -166,7 +169,7 @@ class ApiCatalogRegistrySource:
             直接对齐设计稿里的 `ui_api_endpoints + ui_api_sources + ui_api_tags` 三表拍平逻辑，
             避免在网关和 business-server 之间再绕一层 REST 元数据代理。
         """
-        rows = await self._fetch_mysql_rows(_API_CATALOG_REGISTRY_SELECT_SQL)
+        rows = await self._fetch_rows_with_predecessor_fallback(_API_CATALOG_REGISTRY_SELECT_SQL)
         entries = [_build_entry_from_mysql_row(row) for row in rows]
         if not entries:
             raise ApiCatalogSourceError("MySQL metadata returned no endpoints")
@@ -192,6 +195,22 @@ class ApiCatalogRegistrySource:
                     await cursor.execute(sql, params)
                 rows = await cursor.fetchall()
                 return [dict(row) for row in rows]
+
+    async def _fetch_rows_with_predecessor_fallback(
+        self,
+        sql: str,
+        params: tuple[Any, ...] | None = None,
+    ) -> list[dict[str, Any]]:
+        """兼容 predecessor 字段尚未发布的环境。"""
+        try:
+            return await self._fetch_mysql_rows(sql, params)
+        except Exception as exc:
+            if not _is_mysql_unknown_predecessor_column_error(exc):
+                raise
+            rows = await self._fetch_mysql_rows(_strip_predecessor_specs_projection(sql), params)
+            for row in rows:
+                row["predecessorSpecs"] = "[]"
+            return rows
 
     async def _get_pool(self) -> aiomysql.Pool:
         """懒加载 API Catalog MySQL 连接池。"""
@@ -246,6 +265,7 @@ def _build_entry_from_mysql_row(row: dict[str, Any]) -> ApiCatalogEntry:
         "responseSchema": row.get("responseSchema"),
         "sampleRequest": row.get("sampleRequest"),
         "sampleResponse": row.get("sampleResponse"),
+        "predecessorSpecs": row.get("predecessorSpecs"),
         "operationSafety": row.get("operationSafety"),
         "status": row.get("endpointStatus"),
     }
@@ -276,6 +296,7 @@ def _build_entry(
     response_schema = load_json_object(endpoint.get("responseSchema"))
     sample_request = load_json_object(endpoint.get("sampleRequest"))
     sample_response = load_json_object(endpoint.get("sampleResponse"))
+    predecessors = _parse_predecessor_specs(endpoint.get("predecessorSpecs"))
     operation_safety = _normalize_operation_safety(endpoint.get("operationSafety"))
 
     auth_type = str(source.get("authType") or "").strip()
@@ -334,7 +355,58 @@ def _build_entry(
         template_hint=ApiCatalogTemplateHint(),
         request_field_profiles=_extract_request_field_profiles(method, _to_param_schema(request_schema)),
         response_field_profiles=_extract_response_field_profiles(response_schema, response_data_path, field_labels),
+        predecessors=predecessors,
     )
+
+
+def _parse_predecessor_specs(raw_value: Any) -> list[ApiCatalogPredecessorSpec]:
+    """解析注册表中的 `predecessor_specs`。"""
+    payload = load_json_value(raw_value, [])
+    if not isinstance(payload, list):
+        return []
+
+    specs: list[ApiCatalogPredecessorSpec] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        predecessor_api_id = str(item.get("predecessor_api_id") or "").strip()
+        if not predecessor_api_id:
+            continue
+
+        raw_bindings = item.get("param_bindings")
+        bindings_payload = raw_bindings if isinstance(raw_bindings, list) else []
+        bindings: list[ApiCatalogPredecessorParamBinding] = []
+        for binding in bindings_payload:
+            if not isinstance(binding, dict):
+                continue
+            target_param = str(binding.get("target_param") or "").strip()
+            source_path = str(binding.get("source_path") or "").strip()
+            if not target_param or not source_path:
+                continue
+            select_mode = str(binding.get("select_mode") or "single").strip() or "single"
+            if select_mode not in {"single", "first", "user_select", "all"}:
+                select_mode = "single"
+            bindings.append(
+                ApiCatalogPredecessorParamBinding(
+                    target_param=target_param,
+                    source_path=source_path,
+                    select_mode=select_mode,  # type: ignore[arg-type]
+                )
+            )
+
+        try:
+            spec = ApiCatalogPredecessorSpec(
+                predecessor_api_id=predecessor_api_id,
+                required=bool(item.get("required", True)),
+                order=int(item.get("order", 100)),
+                param_bindings=bindings,
+            )
+        except (TypeError, ValueError):
+            continue
+        specs.append(spec)
+
+    specs.sort(key=lambda value: (value.order, value.predecessor_api_id))
+    return specs
 
 
 def _append_builtin_entries(entries: list[ApiCatalogEntry]) -> list[ApiCatalogEntry]:
@@ -682,6 +754,23 @@ def _to_param_schema(value: dict[str, Any]) -> ParamSchema:
     if isinstance(properties, dict):
         return ParamSchema(type="object", properties=properties, required=value.get("required") or [])
     return ParamSchema()
+
+
+def _strip_predecessor_specs_projection(sql: str) -> str:
+    """移除 SQL 中 predecessor 字段投影。"""
+    lines = sql.splitlines()
+    filtered = [
+        line
+        for line in lines
+        if "predecessor_specs" not in line.lower() and "predecessorspecs" not in line.lower()
+    ]
+    return "\n".join(filtered)
+
+
+def _is_mysql_unknown_predecessor_column_error(exc: Exception) -> bool:
+    """判断是否为 predecessor 字段不存在导致的 Unknown column。"""
+    message = str(exc).lower()
+    return "unknown column" in message and "predecessor" in message
 
 
 def _compact_list(values: list[Any]) -> list[str]:

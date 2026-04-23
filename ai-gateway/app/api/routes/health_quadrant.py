@@ -95,8 +95,8 @@ async def build_health_quadrant(request: HealthQuadrantRequest, raw_request: Req
                     HealthQuadrantBucket(
                         q_code=bucket.get("q_code") or bucket.get("code") or "",
                         q_name=bucket.get("q_name") or bucket.get("name") or "",
-                        abnormal_indicators=bucket["abnormalIndicators"],
-                        recommendation_plans=bucket["recommendationPlans"],
+                        abnormal_indicators=bucket["abnormal_indicators"],
+                        recommendation_plans=bucket["recommendation_plans"],
                     )
                     for bucket in result["quadrants"]
                 ],
@@ -140,14 +140,14 @@ async def confirm_health_quadrant(
     trace_id = (raw_request.headers.get("X-Trace-Id") or raw_request.headers.get("X-Request-Id") or "").strip() or uuid4().hex
     route_started_at = time.perf_counter()
     confirmed_by = (raw_request.headers.get("X-User-Id") or "").strip() or None
-    chief_complaint_items = sorted(set(item.strip() for item in request.chief_complaint_items if item and item.strip()))
+    chief_complaint_text = request.chief_complaint_text if request.chief_complaint_text else ""
     logger.info(
         "health quadrant route confirm received trace_id=%s study_id=%s quadrant_type=%s single_exam_count=%s complaint_count=%s quadrant_count=%s confirmed_by=%s",
         trace_id,
         request.study_id,
         request.quadrant_type,
         len(request.single_exam_items),
-        len(chief_complaint_items),
+        len(chief_complaint_text),
         len(request.quadrants),
         confirmed_by,
     )
@@ -156,7 +156,7 @@ async def confirm_health_quadrant(
             study_id=request.study_id,
             quadrant_type=request.quadrant_type,
             single_exam_items=[item.model_dump(by_alias=True) for item in request.single_exam_items],
-            chief_complaint_text="，".join(chief_complaint_items) if chief_complaint_items else None,
+            chief_complaint_text=chief_complaint_text,
             quadrants=[bucket.model_dump(by_alias=False) for bucket in request.quadrants],
             confirmed_by=confirmed_by,
             trace_id=trace_id,

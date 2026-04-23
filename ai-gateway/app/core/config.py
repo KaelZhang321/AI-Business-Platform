@@ -103,21 +103,22 @@ class Settings(BaseSettings):
     llm_runtime_config_cache_ttl_seconds: int = Field(60, ge=1, le=3600)
 
     # API Query Stage-2
-    api_query_route_timeout_seconds: float = 8.0
+    api_query_route_timeout_seconds: float = 60.0
     api_query_route_retry_count: int = 1
     api_query_retrieval_timeout_seconds: float = 0.8
     api_query_retrieval_per_domain_top_k: int = 2
-    # 第二阶段默认改为 0.45，是为了更贴近设计文档中的“宁可少给候选，也不喂垃圾接口”的保守策略。
-    api_query_score_threshold: float = 0.45
+    # 第二阶段默认改为 0.4，是为了更贴近设计文档中的“宁可少给候选，也不喂垃圾接口”的保守策略。
+    api_query_score_threshold: float = 0.4
     api_query_runtime_invoke_url_template: str = (
         "https://beta-ai-platform.kaibol.net/ai-platform/api/v1/ui-builder/runtime/endpoints/{id}/invoke"
+        # "http://39.96.197.81:8080/api/v1/ui-builder/runtime/endpoints/{id}/invoke"
     )
     api_query_runtime_flow_num: int = 1212
     api_query_runtime_created_by: str = ""
-    api_query_runtime_timeout_seconds: float = 8.0
+    api_query_runtime_timeout_seconds: float = 60.0
     api_query_runtime_enabled: bool = True
     api_query_execution_max_step_count: int = Field(8, ge=1, le=50)
-    api_query_execution_step_timeout_seconds: float = Field(8.0, ge=0.1, le=60.0)
+    api_query_execution_step_timeout_seconds: float = Field(30.0, ge=0.1, le=60.0)
     api_query_execution_graph_timeout_seconds: float = Field(20.0, ge=0.1, le=120.0)
     api_query_execution_min_step_budget_seconds: float = Field(0.5, ge=0.1, le=10.0)
 
@@ -155,6 +156,8 @@ class Settings(BaseSettings):
     # 外部LLM API
     openai_api_key: str = ""
     openai_base_url: str = ""
+    # 默认为 False：避免开发机/容器继承到脏代理变量后把模型请求错误转发到代理。
+    model_router_trust_env: bool = False
 
     # LangSmith 可观测性
     langsmith_api_key: str = ""

@@ -27,6 +27,7 @@ from app.services.api_catalog.schema import (
     ApiCatalogDetailHint,
     ApiCatalogEntry,
     ApiCatalogPaginationHint,
+    ApiCatalogPredecessorSpec,
     ApiCatalogSearchFilters,
     ApiCatalogSearchResult,
     ApiCatalogTemplateHint,
@@ -60,6 +61,7 @@ _OUTPUT_FIELDS = [
     "detail_hint",
     "pagination_hint",
     "template_hint",
+    "predecessors",
 ]
 _LEGACY_OUTPUT_FIELDS = [
     "id",
@@ -431,6 +433,11 @@ def _build_entry_from_fields(fields: dict) -> ApiCatalogEntry:
             **_read_json_field(fields, "pagination_hint", "pagination_hint_json", {})
         ),
         template_hint=ApiCatalogTemplateHint(**_read_json_field(fields, "template_hint", "template_hint_json", {})),
+        predecessors=[
+            ApiCatalogPredecessorSpec.model_validate(item)
+            for item in _read_json_field(fields, "predecessors", "predecessors_json", [])
+            if isinstance(item, dict)
+        ],
     )
 
 

@@ -24,9 +24,7 @@ from app.models.schemas import (
     ApiQueryListPaginationRuntime,
     ApiQueryListQueryContextRuntime,
     ApiQueryListRuntime,
-    ApiQueryPatchContext,
     ApiQueryResponse,
-    ApiQueryResponseMode,
     ApiQueryUIAction,
     ApiQueryUIRuntime,
 )
@@ -88,6 +86,7 @@ _DELETE_DISPLAY_FIELD_PRIORITY = (
 )
 # 这里固定保留 5 条是为了给 Renderer 足够上下文，又避免把大结果集整包塞进生成链路导致注意力失焦。
 _CONTEXT_ROW_LIMIT = 5
+_SELECT_CANDIDATE_ROW_LIMIT = 50
 
 
 class ApiQueryResponseBuilder:
@@ -120,10 +119,8 @@ class ApiQueryResponseBuilder:
         execution_state: ApiQueryExecutionState,
         query_domains_hint: list[str],
         business_intent_codes: list[str],
-        response_mode: ApiQueryResponseMode,
-        patch_context: ApiQueryPatchContext | None,
     ) -> ApiQueryResponse:
-        """把执行状态折叠为最终成功/部分成功/patch 响应。
+        """把执行状态折叠为最终成功/部分成功响应。
 
         功能：
             当前路由阶段仍负责拿到执行报告，但“如何把执行事实压成前端契约”已经不应继续
@@ -135,7 +132,6 @@ class ApiQueryResponseBuilder:
             4. 在必要时附加快照审计元数据
 
         Edge Cases:
-            - patch 模式不会走完整第五阶段渲染，而是直接压成局部更新协议
             - 多步骤执行即使没有 anchor，也必须返回可解释的聚合状态和错误摘要
             - 高风险写意图只有在页面未冻结时才附加快照，避免给无效视图生成审计垃圾
         """
@@ -146,6 +142,9 @@ class ApiQueryResponseBuilder:
             execution_order=execution_state["execution_order"],
         )
         context_pool = _build_plan_context_pool(execution_report)
+        wait_select_context_pool = _build_wait_select_context_pool(execution_report)
+        if wait_select_context_pool:
+            context_pool.update(wait_select_context_pool)
         aggregate_status = _summarize_execution_report(execution_report)
         execution_state["aggregate_status"] = aggregate_status
         state["execution_status"] = aggregate_status
@@ -171,22 +170,6 @@ class ApiQueryResponseBuilder:
             registry_source=self._registry_source,
         )
 
-        # patch 响应只服务列表局部刷新，不再额外生成完整页面结构。
-        if response_mode == ApiQueryResponseMode.PATCH:
-            response = _build_patch_mode_response(
-                trace_id=state["trace_id"],
-                execution_report=execution_report,
-                aggregate_status=aggregate_status,
-                anchor_record=anchor_record,
-                response_plan=response_plan,
-                runtime=runtime,
-                patch_context=patch_context,
-            )
-            state["ui_runtime"] = response.ui_runtime
-            state["ui_spec"] = response.ui_spec
-            state["response"] = response
-            return response
-
         ui_build_result = await _generate_ui_spec_result(
             self._dynamic_ui,
             intent="query",
@@ -207,6 +190,7 @@ class ApiQueryResponseBuilder:
                 "created_by": created_by,
                 "request_params": dict(anchor_record.resolved_params) if anchor_record is not None else {},
                 "context_pool": {step_id: step.model_dump(exclude_none=True) for step_id, step in context_pool.items()},
+                "row_actions": _build_wait_select_row_actions(execution_report),
                 "business_intents": [intent.model_dump() for intent in business_intents],
             },
             status=aggregate_status,
@@ -1705,7 +1689,10 @@ def _collect_form_input_bindings(ui_spec: dict[str, Any]) -> dict[str, dict[str,
             if isinstance(bind_state_path, str) and bind_state_path.startswith("/"):
                 bindings[bind_state_path] = {
                     "component_type": component_type,
-                    "option_source": _extract_form_option_source(props.get("options")),
+                    "option_source": _extract_form_option_source(
+                        dict_code=props.get("dictCode"),
+                        options_payload=props.get("options"),
+                    ),
                 }
     return bindings
 
@@ -1746,8 +1733,18 @@ def _normalize_response_created_by(user_context: dict[str, Any]) -> str:
     return normalized_user_id
 
 
-def _extract_form_option_source(options_payload: Any) -> ApiQueryFormOptionSourceRuntime | None:
-    """从 `PlannerSelect.props.options` 推导可复用的选项来源契约。"""
+def _extract_form_option_source(
+    *,
+    dict_code: Any = None,
+    options_payload: Any = None,
+) -> ApiQueryFormOptionSourceRuntime | None:
+    """从 `PlannerSelect` 组件属性推导可复用的选项来源契约。
+
+    优先使用 `props.dictCode`（与 json-render 契约对齐），同时兼容历史 `props.options`。
+    """
+
+    if isinstance(dict_code, str) and dict_code.strip():
+        return ApiQueryFormOptionSourceRuntime(type="dict", dict_code=dict_code.strip())
 
     if isinstance(options_payload, list):
         return ApiQueryFormOptionSourceRuntime(type="static")
@@ -2029,9 +2026,16 @@ def _build_plan_context_pool(execution_report: DagExecutionReport) -> dict[str, 
 
 def _summarize_execution_report(execution_report: DagExecutionReport) -> ApiQueryExecutionStatus:
     """将多步骤执行结果收敛成对外主状态。"""
-
-    statuses = [record.execution_result.status for record in execution_report.records_by_step_id.values()]
+    ordered_records = [
+        execution_report.records_by_step_id[step_id]
+        for step_id in execution_report.execution_order
+        if step_id in execution_report.records_by_step_id
+    ]
+    statuses = [record.execution_result.status for record in ordered_records]
     if not statuses:
+        return ApiQueryExecutionStatus.SKIPPED
+
+    if _is_wait_select_execution_report(execution_report, ordered_records=ordered_records):
         return ApiQueryExecutionStatus.SKIPPED
 
     has_success = any(status == ApiQueryExecutionStatus.SUCCESS for status in statuses)
@@ -2049,6 +2053,36 @@ def _summarize_execution_report(execution_report: DagExecutionReport) -> ApiQuer
     if any(status == ApiQueryExecutionStatus.EMPTY for status in statuses):
         return ApiQueryExecutionStatus.EMPTY
     return ApiQueryExecutionStatus.SKIPPED
+
+
+def _is_wait_select_execution_report(
+    execution_report: DagExecutionReport,
+    *,
+    ordered_records: list[DagStepExecutionRecord],
+) -> bool:
+    """判断执行报告是否命中 user_select 等待态。"""
+
+    if not ordered_records:
+        return False
+    step_ids = [record.step.step_id for record in ordered_records]
+    records_by_step_id = execution_report.records_by_step_id
+
+    for record in ordered_records:
+        result = record.execution_result
+        if result.status != ApiQueryExecutionStatus.SKIPPED:
+            continue
+        if result.error_code != "WAIT_SELECT_REQUIRED":
+            continue
+        if not any(dep in records_by_step_id for dep in record.step.depends_on):
+            continue
+        if any(
+            records_by_step_id[step_id].execution_result.status == ApiQueryExecutionStatus.ERROR
+            for step_id in step_ids
+            if step_id in records_by_step_id
+        ):
+            return False
+        return True
+    return False
 
 
 def _select_response_anchor(execution_report: DagExecutionReport) -> DagStepExecutionRecord | None:
@@ -2097,6 +2131,9 @@ def _build_ui_data_from_execution_report(
     anchor_record: DagStepExecutionRecord | None,
 ) -> list[dict[str, Any]]:
     """为当前规则渲染器构造可展示的数据集。"""
+    wait_select_rows = _build_wait_select_rows(execution_report)
+    if wait_select_rows:
+        return wait_select_rows
 
     if len(execution_report.records_by_step_id) <= 1 and anchor_record is not None:
         return _normalize_data_for_ui(anchor_record.execution_result)
@@ -2117,6 +2154,83 @@ def _build_ui_data_from_execution_report(
             }
         )
     return summary_rows
+
+
+def _build_wait_select_rows(execution_report: DagExecutionReport) -> list[dict[str, Any]]:
+    """抽取 WAIT_SELECT_REQUIRED 的候选列表数据。"""
+    for step_id in execution_report.execution_order:
+        record = execution_report.records_by_step_id[step_id]
+        execution_result = record.execution_result
+        if execution_result.error_code != "WAIT_SELECT_REQUIRED":
+            continue
+        options_by_binding = execution_result.meta.get("options_by_binding")
+        if not isinstance(options_by_binding, dict):
+            continue
+        rows: list[dict[str, Any]] = []
+        for binding_key, options in options_by_binding.items():
+            if not isinstance(options, list):
+                continue
+            for index, value in enumerate(options[:_SELECT_CANDIDATE_ROW_LIMIT], start=1):
+                rows.append(
+                    {
+                        "bindingKey": binding_key,
+                        "candidateIndex": index,
+                        "candidateValue": value,
+                        "bindingMap": {binding_key: value},
+                    }
+                )
+        return rows
+    return []
+
+
+def _build_wait_select_row_actions(execution_report: DagExecutionReport) -> list[dict[str, Any]]:
+    """构建 WAIT_SELECT 场景的行级动作。"""
+    wait_rows = _build_wait_select_rows(execution_report)
+    if not wait_rows:
+        return []
+    return [
+        {
+            "action": "remoteQuery",
+            "label": "使用该值继续",
+            "params": {
+                "api": "/api/v1/api-query",
+                "queryParams": {},
+                "body": {
+                    "selection_context": {
+                        "user_select": {"$bindRow": "bindingMap"}
+                    }
+                },
+            },
+        }
+    ]
+
+
+def _build_wait_select_context_pool(execution_report: DagExecutionReport) -> dict[str, ApiQueryContextStepResult]:
+    """为 WAIT_SELECT 场景构建结构化上下文。"""
+    for step_id in execution_report.execution_order:
+        record = execution_report.records_by_step_id[step_id]
+        result = record.execution_result
+        if result.error_code != "WAIT_SELECT_REQUIRED":
+            continue
+        return {
+            step_id: ApiQueryContextStepResult(
+                status=ApiQueryExecutionStatus.SKIPPED,
+                domain=record.entry.domain,
+                api_id=record.entry.id,
+                api_path=record.entry.path,
+                method=record.entry.method,
+                data=[],
+                total=0,
+                error=ApiQueryExecutionErrorDetail(
+                    code=result.error_code,
+                    message=result.error or "命中多个候选值，请先选择后继续。",
+                    retryable=True,
+                ),
+                skipped_reason=result.skipped_reason,
+                meta=dict(result.meta),
+            )
+        }
+    return {}
 
 
 def _normalize_data_for_ui(execution_result: ApiQueryExecutionResult) -> list[dict[str, Any]]:
@@ -2144,6 +2258,12 @@ def _build_runtime_from_execution_report(
     ui_catalog_service: UICatalogService,
 ) -> ApiQueryUIRuntime:
     """根据执行报告推导前端运行时契约。"""
+    wait_select_runtime = _build_wait_select_runtime(
+        execution_report,
+        ui_catalog_service=ui_catalog_service,
+    )
+    if wait_select_runtime is not None:
+        return wait_select_runtime
 
     if len(execution_report.records_by_step_id) == 1 and anchor_record is not None:
         return _build_ui_runtime(
@@ -2160,6 +2280,39 @@ def _build_runtime_from_execution_report(
         ),
         ui_actions=_build_runtime_actions({"refresh", "export"}, ui_catalog_service=ui_catalog_service),
     )
+
+
+def _build_wait_select_runtime(
+    execution_report: DagExecutionReport,
+    *,
+    ui_catalog_service: UICatalogService,
+) -> ApiQueryUIRuntime | None:
+    """构建 user_select 等待态运行时。"""
+    for step_id in execution_report.execution_order:
+        record = execution_report.records_by_step_id[step_id]
+        execution_result = record.execution_result
+        if execution_result.error_code != "WAIT_SELECT_REQUIRED":
+            continue
+        options_by_binding = execution_result.meta.get("options_by_binding")
+        if not isinstance(options_by_binding, dict) or not options_by_binding:
+            return None
+
+        return ApiQueryUIRuntime(
+            components=ui_catalog_service.get_component_codes(
+                intent="query",
+                requested_codes=["PlannerCard", "PlannerTable", "PlannerNotice"],
+            ),
+            ui_actions=_build_runtime_actions({"remoteQuery", "refresh"}, ui_catalog_service=ui_catalog_service),
+            list=ApiQueryListRuntime(
+                enabled=True,
+                route_url="/api/v1/api-query",
+                ui_action="remoteQuery",
+            ),
+            detail=ApiQueryDetailRuntime(enabled=False),
+            form=ApiQueryFormRuntime(enabled=False),
+            audit=ApiQueryUIRuntime().audit,
+        )
+    return None
 
 
 def _infer_query_render_mode(
@@ -2211,106 +2364,6 @@ def _build_execution_skip_message(execution_report: DagExecutionReport) -> str:
         if record.execution_result.status == ApiQueryExecutionStatus.SKIPPED:
             return _build_skip_message(record.execution_result)
     return "由于缺少必要条件，当前查询未被执行。"
-
-
-def _build_patch_mode_response(
-    *,
-    trace_id: str,
-    execution_report: DagExecutionReport,
-    aggregate_status: ApiQueryExecutionStatus,
-    anchor_record: DagStepExecutionRecord | None,
-    response_plan: ApiQueryExecutionPlan,
-    runtime: ApiQueryUIRuntime,
-    patch_context: ApiQueryPatchContext | None,
-) -> ApiQueryResponse:
-    """构造列表二跳的 patch 响应。"""
-
-    requested_target = patch_context.mutation_target if patch_context is not None else None
-    ui_spec = _build_list_patch_spec(
-        anchor_record=anchor_record,
-        runtime=runtime,
-        aggregate_status=aggregate_status,
-        requested_target=requested_target,
-    )
-    return ApiQueryResponse(
-        trace_id=trace_id,
-        execution_status=aggregate_status,
-        execution_plan=response_plan,
-        ui_runtime=runtime,
-        ui_spec=ui_spec,
-        error=_build_response_error(execution_report),
-    )
-
-
-def _build_list_patch_spec(
-    *,
-    anchor_record: DagStepExecutionRecord | None,
-    runtime: ApiQueryUIRuntime,
-    aggregate_status: ApiQueryExecutionStatus,
-    requested_target: str | None,
-) -> dict[str, Any]:
-    """把单步列表结果压缩成前端可直接应用的 patch spec。
-
-    功能：
-        patch 响应只解决“列表数据与分页状态如何局部更新”，而不是重新返回整页 UI。
-        这里统一约定 mutation target 和 replace 操作，便于前端做幂等刷新。
-
-    Edge Cases:
-        - 只有 SUCCESS/EMPTY 才会输出 replace 操作，错误态交由前端沿用旧视图并看外层状态
-        - 若 mutation_target 指向表格 dataSource，会同步更新分页器当前页/页大小/总数
-    """
-
-    mutation_target = runtime.list.pagination.mutation_target or requested_target or "report-table.props.dataSource"
-    rows: list[dict[str, Any]] = []
-    if aggregate_status in {ApiQueryExecutionStatus.SUCCESS, ApiQueryExecutionStatus.EMPTY} and anchor_record is not None:
-        rows = _normalize_rows(anchor_record.execution_result.data)
-
-    operations: list[dict[str, Any]] = []
-    if aggregate_status in {ApiQueryExecutionStatus.SUCCESS, ApiQueryExecutionStatus.EMPTY}:
-        operations.append(_build_patch_replace_operation(mutation_target, rows))
-        pagination_container_path = _infer_patch_pagination_container_path(mutation_target)
-        if pagination_container_path is not None:
-            operations.extend(
-                [
-                    _build_patch_replace_operation(
-                        f"{pagination_container_path}.currentPage",
-                        runtime.list.pagination.current_page,
-                    ),
-                    _build_patch_replace_operation(
-                        f"{pagination_container_path}.pageSize",
-                        runtime.list.pagination.page_size,
-                    ),
-                    _build_patch_replace_operation(
-                        f"{pagination_container_path}.total",
-                        runtime.list.pagination.total,
-                    ),
-                ]
-            )
-
-    return {
-        "kind": "patch",
-        "patch_type": "list_query",
-        "mutation_target": mutation_target,
-        "operations": operations,
-    }
-
-
-def _build_patch_replace_operation(path: str, value: Any) -> dict[str, Any]:
-    """构造单条 replace patch。"""
-
-    return {"op": "replace", "path": path, "value": value}
-
-
-def _infer_patch_pagination_container_path(mutation_target: str) -> str | None:
-    """从 `dataSource` 目标路径反推分页状态容器路径。"""
-
-    if not mutation_target:
-        return None
-    if mutation_target == "report-table.props.dataSource":
-        return "report-pagination.props"
-    if mutation_target.endswith(".dataSource"):
-        return mutation_target[: -len(".dataSource")] + ".pagination"
-    return None
 
 
 def _build_response_execution_plan(
@@ -2430,6 +2483,8 @@ def _build_skip_message(execution_result: ApiQueryExecutionResult) -> str:
         missing_fields = execution_result.meta.get("missing_required_params", [])
         if missing_fields:
             return f"由于缺少必要参数 {', '.join(missing_fields)}，当前查询未被执行。"
+    if execution_result.skipped_reason == "wait_select_required":
+        return "命中多个候选值，请先选择后继续。"
     if execution_result.error:
         return execution_result.error
     return "由于缺少必要条件，当前查询未被执行。"

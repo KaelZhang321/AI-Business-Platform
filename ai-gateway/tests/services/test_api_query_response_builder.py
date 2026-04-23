@@ -8,8 +8,6 @@ from app.models.schemas import (
     ApiQueryExecutionPlan,
     ApiQueryExecutionResult,
     ApiQueryExecutionStatus,
-    ApiQueryPatchTrigger,
-    ApiQueryResponseMode,
     ApiQueryPlanStep,
 )
 from app.services.api_catalog.dag_executor import DagStepExecutionRecord
@@ -170,8 +168,6 @@ async def test_build_execution_response_returns_full_spec() -> None:
         },
         query_domains_hint=["crm"],
         business_intent_codes=["none"],
-        response_mode=ApiQueryResponseMode.FULL_SPEC,
-        patch_context=None,
     )
 
     assert response.trace_id == "trace-001"
@@ -346,7 +342,7 @@ async def test_build_execution_response_clears_runtime_when_ui_is_frozen() -> No
     )
     builder = _build_builder(frozen_result)
     state: ApiQueryState = {
-        "request_mode": "direct",
+        "request_mode": "nl",
         "query_text": "direct customer_list",
         "trace_id": "trace-frozen",
         "interaction_id": None,
@@ -370,8 +366,6 @@ async def test_build_execution_response_clears_runtime_when_ui_is_frozen() -> No
         },
         query_domains_hint=["crm"],
         business_intent_codes=["none"],
-        response_mode=ApiQueryResponseMode.FULL_SPEC,
-        patch_context=None,
     )
 
     assert response.execution_status == ApiQueryExecutionStatus.SUCCESS

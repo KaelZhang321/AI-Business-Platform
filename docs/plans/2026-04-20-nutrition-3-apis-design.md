@@ -42,12 +42,12 @@
 ```
 
 ### 2.4 Header 约定
-- `X-Trace-Id`：可选，链路追踪。
 - `X-User-Id`：建议必传，用于审计日志。
 
 ### 2.5 术语约定
-- `mealSlot`：`breakfast | lunch | dinner | snack`。
+- `mealType`：`breakfast | lunch | dinner | snack`。
 - `mode`（仅接口3）：`NORMAL | FAIL_CLOSED`。
+-  `trace_id`：后端代码生成trace_id，用于链路追踪。
 
 ---
 
@@ -59,15 +59,15 @@
 ### 3.2 Request 契约
 ```json
 {
-  "weekStartDate": "2026-03-16",
-  "weekEndDate": "2026-03-22",
+  "startDate": "2026-03-16",
+  "endDate": "2026-03-22",
   "weekMeals": [
     {
       "date": "2026-03-16",
-      "mealSlot": "lunch",
+      "mealType": "lunch",
       "dishes": [
-        {"dishId": "D1001", "dishName": "清蒸鳕鱼"},
-        {"dishId": "D1002", "dishName": "黑米粥"}
+        {"dishCode": "D1001", "dishName": "清蒸鳕鱼"},
+        {"dishCode": "D1002", "dishName": "黑米粥"}
       ]
     }
   ]
@@ -117,7 +117,7 @@
 {
   "customerId": "C123456",
   "mealDate": "2026-03-20",
-  "mealSlot": "dinner",
+  "mealType": "dinner",
   "topN": 5,
   "customerTags": ["控糖", "低盐", "清淡"],
   "excludeMealIds": ["M0009"]

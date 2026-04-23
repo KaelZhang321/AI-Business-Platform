@@ -3,6 +3,7 @@ package com.lzke.ai.interfaces.rest;
 import java.util.List;
 
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -14,6 +15,9 @@ import com.lzke.ai.application.exam.dto.MyCustomerListQueryRequest;
 import com.lzke.ai.application.exam.dto.MyPatientListItemResponse;
 import com.lzke.ai.application.exam.dto.MyPatientListQueryRequest;
 import com.lzke.ai.application.exam.dto.PatientExamBatchResultQueryRequest;
+import com.lzke.ai.application.exam.dto.PatientExamCleanedResultResponse;
+import com.lzke.ai.application.exam.dto.PatientExamComparisonQueryRequest;
+import com.lzke.ai.application.exam.dto.PatientExamComparisonResponse;
 import com.lzke.ai.application.exam.dto.PatientExamDepartmentResponse;
 import com.lzke.ai.application.exam.dto.PatientExamPatientInfoResponse;
 import com.lzke.ai.application.exam.dto.PatientExamPatientQueryRequest;
@@ -29,6 +33,7 @@ import com.lzke.ai.interfaces.dto.PageResult;
 import com.lzke.ai.security.AesECBEncryptUtils;
 
 import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -164,6 +169,36 @@ public class PatientExamController {
     }
 
     /**
+     * 查询单个体检清洗结果。
+     */
+    @Operation(
+            summary = "查询单个体检清洗结果",
+            description = "根据studyId查询体检结果，并通过L1RuleCleaner清洗itemName后返回扁平指标结构"
+    )
+    @GetMapping("/{studyId}/cleaned-result")
+    public ApiResponse<PatientExamCleanedResultResponse> getCleanedExamResult(
+    		@Parameter(description = "根据studyId查询体检结果", required = true)
+    		@PathVariable String studyId
+    ) {
+        return ApiResponse.ok(patientExamApplicationService.getCleanedExamResult(studyId));
+    }
+
+    /**
+     * 查询患者多次体检指标对比，支持 Base64 密文身份证。
+     */
+    @Operation(
+            summary = "查询患者多次体检指标对比",
+            description = "通过请求体传身份证号或Base64密文身份证，避免密文中的/、+、=影响路径解析"
+    )
+    @PostMapping("/patient/comparison")
+    public ApiResponse<PatientExamComparisonResponse> getPatientComparisonByQuery(
+            @Valid @RequestBody PatientExamComparisonQueryRequest request
+    ) {
+    	String idCard = decryptIdCardIfPossible(request.getSfzh());
+        return ApiResponse.ok(patientExamApplicationService.getPatientComparison(idCard, request.getCategory(), request.getMode()));
+    }
+
+    /**
      * 批量查询多次体检结果。
      */
     @Operation(
@@ -176,5 +211,13 @@ public class PatientExamController {
     ) {
     	request.setIdCard(AesECBEncryptUtils.decrypt(request.getIdCard()));
         return ApiResponse.ok(patientExamApplicationService.getBatchExamResults(request));
+    }
+
+    private String decryptIdCardIfPossible(String idCard) {
+        try {
+            return AesECBEncryptUtils.decrypt(idCard);
+        } catch (RuntimeException ex) {
+            return idCard;
+        }
     }
 }

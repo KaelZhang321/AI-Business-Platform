@@ -9,6 +9,8 @@ import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Data;
 
 import java.time.OffsetDateTime;
+import java.util.List;
+import java.util.Map;
 
 /**
  * 医生客户定制卡片。
@@ -31,6 +33,9 @@ public class DoctorCustomerCardCustomize {
     private String favoriteName;
     @Schema(description = "卡片JSON")
     private String cardJson;
+    @TableField(exist = false)
+    @Schema(description = "卡片关联接口关系，key为cardId")
+    private Map<String, List<UiCardEndpointRelation>> cardEndpointRelations;
     @Schema(description = "状态，例如 active / inactive")
     private String status;
     @Schema(description = "备注")

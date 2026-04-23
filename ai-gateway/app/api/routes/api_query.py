@@ -36,6 +36,7 @@ from app.models.schemas import (
     ApiQueryRuntimeMetadataResponse,
     ApiQueryUIRuntime,
 )
+from app.core.config import settings
 from app.services.api_catalog.business_intents import get_business_intent_catalog_service
 from app.services.api_catalog.dag_planner import ApiDagPlanner
 from app.services.api_catalog.executor import ApiExecutor
@@ -78,7 +79,21 @@ def _get_services() -> tuple[ApiCatalogRetriever, ApiParamExtractor, ApiExecutor
 
     global _retriever, _extractor, _executor, _dynamic_ui, _snapshot_service
     if _retriever is None:
-        _retriever = ApiCatalogHybridRetriever()
+        # 本期开关：关闭图谱时直接走纯向量召回，避免进入 Neo4j 相关分支。
+        if settings.api_catalog_graph_enabled or settings.api_catalog_graph_validation_enabled:
+            _retriever = ApiCatalogHybridRetriever()
+            logger.info(
+                "api_query retriever mode=hybrid graph_enabled=%s graph_validation_enabled=%s",
+                settings.api_catalog_graph_enabled,
+                settings.api_catalog_graph_validation_enabled,
+            )
+        else:
+            _retriever = ApiCatalogRetriever()
+            logger.info(
+                "api_query retriever mode=plain graph_enabled=%s graph_validation_enabled=%s",
+                settings.api_catalog_graph_enabled,
+                settings.api_catalog_graph_validation_enabled,
+            )
     if _extractor is None:
         _extractor = ApiParamExtractor(llm_service=_get_api_query_llm_service())
     if _executor is None:
@@ -176,7 +191,7 @@ def _get_catalog_index_job_service() -> ApiCatalogIndexJobService:
     return _catalog_index_job_service
 
 
-@router.post("", response_model=ApiQueryResponse, summary="业务接口查询（支持自然语言与直达模式）")
+@router.post("", response_model=ApiQueryResponse, summary="业务接口查询（自然语言模式）")
 async def api_query(
     request_body: ApiQueryRequest,
     request: Request,
@@ -190,7 +205,7 @@ async def api_query(
         “路由只做适配、工作流负责决策”的边界。
 
     Args:
-        request_body: `/api-query` 标准请求体，包含自然语言或 direct 快路参数。
+        request_body: `/api-query` 标准请求体（自然语言输入）。
         request: FastAPI 原始请求对象，用于读取 trace/header 和 request-scoped 用户事实。
         credentials: 透过 `HTTPBearer` 解析出的 Authorization 凭证；缺失时允许匿名读链继续。
 
@@ -228,7 +243,7 @@ async def api_query(
                 node="dispatch",
                 execution_status=None,
             ),
-            payload={"mode": request_body.mode.value},
+            payload={"query_length": len(request_body.query)},
         ),
     )
     return await _get_workflow().run(
