@@ -1,31 +1,48 @@
 import React, { useRef, useEffect, useCallback } from 'react';
 import gsap from 'gsap';
 
+/** 液滴光标组件属性：控制光标形状、颜色、拖尾和动画参数 */
 export interface BlobCursorProps {
+  /** 光标形状：圆形 / 方形 */
   blobType?: 'circle' | 'square';
+  /** 填充色 */
   fillColor?: string;
+  /** 拖尾数量 */
   trailCount?: number;
+  /** 各层尺寸数组 */
   sizes?: number[];
+  /** 各层内圈尺寸数组 */
   innerSizes?: number[];
+  /** 内圈颜色 */
   innerColor?: string;
+  /** 各层透明度 */
   opacities?: number[];
+  /** 阴影颜色 */
   shadowColor?: string;
+  /** 阴影模糊半径 */
   shadowBlur?: number;
   shadowOffsetX?: number;
   shadowOffsetY?: number;
+  /** SVG 滤镜 ID */
   filterId?: string;
+  /** 滤镜高斯模糊偏差 */
   filterStdDeviation?: number;
   filterColorMatrixValues?: string;
+  /** 是否启用 SVG 液滴融合滤镜 */
   useFilter?: boolean;
+  /** 主光标动画时长（秒） */
   fastDuration?: number;
+  /** 拖尾动画时长（秒） */
   slowDuration?: number;
   fastEase?: string;
   slowEase?: string;
+  /** 层叠顺序 */
   zIndex?: number;
   children?: React.ReactNode;
   className?: string;
 }
 
+/** 液滴光标组件：基于 GSAP 的光标跟随动画，支持多层拖尾和 SVG 液滴融合效果 */
 export default function BlobCursor({
   blobType = 'circle',
   fillColor = '#5227FF',

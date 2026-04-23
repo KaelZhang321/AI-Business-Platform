@@ -2,14 +2,23 @@ import React, { useEffect, useRef } from 'react';
 import { ArrowUp, ChevronLeft, Sparkles, Bot, User, Loader2 } from 'lucide-react';
 import type { ChatHistoryItem, CustomerRecord } from './types';
 
+/** AI 助手侧边栏面板组件属性 */
 interface AssistantSidebarPanelProps {
+  /** 助手是否已收缩 */
   isAssistantShrunk: boolean;
+  /** 当前选中客户 */
   selectedCustomer: CustomerRecord | null;
+  /** 聊天历史记录 */
   chatHistory: ChatHistoryItem[];
+  /** 当前聊天输入内容 */
   chatMessage: string;
+  /** 更新聊天输入 */
   onChatMessageChange: (value: string) => void;
+  /** 提交聊天消息 */
   onChatSubmit: () => void;
+  /** 快捷问题点击回调 */
   onQuickPrompt: (prompt: string) => void;
+  /** 收缩助手回调 */
   onShrink: () => void;
 }
 

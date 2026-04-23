@@ -5,11 +5,15 @@ import { Search, ChevronRight, Star } from 'lucide-react';
 import { FUNCTION_MODULES } from '../data/mockData';
 import type { AppPage } from '../navigation';
 
+/** 功能广场视图组件属性 */
 interface FunctionSquareViewProps {
+  /** 页面切换回调 */
   setCurrentPage: (page: AppPage) => void;
 }
 
+/** 功能广场视图组件：展示最新上线、推荐功能和全部功能模块 */
 export function FunctionSquareView({ setCurrentPage }: FunctionSquareViewProps) {
+  /** 功能名称 → 页面标识的映射表（用于点击跳转） */
   const FEATURE_PAGE_MAP: Record<string, AppPage> = {
     'AI辅助诊断': 'ai-diagnosis',
     'AI报告对比': 'ai-report-comparison',
@@ -17,6 +21,7 @@ export function FunctionSquareView({ setCurrentPage }: FunctionSquareViewProps) 
     'AI四象限健康评估': 'ai-four-quadrant',
   };
 
+  /** 点击模块卡片时跳转到对应页面 */
   const handleModuleClick = (title: string) => {
     const targetPage = FEATURE_PAGE_MAP[title];
     if (targetPage) {

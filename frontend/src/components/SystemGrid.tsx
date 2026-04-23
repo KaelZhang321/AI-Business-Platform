@@ -3,11 +3,15 @@ import React from 'react';
 import { Layers } from 'lucide-react';
 import { System } from '../types';
 
+/** 系统宫格组件属性 */
 interface SystemGridProps {
+  /** 系统快捷入口列表 */
   systems: System[];
+  /** 点击“到院接待”回调 */
   onReceptionClick: () => void;
 }
 
+/** 系统宫格组件：用于渲染一组可点击的业务系统图标入口 */
 export function SystemGrid({ systems, onReceptionClick }: SystemGridProps) {
   return (
     <section className="xl:col-span-2 bg-white/40 backdrop-blur-xl border border-white/60 rounded-3xl p-6 shadow-[0_8px_30px_rgb(0,0,0,0.02)] flex flex-col">

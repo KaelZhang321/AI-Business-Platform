@@ -2,11 +2,15 @@
 import React from 'react';
 import { Clock3, Sparkles } from 'lucide-react';
 
+/** 占位页组件属性 */
 interface PlaceholderPageProps {
+  /** 页面标题 */
   title: string;
+  /** 页面描述文案 */
   description: string;
 }
 
+/** 占位页组件：为尚未接入真实业务逻辑的菜单提供统一的过渡界面 */
 export function PlaceholderPage({ title, description }: PlaceholderPageProps) {
   return (
     <section className="relative overflow-hidden rounded-[32px] border border-slate-200/70 bg-white/80 px-8 py-10 shadow-sm">

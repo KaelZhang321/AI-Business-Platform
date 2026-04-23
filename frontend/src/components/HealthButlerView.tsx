@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
+/** 模拟健康管家客户列表数据 */
 const MOCK_CUSTOMERS = [
   { id: 1, name: '张晓彤', status: '高血压术后7天', tags: ['随访 D3', '情绪监测', '解读完成', '用药核对'], avatar: '张', theme: '术后修复', consumption: 38, bp: '132/86', lastBp: '138/92', lipid: '3.1 (↑)', weight: '58kg', risk: '情绪0.72', lastVisit: '2026-03-13' },
   { id: 2, name: '李娜', status: '糖尿病常规管理', tags: ['血糖监测', '饮食指导', '运动打卡'], avatar: '李', theme: '慢病管理', consumption: 65, bp: '120/80', lastBp: '122/82', lipid: '2.8', weight: '62kg', risk: '低风险', lastVisit: '2026-03-15' },
@@ -15,6 +16,7 @@ const MOCK_CUSTOMERS = [
   { id: 4, name: '赵心语', status: '减重管理第30天', tags: ['体脂监测', '高强度训练', '代餐计划'], avatar: '赵', theme: '体态管理', consumption: 85, bp: '110/70', lastBp: '112/72', lipid: '2.1', weight: '52kg', risk: '低风险', lastVisit: '2026-03-18' },
 ];
 
+/** 健康管家助手气泡消息类型联合体 */
 type ButlerMessage =
   | {
       id: string;
@@ -31,6 +33,7 @@ type ButlerMessage =
       customer: (typeof MOCK_CUSTOMERS)[number];
     };
 
+/** 健康管家助手气泡消息创建载荷类型 */
 type ButlerMessagePayload =
   | {
       role: 'ai' | 'user';
@@ -45,6 +48,7 @@ type ButlerMessagePayload =
 
 let butlerMessageCounter = 0;
 
+/** 助手消息工厂函数：分配递增 ID 和通用结构 */
 function createButlerMessage(message: ButlerMessagePayload): ButlerMessage {
   butlerMessageCounter += 1;
   return {
@@ -53,6 +57,10 @@ function createButlerMessage(message: ButlerMessagePayload): ButlerMessage {
   };
 }
 
+/**
+ * 健康管家视图组件：展示客户健康数据、随访任务和 AI 提醒内容。
+ * 包含搜索过滤、AI 助手对话窗、客户卡片列表及侧边栏。
+ */
 export function HealthButlerView() {
   const [selectedCustomer, setSelectedCustomer] = useState<typeof MOCK_CUSTOMERS[0] | null>(null);
   const [chatInput, setChatInput] = useState('');

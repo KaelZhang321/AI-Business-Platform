@@ -24,6 +24,12 @@ interface QuadrantWorkspaceProps {
   setQuadrantData: Dispatch<SetStateAction<QuadrantData>>
   analysisStep: string
   analysisProgress: number
+  onQuadrantAddItem?: (payload: {
+    quadrantKey: QuadrantKey
+    content: string
+    category?: string
+    nextData: QuadrantData
+  }) => void
 }
 
 export const QuadrantWorkspace = ({
@@ -35,6 +41,7 @@ export const QuadrantWorkspace = ({
   setQuadrantData,
   analysisStep,
   analysisProgress,
+  onQuadrantAddItem,
 }: QuadrantWorkspaceProps) => {
   const [activeId, setActiveId] = useState<string | null>(null)
 
@@ -65,10 +72,36 @@ export const QuadrantWorkspace = ({
 
   const handleAddItem = (containerId: QuadrantKey, content: string, category?: string) => {
     const newItem = { id: `new-${Date.now()}`, content, category }
-    setQuadrantData((prev) => ({
-      ...prev,
-      [containerId]: [newItem, ...prev[containerId]],
-    }))
+    const currentItems = quadrantData[containerId]
+
+    let nextItems: typeof currentItems
+
+    if (!category) {
+      nextItems = [newItem, ...currentItems]
+    } else {
+      const groupIndexes = currentItems.reduce<number[]>((acc, item, index) => {
+        if (item.category === category) {
+          acc.push(index)
+        }
+        return acc
+      }, [])
+
+      if (groupIndexes.length === 0) {
+        nextItems = [newItem, ...currentItems]
+      } else {
+        const insertIndex = groupIndexes[groupIndexes.length - 1] + 1
+        nextItems = [...currentItems]
+        nextItems.splice(insertIndex, 0, newItem)
+      }
+    }
+
+    const nextData: QuadrantData = {
+      ...quadrantData,
+      [containerId]: nextItems,
+    }
+
+    setQuadrantData(nextData)
+    onQuadrantAddItem?.({ quadrantKey: containerId, content, category, nextData })
   }
 
   const handleDragStart = (event: DragStartEvent) => {
@@ -189,15 +222,6 @@ export const QuadrantWorkspace = ({
                   </>
                 )}
               </button>
-              <button className="px-4 py-2 bg-slate-800 text-slate-200 border border-slate-700 text-sm font-bold rounded-full hover:bg-slate-700 transition-colors">
-                手动添加指标
-              </button>
-              <button className="px-4 py-2 bg-slate-800 text-slate-200 border border-slate-700 text-sm font-bold rounded-full hover:bg-slate-700 transition-colors">
-                拖拽调整
-              </button>
-              <button className="px-4 py-2 bg-slate-800 text-slate-200 border border-slate-700 text-sm font-bold rounded-full hover:bg-slate-700 transition-colors">
-                复制结论
-              </button>
             </div>
           )}
         </div>
@@ -271,7 +295,7 @@ export const QuadrantWorkspace = ({
                 items={quadrantData.intervention}
                 colorTheme="red"
                 onRemoveItem={(id) => handleRemoveItem('intervention', id)}
-                onAddItem={(content) => handleAddItem('intervention', content)}
+                onAddItem={(content, category) => handleAddItem('intervention', content, category)}
                 isAnalyzing={isAnalyzing}
                 hasResult={showResults}
               />
@@ -281,7 +305,7 @@ export const QuadrantWorkspace = ({
                 items={quadrantData.monitoring}
                 colorTheme="orange"
                 onRemoveItem={(id) => handleRemoveItem('monitoring', id)}
-                onAddItem={(content) => handleAddItem('monitoring', content)}
+                onAddItem={(content, category) => handleAddItem('monitoring', content, category)}
                 isAnalyzing={isAnalyzing}
                 hasResult={showResults}
               />
@@ -291,7 +315,7 @@ export const QuadrantWorkspace = ({
                 items={quadrantData.prevention}
                 colorTheme="amber"
                 onRemoveItem={(id) => handleRemoveItem('prevention', id)}
-                onAddItem={(content) => handleAddItem('prevention', content)}
+                onAddItem={(content, category) => handleAddItem('prevention', content, category)}
                 isAnalyzing={isAnalyzing}
                 hasResult={showResults}
               />
@@ -301,7 +325,7 @@ export const QuadrantWorkspace = ({
                 items={quadrantData.maintenance}
                 colorTheme="blue"
                 onRemoveItem={(id) => handleRemoveItem('maintenance', id)}
-                onAddItem={(content) => handleAddItem('maintenance', content)}
+                onAddItem={(content, category) => handleAddItem('maintenance', content, category)}
                 isAnalyzing={isAnalyzing}
                 hasResult={showResults}
               />

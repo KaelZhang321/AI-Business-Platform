@@ -3,6 +3,7 @@ import React from 'react';
 import { ShieldAlert, AlertTriangle, Info, CheckCircle2, AlertCircle, X, ExternalLink } from 'lucide-react';
 import { RISKS } from '../data/mockData';
 
+/** 风险看板组件：展示首页中的关键风险提醒和风险状态概览 */
 export function RiskSection() {
   return (
     <section className="xl:col-span-1 bg-white/40 backdrop-blur-xl border border-white/60 rounded-3xl p-6 shadow-[0_8px_30px_rgb(0,0,0,0.02)] flex flex-col">

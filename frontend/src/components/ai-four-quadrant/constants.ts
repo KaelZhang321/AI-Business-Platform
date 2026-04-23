@@ -1,5 +1,6 @@
 import type { AnalysisResultSnapshot, ClientOption, QuadrantData, ReportOption } from './types'
 
+/** 空白四象限数据初始值 */
 export const EMPTY_QUADRANT_DATA: QuadrantData = {
   monitoring: [],
   intervention: [],
@@ -7,6 +8,7 @@ export const EMPTY_QUADRANT_DATA: QuadrantData = {
   prevention: [],
 }
 
+/** 分析过程步骤描述（配合进度条动画显示） */
 export const ANALYSIS_STEPS = [
   '正在读取体检报告数据...',
   '正在解析医生面诊备注...',
@@ -16,12 +18,14 @@ export const ANALYSIS_STEPS = [
   '分析完成，正在同步结果...',
 ]
 
+/** 客户模拟数据（用于选择器演示） */
 export const MOCK_CLIENTS: ClientOption[] = [
   { id: '1', name: '张美玲', phone: '138****5678', avatar: 'https://i.pravatar.cc/150?u=zhang' },
   { id: '2', name: '张美玲', phone: '139****1234', avatar: 'https://i.pravatar.cc/150?u=wang' },
   { id: '3', name: '张美玲', phone: '137****8888', avatar: 'https://i.pravatar.cc/150?u=li' },
 ]
 
+/** 报告模拟数据（按客户 ID 分组） */
 export const MOCK_REPORTS: Record<string, ReportOption[]> = {
   '1': [
     { id: 'R1', title: '2024年度深度体检报告', date: '2024-03-15' },
@@ -31,6 +35,7 @@ export const MOCK_REPORTS: Record<string, ReportOption[]> = {
   '3': [{ id: 'R4', title: '心血管专项筛查报告', date: '2024-02-28' }],
 }
 
+/** 初始分析结果快照（演示用默认值） */
 export const INITIAL_ANALYSIS_RESULTS: AnalysisResultSnapshot = {
   monitoring: [
     { id: 'm1', content: '血管抗衰养护 + 重金属螯合' },
@@ -55,7 +60,7 @@ export const INITIAL_ANALYSIS_RESULTS: AnalysisResultSnapshot = {
   score: 68,
 }
 
+/** 初始聊天消息（AI 欢迎语） */
 export const INITIAL_CHAT_MESSAGES = [
   { id: 1, sender: 'ai' as const, text: '补充问诊备注或调整指令，我会联动右侧结果。' },
-  { id: 2, sender: 'user' as const, text: '补充：近一周睡眠差，重新判断象限' },
 ]

@@ -3,21 +3,33 @@ import React from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Sparkles, Send, MessageSquare, X } from 'lucide-react';
 
+/** AI 助手聊天消息结构 */
 interface Message {
+  /** 消息唯一 ID */
   id: string;
+  /** 消息角色*/
   role: 'ai' | 'user';
+  /** 消息文本 */
   content: string;
 }
 
+/** AI 助手面板组件属性 */
 interface AIAssistantProps {
+  /** 对话消息列表 */
   messages: Message[];
+  /** 聊天输入框内容 */
   chatInput: string;
+  /** 设置聊天输入 */
   setChatInput: (val: string) => void;
+  /** 发送消息回调 */
   handleSendMessage: (overrideText?: string) => void;
+  /** 悬浮助手是否展开 */
   isAIOpen: boolean;
+  /** 设置助手展开状态 */
   setIsAIOpen: (val: boolean) => void;
 }
 
+/** AI 助手面板组件：展示对话消息、推荐问题和悬浮聊天入口 */
 export function AIAssistant({
   messages,
   chatInput,
@@ -26,6 +38,7 @@ export function AIAssistant({
   isAIOpen,
   setIsAIOpen
 }: AIAssistantProps) {
+  /** 推荐问题快捷入口列表 */
   const suggestedPrompts = [
     { id: 'inventory', text: '帮我查询王先生在云仓的剩余库存', tag: '客户云仓' },
     { id: 'drivers', text: '今天下午3点到5点，有哪些空闲的专车司机？', tag: '约车调度' },
@@ -33,6 +46,7 @@ export function AIAssistant({
     { id: 'policy', text: '查看最新的合规审查红头文件', tag: '政策中心' },
   ] as const;
 
+  /** 渲染消息内容：支持标题行、普通文本和按钮行的分行解析 */
   const renderMessageContent = (content: string) => {
     return content.split('\n').map((line) => (
       <React.Fragment key={`${content}-${line}`}>
@@ -52,6 +66,7 @@ export function AIAssistant({
     ));
   };
 
+  /** 推荐问题列表子组件（支持紧凑和展开两种模式） */
   const SuggestedQuestions = ({ isSmall = false }: { isSmall?: boolean }) => (
     <div className={`${isSmall ? 'shrink-0 pt-3 border-t border-slate-200/60' : 'flex-1 overflow-y-auto pr-2 custom-scrollbar'}`}>
       <p className={`font-medium text-slate-500 mb-4 ${isSmall ? 'text-xs mb-2' : 'text-sm'}`}>
@@ -79,6 +94,7 @@ export function AIAssistant({
     </div>
   );
 
+  /** 聊天输入框子组件（带渐变发光边框动画） */
   const ChatInput = ({ isFloating = false }: { isFloating?: boolean }) => (
     <div className={`relative group w-full shrink-0 ${isFloating ? '' : 'mb-6'}`}>
       <motion.div

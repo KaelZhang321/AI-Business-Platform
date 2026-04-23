@@ -46,6 +46,7 @@ export const AIFourQuadrantView = ({
     analysisStep,
     handleStartAnalysis,
     handleSendMessage,
+    handleConfirmQuadrants,
   } = useFourQuadrantState(navigationParams)
 
   return (
@@ -100,6 +101,8 @@ export const AIFourQuadrantView = ({
             ) : (
               <ResultSidebar
                 analysis={INITIAL_ANALYSIS_RESULTS}
+                selectedClient={selectedClient}
+                selectedReport={selectedReport}
                 chatMessages={chatMessages}
                 chatInput={chatInput}
                 onChatInputChange={setChatInput}
@@ -131,6 +134,9 @@ export const AIFourQuadrantView = ({
             setQuadrantData={setQuadrantData}
             analysisStep={analysisStep}
             analysisProgress={analysisProgress}
+            onQuadrantAddItem={({ nextData }) => {
+              void handleConfirmQuadrants(nextData)
+            }}
           />
         </div>
       </div>

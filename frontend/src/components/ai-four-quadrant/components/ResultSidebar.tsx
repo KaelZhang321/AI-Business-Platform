@@ -1,8 +1,10 @@
 import { Send, Sparkles } from 'lucide-react'
-import type { AnalysisResultSnapshot, ChatMessage } from '../types'
+import type { AnalysisResultSnapshot, ChatMessage, ClientOption, ReportOption } from '../types'
 
 interface ResultSidebarProps {
   analysis: AnalysisResultSnapshot
+  selectedClient?: ClientOption
+  selectedReport?: ReportOption
   chatMessages: ChatMessage[]
   chatInput: string
   onChatInputChange: (value: string) => void
@@ -11,11 +13,21 @@ interface ResultSidebarProps {
 
 export const ResultSidebar = ({
   analysis,
+  selectedClient,
+  selectedReport,
   chatMessages,
   chatInput,
   onChatInputChange,
   onSendMessage,
 }: ResultSidebarProps) => {
+  const clientInfo = selectedClient
+    ? `${selectedClient.name}${selectedClient.phone ? ` / ${selectedClient.phone}` : ''}`
+    : analysis.clientInfo
+
+  const reportInfo = selectedReport
+    ? `${selectedReport.title}${selectedReport.date ? ` / ${selectedReport.date}` : ''}`
+    : analysis.reportInfo
+
   return (
     <div className="flex flex-col h-full">
       <div className="mb-6">
@@ -25,16 +37,16 @@ export const ResultSidebar = ({
       <div className="space-y-4 overflow-y-auto pr-2 custom-scrollbar shrink-0">
         <div className="p-4 bg-white dark:bg-slate-900/50 rounded-xl border border-slate-200 dark:border-slate-700">
           <p className="text-xs font-bold text-brand mb-2">客户</p>
-          <p className="text-sm font-bold text-slate-900 dark:text-white">{analysis.clientInfo}</p>
+          <p className="text-sm font-bold text-slate-900 dark:text-white">{clientInfo}</p>
         </div>
         <div className="p-4 bg-white dark:bg-slate-900/50 rounded-xl border border-slate-200 dark:border-slate-700">
           <p className="text-xs font-bold text-brand mb-2">体检报告</p>
-          <p className="text-sm font-bold text-slate-900 dark:text-white">{analysis.reportInfo}</p>
+          <p className="text-sm font-bold text-slate-900 dark:text-white">{reportInfo}</p>
         </div>
-        <div className="p-4 bg-white dark:bg-slate-900/50 rounded-xl border border-slate-200 dark:border-slate-700">
+        {/* <div className="p-4 bg-white dark:bg-slate-900/50 rounded-xl border border-slate-200 dark:border-slate-700">
           <p className="text-xs font-bold text-brand mb-2">AI结论</p>
           <p className="text-sm text-slate-700 dark:text-slate-300 leading-relaxed">{analysis.conclusion}</p>
-        </div>
+        </div> */}
       </div>
 
       <div className="mt-6 bg-white dark:bg-slate-900/50 rounded-xl border border-slate-200 dark:border-slate-700 overflow-hidden flex flex-col flex-1">
@@ -51,11 +63,10 @@ export const ResultSidebar = ({
                   </div>
                 )}
                 <div
-                  className={`max-w-[85%] rounded-2xl px-3 py-2 text-xs leading-relaxed shadow-sm transition-colors duration-300 ${
-                    msg.sender === 'user'
+                  className={`max-w-[85%] rounded-2xl px-3 py-2 text-xs leading-relaxed shadow-sm transition-colors duration-300 ${msg.sender === 'user'
                       ? 'bg-blue-500 text-white rounded-tr-sm'
                       : 'bg-white dark:bg-slate-800 border border-slate-100 dark:border-slate-700 text-slate-700 dark:text-slate-300 rounded-tl-sm'
-                  }`}
+                    }`}
                 >
                   {msg.text}
                 </div>

@@ -3,6 +3,7 @@ import React from 'react';
 import { Activity, Settings, CheckSquare, BarChart2, Zap, Layers, TrendingUp, Bell, CheckSquare as CheckSquareIcon, Sparkles } from 'lucide-react';
 import { NOTICES } from '../data/mockData';
 
+/** 单个统计卡片组件：展示指标名称、数值、单位和趋势变化 */
 function StatCard({ title, value, unit, trend, icon: Icon, trendUp }: { title: string, value: string, unit: string, trend: string, icon: any, trendUp?: boolean }) {
   return (
     <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm flex flex-col hover:shadow-md transition-shadow">
@@ -24,6 +25,7 @@ function StatCard({ title, value, unit, trend, icon: Icon, trendUp }: { title: s
   );
 }
 
+/** 统计区域组件：展示首页核心经营指标和通知公告列表 */
 export function StatsSection() {
   return (
     <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">

@@ -4,10 +4,15 @@ import { Alert, Button, Card, Space, Typography } from 'antd'
 
 const { Paragraph, Text, Title } = Typography
 
+/**
+ * SSO 回调页面：处理企业统一认证返回的授权码或错误信息。
+ * 支持子路径部署场景（如 /ai-platform/sso/callback）。
+ */
 export default function SsoCallback() {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
 
+  /** 解析 URL 查询参数中的回调状态（error / code / 无参数） */
   const callbackState = useMemo(() => {
     const error = searchParams.get('error')
     const errorDescription = searchParams.get('error_description')

@@ -2,7 +2,7 @@ import React from 'react';
 import { motion } from 'motion/react';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { Maximize2, Trash2, Edit } from 'lucide-react';
+import { Maximize2, Trash2 } from 'lucide-react';
 import {
   AssetCard,
   IdentityContactCard,
@@ -22,6 +22,7 @@ import {
   ExecutionDateCard
 } from './AIComponentManagementView';
 
+/** 可拖拽排序的卡片容器组件：支持拖拽排序、放大预览和删除操作 */
 export const SortableCard: React.FC<{
   id: string,
   title: string,
@@ -94,6 +95,7 @@ export const SortableCard: React.FC<{
   );
 };
 
+/** 客户全景分析卡片：展示客户标签、经营状态和风险指标 */
 export const CardPanorama = () => (
   <div className="flex flex-col h-full">
     <div className="flex items-center space-x-2 mb-4">
@@ -121,6 +123,7 @@ export const CardPanorama = () => (
   </div>
 );
 
+/** 风险评估卡片：展示客户流失风险和建议动作 */
 export const CardRisk = () => (
   <div className="flex flex-col h-full justify-center space-y-4">
     <div className="flex items-start space-x-2">
@@ -138,6 +141,7 @@ export const CardRisk = () => (
   </div>
 );
 
+/** 异议处理卡片：展示可能异议及回应建议 */
 export const CardObjection = () => (
   <div className="flex flex-col h-full justify-center space-y-3">
     <p className="text-sm text-slate-700 dark:text-slate-300">可能异议 1：我现在状态挺稳定的，先不用续了。</p>
@@ -146,6 +150,7 @@ export const CardObjection = () => (
   </div>
 );
 
+/** 续费方案卡片：展示续费建议及承接策略 */
 export const CardRenewal = () => (
   <div className="flex flex-col h-full justify-center space-y-4">
     <div className="bg-slate-50 dark:bg-slate-800/50 p-4 rounded-xl flex justify-between items-center">
@@ -161,6 +166,7 @@ export const CardRenewal = () => (
   </div>
 );
 
+/** 升单潜力卡片：展示 AI 分析的升单机会和推荐组合 */
 export const CardUpsell = () => (
   <div className="flex flex-col h-full justify-center space-y-4">
     <div className="flex items-center space-x-4">
@@ -182,6 +188,7 @@ export const CardUpsell = () => (
   </div>
 );
 
+/** 消耗路径卡片：展示客户预计消耗时间线 */
 export const CardConsumption = () => (
   <div className="flex flex-col h-full justify-center space-y-4 relative before:absolute before:left-[5px] before:top-2 before:bottom-2 before:w-px before:bg-slate-200 dark:before:bg-slate-700">
     <div className="relative pl-5 flex justify-between items-start">
@@ -211,6 +218,7 @@ export const CardConsumption = () => (
   </div>
 );
 
+/** 智能洞察卡片：展示 AI 综合判断与客户标签 */
 export const CardInsight = () => (
   <div className="flex flex-col h-full">
     <div className="flex items-center space-x-2 mb-4">
@@ -224,6 +232,7 @@ export const CardInsight = () => (
   </div>
 );
 
+/** 行动建议卡片：展示推荐话术和下一步动作 */
 export const CardAction = () => (
   <div className="flex h-full items-center space-x-6">
     <div className="flex-1 bg-slate-50 dark:bg-slate-800/50 p-4 rounded-xl">
@@ -248,6 +257,7 @@ export const CardAction = () => (
   </div>
 );
 
+/** AI 卡片注册表：定义所有可用的业务卡片配置（id、标题、渲染组件、占位宽度） */
 export const AI_CARDS_DATA = [
   // Management Cards
   // { id: 'asset', title: '客户资产概览', component: (props: any) => <AssetCard {...props} hideHeader={true} context="workbench" />, colSpan: 4 },

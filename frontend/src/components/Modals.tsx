@@ -3,13 +3,19 @@ import React from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { X, CheckSquare, UserCheck, HeartPulse, Briefcase, MessageSquareText, Sparkles, FileText, Users, Clock, CalendarClock, Paperclip, Plus } from 'lucide-react';
 
+/** 到院接待弹窗组件属性 */
 interface ReceptionModalProps {
+  /** 弹窗是否可见 */
   isOpen: boolean;
+  /** 关闭弹窗回调 */
   onClose: () => void;
+  /** 接待表单数据 */
   form: { name: string; serial: string; details: string };
+  /** 更新表单数据 */
   setForm: (form: any) => void;
 }
 
+/** 到院接待弹窗组件：办理客户签到、登记与房间分配，包含 AI 智能分析建议 */
 export function ReceptionModal({ isOpen, onClose, form, setForm }: ReceptionModalProps) {
   return (
     <AnimatePresence>
@@ -149,11 +155,15 @@ export function ReceptionModal({ isOpen, onClose, form, setForm }: ReceptionModa
   );
 }
 
+/** 新建任务弹窗组件属性 */
 interface CreateTaskModalProps {
+  /** 弹窗是否可见 */
   isOpen: boolean;
+  /** 关闭弹窗回调 */
   onClose: () => void;
 }
 
+/** 新建任务弹窗组件：填写任务名称、详情、参与人、时间和附件 */
 export function CreateTaskModal({ isOpen, onClose }: CreateTaskModalProps) {
   return (
     <AnimatePresence>

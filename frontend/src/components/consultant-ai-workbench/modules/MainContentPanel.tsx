@@ -8,28 +8,55 @@ import { AssistantMessageContent } from '../../json-render/AssistantMessageConte
 import { EditableLayoutTag } from './EditableLayoutTag';
 import type { AIResultItem, CustomerRecord, SavedLayout } from './types';
 
+/** 主内容面板组件属性 */
 interface MainContentPanelProps {
+  /** 中间列样式类 */
   middleColClass: string;
+  /** 右侧洞察面板是否展开 */
   isRightPanelOpen: boolean;
+  /** 当前选中客户 */
   selectedCustomer: CustomerRecord | null;
+  /** 当前客户的已保存布局列表 */
   currentCustomerLayouts: SavedLayout[];
+  /** 拖拽约束容器引用 */
   constraintsRef: React.RefObject<HTMLDivElement | null>;
+  /** 重命名布局 */
   onRenameLayout: (id: string, newName: string) => Promise<void> | void;
+  /** 应用布局 */
   onApplyLayout: (id: string) => void;
+  /** 删除布局 */
   onDeleteLayout: (id: string) => Promise<void> | void;
+  /** 打开客户选择弹窗 */
   onOpenCustomerModal: () => void;
+  /** 跳转 AI 报告对比页 */
   onNavigateToComparison: () => void;
+  /** 跳转四象限评估页 */
   onNavigateToFourQuadrant: () => void;
+  /** 当前展示的卡片 ID 列表 */
   dashboardCards: string[];
+  /** 拖拽传感器配置 */
   dndSensors: any;
+  /** 拖拽结束回调 */
   onDragEnd: (event: DragEndEvent) => void;
+  /** 放大卡片 */
   onExpandCard: (id: string) => void;
+  /** 删除卡片 */
   onDeleteCard: (id: string) => void;
+  /** AI 分析结果列表 */
   aiResults: AIResultItem[];
+  /** 最新一条 AI 助手回复内容 */
   latestAssistantMessage: string | null;
+  /** 是否启用布局视图模式 */
   isLayoutViewEnabled: boolean;
+  /** 各卡片的运行时数据 */
+  runtimeDataByCardId: Record<string, unknown>;
+  /** 各卡片的加载状态 */
+  runtimeStatusByCardId: Record<string, 'loading' | 'ready' | 'empty' | 'error'>;
+  /** 各卡片的错误信息 */
+  runtimeErrorByCardId: Record<string, string>;
 }
 
+/** 主内容面板组件：展示客户信息头部、布局标签、AI 结果卡片和拖拽排序工作区 */
 export const MainContentPanel: React.FC<MainContentPanelProps> = ({
   middleColClass,
   isRightPanelOpen,
@@ -50,6 +77,9 @@ export const MainContentPanel: React.FC<MainContentPanelProps> = ({
   aiResults,
   latestAssistantMessage,
   isLayoutViewEnabled,
+  runtimeDataByCardId,
+  runtimeStatusByCardId,
+  runtimeErrorByCardId,
 }) => {
   const hasConversationOutput = Boolean(latestAssistantMessage) && aiResults.length > 0;
   const showConversationOutputOnly = hasConversationOutput && !isLayoutViewEnabled;
@@ -221,7 +251,11 @@ export const MainContentPanel: React.FC<MainContentPanelProps> = ({
                             onEnlarge={() => onExpandCard(id)}
                             onDelete={() => onDeleteCard(id)}
                           >
-                            <CardComponent />
+                            <CardComponent
+                              runtimeData={runtimeDataByCardId[id]}
+                              runtimeStatus={runtimeStatusByCardId[id]}
+                              runtimeError={runtimeErrorByCardId[id]}
+                            />
                           </SortableCard>
                         );
                       })}

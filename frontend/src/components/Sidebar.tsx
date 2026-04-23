@@ -15,20 +15,33 @@ import {
   PAGE_TITLES,
 } from '../navigation';
 
+/** 单个导航条目的属性 */
 interface NavItemProps {
+  /** 图标组件 */
   icon?: LucideIcon;
+  /** 显示文本 */
   label: string;
+  /** 是否处于激活态 */
   active?: boolean;
+  /** 角标数字 */
   badge?: number;
+  /** 是否为子级菜单项 */
   isSubItem?: boolean;
+  /** 是否暗色主题 */
   isDark?: boolean;
+  /** 侧边栏是否已折叠 */
   isCollapsed?: boolean;
+  /** 是否显示展开箭头 */
   hasArrow?: boolean;
+  /** 是否为子级最后一项（用于连接线样式） */
   isLastSubItem?: boolean;
+  /** 子级菜单是否展开 */
   isOpen?: boolean;
+  /** 点击回调 */
   onClick?: () => void;
 }
 
+/** 导航图标名称 → Lucide 组件的映射表 */
 const ICON_MAP: Record<NavigationIcon, LucideIcon> = {
   home: Home,
   'layout-dashboard': LayoutDashboard,
@@ -38,6 +51,7 @@ const ICON_MAP: Record<NavigationIcon, LucideIcon> = {
   settings: Settings,
 };
 
+/** 单个导航条目组件：支持折叠、暗色主题、角标和展开箭头 */
 function NavItem({ icon: Icon, label, active, badge, isSubItem, isDark, isCollapsed, hasArrow, isOpen, onClick }: NavItemProps) {
   if (isCollapsed && isSubItem) return null;
 
@@ -88,17 +102,27 @@ function NavItem({ icon: Icon, label, active, badge, isSubItem, isDark, isCollap
   );
 }
 
+/** 侧边栏组件属性 */
 interface SidebarProps {
+  /** 是否暗色模式 */
   isDarkMode: boolean;
+  /** 切换暗色模式 */
   setIsDarkMode: (val: boolean) => void;
+  /** 侧边栏是否折叠 */
   isCollapsed: boolean;
+  /** 切换折叠状态 */
   setIsCollapsed: (val: boolean) => void;
+  /** 当前活动页面标识 */
   currentPage: AppPage;
+  /** 当前用户显示名 */
   userName?: string;
+  /** 当前用户角色 */
   userRole?: string;
+  /** 登出回调 */
   onLogout: () => void;
 }
 
+/** 左侧导航栏组件：负责页面切换、主题切换以及当前登录用户展示 */
 export function Sidebar({
   isDarkMode,
   setIsDarkMode,
@@ -109,14 +133,18 @@ export function Sidebar({
   userRole,
   onLogout,
 }: SidebarProps) {
-  const navigate = useNavigate();
+  const navigate = useNavigate();          // 路由导航
+  /** 自定义 Logo 图片的 Data URL */
   const [logoUrl, setLogoUrl] = React.useState<string | null>(null);
+  /** 文件上传 input 的 ref */
   const fileInputRef = React.useRef<HTMLInputElement>(null);
 
+  /** 导航到指定页面 */
   const goToPage = React.useCallback((page: AppPage) => {
     navigate(PAGE_PATHS[page]);
   }, [navigate]);
 
+  /** 处理 Logo 上传：将用户选择的图片转为 Data URL 显示 */
   const handleLogoUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (file) {
@@ -128,6 +156,7 @@ export function Sidebar({
     }
   };
 
+  /** 渲染单个导航项（支持带子菜单的分组与普通条目） */
   const renderNavigationItem = (item: NavigationItemDefinition) => {
     const icon = item.icon ? ICON_MAP[item.icon] : undefined;
 

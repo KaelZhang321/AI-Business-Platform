@@ -6,12 +6,17 @@ import { NOTICES } from '../data/mockData';
 import type { AppPage } from '../navigation';
 import { PAGE_TITLES } from '../navigation';
 
+/** 顶部栏组件属性 */
 interface HeaderProps {
+  /** 当前滚动公告索引 */
   currentNoticeIndex: number;
+  /** 当前活动页面标识 */
   currentPage: AppPage;
+  /** 当前用户显示名（可选） */
   currentUserName?: string;
 }
 
+/** 顶部栏组件：展示页面标题、通知轮播、导出能力和当前登录用户 */
 export function Header({ currentNoticeIndex, currentPage, currentUserName }: HeaderProps) {
 
   return (
