@@ -22,9 +22,15 @@ RUN python -m venv "${VIRTUAL_ENV}" && \
   pip install --upgrade pip setuptools wheel
 
 COPY pyproject.toml ./
+
+# 首先从 pyproject.toml 提取纯粹的第三方包并独立安装（完美利用 Docker 层缓存）
+RUN python -c "import tomllib; cfg = tomllib.load(open('pyproject.toml', 'rb')); print('\n'.join(cfg.get('project', {}).get('dependencies', [])))" > /tmp/requirements.txt && \
+  pip install --no-cache-dir -r /tmp/requirements.txt
+
 COPY app ./app
 
-RUN pip install --no-cache-dir .
+# 此步骤由于大部分沉重第三方包已装完，仅仅是轻量打包当前模块，几乎瞬秒
+RUN pip install --no-cache-dir --no-deps .
 
 # 预下载 BGE Embedding + Reranker 模型到缓存目录
 #RUN python -c "\
