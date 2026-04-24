@@ -36,7 +36,7 @@ ENV_VARS=(
 
 # 可选: 数据卷挂载
 VOLUMES=(
-    "-v /data/app/back/business-server/logs:/data/app/back/business-server/logs"
+    "-v /data/app/ai-platform/business-server/logs:/data/app/ai-platform/business-server/logs"
 )
 
 # 可选: 网络配置
