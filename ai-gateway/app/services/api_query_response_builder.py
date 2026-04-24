@@ -89,7 +89,7 @@ _DELETE_DISPLAY_FIELD_PRIORITY = (
 # 这里固定保留 5 条是为了给 Renderer 足够上下文，又避免把大结果集整包塞进生成链路导致注意力失焦。
 _CONTEXT_ROW_LIMIT = 5
 _SELECT_CANDIDATE_ROW_LIMIT = 50
-_DEFAULT_MULTI_STEP_RENDER_POLICY = "summary_table"
+_DEFAULT_MULTI_STEP_RENDER_POLICY = "terminal_result"
 _SUPPORTED_MULTI_STEP_RENDER_POLICIES = {
     "terminal_result",
     "composite_result",
@@ -2342,9 +2342,33 @@ def _build_wait_select_runtime(
 
 
 def _resolve_multi_step_render_policy(raw_policy: str | None) -> str:
-    """解析多步骤渲染策略，非法值统一回退到兼容策略。"""
+    """解析多步骤渲染策略并做历史兼容归一。
+
+    功能：
+        将运行时配置中的渲染策略标准化为受支持值，确保后续 payload 选择逻辑
+        只有一套稳定分支，不会因为配置漂移出现“同链路不同环境渲染不一致”。
+
+    Args:
+        raw_policy: 环境变量/配置中心透传的策略值，允许为空或历史值。
+
+    Returns:
+        归一化后的策略值；仅会返回 `_SUPPORTED_MULTI_STEP_RENDER_POLICIES`
+        中的合法成员。
+
+    兼容说明：
+        旧环境常把策略固定为 terminal_result，会导致多步骤健康查询只展示最后一个接口。
+        为降低线上配置漂移带来的回归风险，terminal_result/composite_result 在运行期自动
+        折叠到 auto_result，由 auto 策略按步骤形态决定是否聚合展示。
+
+    Edge Cases:
+        - 传入空值或未知值：回退 `_DEFAULT_MULTI_STEP_RENDER_POLICY`
+        - 传入历史值 `terminal_result/composite_result`：统一折叠到 `auto_result`
+    """
 
     policy = str(raw_policy or "").strip().lower()
+    # 历史策略值不再直接执行，统一转为 auto 以避免多步骤链路继续单锚点退化。
+    if policy in {"terminal_result", "composite_result"}:
+        return "auto_result"
     if policy in _SUPPORTED_MULTI_STEP_RENDER_POLICIES:
         return policy
     return _DEFAULT_MULTI_STEP_RENDER_POLICY
@@ -2356,7 +2380,22 @@ def _select_query_ui_payload(
     *,
     multi_step_render_policy: str,
 ) -> _QueryUISelection:
-    """按策略选择查询读态的主数据载荷。
+    """按策略选择查询读态主数据，并保证渲染模式与数据来源一致。
+
+    功能：
+        把同一份执行报告折叠为“前端可直接渲染”的主载荷。该函数是多步骤查询从
+        DAG 结果进入 UI 的唯一策略闸门，必须保证：
+        1) 有候选值待用户选择时优先进入 wait-select；
+        2) 多步骤策略分支互斥、可解释；
+        3) 最终 render_mode 与 payload 形态一致，避免 Renderer 误判。
+
+    Args:
+        execution_report: DAG 执行报告，包含步骤顺序、状态、执行结果。
+        anchor_record: 响应锚点记录；单步骤场景用于详情/列表推断兜底。
+        multi_step_render_policy: 已归一化的多步骤渲染策略。
+
+    Returns:
+        `_QueryUISelection`，包含渲染主数据、渲染模式、数据来源和可选运行时锚点。
 
     约束：
         1. WAIT_SELECT_REQUIRED 始终优先，避免被策略分支绕开。
@@ -2364,7 +2403,12 @@ def _select_query_ui_payload(
         3. composite_result 在规则渲染阶段先回退到 terminal_result，后续可叠加 LLM 组合视图。
         4. aggregate_result 会把多步骤业务结果聚合成一个复合对象，供 Renderer 同屏拆块展示。
         5. auto_result 会在 terminal 与 aggregate 之间自动选择，兼顾“终态优先”与“多块并列展示”。
+
+    Edge Cases:
+        - 没有可展示业务数据：回退 summary_table，保证链路可解释性
+        - auto_result 且 terminal 为空：自动尝试 aggregate，再失败才回退 summary
     """
+    # 1) 交互优先：只要命中 WAIT_SELECT_REQUIRED，必须先让用户做 disambiguation。
     wait_select_rows = _build_wait_select_rows(execution_report)
     if wait_select_rows:
         return _QueryUISelection(
@@ -2373,6 +2417,7 @@ def _select_query_ui_payload(
             source="wait_select_candidates",
         )
 
+    # 2) 单步骤链路不做复杂策略分流，直接按结果形态推断 detail/table/composite。
     if len(execution_report.records_by_step_id) <= 1:
         if anchor_record is None:
             return _QueryUISelection(data_for_ui=[], render_mode="table", source="empty")
@@ -2393,6 +2438,7 @@ def _select_query_ui_payload(
             runtime_anchor_record=None,
         )
 
+    # 3) 显式聚合策略：优先把多个叶子业务步骤同屏拆块展示。
     if multi_step_render_policy == "aggregate_result":
         aggregated_payload, aggregate_label_index = _build_multi_step_aggregate_payload(execution_report)
         if aggregated_payload:
@@ -2402,9 +2448,11 @@ def _select_query_ui_payload(
                 source="multi_step_aggregate",
             )
 
+    # 4) terminal 与 auto 共用终态记录计算，避免双分支重复扫描执行图。
     terminal_record = _select_terminal_business_record(execution_report, anchor_record)
     if multi_step_render_policy == "auto_result":
         aggregated_payload, aggregate_label_index = _build_multi_step_aggregate_payload(execution_report)
+        # auto 策略优先保证“多块业务完整性”；不满足再回到 terminal 简洁视图。
         if _should_use_aggregate_result(execution_report, aggregated_payload):
             return _build_multi_step_aggregate_selection(
                 aggregated_payload=aggregated_payload,
@@ -2447,9 +2495,9 @@ def _build_terminal_selection(record: DagStepExecutionRecord) -> _QueryUISelecti
     return _QueryUISelection(
         data_for_ui=rows,
         render_mode=_infer_render_mode_from_rows(rows, record),
-        source=f"terminal:{record.step.step_id}",
-        runtime_anchor_record=record,
-    )
+            source=f"terminal:{record.step.step_id}",
+            runtime_anchor_record=record,
+        )
 
 
 def _build_multi_step_aggregate_selection(
@@ -2475,9 +2523,24 @@ def _should_use_aggregate_result(
 ) -> bool:
     """判断 auto_result 是否应切换到 aggregate 渲染。
 
+    功能：
+        以“业务完整性优先”为目标，为 auto 策略提供一致的聚合开关。该函数只关心
+        步骤拓扑与可展示 section 数，不绑定具体业务字段名，避免领域耦合。
+
+    Args:
+        execution_report: 当前 DAG 执行报告。
+        aggregated_payload: 已按叶子步骤聚合的候选 payload。
+
+    Returns:
+        `True` 表示应采用聚合同屏展示；`False` 表示保持 terminal 终态展示。
+
     策略：
         - 至少存在 2 个叶子业务步骤；
         - 且当前可渲染的聚合 section 至少 2 个。
+
+    Edge Cases:
+        - 聚合结果为空时无条件返回 False
+        - 只有 1 个叶子步骤时保持 terminal，避免把简单链路过度展开
     """
 
     if not aggregated_payload:
@@ -2490,12 +2553,29 @@ def _should_use_aggregate_result(
 def _build_multi_step_aggregate_payload(
     execution_report: DagExecutionReport,
 ) -> tuple[dict[str, Any], dict[str, str]]:
-    """聚合同一执行链路中的多步骤结果，供 composite 渲染同屏展示。
+    """聚合同一执行链路的叶子步骤结果，供 composite 同屏展示。
+
+    功能：
+        将多步骤执行报告压缩为“section -> rows”的结构，同时构建字段标签索引，
+        让 Renderer 能在一个页面中稳定展示多块业务数据（例如健康基本信息/病史/体检）。
+
+    Args:
+        execution_report: DAG 执行报告。
+
+    Returns:
+        二元组 `(payload, label_index)`：
+        - payload: 聚合后的 section 数据；
+        - label_index: 供表头/字段中文名解析的标签索引。
 
     设计意图：
         - terminal_result 只保留最后一步，适合“链路末端即最终答案”的场景；
         - aggregate_result 需要把每个业务步骤都保留为独立 section，保证“健康基本信息 + 病史 + 体检”
           等并列语义不会在 UI 端被截断为单锚点结果。
+
+    Edge Cases:
+        - 上游识别步骤（如客户检索）不进入聚合输出，仅保留叶子业务步骤
+        - 步骤状态非 SUCCESS/PARTIAL_SUCCESS/EMPTY 时跳过，避免错误数据污染展示
+        - section key 冲突时自动加后缀，保证输出键唯一
     """
 
     preferred_statuses = {
@@ -2508,6 +2588,7 @@ def _build_multi_step_aggregate_payload(
     label_index: dict[str, str] = {}
     section_key_counter: dict[str, int] = {}
 
+    # 1) 仅遍历执行顺序里的叶子业务步骤，确保输出顺序与执行链路一致。
     for step_id in execution_report.execution_order:
         # 聚合视图只展示“终态业务块”，跳过客户识别、参数准备等上游依赖步骤，
         # 避免出现“4 步执行只想看 3 块业务结果”时把中间跳板步骤也渲染出来。
@@ -2521,7 +2602,7 @@ def _build_multi_step_aggregate_payload(
         if not rows:
             continue
 
-        # section key 直接对齐业务接口尾段（如 healthBasic / physicalExam），
+        # 2) section key 直接对齐业务接口尾段（如 healthBasic / physicalExam），
         # 让前端可以稳定把 child 与后端字段做一一映射。
         section_key = _build_aggregate_section_key(record, section_key_counter)
         payload[section_key] = rows
@@ -2530,7 +2611,9 @@ def _build_multi_step_aggregate_payload(
         if section_title:
             label_index.setdefault(section_key, section_title)
 
-        # 同时合并每个步骤的字段标签，保障聚合视图中的列标题仍能展示业务中文名。
+        # 3) 合并步骤级字段标签：
+        #    - 既保留叶子字段短路径（便于通用列构建）；
+        #    - 也补齐 section 前缀路径（便于跨 section 精准命中）。
         step_label_index = _build_response_field_label_index(record)
         for field_path, label in step_label_index.items():
             if "[]" in field_path:
@@ -2551,7 +2634,21 @@ def _build_multi_step_aggregate_payload(
 
 
 def _collect_leaf_step_ids(execution_report: DagExecutionReport) -> set[str]:
-    """计算执行计划中的叶子步骤（没有被其他步骤依赖的 step）。"""
+    """计算执行计划中的叶子步骤集合。
+
+    功能：
+        通过依赖关系剔除“被其他步骤消费”的中间节点，保留链路终端业务节点，
+        作为 aggregate 展示的候选步骤集合。
+
+    Args:
+        execution_report: DAG 执行报告。
+
+    Returns:
+        叶子步骤 ID 集合；为空时表示计划结构异常或无可聚合叶子步骤。
+
+    Edge Cases:
+        - 计划中存在 depends_on 指向未知步骤时会被安全忽略
+    """
 
     all_step_ids = {step.step_id for step in execution_report.plan.steps}
     depended_step_ids: set[str] = set()
@@ -2567,7 +2664,23 @@ def _build_aggregate_section_key(
     record: DagStepExecutionRecord,
     section_key_counter: dict[str, int],
 ) -> str:
-    """生成聚合渲染 section 键名，优先复用业务接口尾段。"""
+    """生成聚合渲染 section 键名，优先复用业务接口尾段。
+
+    功能：
+        产出可作为前端 `bizFieldKey` 的稳定键名。优先复用 API path 尾段，
+        既能保持业务可读性，也能避免依赖 step_id 的编排偶然性。
+
+    Args:
+        record: 当前步骤执行记录。
+        section_key_counter: section 键冲突计数器。
+
+    Returns:
+        唯一且可安全拼接路径的 section 键名。
+
+    Edge Cases:
+        - path 含特殊字符：统一清洗为 `_`
+        - 同名接口尾段冲突：追加 `_2/_3...` 后缀保证唯一
+    """
 
     api_tail = record.entry.path.rsplit("/", 1)[-1] if isinstance(record.entry.path, str) else ""
     base_key = api_tail.strip() if api_tail.strip() else record.step.step_id
@@ -2588,7 +2701,21 @@ def _build_aggregate_section_title(
     *,
     fallback: str,
 ) -> str:
-    """推断聚合 section 的展示标题。"""
+    """推断聚合 section 的展示标题。
+
+    功能：
+        优先使用接口描述作为业务标题，保证用户看到的是领域语义而不是技术键名。
+
+    Args:
+        record: 当前步骤执行记录。
+        fallback: 当接口描述缺失时的兜底标题。
+
+    Returns:
+        section 展示标题。
+
+    Edge Cases:
+        - description 为空：回退到 `fallback`
+    """
 
     description = (record.entry.description or "").strip()
     if description:
@@ -2600,13 +2727,30 @@ def _select_terminal_business_record(
     execution_report: DagExecutionReport,
     anchor_record: DagStepExecutionRecord | None,
 ) -> DagStepExecutionRecord | None:
-    """选择多步骤业务终态记录。"""
+    """选择多步骤链路的终态业务记录。
+
+    功能：
+        从执行顺序末尾向前扫描，找到“状态可展示且有渲染数据”的最后一步，
+        用于 terminal 视图和 auto 策略的终态回退。
+
+    Args:
+        execution_report: DAG 执行报告。
+        anchor_record: 响应锚点记录，用于扫描失败时的兜底。
+
+    Returns:
+        可作为终态展示的数据记录；找不到时返回 `None`。
+
+    Edge Cases:
+        - 末尾步骤为空但状态 EMPTY：仍可返回用于空态解释
+        - 全链路无可展示步骤：回退 anchor 或最终返回 None
+    """
 
     preferred_statuses = (
         ApiQueryExecutionStatus.SUCCESS,
         ApiQueryExecutionStatus.PARTIAL_SUCCESS,
         ApiQueryExecutionStatus.EMPTY,
     )
+    # 逆序扫描确保“最靠近业务终态”的步骤优先被选中。
     for step_id in reversed(execution_report.execution_order):
         record = execution_report.records_by_step_id[step_id]
         if record.execution_result.status not in preferred_statuses:

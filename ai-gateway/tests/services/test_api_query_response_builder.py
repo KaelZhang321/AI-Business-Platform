@@ -54,6 +54,17 @@ class FakeRegistrySource:
         return None
 
 
+def test_resolve_multi_step_render_policy_normalizes_legacy_terminal_and_composite_to_auto() -> None:
+    """旧策略值 terminal/composite 应归一到 auto_result，防止多步骤场景退化单锚点。"""
+
+    from app.services.api_query_response_builder import _resolve_multi_step_render_policy
+
+    assert _resolve_multi_step_render_policy("terminal_result") == "auto_result"
+    assert _resolve_multi_step_render_policy("composite_result") == "auto_result"
+    assert _resolve_multi_step_render_policy("aggregate_result") == "aggregate_result"
+    assert _resolve_multi_step_render_policy("summary_table") == "summary_table"
+
+
 def _build_flat_spec() -> dict[str, object]:
     """构造最小 flat spec。"""
 

@@ -93,7 +93,7 @@ class Settings(BaseSettings):
     llm_ui_spec_enabled: bool = False
     # 多步骤查询渲染策略：
     # - auto_result: 自动在 terminal / aggregate 间切换（推荐默认值）
-    # - terminal_result: 仅展示最后一个可渲染业务步骤
+    # - terminal_result/composite_result: 兼容旧值，运行期会自动归一到 auto_result
     # - aggregate_result: 同屏聚合展示所有叶子业务步骤
     # - summary_table: 仅展示执行步骤汇总
     api_query_multi_step_render_policy: str = "auto_result"

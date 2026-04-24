@@ -205,6 +205,19 @@ class DynamicUIService:
             LLM 生成的详情卡片和动作对象可能会把展示 label 混进 `body/queryParams`，
             导致请求键名漂移。这里基于 runtime 契约重新回写已知节点的请求元数据，
             保证前端真正执行时只看到 request_schema 允许的键。
+
+        Args:
+            spec: 候选 UI Spec（通常来自规则渲染或 LLM 渲染）。
+            intent: 当前渲染意图（query / mutation_form / knowledge 等）。
+            context: 响应层透传的渲染上下文。
+            runtime: 当前请求可暴露的运行时契约。
+
+        Returns:
+            已标准化 runtime 元数据的 Spec；若不满足处理条件则原样返回。
+
+        Edge Cases:
+            - runtime 缺失或 spec 非 flat：跳过改写，避免误污染旧结构
+            - `elements` 非字典：直接返回原 Spec，交给 Guard 统一兜底
         """
 
         if runtime is None or not self._is_flat_spec(spec):
@@ -242,9 +255,31 @@ class DynamicUIService:
         context: dict[str, Any],
         runtime: ApiQueryUIRuntime,
     ) -> None:
-        """修正查询页中列表、详情和行级动作的请求元数据。"""
+        """修正查询页中列表、详情和行级动作的请求元数据。
+
+        功能：
+            query 页面同时存在列表、筛选、详情和分页等多个交互入口。
+            这里统一把这些节点的请求参数回写到 runtime 契约，避免前端在不同入口
+            读到不一致的 `api/queryParams/body`，导致同一查询链路出现行为分叉。
+
+        Args:
+            elements: flat spec 的 `elements` 映射。
+            state: flat spec 的 `state`，用于回填详情标识值。
+            context: 渲染上下文，包含 flow_num/created_by/request_params 等事实字段。
+            runtime: query 运行时契约。
+
+        Returns:
+            无返回值，原地更新 `elements` 中相关节点的请求元数据。
+
+        Edge Cases:
+            - list 未启用：只尝试详情节点修正
+            - detail 未启用或缺少 identifier：直接跳过详情回填，避免生成无效请求
+            - row_actions 来自上游 `context.row_actions` 时，优先保留上游显式动作定义
+        """
 
         if runtime.list.enabled:
+            # 1. 先构造三类稳定参数模板：列表基线、筛选提交、筛选重置。
+            # 这样做是为了保证同页不同按钮读取的是同一份 runtime 口径。
             list_request_fields = _build_runtime_request_fields(
                 runtime.list.api_id,
                 param_source=runtime.list.param_source,
@@ -270,6 +305,8 @@ class DynamicUIService:
                 created_by=context.get("created_by"),
                 request_schema_fields=runtime.list.request_schema_fields,
             )
+
+            # 2. 再按组件类型批量覆写，确保 Table/Pagination/Button 一致消费同一契约。
             for element in elements.values():
                 if not isinstance(element, dict):
                     continue
@@ -323,6 +360,7 @@ class DynamicUIService:
                         }
                     )
                 elif element_type == "PlannerButton":
+                    # 查询/重置按钮必须走固定动作覆盖，避免 LLM 把 label 改写后参数失真。
                     label = props.get("label")
                     if label == "查询":
                         self._overwrite_button_action_params(
@@ -342,6 +380,7 @@ class DynamicUIService:
         if not runtime.detail.enabled or not runtime.detail.api_id:
             return
 
+        # 3. 详情卡入口单独处理：先定位主键值，再按 detail request_schema 回写请求。
         detail_identifier_param = runtime.detail.request.identifier_param or runtime.detail.source.identifier_field
         if not isinstance(detail_identifier_param, str) or not detail_identifier_param:
             return
@@ -373,7 +412,25 @@ class DynamicUIService:
         context: dict[str, Any],
         runtime: ApiQueryUIRuntime,
     ) -> None:
-        """修正 mutation 表单页的表单和提交按钮请求元数据。"""
+        """修正 mutation 表单页的表单和提交按钮请求元数据。
+
+        功能：
+            mutation 页面属于“高风险确认后写入”路径，提交参数必须完全受 runtime 契约约束。
+            这里统一把表单容器和提交按钮的动作参数回写到同一请求模板，避免前端从不同
+            节点读取时出现键名漂移或字段缺失。
+
+        Args:
+            elements: flat spec 的 `elements` 映射。
+            context: 渲染上下文，含 submit_payload/flow_num/created_by 等事实字段。
+            runtime: mutation form 运行时契约。
+
+        Returns:
+            无返回值，原地更新相关节点元数据。
+
+        Edge Cases:
+            - form 未启用或 api_id 缺失：直接跳过，防止暴露不可提交的假写入口
+            - submit_payload 缺失：回退字段级 `$bindState` 模板保证“用户最终输入”可提交
+        """
 
         if not runtime.form.enabled or not runtime.form.api_id:
             return
@@ -437,8 +494,29 @@ class DynamicUIService:
         state: dict[str, Any],
         runtime: ApiQueryUIRuntime,
     ) -> Any:
-        """尽量从稳定来源恢复详情主键值，而不是依赖展示 label。"""
+        """恢复详情请求的主键值，优先选择稳定来源而非展示文案。
 
+        功能：
+            详情请求是否正确命中，核心取决于 identifier 值是否稳定。由于 UI 可能被 LLM
+            重新组织，不能只依赖某个固定字段位置，这里按“契约优先 -> 状态回填 -> 展示兜底”
+            顺序分层恢复，最大化命中率。
+
+        Args:
+            elements: 当前 flat spec 元素映射。
+            context: 渲染上下文（含 request_params/form_state）。
+            state: 当前页面 state。
+            runtime: 详情运行时契约。
+
+        Returns:
+            恢复出的 identifier 值；无法恢复时返回 `None`。
+
+        Edge Cases:
+            - request_params 缺失：自动回退 form_state 和 detail card 扫描
+            - label 被中文 description 替换：同时匹配字段名与展示名
+            - 所有来源都为空：返回 None，避免发送错误主键
+        """
+
+        # 1. 首选 request_params：这是响应层传下来的原始请求事实，优先级最高。
         request_params = context.get("request_params")
         if isinstance(request_params, dict):
             identifier_param = runtime.detail.request.identifier_param
@@ -448,6 +526,7 @@ class DynamicUIService:
             if isinstance(source_identifier_field, str) and source_identifier_field in request_params:
                 return request_params.get(source_identifier_field)
 
+        # 2. 次选 form_state：兼容用户在页面内改写后回查详情的场景。
         root_state = context.get("form_state")
         if isinstance(root_state, dict):
             identifier_param = runtime.detail.request.identifier_param
@@ -484,6 +563,7 @@ class DynamicUIService:
                     if item.get("label") in identifier_labels:
                         return item.get("value")
 
+        # 3. 最后兜底页面 state，保证在上下文缺失时仍尽力恢复主键。
         identifier_param = runtime.detail.request.identifier_param
         if isinstance(identifier_param, str):
             state_value = read_state_value(state, f"/form/{identifier_param}")
@@ -497,7 +577,22 @@ class DynamicUIService:
         context: dict[str, Any],
         runtime: ApiQueryUIRuntime,
     ) -> dict[str, Any]:
-        """解析 mutation 表单提交模板。"""
+        """解析 mutation 表单提交模板。
+
+        功能：
+            mutation 页面既要支持通用字段绑定，也要支持删除确认等“自定义 payload”场景。
+            这里统一处理优先级：先尊重上下文显式模板，再回退字段绑定模板。
+
+        Args:
+            context: 渲染上下文，可能携带 `submit_payload` 覆盖模板。
+            runtime: mutation form 运行时契约。
+
+        Returns:
+            提交 payload 模板（可包含 `$bindState` 占位符）。
+
+        Edge Cases:
+            - submit_payload 非字典：回退字段绑定模板，避免前端拿到不可执行参数
+        """
 
         custom_submit_payload = context.get("submit_payload")
         if isinstance(custom_submit_payload, dict):
@@ -1107,10 +1202,18 @@ class DynamicUIService:
         Edge Cases:
             - runtime 为空时回退最小只读能力，避免模型误生成交互动作
             - 列表/详情/表单都会保留 enabled 与关键元数据，兼容不同渲染模式的判定
+
+        Args:
+            runtime: 响应层构建的运行时契约。
+
+        Returns:
+            供 Renderer 使用的轻量 runtime 目录。
         """
         if runtime is None:
             return {"mode": "read_only", "components": []}
 
+        # 这里有意保留 enabled/api_id/param_source 等“可执行约束字段”，
+        # 不保留完整 schema 细节，平衡模型约束与 prompt 体积。
         return {
             "mode": runtime.mode,
             "components": list(runtime.components),
@@ -1187,6 +1290,13 @@ class DynamicUIService:
         Edge Cases:
             - 深层非标量对象会被折叠成字符串摘要，防止递归结构把 prompt 撑爆
             - 超长字符串、超长数组和超大对象都会按固定阈值截断，保证 prompt 规模可预测
+
+        Args:
+            value: 待裁剪的任意值。
+            depth: 当前递归深度，用于控制深层对象展开上限。
+
+        Returns:
+            裁剪后的值，保持“可解释优先”而非“全量保真”。
         """
         if value is None:
             return None
@@ -1441,6 +1551,7 @@ class DynamicUIService:
             - 单条列表结果不自动升格为详情卡，只有 route 层显式标记 `detail` 才切详情视图
             - 多步骤摘要表仍然走 `PlannerTable`，但会通过 notice 显式暴露“只展示安全结果”
         """
+        # 1. 先冻结页面级文案：标题、副标题、局部失败提示统一在根卡片收口。
         render_mode = (context or {}).get("query_render_mode") or "table"
         label_index = self._build_response_field_label_index(context)
         root_props = {
@@ -1452,6 +1563,7 @@ class DynamicUIService:
             subtitle = root_props.get("subtitle")
             root_props["subtitle"] = f"{subtitle} · {partial_message}" if subtitle else partial_message
 
+        # 2. detail/composite 属于显式渲染模式，优先分流，避免被后续表格兜底覆盖。
         if render_mode == "detail":
             detail_props = {
                 "title": (context or {}).get("detail_title", "详情信息"),
@@ -1506,6 +1618,7 @@ class DynamicUIService:
                 ],
             )
 
+        # 3. table 视图：先构建筛选状态与请求模板，再组装查询/重置/分页动作。
         filters_state = _build_query_filter_state(runtime)
         filter_fields = list(runtime.list.filters.fields) if runtime else []
         current_params = dict(runtime.list.query_context.current_params) if runtime else {}
@@ -1599,6 +1712,7 @@ class DynamicUIService:
         }
         context_row_actions = (context or {}).get("row_actions")
         if isinstance(context_row_actions, list) and context_row_actions:
+            # 上游显式动作优先级最高（例如 WAIT_SELECT 场景），避免被默认详情动作覆盖。
             table_props["rowActions"] = self._normalize_row_actions(context_row_actions)
         elif runtime and runtime.detail.enabled:
             # 详情动作只下发运行时契约，不在网关 UI 层硬编码具体业务参数。
@@ -1965,6 +2079,20 @@ class DynamicUIService:
             复合结果常见于“一个 summary + 多个 records 列表”的查询语义。
             若继续复用 detail 模式，会把 nested dict/list 退化成字符串，用户不可读。
             这里按数据形态拆分组件，保持通用且不依赖具体字段命名。
+
+        Args:
+            row: 单对象复合结果（通常含 summary 对象 + 多个 records 数组）。
+            root_props: 根卡片属性（title/subtitle）。
+            context: 渲染上下文。
+            runtime: query 运行时契约。
+            label_index: response_schema 派生的字段中文名索引。
+
+        Returns:
+            flat spec，子节点按“概览指标 + 明细表”组织。
+
+        Edge Cases:
+            - 没有可表格化 section 时回退详情卡，避免输出空页面
+            - summary 无法推断业务字段名时不强行写入 bizFieldKey
         """
 
         ctx = context if isinstance(context, dict) else {}
@@ -1978,6 +2106,7 @@ class DynamicUIService:
             request_schema_fields=runtime.list.request_schema_fields if runtime else None,
         )
 
+        # 1. 先提取标量指标，映射为统一 InfoGrid 概览区。
         scalar_metrics = self._build_composite_metrics(row)
         resolved_label_index = label_index or {}
         summary_field_key = self._infer_composite_summary_field_key(row, scalar_metrics)
@@ -2007,6 +2136,7 @@ class DynamicUIService:
                 }
             )
 
+        # 2. 再把列表型 section 下钻为表格，保持每个业务块都有稳定 bizFieldKey。
         for section_name, section_value in row.items():
             table_rows = self._extract_table_rows(section_value)
             if not table_rows:
@@ -2033,6 +2163,7 @@ class DynamicUIService:
                 }
             )
 
+        # 3. 极端兜底：既无指标也无列表时，至少保留详情卡让用户看到事实内容。
         if not children:
             children.append(
                 {
