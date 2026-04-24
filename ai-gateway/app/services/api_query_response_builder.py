@@ -90,7 +90,13 @@ _DELETE_DISPLAY_FIELD_PRIORITY = (
 _CONTEXT_ROW_LIMIT = 5
 _SELECT_CANDIDATE_ROW_LIMIT = 50
 _DEFAULT_MULTI_STEP_RENDER_POLICY = "summary_table"
-_SUPPORTED_MULTI_STEP_RENDER_POLICIES = {"terminal_result", "composite_result", "summary_table"}
+_SUPPORTED_MULTI_STEP_RENDER_POLICIES = {
+    "terminal_result",
+    "composite_result",
+    "summary_table",
+    "aggregate_result",
+    "auto_result",
+}
 _RESPONSE_SCHEMA_FALLBACK_PATHS = ("result", "data", "payload", "list", "records")
 
 
@@ -102,6 +108,7 @@ class _QueryUISelection:
     render_mode: str
     source: str
     runtime_anchor_record: DagStepExecutionRecord | None = None
+    response_field_label_index: dict[str, str] | None = None
 
 
 class ApiQueryResponseBuilder:
@@ -179,6 +186,10 @@ class ApiQueryResponseBuilder:
             anchor_record,
             multi_step_render_policy=multi_step_render_policy,
         )
+        response_field_label_index = (
+            ui_selection.response_field_label_index
+            or _build_response_field_label_index(ui_selection.runtime_anchor_record)
+        )
         data_for_ui = ui_selection.data_for_ui
         runtime = _build_runtime_from_execution_report(
             execution_report,
@@ -216,7 +227,7 @@ class ApiQueryResponseBuilder:
                 "business_intents": [intent.model_dump() for intent in business_intents],
                 # 把 response_schema 的 description/title 预先解析成字段显示名索引；
                 # Renderer 仅消费该只读映射做展示，不会污染实际请求参数键名。
-                "response_field_label_index": _build_response_field_label_index(ui_selection.runtime_anchor_record),
+                "response_field_label_index": response_field_label_index,
             },
             status=aggregate_status,
             runtime=runtime,
@@ -2351,6 +2362,8 @@ def _select_query_ui_payload(
         1. WAIT_SELECT_REQUIRED 始终优先，避免被策略分支绕开。
         2. 多步骤默认采用 terminal_result，直接展示最后一个成功步骤的数据。
         3. composite_result 在规则渲染阶段先回退到 terminal_result，后续可叠加 LLM 组合视图。
+        4. aggregate_result 会把多步骤业务结果聚合成一个复合对象，供 Renderer 同屏拆块展示。
+        5. auto_result 会在 terminal 与 aggregate 之间自动选择，兼顾“终态优先”与“多块并列展示”。
     """
     wait_select_rows = _build_wait_select_rows(execution_report)
     if wait_select_rows:
@@ -2380,15 +2393,42 @@ def _select_query_ui_payload(
             runtime_anchor_record=None,
         )
 
+    if multi_step_render_policy == "aggregate_result":
+        aggregated_payload, aggregate_label_index = _build_multi_step_aggregate_payload(execution_report)
+        if aggregated_payload:
+            return _build_multi_step_aggregate_selection(
+                aggregated_payload=aggregated_payload,
+                aggregate_label_index=aggregate_label_index,
+                source="multi_step_aggregate",
+            )
+
     terminal_record = _select_terminal_business_record(execution_report, anchor_record)
-    if terminal_record is not None:
-        rows = _normalize_data_for_ui(terminal_record.execution_result)
+    if multi_step_render_policy == "auto_result":
+        aggregated_payload, aggregate_label_index = _build_multi_step_aggregate_payload(execution_report)
+        if _should_use_aggregate_result(execution_report, aggregated_payload):
+            return _build_multi_step_aggregate_selection(
+                aggregated_payload=aggregated_payload,
+                aggregate_label_index=aggregate_label_index,
+                source="multi_step_auto_aggregate",
+            )
+        if terminal_record is not None:
+            return _build_terminal_selection(terminal_record)
+        if aggregated_payload:
+            return _build_multi_step_aggregate_selection(
+                aggregated_payload=aggregated_payload,
+                aggregate_label_index=aggregate_label_index,
+                source="multi_step_auto_aggregate_fallback",
+            )
+        summary_rows = _build_multi_step_summary_rows(execution_report)
         return _QueryUISelection(
-            data_for_ui=rows,
-            render_mode=_infer_render_mode_from_rows(rows, terminal_record),
-            source=f"terminal:{terminal_record.step.step_id}",
-            runtime_anchor_record=terminal_record,
+            data_for_ui=summary_rows,
+            render_mode="summary_table",
+            source="multi_step_summary_fallback",
+            runtime_anchor_record=None,
         )
+
+    if terminal_record is not None:
+        return _build_terminal_selection(terminal_record)
 
     # 当 terminal/composite 找不到可展示业务数据时，回退到步骤汇总表保证可解释性。
     summary_rows = _build_multi_step_summary_rows(execution_report)
@@ -2398,6 +2438,162 @@ def _select_query_ui_payload(
         source="multi_step_summary_fallback",
         runtime_anchor_record=None,
     )
+
+
+def _build_terminal_selection(record: DagStepExecutionRecord) -> _QueryUISelection:
+    """把终态 record 折叠成统一的 QueryUISelection。"""
+
+    rows = _normalize_data_for_ui(record.execution_result)
+    return _QueryUISelection(
+        data_for_ui=rows,
+        render_mode=_infer_render_mode_from_rows(rows, record),
+        source=f"terminal:{record.step.step_id}",
+        runtime_anchor_record=record,
+    )
+
+
+def _build_multi_step_aggregate_selection(
+    *,
+    aggregated_payload: dict[str, Any],
+    aggregate_label_index: dict[str, str],
+    source: str,
+) -> _QueryUISelection:
+    """构造聚合渲染选择对象。"""
+
+    return _QueryUISelection(
+        data_for_ui=[aggregated_payload],
+        render_mode="composite",
+        source=source,
+        runtime_anchor_record=None,
+        response_field_label_index=aggregate_label_index,
+    )
+
+
+def _should_use_aggregate_result(
+    execution_report: DagExecutionReport,
+    aggregated_payload: dict[str, Any],
+) -> bool:
+    """判断 auto_result 是否应切换到 aggregate 渲染。
+
+    策略：
+        - 至少存在 2 个叶子业务步骤；
+        - 且当前可渲染的聚合 section 至少 2 个。
+    """
+
+    if not aggregated_payload:
+        return False
+    leaf_step_count = len(_collect_leaf_step_ids(execution_report))
+    section_count = len(aggregated_payload)
+    return leaf_step_count >= 2 and section_count >= 2
+
+
+def _build_multi_step_aggregate_payload(
+    execution_report: DagExecutionReport,
+) -> tuple[dict[str, Any], dict[str, str]]:
+    """聚合同一执行链路中的多步骤结果，供 composite 渲染同屏展示。
+
+    设计意图：
+        - terminal_result 只保留最后一步，适合“链路末端即最终答案”的场景；
+        - aggregate_result 需要把每个业务步骤都保留为独立 section，保证“健康基本信息 + 病史 + 体检”
+          等并列语义不会在 UI 端被截断为单锚点结果。
+    """
+
+    preferred_statuses = {
+        ApiQueryExecutionStatus.SUCCESS,
+        ApiQueryExecutionStatus.PARTIAL_SUCCESS,
+        ApiQueryExecutionStatus.EMPTY,
+    }
+    leaf_step_ids = _collect_leaf_step_ids(execution_report)
+    payload: dict[str, Any] = {}
+    label_index: dict[str, str] = {}
+    section_key_counter: dict[str, int] = {}
+
+    for step_id in execution_report.execution_order:
+        # 聚合视图只展示“终态业务块”，跳过客户识别、参数准备等上游依赖步骤，
+        # 避免出现“4 步执行只想看 3 块业务结果”时把中间跳板步骤也渲染出来。
+        if leaf_step_ids and step_id not in leaf_step_ids:
+            continue
+        record = execution_report.records_by_step_id[step_id]
+        if record.execution_result.status not in preferred_statuses:
+            continue
+
+        rows = _normalize_data_for_ui(record.execution_result)
+        if not rows:
+            continue
+
+        # section key 直接对齐业务接口尾段（如 healthBasic / physicalExam），
+        # 让前端可以稳定把 child 与后端字段做一一映射。
+        section_key = _build_aggregate_section_key(record, section_key_counter)
+        payload[section_key] = rows
+
+        section_title = _build_aggregate_section_title(record, fallback=section_key)
+        if section_title:
+            label_index.setdefault(section_key, section_title)
+
+        # 同时合并每个步骤的字段标签，保障聚合视图中的列标题仍能展示业务中文名。
+        step_label_index = _build_response_field_label_index(record)
+        for field_path, label in step_label_index.items():
+            if "[]" in field_path:
+                leaf_path = field_path.split("[]", 1)[-1].lstrip(".")
+                if leaf_path:
+                    label_index.setdefault(leaf_path, label)
+                    label_index.setdefault(f"{section_key}[].{leaf_path}", label)
+                continue
+            if "." in field_path:
+                leaf_path = field_path.split(".", 1)[-1]
+                label_index.setdefault(leaf_path, label)
+                label_index.setdefault(f"{section_key}[].{leaf_path}", label)
+                continue
+            label_index.setdefault(field_path, label)
+            label_index.setdefault(f"{section_key}[].{field_path}", label)
+
+    return payload, label_index
+
+
+def _collect_leaf_step_ids(execution_report: DagExecutionReport) -> set[str]:
+    """计算执行计划中的叶子步骤（没有被其他步骤依赖的 step）。"""
+
+    all_step_ids = {step.step_id for step in execution_report.plan.steps}
+    depended_step_ids: set[str] = set()
+    for step in execution_report.plan.steps:
+        for depended_step_id in step.depends_on:
+            if depended_step_id in all_step_ids:
+                depended_step_ids.add(depended_step_id)
+    leaf_step_ids = all_step_ids - depended_step_ids
+    return leaf_step_ids
+
+
+def _build_aggregate_section_key(
+    record: DagStepExecutionRecord,
+    section_key_counter: dict[str, int],
+) -> str:
+    """生成聚合渲染 section 键名，优先复用业务接口尾段。"""
+
+    api_tail = record.entry.path.rsplit("/", 1)[-1] if isinstance(record.entry.path, str) else ""
+    base_key = api_tail.strip() if api_tail.strip() else record.step.step_id
+    # 统一清洗非法字符，避免 path 中的连字符、空格等破坏字段路径拼接。
+    normalized_key = re.sub(r"[^0-9a-zA-Z_]", "_", base_key)
+    if not normalized_key:
+        normalized_key = re.sub(r"[^0-9a-zA-Z_]", "_", record.step.step_id) or "section"
+
+    current_index = section_key_counter.get(normalized_key, 0) + 1
+    section_key_counter[normalized_key] = current_index
+    if current_index == 1:
+        return normalized_key
+    return f"{normalized_key}_{current_index}"
+
+
+def _build_aggregate_section_title(
+    record: DagStepExecutionRecord,
+    *,
+    fallback: str,
+) -> str:
+    """推断聚合 section 的展示标题。"""
+
+    description = (record.entry.description or "").strip()
+    if description:
+        return description
+    return fallback
 
 
 def _select_terminal_business_record(

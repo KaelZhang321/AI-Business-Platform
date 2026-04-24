@@ -91,8 +91,12 @@ class Settings(BaseSettings):
 
     # 动态UI
     llm_ui_spec_enabled: bool = False
-    # 多步骤查询渲染策略：默认展示业务终态，必要时可回退步骤汇总。
-    api_query_multi_step_render_policy: str = "terminal_result"
+    # 多步骤查询渲染策略：
+    # - auto_result: 自动在 terminal / aggregate 间切换（推荐默认值）
+    # - terminal_result: 仅展示最后一个可渲染业务步骤
+    # - aggregate_result: 同屏聚合展示所有叶子业务步骤
+    # - summary_table: 仅展示执行步骤汇总
+    api_query_multi_step_render_policy: str = "auto_result"
 
     # API Query 专用 LLM（Volcengine Ark）
     # 这一组配置只服务 `/api/v1/api-query`，避免把网关内其他问答/聊天链路强行绑到同一供应商。

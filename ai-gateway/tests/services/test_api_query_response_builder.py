@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 import pytest
 
@@ -950,3 +951,470 @@ async def test_build_execution_response_multi_step_can_use_summary_policy(monkey
     assert dynamic_ui.captured_data[0]["stepId"] == "step_customers"
     assert dynamic_ui.captured_context is not None
     assert dynamic_ui.captured_context["query_render_mode"] == "summary_table"
+
+
+@pytest.mark.asyncio
+async def test_build_execution_response_multi_step_can_use_aggregate_policy(monkeypatch) -> None:
+    """多步骤策略切到 aggregate_result 时应聚合同屏渲染多个业务步骤。"""
+
+    monkeypatch.setattr(settings, "api_query_multi_step_render_policy", "aggregate_result")
+    customer_entry = ApiCatalogEntry(
+        id="customer_list",
+        description="客户列表",
+        domain="crm",
+        operation_safety="query",
+        method="GET",
+        path="/api/customer/list",
+        param_schema=ParamSchema(
+            properties={"ownerId": {"type": "string"}},
+            required=["ownerId"],
+        ),
+    )
+    health_basic_entry = ApiCatalogEntry(
+        id="health_basic",
+        description="健康基本信息",
+        domain="health",
+        operation_safety="query",
+        method="GET",
+        path="/leczcore-data-manage/dwCustomerArchive/healthBasic",
+        response_schema={
+            "type": "object",
+            "properties": {
+                "data": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "bloodType": {"type": "string", "description": "血型"},
+                        },
+                    },
+                }
+            },
+        },
+        response_data_path="data",
+        param_schema=ParamSchema(
+            properties={"encryptedIdCard": {"type": "string"}},
+            required=["encryptedIdCard"],
+        ),
+    )
+    health_history_entry = ApiCatalogEntry(
+        id="health_history",
+        description="病史",
+        domain="health",
+        operation_safety="query",
+        method="GET",
+        path="/leczcore-data-manage/dwCustomerArchive/healthStatusMedicalHistory",
+        response_schema={
+            "type": "object",
+            "properties": {
+                "data": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "history": {"type": "string", "description": "既往史"},
+                        },
+                    },
+                }
+            },
+        },
+        response_data_path="data",
+        param_schema=ParamSchema(
+            properties={"encryptedIdCard": {"type": "string"}},
+            required=["encryptedIdCard"],
+        ),
+    )
+    physical_exam_entry = ApiCatalogEntry(
+        id="physical_exam",
+        description="体检情况",
+        domain="health",
+        operation_safety="query",
+        method="GET",
+        path="/leczcore-data-manage/dwCustomerArchive/physicalExam",
+        response_schema={
+            "type": "object",
+            "properties": {
+                "data": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "latestExamDate": {"type": "string", "description": "最近体检时间"},
+                        },
+                    },
+                }
+            },
+        },
+        response_data_path="data",
+        param_schema=ParamSchema(
+            properties={"encryptedIdCard": {"type": "string"}},
+            required=["encryptedIdCard"],
+        ),
+    )
+    plan = ApiQueryExecutionPlan(
+        plan_id="plan_health_aggregate_001",
+        steps=[
+            ApiQueryPlanStep(
+                step_id="step_customers",
+                api_id="customer_list",
+                api_path=customer_entry.path,
+                params={"ownerId": "E001"},
+                depends_on=[],
+            ),
+            ApiQueryPlanStep(
+                step_id="step_health_basic",
+                api_id="health_basic",
+                api_path=health_basic_entry.path,
+                params={"encryptedIdCard": "$[step_customers.data][*].idCard"},
+                depends_on=["step_customers"],
+            ),
+            ApiQueryPlanStep(
+                step_id="step_health_history",
+                api_id="health_history",
+                api_path=health_history_entry.path,
+                params={"encryptedIdCard": "$[step_customers.data][*].idCard"},
+                depends_on=["step_customers"],
+            ),
+            ApiQueryPlanStep(
+                step_id="step_physical_exam",
+                api_id="physical_exam",
+                api_path=physical_exam_entry.path,
+                params={"encryptedIdCard": "$[step_customers.data][*].idCard"},
+                depends_on=["step_customers"],
+            ),
+        ],
+    )
+    records = {
+        "step_customers": DagStepExecutionRecord(
+            step=plan.steps[0],
+            entry=customer_entry,
+            resolved_params={"ownerId": "E001"},
+            execution_result=ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.SUCCESS,
+                data=[{"idCard": "ENC001", "customerName": "刘海坚"}],
+                total=1,
+                trace_id="trace-health-aggregate",
+            ),
+        ),
+        "step_health_basic": DagStepExecutionRecord(
+            step=plan.steps[1],
+            entry=health_basic_entry,
+            resolved_params={"encryptedIdCard": "ENC001"},
+            execution_result=ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.SUCCESS,
+                data=[{"bloodType": "A型"}],
+                total=1,
+                trace_id="trace-health-aggregate",
+            ),
+        ),
+        "step_health_history": DagStepExecutionRecord(
+            step=plan.steps[2],
+            entry=health_history_entry,
+            resolved_params={"encryptedIdCard": "ENC001"},
+            execution_result=ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.SUCCESS,
+                data=[{"history": "高血压"}],
+                total=1,
+                trace_id="trace-health-aggregate",
+            ),
+        ),
+        "step_physical_exam": DagStepExecutionRecord(
+            step=plan.steps[3],
+            entry=physical_exam_entry,
+            resolved_params={"encryptedIdCard": "ENC001"},
+            execution_result=ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.SUCCESS,
+                data=[{"latestExamDate": "2025-04-08"}],
+                total=1,
+                trace_id="trace-health-aggregate",
+            ),
+        ),
+    }
+    dynamic_ui = CaptureDynamicUIService(result=UISpecBuildResult(spec=_build_flat_spec(), frozen=False))
+    builder = ApiQueryResponseBuilder(
+        dynamic_ui=dynamic_ui,
+        snapshot_service=UISnapshotService(),
+        ui_catalog_service=UICatalogService(),
+        registry_source=FakeRegistrySource(),
+    )
+    state: ApiQueryState = {
+        "request_mode": "nl",
+        "query_text": "查询客户刘海坚的健康数据",
+        "trace_id": "trace-health-aggregate",
+        "interaction_id": None,
+        "conversation_id": None,
+        "plan": plan,
+    }
+
+    await builder.build_execution_response(
+        state=state,
+        runtime_context=ApiQueryRuntimeContext(
+            step_entries={
+                "step_customers": customer_entry,
+                "step_health_basic": health_basic_entry,
+                "step_health_history": health_history_entry,
+                "step_physical_exam": physical_exam_entry,
+            },
+            log_prefix="api_query[trace=trace-health-aggregate]",
+        ),
+        execution_state={
+            "plan": plan,
+            "trace_id": "trace-health-aggregate",
+            "records_by_step_id": records,
+            "execution_order": [
+                "step_customers",
+                "step_health_basic",
+                "step_health_history",
+                "step_physical_exam",
+            ],
+            "errors": [],
+            "aggregate_status": None,
+        },
+        query_domains_hint=["crm", "health"],
+        business_intent_codes=["none"],
+    )
+
+    assert dynamic_ui.captured_context is not None
+    assert dynamic_ui.captured_context["query_render_mode"] == "composite"
+    assert dynamic_ui.captured_context["response_field_label_index"]["healthBasic"] == "健康基本信息"
+    assert dynamic_ui.captured_context["response_field_label_index"]["healthStatusMedicalHistory"] == "病史"
+    assert dynamic_ui.captured_context["response_field_label_index"]["physicalExam"] == "体检情况"
+    assert dynamic_ui.captured_data == [
+        {
+            "healthBasic": [{"bloodType": "A型"}],
+            "healthStatusMedicalHistory": [{"history": "高血压"}],
+            "physicalExam": [{"latestExamDate": "2025-04-08"}],
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_build_execution_response_multi_step_auto_policy_prefers_aggregate(monkeypatch) -> None:
+    """auto_result 在多叶子业务步骤场景下应自动切到 aggregate。"""
+
+    monkeypatch.setattr(settings, "api_query_multi_step_render_policy", "auto_result")
+    customer_entry = ApiCatalogEntry(
+        id="customer_list",
+        description="客户列表",
+        domain="crm",
+        operation_safety="query",
+        method="GET",
+        path="/api/customer/list",
+        param_schema=ParamSchema(
+            properties={"ownerId": {"type": "string"}},
+            required=["ownerId"],
+        ),
+    )
+    health_basic_entry = ApiCatalogEntry(
+        id="health_basic",
+        description="健康基本信息",
+        domain="health",
+        operation_safety="query",
+        method="GET",
+        path="/leczcore-data-manage/dwCustomerArchive/healthBasic",
+        response_schema={
+            "type": "object",
+            "properties": {
+                "data": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "bloodType": {"type": "string", "description": "血型"},
+                        },
+                    },
+                }
+            },
+        },
+        response_data_path="data",
+        param_schema=ParamSchema(
+            properties={"encryptedIdCard": {"type": "string"}},
+            required=["encryptedIdCard"],
+        ),
+    )
+    health_history_entry = ApiCatalogEntry(
+        id="health_history",
+        description="病史",
+        domain="health",
+        operation_safety="query",
+        method="GET",
+        path="/leczcore-data-manage/dwCustomerArchive/healthStatusMedicalHistory",
+        response_schema={
+            "type": "object",
+            "properties": {
+                "data": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "history": {"type": "string", "description": "既往史"},
+                        },
+                    },
+                }
+            },
+        },
+        response_data_path="data",
+        param_schema=ParamSchema(
+            properties={"encryptedIdCard": {"type": "string"}},
+            required=["encryptedIdCard"],
+        ),
+    )
+    physical_exam_entry = ApiCatalogEntry(
+        id="physical_exam",
+        description="体检情况",
+        domain="health",
+        operation_safety="query",
+        method="GET",
+        path="/leczcore-data-manage/dwCustomerArchive/physicalExam",
+        response_schema={
+            "type": "object",
+            "properties": {
+                "data": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "latestExamDate": {"type": "string", "description": "最近体检时间"},
+                        },
+                    },
+                }
+            },
+        },
+        response_data_path="data",
+        param_schema=ParamSchema(
+            properties={"encryptedIdCard": {"type": "string"}},
+            required=["encryptedIdCard"],
+        ),
+    )
+    plan = ApiQueryExecutionPlan(
+        plan_id="plan_health_auto_aggregate_001",
+        steps=[
+            ApiQueryPlanStep(
+                step_id="step_customers",
+                api_id="customer_list",
+                api_path=customer_entry.path,
+                params={"ownerId": "E001"},
+                depends_on=[],
+            ),
+            ApiQueryPlanStep(
+                step_id="step_health_basic",
+                api_id="health_basic",
+                api_path=health_basic_entry.path,
+                params={"encryptedIdCard": "$[step_customers.data][*].idCard"},
+                depends_on=["step_customers"],
+            ),
+            ApiQueryPlanStep(
+                step_id="step_health_history",
+                api_id="health_history",
+                api_path=health_history_entry.path,
+                params={"encryptedIdCard": "$[step_customers.data][*].idCard"},
+                depends_on=["step_customers"],
+            ),
+            ApiQueryPlanStep(
+                step_id="step_physical_exam",
+                api_id="physical_exam",
+                api_path=physical_exam_entry.path,
+                params={"encryptedIdCard": "$[step_customers.data][*].idCard"},
+                depends_on=["step_customers"],
+            ),
+        ],
+    )
+    records = {
+        "step_customers": DagStepExecutionRecord(
+            step=plan.steps[0],
+            entry=customer_entry,
+            resolved_params={"ownerId": "E001"},
+            execution_result=ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.SUCCESS,
+                data=[{"idCard": "ENC001", "customerName": "刘海坚"}],
+                total=1,
+                trace_id="trace-health-auto-aggregate",
+            ),
+        ),
+        "step_health_basic": DagStepExecutionRecord(
+            step=plan.steps[1],
+            entry=health_basic_entry,
+            resolved_params={"encryptedIdCard": "ENC001"},
+            execution_result=ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.SUCCESS,
+                data=[{"bloodType": "A型"}],
+                total=1,
+                trace_id="trace-health-auto-aggregate",
+            ),
+        ),
+        "step_health_history": DagStepExecutionRecord(
+            step=plan.steps[2],
+            entry=health_history_entry,
+            resolved_params={"encryptedIdCard": "ENC001"},
+            execution_result=ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.SUCCESS,
+                data=[{"history": "高血压"}],
+                total=1,
+                trace_id="trace-health-auto-aggregate",
+            ),
+        ),
+        "step_physical_exam": DagStepExecutionRecord(
+            step=plan.steps[3],
+            entry=physical_exam_entry,
+            resolved_params={"encryptedIdCard": "ENC001"},
+            execution_result=ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.SUCCESS,
+                data=[{"latestExamDate": "2025-04-08"}],
+                total=1,
+                trace_id="trace-health-auto-aggregate",
+            ),
+        ),
+    }
+    dynamic_ui = CaptureDynamicUIService(result=UISpecBuildResult(spec=_build_flat_spec(), frozen=False))
+    builder = ApiQueryResponseBuilder(
+        dynamic_ui=dynamic_ui,
+        snapshot_service=UISnapshotService(),
+        ui_catalog_service=UICatalogService(),
+        registry_source=FakeRegistrySource(),
+    )
+    state: ApiQueryState = {
+        "request_mode": "nl",
+        "query_text": "查询客户刘海坚的健康数据",
+        "trace_id": "trace-health-auto-aggregate",
+        "interaction_id": None,
+        "conversation_id": None,
+        "plan": plan,
+    }
+
+    await builder.build_execution_response(
+        state=state,
+        runtime_context=ApiQueryRuntimeContext(
+            step_entries={
+                "step_customers": customer_entry,
+                "step_health_basic": health_basic_entry,
+                "step_health_history": health_history_entry,
+                "step_physical_exam": physical_exam_entry,
+            },
+            log_prefix="api_query[trace=trace-health-auto-aggregate]",
+        ),
+        execution_state={
+            "plan": plan,
+            "trace_id": "trace-health-auto-aggregate",
+            "records_by_step_id": records,
+            "execution_order": [
+                "step_customers",
+                "step_health_basic",
+                "step_health_history",
+                "step_physical_exam",
+            ],
+            "errors": [],
+            "aggregate_status": None,
+        },
+        query_domains_hint=["crm", "health"],
+        business_intent_codes=["none"],
+    )
+
+    assert dynamic_ui.captured_context is not None
+    assert dynamic_ui.captured_context["query_render_mode"] == "composite"
+    assert dynamic_ui.captured_data == [
+        {
+            "healthBasic": [{"bloodType": "A型"}],
+            "healthStatusMedicalHistory": [{"history": "高血压"}],
+            "physicalExam": [{"latestExamDate": "2025-04-08"}],
+        }
+    ]

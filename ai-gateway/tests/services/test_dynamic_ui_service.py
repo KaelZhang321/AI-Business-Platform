@@ -656,6 +656,7 @@ async def test_rule_query_spec_composite_renders_metrics_and_tables_without_stri
     info_grid = next(elements[child_id] for child_id in child_ids if elements[child_id]["type"] == "PlannerInfoGrid")
     info_items = {(item["label"], item["value"]) for item in info_grid["props"]["items"]}
     assert ("储值总余额", "13245060.0") in info_items
+    assert info_grid["props"]["bizFieldKey"] == "summaryCard"
 
     tables = [elements[child_id] for child_id in child_ids if elements[child_id]["type"] == "PlannerTable"]
     table_titles = [table["props"].get("title") for table in tables]
@@ -663,9 +664,12 @@ async def test_rule_query_spec_composite_renders_metrics_and_tables_without_stri
     assert "调理方案记录" in table_titles
 
     delivery_table = next(table for table in tables if table["props"].get("title") == "交付记录")
+    assert delivery_table["props"]["bizFieldKey"] == "deliveryRecords"
     assert delivery_table["props"]["columns"][0]["dataIndex"] == "deliveryDate"
     assert delivery_table["props"]["columns"][0]["title"] == "交付日期"
     assert delivery_table["props"]["dataSource"][0]["deliveryProject"] == "肝脏解毒支持（白金版）"
+    cure_plan_table = next(table for table in tables if table["props"].get("title") == "调理方案记录")
+    assert cure_plan_table["props"]["bizFieldKey"] == "curePlanRecords"
 
 
 @pytest.mark.asyncio

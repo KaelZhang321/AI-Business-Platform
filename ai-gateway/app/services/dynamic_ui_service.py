@@ -1980,6 +1980,7 @@ class DynamicUIService:
 
         scalar_metrics = self._build_composite_metrics(row)
         resolved_label_index = label_index or {}
+        summary_field_key = self._infer_composite_summary_field_key(row, scalar_metrics)
         info_grid_items: list[dict[str, str]] = []
         for field_path, field_name, value in scalar_metrics:
             info_grid_items.append(
@@ -2001,6 +2002,7 @@ class DynamicUIService:
                     "type": "PlannerInfoGrid",
                     "props": {
                         "items": info_grid_items,
+                        **({"bizFieldKey": summary_field_key} if summary_field_key else {}),
                     },
                 }
             )
@@ -2025,6 +2027,7 @@ class DynamicUIService:
                             field_path_prefix=f"{section_name}[]",
                         ),
                         "dataSource": table_rows,
+                        "bizFieldKey": section_name,
                         **list_request_fields,
                     },
                 }
@@ -2094,6 +2097,22 @@ class DynamicUIService:
                 continue
             metrics.append((key, key, value))
         return metrics
+
+    @staticmethod
+    def _infer_composite_summary_field_key(
+        row: dict[str, Any],
+        metrics: list[tuple[str, str, Any]],
+    ) -> str | None:
+        """推断复合视图概览区对应的业务字段名。"""
+
+        prefix_candidates = [field_path.split(".", 1)[0] for field_path, _, _ in metrics if "." in field_path]
+        if prefix_candidates:
+            return prefix_candidates[0]
+
+        for key, value in row.items():
+            if isinstance(value, dict):
+                return key
+        return None
 
     # ── 指标构建 ──
 

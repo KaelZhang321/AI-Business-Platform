@@ -602,10 +602,14 @@ def test_api_query_renders_composite_single_object_as_metrics_and_tables(monkeyp
     info_grid = next(child for child in children if child["type"] == "PlannerInfoGrid")
     metric_pairs = {(item["label"], item["value"]) for item in info_grid["props"]["items"]}
     assert ("可用储值余额", "13245060.0") in metric_pairs
+    assert info_grid["props"]["bizFieldKey"] == "summaryCard"
 
     delivery_table = next(child for child in children if child["type"] == "PlannerTable" and child["props"].get("title") == "交付记录")
+    assert delivery_table["props"]["bizFieldKey"] == "deliveryRecords"
     assert delivery_table["props"]["columns"][0]["title"] == "交付日期"
     assert delivery_table["props"]["dataSource"][0]["deliveryProject"] == "肝脏解毒支持（白金版）"
+    cure_plan_table = next(child for child in children if child["type"] == "PlannerTable" and child["props"].get("title") == "调理方案记录")
+    assert cure_plan_table["props"]["bizFieldKey"] == "curePlanRecords"
     # 纯单接口详情场景未启用列表 runtime，因此 composite 表格不会挂载二跳接口地址。
     assert delivery_table["props"]["api"] == ""
     _assert_runtime_metadata(delivery_table["props"], trace_id=body["trace_id"], api_suffix=None)
@@ -1010,6 +1014,454 @@ def test_api_query_multi_step_can_fallback_to_summary_table_via_policy(monkeypat
     body = response.json()
     table = _get_root_children(body["ui_spec"])[1]
     assert table["props"]["dataSource"][0]["stepId"] == "step_customers"
+
+
+def test_api_query_multi_step_can_render_aggregate_sections(monkeypatch) -> None:
+    customer_entry = ApiCatalogEntry(
+        id="customer_list",
+        description="查询客户列表",
+        domain="crm",
+        operation_safety="query",
+        method="GET",
+        path="/api/v1/customers",
+        param_schema={
+            "type": "object",
+            "properties": {"customerInfo": {"type": "string"}},
+            "required": ["customerInfo"],
+        },
+    )
+    health_basic_entry = ApiCatalogEntry(
+        id="health_basic",
+        description="健康基本信息",
+        domain="health",
+        operation_safety="query",
+        method="GET",
+        path="/leczcore-data-manage/dwCustomerArchive/healthBasic",
+        response_schema={
+            "type": "object",
+            "properties": {
+                "data": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "bloodType": {"type": "string", "description": "血型"},
+                        },
+                    },
+                }
+            },
+        },
+        response_data_path="data",
+        param_schema={
+            "type": "object",
+            "properties": {"encryptedIdCard": {"type": "string"}},
+            "required": ["encryptedIdCard"],
+        },
+    )
+    health_history_entry = ApiCatalogEntry(
+        id="health_history",
+        description="病史",
+        domain="health",
+        operation_safety="query",
+        method="GET",
+        path="/leczcore-data-manage/dwCustomerArchive/healthStatusMedicalHistory",
+        response_schema={
+            "type": "object",
+            "properties": {
+                "data": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "history": {"type": "string", "description": "既往史"},
+                        },
+                    },
+                }
+            },
+        },
+        response_data_path="data",
+        param_schema={
+            "type": "object",
+            "properties": {"encryptedIdCard": {"type": "string"}},
+            "required": ["encryptedIdCard"],
+        },
+    )
+    physical_exam_entry = ApiCatalogEntry(
+        id="physical_exam",
+        description="体检情况",
+        domain="health",
+        operation_safety="query",
+        method="GET",
+        path="/leczcore-data-manage/dwCustomerArchive/physicalExam",
+        response_schema={
+            "type": "object",
+            "properties": {
+                "data": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "latestExamDate": {"type": "string", "description": "最近体检时间"},
+                        },
+                    },
+                }
+            },
+        },
+        response_data_path="data",
+        param_schema={
+            "type": "object",
+            "properties": {"encryptedIdCard": {"type": "string"}},
+            "required": ["encryptedIdCard"],
+        },
+    )
+
+    class MultiRetriever:
+        async def search(self, query: str, top_k: int = 3, score_threshold: float = 0.3, filters=None):
+            return [
+                ApiCatalogSearchResult(entry=customer_entry, score=0.95),
+                ApiCatalogSearchResult(entry=health_basic_entry, score=0.94),
+                ApiCatalogSearchResult(entry=health_history_entry, score=0.93),
+                ApiCatalogSearchResult(entry=physical_exam_entry, score=0.92),
+            ]
+
+        async def search_stratified(self, query: str, *, domains, top_k: int = 3, filters=None, **kwargs):
+            return await self.search(query, top_k=top_k, score_threshold=0.3, filters=filters)
+
+    class RouteOnlyExtractor:
+        async def route_query(self, query: str, user_context: dict[str, object], **kwargs):
+            return ApiQueryRoutingResult(
+                query_domains=["crm", "health"],
+                business_intents=["none"],
+                is_multi_domain=True,
+                reasoning="aggregate policy runtime test",
+                route_status="ok",
+            )
+
+    class PlannerStub:
+        async def build_plan(self, query, candidates, user_context, route_hint, **kwargs):
+            return ApiQueryExecutionPlan(
+                plan_id="dag_liuhaijian_health",
+                steps=[
+                    ApiQueryPlanStep(
+                        step_id="step_get_customer",
+                        api_id="customer_list",
+                        api_path=customer_entry.path,
+                        params={"customerInfo": "刘海坚", "pageNo": 1, "pageSize": 10},
+                        depends_on=[],
+                    ),
+                    ApiQueryPlanStep(
+                        step_id="step_health_basic",
+                        api_id="health_basic",
+                        api_path=health_basic_entry.path,
+                        params={"encryptedIdCard": "$[step_get_customer.data][*].idCard"},
+                        depends_on=["step_get_customer"],
+                    ),
+                    ApiQueryPlanStep(
+                        step_id="step_health_history",
+                        api_id="health_history",
+                        api_path=health_history_entry.path,
+                        params={"encryptedIdCard": "$[step_get_customer.data][*].idCard"},
+                        depends_on=["step_get_customer"],
+                    ),
+                    ApiQueryPlanStep(
+                        step_id="step_physical_exam",
+                        api_id="physical_exam",
+                        api_path=physical_exam_entry.path,
+                        params={"encryptedIdCard": "$[step_get_customer.data][*].idCard"},
+                        depends_on=["step_get_customer"],
+                    ),
+                ],
+            )
+
+        def validate_plan(self, plan, candidates):
+            return {
+                "step_get_customer": customer_entry,
+                "step_health_basic": health_basic_entry,
+                "step_health_history": health_history_entry,
+                "step_physical_exam": physical_exam_entry,
+            }
+
+    class MultiStepExecutor:
+        async def call(self, entry, params, user_token=None, trace_id: str | None = None, user_id: str | None = None):
+            if entry.id == "customer_list":
+                return ApiQueryExecutionResult(
+                    status=ApiQueryExecutionStatus.SUCCESS,
+                    data=[{"idCard": "ENC001", "customerName": "刘海坚"}],
+                    total=1,
+                    trace_id=trace_id,
+                )
+            if entry.id == "health_basic":
+                return ApiQueryExecutionResult(
+                    status=ApiQueryExecutionStatus.SUCCESS,
+                    data=[{"bloodType": "A型"}],
+                    total=1,
+                    trace_id=trace_id,
+                )
+            if entry.id == "health_history":
+                return ApiQueryExecutionResult(
+                    status=ApiQueryExecutionStatus.SUCCESS,
+                    data=[{"history": "高血压"}],
+                    total=1,
+                    trace_id=trace_id,
+                )
+            return ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.SUCCESS,
+                data=[{"latestExamDate": "2025-04-08"}],
+                total=1,
+                trace_id=trace_id,
+            )
+
+    monkeypatch.setattr(settings, "api_query_multi_step_render_policy", "aggregate_result")
+    stub_services = (
+        MultiRetriever(),
+        RouteOnlyExtractor(),
+        MultiStepExecutor(),
+        api_query_routes.DynamicUIService(),
+        PassThroughSnapshotService(),
+    )
+    monkeypatch.setattr(api_query_routes, "_get_services", lambda: stub_services)
+    monkeypatch.setattr(api_query_routes, "_get_planner", lambda: PlannerStub())
+
+    client = TestClient(create_test_app())
+    response = client.post("/api/v1/api-query", json={"query": "查询客户刘海坚的健康数据"})
+
+    assert response.status_code == 200
+    body = response.json()
+    _assert_api_query_response_keys(body)
+    children = _get_root_children(body["ui_spec"])
+    tables = [child for child in children if child["type"] == "PlannerTable"]
+    assert len(tables) == 3
+
+    # 聚合模式下每个子表都携带后端字段锚点，前端可按 bizFieldKey 进行稳定映射。
+    assert {table["props"]["bizFieldKey"] for table in tables} == {
+        "healthBasic",
+        "healthStatusMedicalHistory",
+        "physicalExam",
+    }
+    titles = {table["props"]["title"] for table in tables}
+    assert {"健康基本信息", "病史", "体检情况"} <= titles
+
+
+def test_api_query_multi_step_auto_policy_renders_aggregate_sections(monkeypatch) -> None:
+    customer_entry = ApiCatalogEntry(
+        id="customer_list",
+        description="查询客户列表",
+        domain="crm",
+        operation_safety="query",
+        method="GET",
+        path="/api/v1/customers",
+        param_schema={
+            "type": "object",
+            "properties": {"customerInfo": {"type": "string"}},
+            "required": ["customerInfo"],
+        },
+    )
+    health_basic_entry = ApiCatalogEntry(
+        id="health_basic",
+        description="健康基本信息",
+        domain="health",
+        operation_safety="query",
+        method="GET",
+        path="/leczcore-data-manage/dwCustomerArchive/healthBasic",
+        response_schema={
+            "type": "object",
+            "properties": {
+                "data": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "bloodType": {"type": "string", "description": "血型"},
+                        },
+                    },
+                }
+            },
+        },
+        response_data_path="data",
+        param_schema={
+            "type": "object",
+            "properties": {"encryptedIdCard": {"type": "string"}},
+            "required": ["encryptedIdCard"],
+        },
+    )
+    health_history_entry = ApiCatalogEntry(
+        id="health_history",
+        description="病史",
+        domain="health",
+        operation_safety="query",
+        method="GET",
+        path="/leczcore-data-manage/dwCustomerArchive/healthStatusMedicalHistory",
+        response_schema={
+            "type": "object",
+            "properties": {
+                "data": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "history": {"type": "string", "description": "既往史"},
+                        },
+                    },
+                }
+            },
+        },
+        response_data_path="data",
+        param_schema={
+            "type": "object",
+            "properties": {"encryptedIdCard": {"type": "string"}},
+            "required": ["encryptedIdCard"],
+        },
+    )
+    physical_exam_entry = ApiCatalogEntry(
+        id="physical_exam",
+        description="体检情况",
+        domain="health",
+        operation_safety="query",
+        method="GET",
+        path="/leczcore-data-manage/dwCustomerArchive/physicalExam",
+        response_schema={
+            "type": "object",
+            "properties": {
+                "data": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "latestExamDate": {"type": "string", "description": "最近体检时间"},
+                        },
+                    },
+                }
+            },
+        },
+        response_data_path="data",
+        param_schema={
+            "type": "object",
+            "properties": {"encryptedIdCard": {"type": "string"}},
+            "required": ["encryptedIdCard"],
+        },
+    )
+
+    class MultiRetriever:
+        async def search(self, query: str, top_k: int = 3, score_threshold: float = 0.3, filters=None):
+            return [
+                ApiCatalogSearchResult(entry=customer_entry, score=0.95),
+                ApiCatalogSearchResult(entry=health_basic_entry, score=0.94),
+                ApiCatalogSearchResult(entry=health_history_entry, score=0.93),
+                ApiCatalogSearchResult(entry=physical_exam_entry, score=0.92),
+            ]
+
+        async def search_stratified(self, query: str, *, domains, top_k: int = 3, filters=None, **kwargs):
+            return await self.search(query, top_k=top_k, score_threshold=0.3, filters=filters)
+
+    class RouteOnlyExtractor:
+        async def route_query(self, query: str, user_context: dict[str, object], **kwargs):
+            return ApiQueryRoutingResult(
+                query_domains=["crm", "health"],
+                business_intents=["none"],
+                is_multi_domain=True,
+                reasoning="auto policy runtime test",
+                route_status="ok",
+            )
+
+    class PlannerStub:
+        async def build_plan(self, query, candidates, user_context, route_hint, **kwargs):
+            return ApiQueryExecutionPlan(
+                plan_id="dag_liuhaijian_health_auto",
+                steps=[
+                    ApiQueryPlanStep(
+                        step_id="step_get_customer",
+                        api_id="customer_list",
+                        api_path=customer_entry.path,
+                        params={"customerInfo": "刘海坚", "pageNo": 1, "pageSize": 10},
+                        depends_on=[],
+                    ),
+                    ApiQueryPlanStep(
+                        step_id="step_health_basic",
+                        api_id="health_basic",
+                        api_path=health_basic_entry.path,
+                        params={"encryptedIdCard": "$[step_get_customer.data][*].idCard"},
+                        depends_on=["step_get_customer"],
+                    ),
+                    ApiQueryPlanStep(
+                        step_id="step_health_history",
+                        api_id="health_history",
+                        api_path=health_history_entry.path,
+                        params={"encryptedIdCard": "$[step_get_customer.data][*].idCard"},
+                        depends_on=["step_get_customer"],
+                    ),
+                    ApiQueryPlanStep(
+                        step_id="step_physical_exam",
+                        api_id="physical_exam",
+                        api_path=physical_exam_entry.path,
+                        params={"encryptedIdCard": "$[step_get_customer.data][*].idCard"},
+                        depends_on=["step_get_customer"],
+                    ),
+                ],
+            )
+
+        def validate_plan(self, plan, candidates):
+            return {
+                "step_get_customer": customer_entry,
+                "step_health_basic": health_basic_entry,
+                "step_health_history": health_history_entry,
+                "step_physical_exam": physical_exam_entry,
+            }
+
+    class MultiStepExecutor:
+        async def call(self, entry, params, user_token=None, trace_id: str | None = None, user_id: str | None = None):
+            if entry.id == "customer_list":
+                return ApiQueryExecutionResult(
+                    status=ApiQueryExecutionStatus.SUCCESS,
+                    data=[{"idCard": "ENC001", "customerName": "刘海坚"}],
+                    total=1,
+                    trace_id=trace_id,
+                )
+            if entry.id == "health_basic":
+                return ApiQueryExecutionResult(
+                    status=ApiQueryExecutionStatus.SUCCESS,
+                    data=[{"bloodType": "A型"}],
+                    total=1,
+                    trace_id=trace_id,
+                )
+            if entry.id == "health_history":
+                return ApiQueryExecutionResult(
+                    status=ApiQueryExecutionStatus.SUCCESS,
+                    data=[{"history": "高血压"}],
+                    total=1,
+                    trace_id=trace_id,
+                )
+            return ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.SUCCESS,
+                data=[{"latestExamDate": "2025-04-08"}],
+                total=1,
+                trace_id=trace_id,
+            )
+
+    monkeypatch.setattr(settings, "api_query_multi_step_render_policy", "auto_result")
+    stub_services = (
+        MultiRetriever(),
+        RouteOnlyExtractor(),
+        MultiStepExecutor(),
+        api_query_routes.DynamicUIService(),
+        PassThroughSnapshotService(),
+    )
+    monkeypatch.setattr(api_query_routes, "_get_services", lambda: stub_services)
+    monkeypatch.setattr(api_query_routes, "_get_planner", lambda: PlannerStub())
+
+    client = TestClient(create_test_app())
+    response = client.post("/api/v1/api-query", json={"query": "查询客户刘海坚的健康数据"})
+
+    assert response.status_code == 200
+    body = response.json()
+    _assert_api_query_response_keys(body)
+    children = _get_root_children(body["ui_spec"])
+    tables = [child for child in children if child["type"] == "PlannerTable"]
+    assert len(tables) == 3
+    assert {table["props"]["bizFieldKey"] for table in tables} == {
+        "healthBasic",
+        "healthStatusMedicalHistory",
+        "physicalExam",
+    }
 
 
 def test_api_query_returns_error_response_when_execution_graph_fails(monkeypatch) -> None:
