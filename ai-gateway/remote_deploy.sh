@@ -23,6 +23,7 @@ FULL_IMAGE="${IMAGE_NAME}:${IMAGE_TAG}"
 
 # 容器配置
 CONTAINER_NAME="ai-gateway" # 容器名称
+HOST_PORT=8000
 CONTAINER_PORT=8000         # 容器内启动暴露的端口 (对应 Dockerfile 里的 EXPOSE 8000)
 
 # 环境变量配置
