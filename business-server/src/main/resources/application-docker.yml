@@ -1,0 +1,78 @@
+spring:
+  datasource:
+    url: jdbc:mysql://${BUSINESS_MYSQL_HOST:ai-platform-mysql}:${BUSINESS_MYSQL_PORT:3306}/${BUSINESS_MYSQL_DATABASE:ai_platform_business}?useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&characterEncoding=UTF-8
+    username: ${BUSINESS_MYSQL_USER:ai_platform}
+    password: ${BUSINESS_MYSQL_PASSWORD:ai_platform_dev}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      maximum-pool-size: 20
+      minimum-idle: 5
+      connection-timeout: 20000
+      idle-timeout: 300000
+      max-lifetime: 1800000
+      pool-name: ai-platform-mysql
+
+  data:
+    redis:
+      host: ${REDIS_HOST:ai-platform-redis}
+      port: 6379
+      password: ${REDIS_PASSWORD:redis_dev}
+
+  rabbitmq:
+    host: ${RABBITMQ_HOST:ai-platform-rabbitmq}
+    port: 5672
+    username: ${RABBITMQ_USER:admin}
+    password: ${RABBITMQ_PASSWORD:admin_dev}
+
+flowable:
+  database-schema-update: true
+  async-executor-activate: true
+  database-type: mysql
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  endpoint:
+    health:
+      show-details: always
+  metrics:
+    export:
+      prometheus:
+        enabled: true
+    tags:
+      application: ${spring.application.name:ai-business-server}
+
+logging:
+  level:
+    com.lzke.ai: INFO
+    org.springframework.web: INFO
+    org.flowable: WARN
+
+app:
+  security:
+    jwt:
+      secret: ${JWT_SECRET:change_me_super_secret_key_please}
+      expiration: 86400000
+  minio:
+    endpoint: http://${MINIO_HOST:ai-platform-minio}:9000
+    access-key: ${MINIO_ACCESS_KEY:minioadmin}
+    secret-key: ${MINIO_SECRET_KEY:minioadmin_dev}
+    bucket: ai-platform-docs
+  clickhouse:
+    url: jdbc:clickhouse://${CLICKHOUSE_HOST:ai-platform-clickhouse}:8123/${CLICKHOUSE_DB:ai_platform_logs}
+    username: ${CLICKHOUSE_USER:default}
+    password: ${CLICKHOUSE_PASSWORD:clickhouse_dev}
+  feature-flags:
+    global-enabled: true
+    flags:
+      semantic-cache:
+        enabled: false
+        description: "AI网关语义缓存"
+      spring-ai:
+        enabled: false
+        description: "Spring AI 框架集成"
+      graphrag:
+        enabled: true
+        description: "GraphRAG 三路融合检索"

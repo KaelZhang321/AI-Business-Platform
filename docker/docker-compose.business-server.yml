@@ -1,0 +1,32 @@
+services:
+  business-server:
+    container_name: ai-platform-business-server
+    image: ai-platform/business-server:${BUSINESS_SERVER_IMAGE_TAG:-local}
+    build:
+      context: ../business-server
+      dockerfile: Dockerfile
+    env_file:
+      - path: ./.env
+        required: false
+    environment:
+      TZ: Asia/Shanghai
+      JAVA_TOOL_OPTIONS: "-Duser.timezone=Asia/Shanghai"
+      SPRING_PROFILES_ACTIVE: docker
+    ports:
+      - "${BUSINESS_SERVER_HOST_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/actuator/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "4"
+          memory: 2G
+        reservations:
+          cpus: "1"
+          memory: 512M
+

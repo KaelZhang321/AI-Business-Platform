@@ -1,0 +1,65 @@
+# === Node.js ===
+node_modules/
+dist/
+.vite/
+*.local
+
+# === Python ===
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+*.egg
+.venv/
+venv/
+env/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# === Java ===
+target/
+*.class
+*.jar
+*.war
+*.ear
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+
+# === IDE ===
+.idea/
+*.iml
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+
+# === OS ===
+.DS_Store
+Thumbs.db
+
+# === Docker ===
+docker/.env
+
+# === Environment ===
+.env.local
+.env.*.local
+*.env
+
+# === Logs ===
+*.log
+logs/
+
+# === Coverage ===
+coverage/
+htmlcov/
+.coverage
+.gitnexus
+.claude
+.planning/*
+.omx/

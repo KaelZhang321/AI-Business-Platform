@@ -1,0 +1,133 @@
+#!/bin/bash
+# ═══════════════════════════════════════════════════════════
+# AI业务中台 — 一键部署脚本
+# 用法: cd docker && bash deploy.sh [infra|gateway|gateway-reindex|business|frontend|all]
+# ═══════════════════════════════════════════════════════════
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+COMPOSE_DIR="$SCRIPT_DIR"
+COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-docker}"
+
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+NC='\033[0m'
+
+log_info()  { echo -e "${GREEN}[INFO]${NC} $1"; }
+log_warn()  { echo -e "${YELLOW}[WARN]${NC} $1"; }
+log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
+
+# ── 1. 确保 Docker 网络存在 ────────────────────────────────
+ensure_network() {
+    if ! docker network inspect ai-platform-net &>/dev/null; then
+        log_info "创建 Docker 网络: ai-platform-net"
+        docker network create ai-platform-net
+    fi
+}
+
+
+# ── 2. AI 网关 ──────────────────────────────────────────
+deploy_gateway() {
+    log_info "构建并启动 AI 网关..."
+    cd "$COMPOSE_DIR"
+    docker compose -f docker-compose.ai-gateway.yml build --no-cache
+    docker compose -f docker-compose.ai-gateway.yml up -d
+    log_info "AI 网关已启动，等待健康检查..."
+    sleep 5
+    docker logs ai-platform-ai-gateway --tail 20
+}
+
+rebuild_gateway_index() {
+    local compose_file="docker-compose.ai-gateway.yml"
+    local container_id=""
+    local container_state=""
+
+    log_info "按需重建 AI 网关 API Catalog 向量索引..."
+    cd "$COMPOSE_DIR"
+
+    container_id="$(docker compose -f "$compose_file" ps -q ai-gateway)"
+    if [ -z "$container_id" ]; then
+        log_error "未找到 ai-gateway 容器。请先执行: bash deploy.sh gateway"
+        exit 1
+    fi
+
+    container_state="$(docker inspect -f '{{.State.Status}}' "$container_id")"
+    if [ "$container_state" != "running" ]; then
+        log_error "ai-gateway 容器当前状态为 '$container_state'，无法执行重建。请先启动服务。"
+        exit 1
+    fi
+
+    log_info "在运行中的 ai-gateway 容器内执行全量索引重建..."
+    docker compose -f "$compose_file" exec -T ai-gateway python -m app.services.api_catalog.indexer
+    log_info "AI 网关 API Catalog 索引重建完成"
+}
+
+# ── 3. 业务编排层 ───────────────────────────────────────
+deploy_business() {
+    log_info "构建并启动业务编排服务..."
+    cd "$COMPOSE_DIR"
+    docker compose -f docker-compose.business-server.yml build --no-cache
+    docker compose -f docker-compose.business-server.yml up -d
+    log_info "业务编排服务已启动，等待健康检查..."
+    sleep 10
+    docker logs ai-platform-business-server --tail 20
+}
+
+# ── 4. 前端构建 ─────────────────────────────────────────
+deploy_frontend() {
+    log_info "构建前端项目..."
+    cd "$PROJECT_DIR/frontend"
+
+    if [ ! -d "node_modules" ]; then
+        log_info "安装前端依赖..."
+        npm install
+    fi
+
+    log_info "执行 npm run build..."
+    npm run build
+
+    # 通过临时容器复制构建产物到 volume（不依赖宿主机路径）
+    local volume_name="${COMPOSE_PROJECT_NAME}_frontend_dist"
+    log_info "复制前端构建产物到 volume: ${volume_name}"
+    docker run --rm \
+        -v "${volume_name}":/dist \
+        -v "$PROJECT_DIR/frontend/dist":/src:ro \
+        alpine sh -c "rm -rf /dist/* && cp -r /src/* /dist/"
+
+    # 重启 Nginx 加载新文件
+    log_info "重启 Nginx..."
+    cd "$COMPOSE_DIR"
+    docker compose restart nginx
+    log_info "前端部署完成"
+}
+
+# ── 5. 全量部署 ─────────────────────────────────────────
+deploy_all() {
+    ensure_network
+    deploy_gateway
+    deploy_business
+    deploy_frontend
+    echo ""
+    log_info "==============================="
+    log_info "  全部服务部署完成!"
+    log_info "  访问: http://localhost:80"
+    log_info "==============================="
+    echo ""
+    docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" | grep ai-platform
+}
+
+# ── 主入口 ──────────────────────────────────────────────
+case "${1:-all}" in
+    gateway)  ensure_network && deploy_gateway ;;
+    gateway-reindex|reindex) rebuild_gateway_index ;;
+    business) ensure_network && deploy_business ;;
+    frontend) deploy_frontend ;;
+    all)      deploy_all ;;
+    *)
+        echo "用法: bash deploy.sh [infra|gateway|gateway-reindex|business|frontend|all]"
+        exit 1
+        ;;
+esac

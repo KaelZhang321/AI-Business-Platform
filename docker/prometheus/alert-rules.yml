@@ -1,0 +1,200 @@
+groups:
+  - name: infrastructure
+    rules:
+      # MySQL 连接数超过 80%
+      - alert: MySQLConnectionsHigh
+        expr: mysql_global_status_threads_connected / mysql_global_variables_max_connections > 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "MySQL 连接数超过 80%"
+          description: "当前连接数占最大连接数的 {{ $value | humanizePercentage }}"
+
+      # MySQL 慢查询增长
+      - alert: MySQLSlowQueries
+        expr: rate(mysql_global_status_slow_queries[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "MySQL 慢查询频率过高"
+          description: "5分钟内慢查询速率: {{ $value | humanize }} /s"
+
+      # MySQL 死锁
+      - alert: MySQLDeadlocks
+        expr: increase(mysql_global_status_innodb_deadlocks[5m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "MySQL 检测到死锁"
+          description: "5分钟内死锁次数: {{ $value }}"
+
+      # Redis 内存使用超过 80%
+      - alert: RedisMemoryHigh
+        expr: redis_memory_used_bytes / redis_memory_max_bytes > 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Redis 内存使用超过 80%"
+          description: "当前内存使用率: {{ $value | humanizePercentage }}"
+
+      # Redis 连接被拒绝
+      - alert: RedisRejectedConnections
+        expr: increase(redis_rejected_connections_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Redis 出现连接拒绝"
+          description: "5分钟内被拒绝连接数: {{ $value }}"
+
+      # Redis 连接数过高
+      - alert: RedisConnectionsHigh
+        expr: redis_connected_clients / redis_config_maxclients > 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Redis 连接数超过 80%"
+          description: "当前连接数: {{ $value | humanizePercentage }}"
+
+  - name: application
+    rules:
+      # AI网关 5xx 错误率过高
+      - alert: AIGateway5xxRate
+        expr: rate(ai_gateway_requests_total{status=~"5.."}[5m]) / rate(ai_gateway_requests_total[5m]) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "AI网关 5xx 错误率超过 5%"
+          description: "当前 5xx 错误率: {{ $value | humanizePercentage }}"
+
+      # AI网关请求延迟过高
+      - alert: AIGatewayHighLatency
+        expr: histogram_quantile(0.95, rate(ai_gateway_request_latency_seconds_bucket[5m])) > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "AI网关 P95 延迟超过 10s"
+          description: "当前 P95 延迟: {{ $value | humanize }}s"
+
+      # 业务编排层 5xx 错误率过高
+      - alert: BusinessServer5xxRate
+        expr: >
+          sum(rate(http_server_requests_seconds_count{job="business-server",status=~"5.."}[5m]))
+          /
+          sum(rate(http_server_requests_seconds_count{job="business-server"}[5m]))
+          > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "业务编排层 5xx 错误率超过 5%"
+          description: "当前 5xx 错误率: {{ $value | humanizePercentage }}"
+
+      # 业务编排层 P95 延迟过高
+      - alert: BusinessServerHighLatency
+        expr: histogram_quantile(0.95, sum(rate(http_server_requests_seconds_bucket{job="business-server"}[5m])) by (le)) > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "业务编排层 P95 延迟超过 5s"
+          description: "当前 P95 延迟: {{ $value | humanize }}s"
+
+      # 业务编排层 JVM 堆内存使用过高
+      - alert: JvmHeapHigh
+        expr: jvm_memory_used_bytes{job="business-server",area="heap"} / jvm_memory_max_bytes{job="business-server",area="heap"} > 0.85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "JVM 堆内存使用超过 85%"
+          description: "当前堆内存使用率: {{ $value | humanizePercentage }}"
+
+      # 业务编排层健康检查失败
+      - alert: BusinessServerDown
+        expr: up{job="business-server"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "业务编排层不可达"
+          description: "业务编排服务已宕机超过 1 分钟"
+
+      # AI网关健康检查失败
+      - alert: AIGatewayDown
+        expr: up{job="ai-gateway"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "AI网关不可达"
+          description: "AI网关服务已宕机超过 1 分钟"
+
+      # HikariCP 连接池活跃连接过高
+      - alert: HikariPoolExhausted
+        expr: hikaricp_connections_active{job="business-server"} / hikaricp_connections_max{job="business-server"} > 0.85
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "HikariCP 连接池使用超过 85%"
+          description: "活跃连接: {{ $value | humanizePercentage }}"
+
+  - name: container-resources
+    rules:
+      # 容器 CPU 使用率超过 85%
+      - alert: ContainerCPUHigh
+        expr: rate(container_cpu_usage_seconds_total[5m]) * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "容器 {{ $labels.name }} CPU 使用率过高"
+          description: "当前 CPU 使用率: {{ $value | humanize }}%"
+
+      # 容器内存使用率超过 85%
+      - alert: ContainerMemoryHigh
+        expr: container_memory_usage_bytes / container_spec_memory_limit_bytes > 0.85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "容器 {{ $labels.name }} 内存使用率过高"
+          description: "当前内存使用率: {{ $value | humanizePercentage }}"
+
+      # 磁盘空间使用超过 85%
+      - alert: DiskSpaceHigh
+        expr: (node_filesystem_size_bytes - node_filesystem_avail_bytes) / node_filesystem_size_bytes > 0.85
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "磁盘 {{ $labels.mountpoint }} 使用率超过 85%"
+          description: "当前磁盘使用率: {{ $value | humanizePercentage }}"
+
+      # RabbitMQ 队列深度过高
+      - alert: RabbitMQQueueDepthHigh
+        expr: rabbitmq_queue_messages > 10000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "RabbitMQ 队列 {{ $labels.queue }} 消息积压"
+          description: "当前队列深度: {{ $value }}"
+
+      # RabbitMQ 消费者为零（队列无消费者处理）
+      - alert: RabbitMQNoConsumers
+        expr: rabbitmq_queue_consumers == 0 and rabbitmq_queue_messages > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "RabbitMQ 队列 {{ $labels.queue }} 无消费者"
+          description: "队列有 {{ $value }} 条消息但无消费者处理"
