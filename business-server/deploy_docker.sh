@@ -28,6 +28,11 @@ CONTAINER_NAME="business-server" # 容器名称
 HOST_PORT=8080 # 宿主机端口
 CONTAINER_PORT=8080 # 容器端口
 
+if [[ "${PROFILES_ACTIVE}" == "dev" ]]; then
+    HOST_PORT=8080
+else
+    HOST_PORT=8081
+fi
 # 可选: 环境变量配置
 ENV_VARS=(
     "-e SPRING_PROFILES_ACTIVE=${PROFILES_ACTIVE}"
