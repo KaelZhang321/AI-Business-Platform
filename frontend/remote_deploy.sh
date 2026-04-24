@@ -10,10 +10,6 @@ IMAGE_TAG=1.0.0
 
 echo "=== Remote Deployment for $FULL_IMAGE_NAME ==="
 
-# 1. Login to Aliyun Registry
-echo "Logging into Aliyun Registry on remote..."
-echo "$ALIYUN_PASSWORD" | docker login --username "$ALIYUN_USER" --password-stdin "$ALIYUN_REGISTRY"
-
 # 2. Pull the latest image
 echo "Pulling latest image: $FULL_IMAGE_NAME"
 # Use IMAGE_TAG or default to 'latest'
