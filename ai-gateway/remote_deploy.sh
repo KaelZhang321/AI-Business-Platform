@@ -1,15 +1,13 @@
 #!/bin/bash
 
 ###############################################################################
-# Spring Boot Docker 部署脚本
+# AI 网关 (ai-gateway) Docker 部署脚本
 # 功能: 停止现有容器、拉取新镜像、启动新容器
 ###############################################################################
 
 set -e  # 遇到错误立即退出
 
 # ==================== 配置区域 ====================
-# 请根据实际情况修改以下配置
-
 
 # 根据 PROFILES_ACTIVE 确定镜像命名空间
 if [[ "${PROFILES_ACTIVE}" == "dev" ]]; then
@@ -19,32 +17,28 @@ else
 fi
 
 # Docker 镜像配置
-IMAGE_NAME="crpi-301jbh81iyvo39lb.cn-beijing.personal.cr.aliyuncs.com/${NAMESPACE}/business-server"  # 镜像名称
-IMAGE_TAG="1.0.0"                         # 镜像标签
+IMAGE_NAME="crpi-301jbh81iyvo39lb.cn-beijing.personal.cr.aliyuncs.com/${NAMESPACE}/ai-gateway"  # 镜像名称
+IMAGE_TAG="latest"                        # 镜像标签 (流水线通常注入真实的tag，可通过环境变量覆盖)
 FULL_IMAGE="${IMAGE_NAME}:${IMAGE_TAG}"
 
 # 容器配置
-CONTAINER_NAME="business-server" # 容器名称
-HOST_PORT=8080 # 宿主机端口
-CONTAINER_PORT=8080 # 容器端口
+CONTAINER_NAME="ai-gateway" # 容器名称
+HOST_PORT=8000
+CONTAINER_PORT=8000         # 容器内启动暴露的端口 (对应 Dockerfile 里的 EXPOSE 8000)
 
-if [[ "${PROFILES_ACTIVE}" == "dev" ]]; then
-    HOST_PORT=8080
-else
-    HOST_PORT=8081
-fi
-# 可选: 环境变量配置
+# 环境变量配置
 ENV_VARS=(
-    "-e SPRING_PROFILES_ACTIVE=${PROFILES_ACTIVE}"
+    "-e ENVIRONMENT=${PROFILES_ACTIVE}"
     "-e TZ=Asia/Shanghai"
 )
 
-# 可选: 数据卷挂载
+# 数据卷挂载 (加入日志和本地宿主机的大模型缓存映射)
 VOLUMES=(
-    "-v /data/app/ai-platform/business-server/logs:/data/app/ai-platform/business-server/logs"
+    "-v /data/app/ai-platform/ai-gateway/logs:/app/logs"
+    "-v /data/app/ai-platform/ai-gateway/model-cache:/opt/model-cache"  # 把本地硬盘挂载给容器存放上G的向量模型
 )
 
-# 可选: 网络配置
+# 网络配置
 NETWORK="--network bridge"
 
 # ==================== 颜色输出 ====================
@@ -110,16 +104,18 @@ cleanup_old_images() {
 
 # 拉取新镜像
 pull_image() {
-    log_info "登录镜像仓库..."
-    echo "${ALIYUN_PASSWORD}" | docker login --username "${ALIYUN_USER}" --password-stdin "${ALIYUN_REGISTRY}" || true
-
-    log_info "开始拉取镜像: ${FULL_IMAGE}"
+    log_info "开始尝试拉取镜像: ${FULL_IMAGE}"
     
+    # 尝试登录 (如果凭证在环境变量中存在)
+    if [ ! -z "$ALIYUN_PASSWORD" ] && [ ! -z "$ALIYUN_USER" ]; then
+        log_info "正在使用凭证登录镜像仓库..."
+        echo "${ALIYUN_PASSWORD}" | docker login --username "${ALIYUN_USER}" --password-stdin crpi-301jbh81iyvo39lb.cn-beijing.personal.cr.aliyuncs.com || true
+    fi
+
     if docker pull ${FULL_IMAGE}; then
         log_info "镜像拉取成功"
     else
-        log_error "镜像拉取失败"
-        exit 1
+        log_warn "镜像拉取失败或走本地构建，不再强行阻断"
     fi
 }
 
@@ -129,8 +125,9 @@ start_container() {
     
     # 构建 docker run 命令
     DOCKER_RUN_CMD="docker run -d \
+        --gpus all \
         --name ${CONTAINER_NAME} \
-        --restart=unless-stopped \
+        --restart=always \
         -p ${HOST_PORT}:${CONTAINER_PORT} \
         ${NETWORK} \
         ${ENV_VARS[@]} \
@@ -149,7 +146,7 @@ start_container() {
 # 健康检查
 health_check() {
     log_info "等待应用启动..."
-    sleep 5
+    sleep 3
     
     log_info "检查容器运行状态..."
     if docker ps --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
@@ -158,7 +155,7 @@ health_check() {
         # 显示容器日志（最后 20 行）
         log_info "容器日志（最后 20 行）:"
         echo "----------------------------------------"
-        docker logs --tail 20 ${CONTAINER_NAME}
+        docker logs --tail 20 ${CONTAINER_NAME} || true
         echo "----------------------------------------"
         
         return 0
@@ -166,8 +163,8 @@ health_check() {
         log_error "容器未正常运行"
         
         # 显示容器日志用于排查问题
-        log_error "容器日志:"
-        docker logs ${CONTAINER_NAME}
+        log_error "容器崩溃日志:"
+        docker logs ${CONTAINER_NAME} || true
         
         exit 1
     fi
@@ -183,10 +180,10 @@ show_container_info() {
 
 # ==================== 主流程 ====================
 main() {
-    log_info "========== 开始部署 =========="
-    log_info "镜像: ${FULL_IMAGE}"
-    log_info "容器: ${CONTAINER_NAME}"
-    log_info "端口: ${HOST_PORT}:${CONTAINER_PORT}"
+    log_info "========== 开始部署 AI网关 (AI-Gateway) =========="
+    log_info "当前运行环境 (PROFILE): ${PROFILES_ACTIVE:-prod}"
+    log_info "目标镜像: ${FULL_IMAGE}"
+    log_info "对外端口映射: ${HOST_PORT}:${CONTAINER_PORT}"
     echo ""
     
     # 1. 检查 Docker
@@ -198,11 +195,11 @@ main() {
     # 3. 拉取新镜像
     pull_image
     
-    # 4. 清理旧镜像（可选）
-    cleanup_old_images
-    
-    # 5. 启动新容器
+    # 4. 启动新容器
     start_container
+    
+    # 5. 清理旧镜像（可选，放在启动完成后避免误删基础层）
+    cleanup_old_images
     
     # 6. 健康检查
     health_check
