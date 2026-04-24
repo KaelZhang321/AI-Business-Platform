@@ -52,6 +52,7 @@ class StubUICatalogService:
         if intent == "query":
             return {
                 "PlannerCard": "自定义卡片说明",
+                "PlannerInfoGrid": "自定义信息网格说明",
                 "PlannerTable": "自定义表格说明",
                 "PlannerDetailCard": "自定义详情说明",
                 "PlannerPagination": "自定义分页说明",
@@ -69,6 +70,7 @@ class StubUICatalogService:
         if intent == "query":
             return [
                 "PlannerCard",
+                "PlannerInfoGrid",
                 "PlannerTable",
                 "PlannerDetailCard",
                 "PlannerPagination",
@@ -82,6 +84,7 @@ class StubUICatalogService:
     def get_all_component_codes(self) -> set[str]:
         return {
             "PlannerCard",
+            "PlannerInfoGrid",
             "PlannerTable",
             "PlannerDetailCard",
             "PlannerPagination",
@@ -112,6 +115,8 @@ def _make_runtime() -> ApiQueryUIRuntime:
     return ApiQueryUIRuntime(
         components=[
             "PlannerCard",
+            "PlannerMetric",
+            "PlannerInfoGrid",
             "PlannerTable",
             "PlannerDetailCard",
             "PlannerPagination",
@@ -582,6 +587,142 @@ async def test_rule_query_spec_exposes_runtime_metadata_for_list_components(
     assert pagination["props"]["pageParam"] == "pageNum"
     assert pagination["props"]["pageSizeParam"] == "pageSize"
 
+
+@pytest.mark.asyncio
+async def test_rule_query_spec_composite_renders_metrics_and_tables_without_stringifying_nested_blocks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """composite 模式应拆分指标与明细表，而不是把嵌套结构塞进详情字符串。"""
+    monkeypatch.setattr(settings, "llm_ui_spec_enabled", False)
+    service = DynamicUIService(catalog_service=UICatalogService())
+
+    data = [
+        {
+            "summaryCard": {
+                "storeFundCount": 12,
+                "storeLeftFunds": 13245060.0,
+                "storeAvailableAmount": 11954620.0,
+            },
+            "deliveryRecords": [
+                {
+                    "deliveryDate": "2024-10-01T00:00",
+                    "deliveryProject": "肝脏解毒支持（白金版）",
+                    "deliveryAmount": 27103.46,
+                },
+                {
+                    "deliveryDate": "2024-09-30T00:00",
+                    "deliveryProject": "免疫功能调理",
+                    "deliveryAmount": 20000.0,
+                },
+            ],
+            "curePlanRecords": [
+                {
+                    "fcreateTime": "2024-11-20T09:44",
+                    "fproductBillProjectName": "免疫力改善-C治疗",
+                    "fprojectAmount": 298000.0,
+                }
+            ],
+        }
+    ]
+
+    spec = await service.generate_ui_spec(
+        intent="query",
+        data=data,
+        context={
+            "question": "查询刘海坚的储值方案",
+            "query_render_mode": "composite",
+            "response_field_label_index": {
+                "summaryCard.storeLeftFunds": "储值总余额",
+                "deliveryRecords": "交付记录",
+                "deliveryRecords[].deliveryDate": "交付日期",
+                "curePlanRecords": "调理方案记录",
+            },
+        },
+        runtime=_make_runtime(),
+    )
+
+    assert spec is not None
+    root = _root_element(spec)
+    child_ids = root.get("children", [])
+    assert isinstance(child_ids, list)
+    elements = spec["elements"]
+    assert isinstance(elements, dict)
+    child_types = [elements[child_id]["type"] for child_id in child_ids if isinstance(child_id, str)]
+
+    assert "PlannerInfoGrid" in child_types
+    assert child_types.count("PlannerTable") >= 2
+    assert "PlannerDetailCard" not in child_types
+
+    info_grid = next(elements[child_id] for child_id in child_ids if elements[child_id]["type"] == "PlannerInfoGrid")
+    info_items = {(item["label"], item["value"]) for item in info_grid["props"]["items"]}
+    assert ("储值总余额", "13245060.0") in info_items
+
+    tables = [elements[child_id] for child_id in child_ids if elements[child_id]["type"] == "PlannerTable"]
+    table_titles = [table["props"].get("title") for table in tables]
+    assert "交付记录" in table_titles
+    assert "调理方案记录" in table_titles
+
+    delivery_table = next(table for table in tables if table["props"].get("title") == "交付记录")
+    assert delivery_table["props"]["columns"][0]["dataIndex"] == "deliveryDate"
+    assert delivery_table["props"]["columns"][0]["title"] == "交付日期"
+    assert delivery_table["props"]["dataSource"][0]["deliveryProject"] == "肝脏解毒支持（白金版）"
+
+
+@pytest.mark.asyncio
+async def test_rule_query_spec_detail_uses_schema_description_labels(monkeypatch: pytest.MonkeyPatch) -> None:
+    """detail 模式应优先展示 response_schema 描述作为字段标签。"""
+
+    monkeypatch.setattr(settings, "llm_ui_spec_enabled", False)
+    service = DynamicUIService(catalog_service=UICatalogService())
+
+    spec = await service.generate_ui_spec(
+        intent="query",
+        data=[{"customerId": "C001", "level": "VIP"}],
+        context={
+            "question": "查询客户详情",
+            "query_render_mode": "detail",
+            "response_field_label_index": {
+                "customerId": "客户编号",
+                "level": "客户等级",
+            },
+        },
+        runtime=_make_runtime(),
+    )
+
+    assert spec is not None
+    detail_card = _root_child_by_type(spec, "PlannerDetailCard")
+    assert detail_card["props"]["items"] == [
+        {"label": "客户编号", "value": "C001"},
+        {"label": "客户等级", "value": "VIP"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_rule_query_spec_table_uses_schema_description_column_titles(monkeypatch: pytest.MonkeyPatch) -> None:
+    """table 模式应优先展示 response_schema 描述作为列标题。"""
+
+    monkeypatch.setattr(settings, "llm_ui_spec_enabled", False)
+    service = DynamicUIService(catalog_service=UICatalogService())
+
+    spec = await service.generate_ui_spec(
+        intent="query",
+        data=[{"customerId": "C001", "customerName": "张三"}],
+        context={
+            "question": "查询客户列表",
+            "query_render_mode": "table",
+            "response_field_label_index": {
+                "customerId": "客户编号",
+                "customerName": "客户姓名",
+            },
+        },
+        runtime=_make_list_runtime(),
+    )
+
+    assert spec is not None
+    table = _root_child_by_type(spec, "PlannerTable")
+    columns = table["props"]["columns"]
+    assert columns[0]["title"] == "客户编号"
+    assert columns[1]["title"] == "客户姓名"
 
 @pytest.mark.asyncio
 async def test_mutation_form_skipped_status_still_renders_planner_form() -> None:

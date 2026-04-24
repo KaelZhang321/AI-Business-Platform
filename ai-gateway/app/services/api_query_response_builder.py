@@ -32,6 +32,7 @@ from app.models.schemas import (
 from app.services.api_catalog.dag_executor import DagExecutionReport, DagStepExecutionRecord
 from app.services.api_catalog.registry_source import ApiCatalogRegistrySource
 from app.services.api_catalog.schema import ApiCatalogEntry
+from app.services.api_catalog.schema_utils import extract_schema_description, resolve_schema_at_data_path
 from app.services.api_query_request_schema_gate import build_request_schema_gated_fields
 from app.services.api_query_state import ApiQueryExecutionState, ApiQueryRuntimeContext, ApiQueryState
 from app.services.api_query_state import ApiQueryDeletePreviewContext
@@ -90,6 +91,7 @@ _CONTEXT_ROW_LIMIT = 5
 _SELECT_CANDIDATE_ROW_LIMIT = 50
 _DEFAULT_MULTI_STEP_RENDER_POLICY = "summary_table"
 _SUPPORTED_MULTI_STEP_RENDER_POLICIES = {"terminal_result", "composite_result", "summary_table"}
+_RESPONSE_SCHEMA_FALLBACK_PATHS = ("result", "data", "payload", "list", "records")
 
 
 @dataclass(frozen=True, slots=True)
@@ -212,6 +214,9 @@ class ApiQueryResponseBuilder:
                 "context_pool": {step_id: step.model_dump(exclude_none=True) for step_id, step in context_pool.items()},
                 "row_actions": _build_wait_select_row_actions(execution_report),
                 "business_intents": [intent.model_dump() for intent in business_intents],
+                # 把 response_schema 的 description/title 预先解析成字段显示名索引；
+                # Renderer 仅消费该只读映射做展示，不会污染实际请求参数键名。
+                "response_field_label_index": _build_response_field_label_index(ui_selection.runtime_anchor_record),
             },
             status=aggregate_status,
             runtime=runtime,
@@ -500,6 +505,7 @@ class ApiQueryResponseBuilder:
         requested_component_codes = [
             "PlannerCard",
             "PlannerMetric",
+            "PlannerInfoGrid",
             "PlannerForm",
             "PlannerInput",
             "PlannerSelect",
@@ -1395,6 +1401,8 @@ def _build_ui_runtime(
 
     requested_component_codes = [
         "PlannerCard",
+        "PlannerMetric",
+        "PlannerInfoGrid",
         "PlannerTable",
         "PlannerDetailCard",
         "PlannerNotice",
@@ -2447,8 +2455,23 @@ def _infer_render_mode_from_rows(
     if not rows:
         return "table"
     if len(rows) == 1 and record is not None and isinstance(record.execution_result.data, dict):
+        if _has_nested_business_blocks(record.execution_result.data):
+            # 单对象中同时包含概览块与明细集合时，继续走 detail 会把复杂结构字符串化。
+            # 这里显式切到 composite，让下游规则渲染按“指标 + 表格”语义拆分展示。
+            return "composite"
         return "detail"
     return "table"
+
+
+def _has_nested_business_blocks(payload: dict[str, Any]) -> bool:
+    """判断单对象结果是否包含可拆分的复合业务块。"""
+
+    for value in payload.values():
+        if isinstance(value, dict) and value:
+            return True
+        if isinstance(value, list) and any(isinstance(item, dict) for item in value):
+            return True
+    return False
 
 
 def _infer_query_render_mode(
@@ -2511,6 +2534,140 @@ def _build_response_execution_plan(
         entry = step_entries.get(step.step_id)
         enriched_steps.append(step.model_copy(update={"api_id": entry.id if entry else step.api_id}))
     return plan.model_copy(update={"steps": enriched_steps})
+
+
+def _build_response_field_label_index(
+    runtime_anchor_record: DagStepExecutionRecord | None,
+) -> dict[str, str]:
+    """根据终态 record 的 response_schema 构建字段显示名索引。
+
+    功能：
+        ui_spec 中的 `label/title` 需要展示业务语义文案，而不是原始字段键名。
+        这里统一把 schema 的 description/title 展开成稳定索引，供 Renderer 在
+        `PlannerMetric / PlannerTable / PlannerDetailCard` 三类组件中复用。
+
+    返回键规范：
+        - 顶层字段：`field`
+        - 嵌套对象字段：`parent.child`
+        - 数组对象字段：`listField[].child`
+    """
+
+    if runtime_anchor_record is None:
+        return {}
+    entry = runtime_anchor_record.entry
+    response_schema = entry.response_schema
+    if not isinstance(response_schema, dict) or not response_schema:
+        return _normalize_entry_field_labels(entry.field_labels)
+
+    for schema_node in _iter_response_schema_label_nodes(response_schema, entry.response_data_path):
+        label_index: dict[str, str] = {}
+        _collect_schema_field_labels(schema_node, label_index, prefix="")
+        if label_index:
+            return _merge_label_index_with_entry_labels(label_index, entry.field_labels)
+
+    return _normalize_entry_field_labels(entry.field_labels)
+
+
+def _iter_response_schema_label_nodes(
+    response_schema: dict[str, Any],
+    response_data_path: str,
+):
+    """按声明路径优先、候选路径兜底返回可用于抽取 label 的 schema 节点。"""
+
+    candidates: list[str] = []
+    preferred_path = (response_data_path or "").strip()
+    if preferred_path:
+        candidates.append(preferred_path)
+    for fallback_path in _RESPONSE_SCHEMA_FALLBACK_PATHS:
+        if fallback_path not in candidates:
+            candidates.append(fallback_path)
+    if not candidates:
+        candidates.append("")
+
+    seen: set[str] = set()
+    for path in candidates:
+        if path in seen:
+            continue
+        seen.add(path)
+        schema_node, _ = resolve_schema_at_data_path(response_schema, path)
+        if isinstance(schema_node, dict) and schema_node:
+            yield schema_node
+
+
+def _normalize_entry_field_labels(field_labels: dict[str, str]) -> dict[str, str]:
+    """过滤并标准化 catalog `field_labels`。"""
+
+    normalized: dict[str, str] = {}
+    if not isinstance(field_labels, dict):
+        return normalized
+    for raw_key, raw_label in field_labels.items():
+        if not isinstance(raw_key, str) or not raw_key.strip():
+            continue
+        if not isinstance(raw_label, str) or not raw_label.strip():
+            continue
+        normalized[raw_key.strip()] = raw_label.strip()
+    return normalized
+
+
+def _merge_label_index_with_entry_labels(
+    label_index: dict[str, str],
+    field_labels: dict[str, str],
+) -> dict[str, str]:
+    """优先保留 schema 抽取结果，再用 field_labels 补齐缺失键。"""
+
+    merged = dict(label_index)
+    for key, value in _normalize_entry_field_labels(field_labels).items():
+        merged.setdefault(key, value)
+    return merged
+
+
+def _collect_schema_field_labels(
+    schema_node: dict[str, Any],
+    label_index: dict[str, str],
+    *,
+    prefix: str,
+) -> None:
+    """递归抽取 schema 字段描述，并按路径写入索引。"""
+
+    properties = schema_node.get("properties")
+    if not isinstance(properties, dict):
+        return
+
+    for field_name, field_schema in properties.items():
+        if not isinstance(field_schema, dict):
+            continue
+        field_path = f"{prefix}.{field_name}" if prefix else field_name
+        label = extract_schema_description(field_schema)
+        if label:
+            label_index[field_path] = label
+        _collect_nested_schema_labels(
+            field_schema,
+            label_index,
+            field_path=field_path,
+        )
+
+
+def _collect_nested_schema_labels(
+    field_schema: dict[str, Any],
+    label_index: dict[str, str],
+    *,
+    field_path: str,
+) -> None:
+    """处理 object / array<object> 的子字段描述。"""
+
+    field_type = str(field_schema.get("type") or "").strip().lower()
+    if field_type == "object":
+        _collect_schema_field_labels(field_schema, label_index, prefix=field_path)
+        return
+    if field_type != "array":
+        return
+
+    items = field_schema.get("items")
+    if not isinstance(items, dict):
+        return
+    if str(items.get("type") or "").strip().lower() != "object":
+        return
+    _collect_schema_field_labels(items, label_index, prefix=f"{field_path}[]")
 
 
 def _build_context_pool(

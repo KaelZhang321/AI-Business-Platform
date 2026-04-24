@@ -88,6 +88,22 @@ def _build_test_entry() -> ApiCatalogEntry:
         operation_safety="query",
         method="GET",
         path="/api/customer/list",
+        response_schema={
+            "type": "object",
+            "properties": {
+                "data": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": {"type": "string", "description": "客户ID"},
+                            "name": {"type": "string", "description": "客户姓名"},
+                        },
+                    },
+                }
+            },
+        },
+        response_data_path="data",
         param_schema=ParamSchema(
             properties={
                 "ownerId": {"type": "string", "title": "负责人"},
@@ -515,6 +531,314 @@ async def test_build_execution_response_multi_step_defaults_to_terminal_result(m
     assert response.ui_runtime is not None
     assert response.ui_runtime.list.enabled is True
     assert response.ui_runtime.list.api_id == "order_stats"
+
+
+@pytest.mark.asyncio
+async def test_build_execution_response_multi_step_terminal_single_object_uses_composite_mode() -> None:
+    """终态为单对象且包含嵌套结构时，应显式切到 composite 渲染模式。"""
+
+    customer_entry = ApiCatalogEntry(
+        id="customer_list",
+        description="客户列表",
+        domain="crm",
+        operation_safety="query",
+        method="GET",
+        path="/api/customer/list",
+        param_schema=ParamSchema(
+            properties={"ownerId": {"type": "string"}},
+            required=["ownerId"],
+        ),
+    )
+    plan_entry = ApiCatalogEntry(
+        id="plan_overview",
+        description="储值方案总览",
+        domain="asset",
+        operation_safety="query",
+        method="GET",
+        path="/api/plan/overview",
+        response_schema={
+            "type": "object",
+            "properties": {
+                "data": {
+                    "type": "object",
+                    "properties": {
+                        "summaryCard": {
+                            "type": "object",
+                            "properties": {
+                                "storeLeftFunds": {"type": "number", "description": "储值总余额"},
+                                "storeFundCount": {"type": "integer", "description": "储值方案数"},
+                            },
+                        },
+                        "deliveryRecords": {
+                            "type": "array",
+                            "description": "交付记录",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "deliveryProject": {"type": "string", "description": "交付项目"},
+                                    "deliveryAmount": {"type": "number", "description": "交付金额"},
+                                },
+                            },
+                        },
+                        "curePlanRecords": {
+                            "type": "array",
+                            "description": "调理方案记录",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "fproductBillProjectName": {"type": "string", "description": "方案名称"},
+                                    "fprojectAmount": {"type": "number", "description": "方案金额"},
+                                },
+                            },
+                        },
+                    },
+                }
+            },
+        },
+        response_data_path="data",
+        param_schema=ParamSchema(
+            properties={"encryptedIdCard": {"type": "string"}},
+            required=["encryptedIdCard"],
+        ),
+    )
+    plan = ApiQueryExecutionPlan(
+        plan_id="plan_composite_001",
+        steps=[
+            ApiQueryPlanStep(
+                step_id="step_customers",
+                api_id="customer_list",
+                api_path=customer_entry.path,
+                params={"ownerId": "E001"},
+                depends_on=[],
+            ),
+            ApiQueryPlanStep(
+                step_id="step_plan_overview",
+                api_id="plan_overview",
+                api_path=plan_entry.path,
+                params={"encryptedIdCard": "$[step_customers.data][*].idCard"},
+                depends_on=["step_customers"],
+            ),
+        ],
+    )
+    records = {
+        "step_customers": DagStepExecutionRecord(
+            step=plan.steps[0],
+            entry=customer_entry,
+            resolved_params={"ownerId": "E001"},
+            execution_result=ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.SUCCESS,
+                data=[{"idCard": "ENC001", "customerName": "刘海坚"}],
+                total=1,
+                trace_id="trace-composite",
+            ),
+        ),
+        "step_plan_overview": DagStepExecutionRecord(
+            step=plan.steps[1],
+            entry=plan_entry,
+            resolved_params={"encryptedIdCard": "ENC001"},
+            execution_result=ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.SUCCESS,
+                data={
+                    "summaryCard": {"storeLeftFunds": 13245060.0, "storeFundCount": 12},
+                    "deliveryRecords": [{"deliveryProject": "肝脏解毒支持（白金版）", "deliveryAmount": 27103.46}],
+                    "curePlanRecords": [{"fproductBillProjectName": "免疫功能调理-单次", "fprojectAmount": 60000.0}],
+                },
+                total=1,
+                trace_id="trace-composite",
+            ),
+        ),
+    }
+    dynamic_ui = CaptureDynamicUIService(result=UISpecBuildResult(spec=_build_flat_spec(), frozen=False))
+    builder = ApiQueryResponseBuilder(
+        dynamic_ui=dynamic_ui,
+        snapshot_service=UISnapshotService(),
+        ui_catalog_service=UICatalogService(),
+        registry_source=FakeRegistrySource(),
+    )
+    state: ApiQueryState = {
+        "request_mode": "nl",
+        "query_text": "查询刘海坚的储值方案",
+        "trace_id": "trace-composite",
+        "interaction_id": None,
+        "conversation_id": None,
+        "plan": plan,
+    }
+
+    response = await builder.build_execution_response(
+        state=state,
+        runtime_context=ApiQueryRuntimeContext(
+            step_entries={"step_customers": customer_entry, "step_plan_overview": plan_entry},
+            log_prefix="api_query[trace=trace-composite]",
+        ),
+        execution_state={
+            "plan": plan,
+            "trace_id": "trace-composite",
+            "records_by_step_id": records,
+            "execution_order": ["step_customers", "step_plan_overview"],
+            "errors": [],
+            "aggregate_status": None,
+        },
+        query_domains_hint=["crm", "asset"],
+        business_intent_codes=["none"],
+    )
+
+    assert dynamic_ui.captured_data == [
+        {
+            "summaryCard": {"storeLeftFunds": 13245060.0, "storeFundCount": 12},
+            "deliveryRecords": [{"deliveryProject": "肝脏解毒支持（白金版）", "deliveryAmount": 27103.46}],
+            "curePlanRecords": [{"fproductBillProjectName": "免疫功能调理-单次", "fprojectAmount": 60000.0}],
+        }
+    ]
+    assert dynamic_ui.captured_context is not None
+    assert dynamic_ui.captured_context["query_render_mode"] == "composite"
+    assert dynamic_ui.captured_context["response_field_label_index"]["summaryCard.storeLeftFunds"] == "储值总余额"
+    assert dynamic_ui.captured_context["response_field_label_index"]["deliveryRecords"] == "交付记录"
+    assert dynamic_ui.captured_context["response_field_label_index"]["deliveryRecords[].deliveryProject"] == "交付项目"
+    assert response.ui_runtime is not None
+    assert response.ui_runtime.list.enabled is True
+    assert response.ui_runtime.list.api_id == "plan_overview"
+
+
+@pytest.mark.asyncio
+async def test_build_execution_response_field_labels_fallback_when_response_data_path_mismatch() -> None:
+    """response_data_path 配置错位时，仍应从 fallback schema 路径抽取中文字段名。"""
+
+    customer_entry = ApiCatalogEntry(
+        id="customer_list",
+        description="客户列表",
+        domain="crm",
+        operation_safety="query",
+        method="GET",
+        path="/api/customer/list",
+        param_schema=ParamSchema(
+            properties={"ownerId": {"type": "string"}},
+            required=["ownerId"],
+        ),
+    )
+    plan_entry = ApiCatalogEntry(
+        id="plan_overview_mismatch",
+        description="储值方案总览",
+        domain="asset",
+        operation_safety="query",
+        method="GET",
+        path="/api/plan/overview",
+        response_schema={
+            "type": "object",
+            "properties": {
+                "result": {
+                    "type": "object",
+                    "properties": {
+                        "summaryCard": {
+                            "type": "object",
+                            "properties": {
+                                "storeLeftFunds": {"type": "number", "description": "储值总余额"},
+                            },
+                        },
+                        "deliveryRecords": {
+                            "type": "array",
+                            "description": "交付记录",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "deliveryProject": {"type": "string", "description": "交付项目"},
+                                },
+                            },
+                        },
+                    },
+                }
+            },
+        },
+        # 故意制造目录配置错位，模拟真实 catalog 脏数据。
+        response_data_path="data",
+        param_schema=ParamSchema(
+            properties={"encryptedIdCard": {"type": "string"}},
+            required=["encryptedIdCard"],
+        ),
+    )
+    plan = ApiQueryExecutionPlan(
+        plan_id="plan_composite_path_mismatch_001",
+        steps=[
+            ApiQueryPlanStep(
+                step_id="step_customers",
+                api_id="customer_list",
+                api_path=customer_entry.path,
+                params={"ownerId": "E001"},
+                depends_on=[],
+            ),
+            ApiQueryPlanStep(
+                step_id="step_plan_overview",
+                api_id="plan_overview_mismatch",
+                api_path=plan_entry.path,
+                params={"encryptedIdCard": "$[step_customers.data][*].idCard"},
+                depends_on=["step_customers"],
+            ),
+        ],
+    )
+    records = {
+        "step_customers": DagStepExecutionRecord(
+            step=plan.steps[0],
+            entry=customer_entry,
+            resolved_params={"ownerId": "E001"},
+            execution_result=ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.SUCCESS,
+                data=[{"idCard": "ENC001", "customerName": "刘海坚"}],
+                total=1,
+                trace_id="trace-composite-path-mismatch",
+            ),
+        ),
+        "step_plan_overview": DagStepExecutionRecord(
+            step=plan.steps[1],
+            entry=plan_entry,
+            resolved_params={"encryptedIdCard": "ENC001"},
+            execution_result=ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.SUCCESS,
+                data={
+                    "summaryCard": {"storeLeftFunds": 13245060.0},
+                    "deliveryRecords": [{"deliveryProject": "肝脏解毒支持（白金版）"}],
+                },
+                total=1,
+                trace_id="trace-composite-path-mismatch",
+            ),
+        ),
+    }
+    dynamic_ui = CaptureDynamicUIService(result=UISpecBuildResult(spec=_build_flat_spec(), frozen=False))
+    builder = ApiQueryResponseBuilder(
+        dynamic_ui=dynamic_ui,
+        snapshot_service=UISnapshotService(),
+        ui_catalog_service=UICatalogService(),
+        registry_source=FakeRegistrySource(),
+    )
+    state: ApiQueryState = {
+        "request_mode": "nl",
+        "query_text": "查询刘海坚的储值方案",
+        "trace_id": "trace-composite-path-mismatch",
+        "interaction_id": None,
+        "conversation_id": None,
+        "plan": plan,
+    }
+
+    await builder.build_execution_response(
+        state=state,
+        runtime_context=ApiQueryRuntimeContext(
+            step_entries={"step_customers": customer_entry, "step_plan_overview": plan_entry},
+            log_prefix="api_query[trace=trace-composite-path-mismatch]",
+        ),
+        execution_state={
+            "plan": plan,
+            "trace_id": "trace-composite-path-mismatch",
+            "records_by_step_id": records,
+            "execution_order": ["step_customers", "step_plan_overview"],
+            "errors": [],
+            "aggregate_status": None,
+        },
+        query_domains_hint=["crm", "asset"],
+        business_intent_codes=["none"],
+    )
+
+    assert dynamic_ui.captured_context is not None
+    assert dynamic_ui.captured_context["response_field_label_index"]["summaryCard.storeLeftFunds"] == "储值总余额"
+    assert dynamic_ui.captured_context["response_field_label_index"]["deliveryRecords"] == "交付记录"
+    assert dynamic_ui.captured_context["response_field_label_index"]["deliveryRecords[].deliveryProject"] == "交付项目"
 
 
 @pytest.mark.asyncio

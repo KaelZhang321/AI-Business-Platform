@@ -458,6 +458,17 @@ class DynamicUIService:
 
         source_identifier_field = runtime.detail.source.identifier_field
         if isinstance(source_identifier_field, str):
+            # 详情卡 label 可能已被 schema description/title 替换；
+            # 主键回填时需同时兼容“原始字段名”和“展示字段名”两条匹配路径。
+            label_index = self._build_response_field_label_index(context)
+            identifier_labels = {
+                source_identifier_field,
+                self._resolve_field_label(
+                    field_name=source_identifier_field,
+                    label_index=label_index,
+                    field_path=source_identifier_field,
+                ),
+            }
             for element in elements.values():
                 if not isinstance(element, dict) or element.get("type") != "PlannerDetailCard":
                     continue
@@ -470,7 +481,7 @@ class DynamicUIService:
                 for item in items:
                     if not isinstance(item, dict):
                         continue
-                    if item.get("label") == source_identifier_field:
+                    if item.get("label") in identifier_labels:
                         return item.get("value")
 
         identifier_param = runtime.detail.request.identifier_param
@@ -1431,6 +1442,7 @@ class DynamicUIService:
             - 多步骤摘要表仍然走 `PlannerTable`，但会通过 notice 显式暴露“只展示安全结果”
         """
         render_mode = (context or {}).get("query_render_mode") or "table"
+        label_index = self._build_response_field_label_index(context)
         root_props = {
             "title": (context or {}).get("question", "数据查询结果"),
             "subtitle": self._build_query_subtitle(rows, context, render_mode),
@@ -1443,7 +1455,7 @@ class DynamicUIService:
         if render_mode == "detail":
             detail_props = {
                 "title": (context or {}).get("detail_title", "详情信息"),
-                "items": self._build_detail_items(rows[0]),
+                "items": self._build_detail_items(rows[0], label_index=label_index),
             }
             if runtime and runtime.detail.enabled and runtime.detail.api_id:
                 detail_identifier_field = runtime.detail.source.identifier_field
@@ -1465,6 +1477,31 @@ class DynamicUIService:
                     {
                         "type": "PlannerDetailCard",
                         "props": detail_props,
+                    }
+                ],
+            )
+
+        if render_mode == "composite":
+            return self._build_query_composite_spec(
+                row=rows[0] if rows else {},
+                root_props=root_props,
+                context=context,
+                runtime=runtime,
+                label_index=label_index,
+            )
+
+        # 仅当结果本身是单对象时才回退详情卡。对多行数据仍应保留表格渲染，
+        # 否则 LLM 失败后的规则兜底会把列表误折叠成详情卡，破坏既有列表语义。
+        if not (runtime and runtime.list.enabled) and len(rows) <= 1:
+            return self._build_flat_card_spec(
+                root_props=root_props,
+                children=[
+                    {
+                        "type": "PlannerDetailCard",
+                        "props": {
+                            "title": (context or {}).get("detail_title", "详情信息"),
+                            "items": self._build_detail_items(rows[0] if rows else {}, label_index=label_index),
+                        },
                     }
                 ],
             )
@@ -1556,7 +1593,7 @@ class DynamicUIService:
             elements["query-filters"]["children"].extend(["filter_reset", "filter_submit"])
 
         table_props: dict[str, Any] = {
-            "columns": self._build_table_columns(rows[0]),
+            "columns": self._build_table_columns(rows[0], label_index=label_index),
             "dataSource": rows,
             **list_request_fields,
         }
@@ -1816,37 +1853,66 @@ class DynamicUIService:
         return f"{normalized[:limit]}..."
 
     @staticmethod
-    def _build_table_columns(sample_row: dict[str, Any]) -> list[dict[str, str]]:
+    def _build_table_columns(
+        sample_row: dict[str, Any],
+        *,
+        label_index: dict[str, str] | None = None,
+        field_path_prefix: str = "",
+    ) -> list[dict[str, str]]:
         """把行对象字段映射成 `PlannerTable.columns`。
 
         功能：
             这里输出稳定的列元数据而不是裸字符串，是为了给后续前端表格实现预留
             `title / dataIndex / key` 三元组契约，避免任务 2 做完后任务 5 又得返工改列结构。
         """
-        return [
-            {
-                "key": key,
-                "title": key,
-                "dataIndex": key,
-            }
-            for key in sample_row.keys()
-        ]
+        resolved_label_index = label_index or {}
+        columns: list[dict[str, str]] = []
+        for key in sample_row.keys():
+            field_path = f"{field_path_prefix}.{key}" if field_path_prefix else key
+            columns.append(
+                {
+                    "key": key,
+                    "title": DynamicUIService._resolve_field_label(
+                        field_name=key,
+                        label_index=resolved_label_index,
+                        field_path=field_path,
+                    ),
+                    "dataIndex": key,
+                }
+            )
+        return columns
 
     @staticmethod
-    def _build_detail_items(row: dict[str, Any]) -> list[dict[str, str]]:
+    def _build_detail_items(
+        row: dict[str, Any],
+        *,
+        label_index: dict[str, str] | None = None,
+        field_path_prefix: str = "",
+    ) -> list[dict[str, str]]:
         """把对象详情映射成 `PlannerDetailCard.items`。
 
         功能：
             详情视图的目标是“稳定展示事实”，不是透传原始对象结构。
-            因此这里统一把值折叠成可读字符串，避免复杂嵌套对象直接把详情卡 props 撑穿。
+            对嵌套 list/dict 在详情视图中直接跳过，避免把结构化明细压成超长字符串；
+            这类字段应由 composite 模式拆分成表格或指标区展示。
         """
-        return [
-            {
-                "label": key,
-                "value": DynamicUIService._stringify_detail_value(value),
-            }
-            for key, value in row.items()
-        ]
+        resolved_label_index = label_index or {}
+        items = []
+        for key, value in row.items():
+            if isinstance(value, (list, dict)):
+                continue
+            field_path = f"{field_path_prefix}.{key}" if field_path_prefix else key
+            items.append(
+                {
+                    "label": DynamicUIService._resolve_field_label(
+                        field_name=key,
+                        label_index=resolved_label_index,
+                        field_path=field_path,
+                    ),
+                    "value": DynamicUIService._stringify_detail_value(value),
+                }
+            )
+        return items or [{"label": "提示", "value": "暂无可展示的标量字段"}]
 
     @staticmethod
     def _stringify_detail_value(value: Any) -> str:
@@ -1876,11 +1942,158 @@ class DynamicUIService:
         total = (context or {}).get("total")
         if render_mode == "detail":
             return "当前展示单条记录详情"
+        if render_mode == "composite":
+            return "当前展示复合结果（概览指标 + 明细列表）"
         if render_mode == "summary_table":
             return f"当前展示 {len(rows)} 个执行步骤的汇总结果"
         if isinstance(total, int) and total > len(rows):
             return f"共 {total} 条，当前展示 {len(rows)} 条"
         return f"当前展示 {len(rows)} 条"
+
+    def _build_query_composite_spec(
+        self,
+        *,
+        row: dict[str, Any],
+        root_props: dict[str, Any],
+        context: dict[str, Any] | None,
+        runtime: ApiQueryUIRuntime | None,
+        label_index: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """把单对象复合结果拆分成指标和明细表。
+
+        功能：
+            复合结果常见于“一个 summary + 多个 records 列表”的查询语义。
+            若继续复用 detail 模式，会把 nested dict/list 退化成字符串，用户不可读。
+            这里按数据形态拆分组件，保持通用且不依赖具体字段命名。
+        """
+
+        ctx = context if isinstance(context, dict) else {}
+        children: list[dict[str, Any]] = []
+        list_request_fields = _build_runtime_request_fields(
+            runtime.list.api_id if runtime else None,
+            param_source=runtime.list.param_source if runtime else None,
+            params=dict(runtime.list.query_context.current_params) if runtime else {},
+            flow_num=ctx.get("flow_num"),
+            created_by=ctx.get("created_by"),
+            request_schema_fields=runtime.list.request_schema_fields if runtime else None,
+        )
+
+        scalar_metrics = self._build_composite_metrics(row)
+        resolved_label_index = label_index or {}
+        info_grid_items: list[dict[str, str]] = []
+        for field_path, field_name, value in scalar_metrics:
+            info_grid_items.append(
+                {
+                    "label": self._resolve_field_label(
+                        field_name=field_name,
+                        label_index=resolved_label_index,
+                        field_path=field_path,
+                    ),
+                    "value": self._stringify_detail_value(value),
+                }
+            )
+
+        # 复合视图的概览信息统一收敛为一个 InfoGrid，
+        # 避免同一组指标拆成多个 Metric 造成视觉噪声与层级碎片化。
+        if info_grid_items:
+            children.append(
+                {
+                    "type": "PlannerInfoGrid",
+                    "props": {
+                        "items": info_grid_items,
+                    },
+                }
+            )
+
+        for section_name, section_value in row.items():
+            table_rows = self._extract_table_rows(section_value)
+            if not table_rows:
+                continue
+            section_field_path = section_name
+            children.append(
+                {
+                    "type": "PlannerTable",
+                    "props": {
+                        "title": self._resolve_field_label(
+                            field_name=section_name,
+                            label_index=resolved_label_index,
+                            field_path=section_field_path,
+                        ),
+                        "columns": self._build_table_columns(
+                            table_rows[0],
+                            label_index=resolved_label_index,
+                            field_path_prefix=f"{section_name}[]",
+                        ),
+                        "dataSource": table_rows,
+                        **list_request_fields,
+                    },
+                }
+            )
+
+        if not children:
+            children.append(
+                {
+                    "type": "PlannerDetailCard",
+                    "props": {
+                        "title": ctx.get("detail_title", "详情信息"),
+                        "items": self._build_detail_items(row, label_index=resolved_label_index),
+                    },
+                }
+            )
+        return self._build_flat_card_spec(root_props=root_props, children=children)
+
+    @staticmethod
+    def _build_response_field_label_index(context: dict[str, Any] | None) -> dict[str, str]:
+        """从渲染上下文读取 response_schema 字段显示名索引。"""
+
+        if not isinstance(context, dict):
+            return {}
+        label_index = context.get("response_field_label_index")
+        if not isinstance(label_index, dict):
+            return {}
+
+        normalized: dict[str, str] = {}
+        for raw_path, raw_label in label_index.items():
+            if not isinstance(raw_path, str) or not raw_path.strip():
+                continue
+            if not isinstance(raw_label, str) or not raw_label.strip():
+                continue
+            normalized[raw_path.strip()] = raw_label.strip()
+        return normalized
+
+    @staticmethod
+    def _resolve_field_label(
+        *,
+        field_name: str,
+        label_index: dict[str, str],
+        field_path: str,
+    ) -> str:
+        """解析字段展示名，优先使用 schema description/title。"""
+
+        return label_index.get(field_path) or label_index.get(field_name) or field_name
+
+    @staticmethod
+    def _extract_table_rows(value: Any) -> list[dict[str, Any]]:
+        """从复合字段中提取可用于表格渲染的行数据。"""
+        if isinstance(value, list):
+            rows = [item for item in value if isinstance(item, dict)]
+            return rows
+        return []
+
+    @staticmethod
+    def _build_composite_metrics(row: dict[str, Any]) -> list[tuple[str, str, Any]]:
+        """提取复合结果中的标量指标。"""
+        metrics: list[tuple[str, str, Any]] = []
+        for key, value in row.items():
+            if isinstance(value, (dict, list)):
+                if isinstance(value, dict):
+                    for child_key, child_value in value.items():
+                        if isinstance(child_value, (dict, list)):
+                            continue
+                        metrics.append((f"{key}.{child_key}", child_key, child_value))
+                continue
+            metrics.append((key, key, value))
+        return metrics
 
     # ── 指标构建 ──
 

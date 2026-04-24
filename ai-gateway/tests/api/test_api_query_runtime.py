@@ -140,6 +140,23 @@ def _make_entry() -> ApiCatalogEntry:
         operation_safety="query",
         method="GET",
         path="/api/v1/customers",
+        response_schema={
+            "type": "object",
+            "properties": {
+                "data": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "customerId": {"type": "string", "description": "客户编号"},
+                            "customerName": {"type": "string", "description": "客户姓名"},
+                            "level": {"type": "string", "description": "客户等级"},
+                        },
+                    },
+                }
+            },
+        },
+        response_data_path="data",
     )
 
 
@@ -498,9 +515,100 @@ def test_api_query_renders_single_object_as_detail_card(monkeypatch) -> None:
     assert body["execution_plan"]["steps"][0]["step_id"] == "step_customer_list"
     detail_card = _get_child_by_type(body["ui_spec"], "PlannerDetailCard")
     assert detail_card["props"]["title"] == "查询客户列表"
-    assert {"label": "customerId", "value": "C001"} in detail_card["props"]["items"]
-    assert {"label": "level", "value": "VIP"} in detail_card["props"]["items"]
+    assert {"label": "客户编号", "value": "C001"} in detail_card["props"]["items"]
+    assert {"label": "客户等级", "value": "VIP"} in detail_card["props"]["items"]
     _assert_runtime_metadata(detail_card["props"], trace_id=body["trace_id"], api_suffix="customer_list")
+
+
+def test_api_query_renders_composite_single_object_as_metrics_and_tables(monkeypatch) -> None:
+    entry = _make_entry()
+    entry.response_schema = {
+        "type": "object",
+        "properties": {
+            "data": {
+                "type": "object",
+                "properties": {
+                    "summaryCard": {
+                        "type": "object",
+                        "properties": {
+                            "storeLeftFunds": {"type": "number", "description": "可用储值余额"},
+                            "storeFundCount": {"type": "integer", "description": "储值方案数"},
+                        },
+                    },
+                    "deliveryRecords": {
+                        "type": "array",
+                        "description": "交付记录",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "deliveryDate": {"type": "string", "description": "交付日期"},
+                                "deliveryProject": {"type": "string", "description": "交付项目"},
+                                "deliveryAmount": {"type": "number", "description": "交付金额"},
+                            },
+                        },
+                    },
+                    "curePlanRecords": {
+                        "type": "array",
+                        "description": "调理方案记录",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "fcreateTime": {"type": "string", "description": "创建时间"},
+                                "fproductBillProjectName": {"type": "string", "description": "方案名称"},
+                                "fprojectAmount": {"type": "number", "description": "方案金额"},
+                            },
+                        },
+                    },
+                },
+            }
+        },
+    }
+    entry.response_data_path = "data"
+    stub_services = (
+        StubRetriever(entry),
+        StubExtractor(entry),
+        StubExecutor(
+            ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.SUCCESS,
+                data={
+                    "summaryCard": {"storeLeftFunds": 13245060.0, "storeFundCount": 12},
+                    "deliveryRecords": [
+                        {"deliveryDate": "2024-10-01T00:00", "deliveryProject": "肝脏解毒支持（白金版）", "deliveryAmount": 27103.46}
+                    ],
+                    "curePlanRecords": [
+                        {"fcreateTime": "2024-11-20T09:44", "fproductBillProjectName": "免疫力改善-C治疗", "fprojectAmount": 298000.0}
+                    ],
+                },
+                total=1,
+            )
+        ),
+        api_query_routes.DynamicUIService(),
+        PassThroughSnapshotService(),
+    )
+    monkeypatch.setattr(api_query_routes, "_get_services", lambda: stub_services)
+
+    client = TestClient(create_test_app())
+    response = client.post("/api/v1/api-query", json={"query": "查询刘海坚的储值方案"})
+
+    assert response.status_code == 200
+    body = response.json()
+    _assert_api_query_response_keys(body)
+    children = _get_root_children(body["ui_spec"])
+    child_types = [child["type"] for child in children]
+    assert "PlannerInfoGrid" in child_types
+    assert child_types.count("PlannerTable") >= 2
+    assert "PlannerDetailCard" not in child_types
+
+    info_grid = next(child for child in children if child["type"] == "PlannerInfoGrid")
+    metric_pairs = {(item["label"], item["value"]) for item in info_grid["props"]["items"]}
+    assert ("可用储值余额", "13245060.0") in metric_pairs
+
+    delivery_table = next(child for child in children if child["type"] == "PlannerTable" and child["props"].get("title") == "交付记录")
+    assert delivery_table["props"]["columns"][0]["title"] == "交付日期"
+    assert delivery_table["props"]["dataSource"][0]["deliveryProject"] == "肝脏解毒支持（白金版）"
+    # 纯单接口详情场景未启用列表 runtime，因此 composite 表格不会挂载二跳接口地址。
+    assert delivery_table["props"]["api"] == ""
+    _assert_runtime_metadata(delivery_table["props"], trace_id=body["trace_id"], api_suffix=None)
 
 
 def test_api_query_detail_card_uses_detail_request_schema_keys(monkeypatch) -> None:

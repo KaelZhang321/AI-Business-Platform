@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 _QUERY_DEFAULT_COMPONENT_CODES = [
     "PlannerCard",
     "PlannerMetric",
+    "PlannerInfoGrid",
     "PlannerTable",
     "PlannerDetailCard",
     "PlannerPagination",
@@ -377,6 +378,11 @@ def _build_builtin_snapshot() -> UICatalogSnapshot:
             code="PlannerMetric",
             name="规划指标",
             description="只读指标展示，props: label, value",
+        ),
+        "PlannerInfoGrid": UIComponentDefinition(
+            code="PlannerInfoGrid",
+            name="规划信息网格",
+            description="信息网格展示，props: items[{label,value}], minColumnWidth",
         ),
         "PlannerDetailCard": UIComponentDefinition(
             code="PlannerDetailCard",
