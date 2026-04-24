@@ -32,9 +32,10 @@ ENV_VARS=(
     "-e TZ=Asia/Shanghai"
 )
 
-# 可选: 数据卷挂载 (可根据实际需求增加大模型缓存等映射)
+# 数据卷挂载 (加入日志和本地宿主机的大模型缓存映射)
 VOLUMES=(
     "-v /data/app/ai-platform/ai-gateway/logs:/app/logs"
+    "-v /data/app/ai-platform/ai-gateway/model-cache:/opt/model-cache"  # 把本地硬盘挂载给容器存放上G的向量模型
 )
 
 # 网络配置
@@ -124,6 +125,7 @@ start_container() {
     
     # 构建 docker run 命令
     DOCKER_RUN_CMD="docker run -d \
+        --gpus all \
         --name ${CONTAINER_NAME} \
         --restart=always \
         -p ${HOST_PORT}:${CONTAINER_PORT} \
