@@ -7,7 +7,7 @@ set -e
 
 IMAGE_NAME="crpi-301jbh81iyvo39lb.cn-beijing.personal.cr.aliyuncs.com/${NAMESPACE}/ai-web"  # 镜像名称
 IMAGE_TAG="1.0.0"                         # 镜像标签
-FULL_IMAGE="${IMAGE_NAME}:${IMAGE_TAG}"
+FULL_IMAGE_NAME="${IMAGE_NAME}:${IMAGE_TAG}"
 echo "=== Remote Deployment for $FULL_IMAGE_NAME ==="
 
 
