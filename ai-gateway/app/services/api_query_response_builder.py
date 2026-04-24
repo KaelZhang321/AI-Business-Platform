@@ -213,7 +213,9 @@ class ApiQueryResponseBuilder:
                 "question": state["query_text"],
                 "user_query": state["query_text"],
                 "title": _build_execution_title(execution_report, anchor_record),
-                "detail_title": anchor_record.entry.description if anchor_record else "详情信息",
+                "detail_title": (
+                    anchor_record.entry.name or anchor_record.entry.description if anchor_record else "详情信息"
+                ),
                 "total": _build_response_total(anchor_record),
                 "api_id": anchor_record.entry.id if anchor_record else None,
                 "error": _build_response_error(execution_report),
@@ -2448,23 +2450,29 @@ def _select_query_ui_payload(
 
     # 3) 显式聚合策略：优先把多个叶子业务步骤同屏拆块展示。
     if multi_step_render_policy == "aggregate_result":
-        aggregated_payload, aggregate_label_index = _build_multi_step_aggregate_payload(execution_report)
+        aggregated_payload, aggregate_label_index, aggregate_title_index = _build_multi_step_aggregate_payload(
+            execution_report
+        )
         if aggregated_payload:
             return _build_multi_step_aggregate_selection(
                 aggregated_payload=aggregated_payload,
                 aggregate_label_index=aggregate_label_index,
+                aggregate_title_index=aggregate_title_index,
                 source="multi_step_aggregate",
                 runtime_anchor_record=terminal_record,
             )
 
     # 4) terminal 与 auto 共用终态记录计算，避免双分支重复扫描执行图。
     if multi_step_render_policy == "auto_result":
-        aggregated_payload, aggregate_label_index = _build_multi_step_aggregate_payload(execution_report)
+        aggregated_payload, aggregate_label_index, aggregate_title_index = _build_multi_step_aggregate_payload(
+            execution_report
+        )
         # auto 策略优先保证“多块业务完整性”；不满足再回到 terminal 简洁视图。
         if _should_use_aggregate_result(execution_report, aggregated_payload):
             return _build_multi_step_aggregate_selection(
                 aggregated_payload=aggregated_payload,
                 aggregate_label_index=aggregate_label_index,
+                aggregate_title_index=aggregate_title_index,
                 source="multi_step_auto_aggregate",
                 runtime_anchor_record=terminal_record,
             )
@@ -2474,6 +2482,7 @@ def _select_query_ui_payload(
             return _build_multi_step_aggregate_selection(
                 aggregated_payload=aggregated_payload,
                 aggregate_label_index=aggregate_label_index,
+                aggregate_title_index=aggregate_title_index,
                 source="multi_step_auto_aggregate_fallback",
                 runtime_anchor_record=terminal_record,
             )
@@ -2514,6 +2523,7 @@ def _build_multi_step_aggregate_selection(
     *,
     aggregated_payload: dict[str, Any],
     aggregate_label_index: dict[str, str],
+    aggregate_title_index: dict[str, str],
     source: str,
     runtime_anchor_record: DagStepExecutionRecord | None,
 ) -> _QueryUISelection:
@@ -2525,6 +2535,7 @@ def _build_multi_step_aggregate_selection(
         source=source,
         runtime_anchor_record=runtime_anchor_record,
         response_field_label_index=aggregate_label_index,
+        aggregate_section_title_index=aggregate_title_index,
     )
 
 
@@ -2563,7 +2574,7 @@ def _should_use_aggregate_result(
 
 def _build_multi_step_aggregate_payload(
     execution_report: DagExecutionReport,
-) -> tuple[dict[str, Any], dict[str, str]]:
+) -> tuple[dict[str, Any], dict[str, str], dict[str, str]]:
     """聚合同一执行链路的叶子步骤结果，供 composite 同屏展示。
 
     功能：
@@ -2574,9 +2585,10 @@ def _build_multi_step_aggregate_payload(
         execution_report: DAG 执行报告。
 
     Returns:
-        二元组 `(payload, label_index)`：
+        三元组 `(payload, label_index, title_index)`：
         - payload: 聚合后的 section 数据；
         - label_index: 供表头/字段中文名解析的标签索引。
+        - title_index: section 对应的标题映射，优先来源于接口注册名。
 
     设计意图：
         - terminal_result 只保留最后一步，适合“链路末端即最终答案”的场景；
@@ -2597,6 +2609,7 @@ def _build_multi_step_aggregate_payload(
     leaf_step_ids = _collect_leaf_step_ids(execution_report)
     payload: dict[str, Any] = {}
     label_index: dict[str, str] = {}
+    title_index: dict[str, str] = {}
     section_key_counter: dict[str, int] = {}
 
     # 1) 仅遍历执行顺序里的叶子业务步骤，确保输出顺序与执行链路一致。
@@ -2620,7 +2633,7 @@ def _build_multi_step_aggregate_payload(
 
         section_title = _build_aggregate_section_title(record, fallback=section_key)
         if section_title:
-            label_index.setdefault(section_key, section_title)
+            title_index[section_key] = section_title
 
         # 3) 合并步骤级字段标签：
         #    - 既保留叶子字段短路径（便于通用列构建）；
@@ -2641,7 +2654,7 @@ def _build_multi_step_aggregate_payload(
             label_index.setdefault(field_path, label)
             label_index.setdefault(f"{section_key}[].{field_path}", label)
 
-    return payload, label_index
+    return payload, label_index, title_index
 
 
 def _collect_leaf_step_ids(execution_report: DagExecutionReport) -> set[str]:
@@ -2715,7 +2728,8 @@ def _build_aggregate_section_title(
     """推断聚合 section 的展示标题。
 
     功能：
-        优先使用接口描述作为业务标题，保证用户看到的是领域语义而不是技术键名。
+        优先使用接口注册名（`ui_api_endpoints.name`）作为业务标题，
+        再回退到接口描述，确保聚合子块标题与业务配置一致。
 
     Args:
         record: 当前步骤执行记录。
@@ -2725,9 +2739,11 @@ def _build_aggregate_section_title(
         section 展示标题。
 
     Edge Cases:
-        - description 为空：回退到 `fallback`
+        - name/description 均为空：回退到 `fallback`
     """
-
+    entry_name = (record.entry.name or "").strip()
+    if entry_name:
+        return entry_name
     description = (record.entry.description or "").strip()
     if description:
         return description

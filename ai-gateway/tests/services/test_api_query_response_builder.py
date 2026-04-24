@@ -438,6 +438,7 @@ async def test_build_execution_response_multi_step_defaults_to_terminal_result(m
 
     customer_entry = ApiCatalogEntry(
         id="customer_list",
+        name="客户查询接口",
         description="客户列表",
         domain="crm",
         operation_safety="query",
@@ -983,6 +984,7 @@ async def test_build_execution_response_multi_step_can_use_aggregate_policy(monk
     )
     health_basic_entry = ApiCatalogEntry(
         id="health_basic",
+        name="健康基本信息接口",
         description="健康基本信息",
         domain="health",
         operation_safety="query",
@@ -1010,6 +1012,7 @@ async def test_build_execution_response_multi_step_can_use_aggregate_policy(monk
     )
     health_history_entry = ApiCatalogEntry(
         id="health_history",
+        name="病史接口",
         description="病史",
         domain="health",
         operation_safety="query",
@@ -1037,6 +1040,7 @@ async def test_build_execution_response_multi_step_can_use_aggregate_policy(monk
     )
     physical_exam_entry = ApiCatalogEntry(
         id="physical_exam",
+        name="体检接口",
         description="体检情况",
         domain="health",
         operation_safety="query",
@@ -1187,9 +1191,14 @@ async def test_build_execution_response_multi_step_can_use_aggregate_policy(monk
 
     assert dynamic_ui.captured_context is not None
     assert dynamic_ui.captured_context["query_render_mode"] == "composite"
-    assert dynamic_ui.captured_context["response_field_label_index"]["healthBasic"] == "健康基本信息"
-    assert dynamic_ui.captured_context["response_field_label_index"]["healthStatusMedicalHistory"] == "病史"
-    assert dynamic_ui.captured_context["response_field_label_index"]["physicalExam"] == "体检情况"
+    assert dynamic_ui.captured_context["aggregate_section_title_index"] == {
+        "healthBasic": "健康基本信息接口",
+        "healthStatusMedicalHistory": "病史接口",
+        "physicalExam": "体检接口",
+    }
+    assert "healthBasic" not in dynamic_ui.captured_context["response_field_label_index"]
+    assert "healthStatusMedicalHistory" not in dynamic_ui.captured_context["response_field_label_index"]
+    assert "physicalExam" not in dynamic_ui.captured_context["response_field_label_index"]
     assert dynamic_ui.captured_data == [
         {
             "healthBasic": [{"bloodType": "A型"}],
@@ -1206,6 +1215,7 @@ async def test_build_execution_response_multi_step_auto_policy_prefers_aggregate
     monkeypatch.setattr(settings, "api_query_multi_step_render_policy", "auto_result")
     customer_entry = ApiCatalogEntry(
         id="customer_list",
+        name="客户查询接口",
         description="客户列表",
         domain="crm",
         operation_safety="query",
@@ -1218,6 +1228,7 @@ async def test_build_execution_response_multi_step_auto_policy_prefers_aggregate
     )
     health_basic_entry = ApiCatalogEntry(
         id="health_basic",
+        name="健康基本信息接口",
         description="健康基本信息",
         domain="health",
         operation_safety="query",
@@ -1245,6 +1256,7 @@ async def test_build_execution_response_multi_step_auto_policy_prefers_aggregate
     )
     health_history_entry = ApiCatalogEntry(
         id="health_history",
+        name="病史接口",
         description="病史",
         domain="health",
         operation_safety="query",
@@ -1272,6 +1284,7 @@ async def test_build_execution_response_multi_step_auto_policy_prefers_aggregate
     )
     physical_exam_entry = ApiCatalogEntry(
         id="physical_exam",
+        name="体检接口",
         description="体检情况",
         domain="health",
         operation_safety="query",
@@ -1422,6 +1435,11 @@ async def test_build_execution_response_multi_step_auto_policy_prefers_aggregate
 
     assert dynamic_ui.captured_context is not None
     assert dynamic_ui.captured_context["query_render_mode"] == "composite"
+    assert dynamic_ui.captured_context["aggregate_section_title_index"] == {
+        "healthBasic": "健康基本信息接口",
+        "healthStatusMedicalHistory": "病史接口",
+        "physicalExam": "体检接口",
+    }
     assert dynamic_ui.captured_data == [
         {
             "healthBasic": [{"bloodType": "A型"}],

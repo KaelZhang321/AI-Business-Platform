@@ -39,6 +39,7 @@ logger = logging.getLogger(__name__)
 
 _OUTPUT_FIELDS = [
     "id",
+    "name",
     "description",
     "domain",
     "env",
@@ -394,6 +395,7 @@ def _build_entry_from_fields(fields: dict) -> ApiCatalogEntry:
     sample_request = api_schema.get("sample_request", {})
     return ApiCatalogEntry(
         id=fields.get("id", ""),
+        name=fields.get("name", ""),
         description=fields.get("description", ""),
         domain=fields.get("domain", "generic"),
         env=fields.get("env", "shared"),

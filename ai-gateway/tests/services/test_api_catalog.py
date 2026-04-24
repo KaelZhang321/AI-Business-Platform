@@ -794,6 +794,7 @@ class TestIndexerSchema:
         field_map = {field.name: field for field in schema.fields}
 
         assert schema.enable_dynamic_field is True
+        assert field_map["name"].dtype == DataType.VARCHAR
         assert field_map["api_schema"].dtype == DataType.JSON
         assert field_map["executor_config"].dtype == DataType.JSON
         assert field_map["security_rules"].dtype == DataType.JSON
@@ -994,6 +995,7 @@ class TestRetrieverCompatibility:
         entry = _build_entry_from_fields(
             {
                 "id": "customer_list",
+                "name": "客户列表接口",
                 "description": "查询客户列表",
                 "domain": "crm",
                 "env": "prod",
@@ -1042,6 +1044,7 @@ class TestRetrieverCompatibility:
             }
         )
 
+        assert entry.name == "客户列表接口"
         assert entry.param_schema.required == ["pageNum"]
         assert entry.response_schema["type"] == "object"
         assert entry.sample_request == {"pageNum": 1}

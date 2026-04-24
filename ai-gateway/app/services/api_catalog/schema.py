@@ -118,6 +118,7 @@ class ApiCatalogEntry(BaseModel):
 
     # ---------- 标识 ----------
     id: str = Field(..., description="接口唯一标识，如 biz_customer_list_v1")
+    name: str = Field("", description="接口名称，来源于业务注册表 ui_api_endpoints.name")
 
     # ---------- 检索用字段 ----------
     description: str = Field(..., description="接口自然语言描述（embedding 的主要内容）")

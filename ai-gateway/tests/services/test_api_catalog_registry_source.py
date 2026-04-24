@@ -86,7 +86,7 @@ def _mysql_row() -> dict[str, object]:
         "endpointId": "ep_1",
         "tagId": "tag_customer",
         "tagName": "客户管理",
-        "endpointName": "客户列表",
+        "name": "客户列表",
         "path": "/api/customer/list",
         "method": "GET",
         "summary": "查询当前登录用户名下的客户列表",
@@ -154,6 +154,7 @@ async def test_registry_source_loads_entries_from_mysql_and_appends_builtin_dict
     entry_by_path = {entry.path: entry for entry in entries}
     customer_entry = entry_by_path["/api/customer/list"]
     assert customer_entry.id == "ep_1"
+    assert customer_entry.name == "客户列表"
     assert customer_entry.domain == "crm"
     assert customer_entry.env == "prod"
     assert customer_entry.tag_name == "客户管理"
@@ -260,7 +261,7 @@ async def test_registry_source_marks_mutation_entry_for_confirmation(monkeypatch
     row.update(
         {
             "endpointId": "ep_delete_role",
-            "endpointName": "删除角色",
+            "name": "删除角色",
             "path": "/system/employee/sys-role/delete",
             "method": "POST",
             "summary": "删除指定角色",

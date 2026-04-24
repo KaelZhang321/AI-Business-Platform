@@ -68,6 +68,12 @@ def _get_collection_schema() -> CollectionSchema:
             description="接口注册表主键，对齐 ui_api_endpoints.id，用于增量更新和精确命中。",
         ),
         FieldSchema(
+            name="name",
+            dtype=DataType.VARCHAR,
+            max_length=256,
+            description="接口名称，来源于业务注册表 ui_api_endpoints.name，用于 UI 标题与业务语义展示。",
+        ),
+        FieldSchema(
             name="description",
             dtype=DataType.VARCHAR,
             max_length=1024,
@@ -430,6 +436,7 @@ class ApiCatalogIndexer:
         # 准备插入数据
         data = [
             [entry.id],
+            [entry.name],
             [entry.description],
             [entry.domain],
             [entry.env],

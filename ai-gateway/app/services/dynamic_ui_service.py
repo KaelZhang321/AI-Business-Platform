@@ -2137,6 +2137,7 @@ class DynamicUIService:
             )
 
         # 2. 再把列表型 section 下钻为表格，保持每个业务块都有稳定 bizFieldKey。
+        section_title_index = self._build_aggregate_section_title_index(ctx)
         for section_name, section_value in row.items():
             table_rows = self._extract_table_rows(section_value)
             if not table_rows:
@@ -2146,7 +2147,10 @@ class DynamicUIService:
                 {
                     "type": "PlannerTable",
                     "props": {
-                        "title": self._resolve_field_label(
+                        # 聚合渲染优先使用后端下发的 section 标题（接口名称）；
+                        # 没有时再回退字段 label 解析，保持旧行为兼容。
+                        "title": section_title_index.get(section_name)
+                        or self._resolve_field_label(
                             field_name=section_name,
                             label_index=resolved_label_index,
                             field_path=section_field_path,
@@ -2175,6 +2179,35 @@ class DynamicUIService:
                 }
             )
         return self._build_flat_card_spec(root_props=root_props, children=children)
+
+    @staticmethod
+    def _build_aggregate_section_title_index(context: dict[str, Any]) -> dict[str, str]:
+        """读取聚合 section 标题映射。
+
+        功能：
+            把后端基于 API Catalog 产出的 `section -> 接口名称` 映射收敛成安全字典，
+            供 composite 渲染优先使用，避免标题退化成技术字段名。
+
+        Args:
+            context: 查询渲染上下文。
+
+        Returns:
+            仅包含非空字符串键值对的标题映射字典。
+
+        Edge Cases:
+            - 缺失或脏值输入时返回空字典，渲染层会回退到原有 label 解析逻辑
+        """
+        raw_index = context.get("aggregate_section_title_index")
+        if not isinstance(raw_index, dict):
+            return {}
+        normalized: dict[str, str] = {}
+        for raw_key, raw_value in raw_index.items():
+            if not isinstance(raw_key, str) or not raw_key.strip():
+                continue
+            if not isinstance(raw_value, str) or not raw_value.strip():
+                continue
+            normalized[raw_key.strip()] = raw_value.strip()
+        return normalized
 
     @staticmethod
     def _build_response_field_label_index(context: dict[str, Any] | None) -> dict[str, str]:

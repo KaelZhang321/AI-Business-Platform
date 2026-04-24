@@ -901,6 +901,7 @@ def _build_synthetic_entry(step: ApiQueryPlanStep) -> ApiCatalogEntry:
 
     return ApiCatalogEntry(
         id=step.api_id or step.step_id,
+        name="synthetic_failure",
         description="执行图 synthetic failure",
         domain="generic",
         operation_safety="query",

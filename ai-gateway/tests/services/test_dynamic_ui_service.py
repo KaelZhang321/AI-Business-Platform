@@ -673,6 +673,54 @@ async def test_rule_query_spec_composite_renders_metrics_and_tables_without_stri
 
 
 @pytest.mark.asyncio
+async def test_rule_query_spec_composite_uses_aggregate_section_title_index_for_table_titles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """聚合渲染下，表格标题应优先使用后端下发的 section 标题映射。"""
+    monkeypatch.setattr(settings, "llm_ui_spec_enabled", False)
+    service = DynamicUIService(catalog_service=UICatalogService())
+
+    data = [
+        {
+            "healthBasic": [{"bloodType": "A型"}],
+            "healthStatusMedicalHistory": [{"history": "高血压"}],
+            "physicalExam": [{"latestExamDate": "2025-04-08"}],
+        }
+    ]
+
+    spec = await service.generate_ui_spec(
+        intent="query",
+        data=data,
+        context={
+            "question": "查询客户刘海坚的健康数据",
+            "query_render_mode": "composite",
+            "aggregate_section_title_index": {
+                "healthBasic": "健康基础档案",
+                "healthStatusMedicalHistory": "医疗史概览",
+                "physicalExam": "体检结果",
+            },
+        },
+        runtime=_make_runtime(),
+    )
+
+    assert spec is not None
+    root = _root_element(spec)
+    child_ids = root.get("children", [])
+    elements = spec["elements"]
+    tables = [elements[child_id] for child_id in child_ids if elements[child_id]["type"] == "PlannerTable"]
+    assert {table["props"]["bizFieldKey"] for table in tables} == {
+        "healthBasic",
+        "healthStatusMedicalHistory",
+        "physicalExam",
+    }
+    assert {table["props"]["title"] for table in tables} == {
+        "健康基础档案",
+        "医疗史概览",
+        "体检结果",
+    }
+
+
+@pytest.mark.asyncio
 async def test_rule_query_spec_detail_uses_schema_description_labels(monkeypatch: pytest.MonkeyPatch) -> None:
     """detail 模式应优先展示 response_schema 描述作为字段标签。"""
 

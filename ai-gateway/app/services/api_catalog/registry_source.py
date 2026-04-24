@@ -33,7 +33,7 @@ SELECT
     e.id AS endpointId,
     e.tag_id AS tagId,
     t.name AS tagName,
-    e.name AS endpointName,
+    e.name AS name,
     e.path AS path,
     e.method AS method,
     e.summary AS summary,
@@ -257,7 +257,7 @@ def _build_entry_from_mysql_row(row: dict[str, Any]) -> ApiCatalogEntry:
         "id": row.get("endpointId"),
         "tagId": row.get("tagId"),
         "tagName": row.get("tagName"),
-        "name": row.get("endpointName"),
+        "name": row.get("name"),
         "path": row.get("path"),
         "method": row.get("method"),
         "summary": row.get("summary"),
@@ -309,6 +309,7 @@ def _build_entry(
 
     return ApiCatalogEntry(
         id=str(endpoint.get("id") or f"{method}:{path}"),
+        name=name,
         description=summary or name or f"{method} {path}",
         example_queries=_build_example_queries(name, summary),
         tags=_compact_list([tag_name, source_name, source_code, method]),
@@ -467,6 +468,7 @@ def _build_system_dict_entry() -> ApiCatalogEntry:
     field_labels = {"label": "标签", "value": "值"}
     return ApiCatalogEntry(
         id="system_dicts_v1",
+        name="系统字典",
         description="批量获取系统级字典项。用于生成表单下拉选项和枚举值映射。",
         example_queries=["获取客户等级字典", "查询客户区域下拉选项", "获取合同类型字典"],
         tags=["system", "dictionary", "options"],
