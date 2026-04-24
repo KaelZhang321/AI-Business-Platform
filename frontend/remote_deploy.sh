@@ -4,6 +4,11 @@ set -e
 # This script is executed on the REMOTE server.
 # Environment variables like ALIYUN_REGISTRY, FULL_IMAGE_NAME, etc. are passed by the deploy script.
 
+if [[ "${PROFILES_ACTIVE}" == "dev" ]]; then
+    NAMESPACE="leczcore_dev"
+else
+    NAMESPACE="leczcore_prod"
+fi
 
 IMAGE_NAME="crpi-301jbh81iyvo39lb.cn-beijing.personal.cr.aliyuncs.com/${NAMESPACE}/ai-web"  # 镜像名称
 IMAGE_TAG="1.0.0"                         # 镜像标签
