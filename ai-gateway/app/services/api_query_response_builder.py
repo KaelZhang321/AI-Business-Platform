@@ -109,6 +109,7 @@ class _QueryUISelection:
     source: str
     runtime_anchor_record: DagStepExecutionRecord | None = None
     response_field_label_index: dict[str, str] | None = None
+    aggregate_section_title_index: dict[str, str] | None = None
 
 
 class ApiQueryResponseBuilder:
@@ -190,6 +191,7 @@ class ApiQueryResponseBuilder:
             ui_selection.response_field_label_index
             or _build_response_field_label_index(ui_selection.runtime_anchor_record)
         )
+        aggregate_section_title_index = ui_selection.aggregate_section_title_index or {}
         data_for_ui = ui_selection.data_for_ui
         runtime = _build_runtime_from_execution_report(
             execution_report,
@@ -228,6 +230,9 @@ class ApiQueryResponseBuilder:
                 # 把 response_schema 的 description/title 预先解析成字段显示名索引；
                 # Renderer 仅消费该只读映射做展示，不会污染实际请求参数键名。
                 "response_field_label_index": response_field_label_index,
+                # 多步骤聚合场景下，把 section -> 接口名称映射下发给渲染层，
+                # 确保 child.props.title 与业务注册表 ui_api_endpoints.name 一致。
+                "aggregate_section_title_index": aggregate_section_title_index,
             },
             status=aggregate_status,
             runtime=runtime,
@@ -2438,6 +2443,9 @@ def _select_query_ui_payload(
             runtime_anchor_record=None,
         )
 
+    # multi-step 聚合也需要 list runtime（api/query/body）供每个 section 表格注入请求元数据。
+    terminal_record = _select_terminal_business_record(execution_report, anchor_record)
+
     # 3) 显式聚合策略：优先把多个叶子业务步骤同屏拆块展示。
     if multi_step_render_policy == "aggregate_result":
         aggregated_payload, aggregate_label_index = _build_multi_step_aggregate_payload(execution_report)
@@ -2446,10 +2454,10 @@ def _select_query_ui_payload(
                 aggregated_payload=aggregated_payload,
                 aggregate_label_index=aggregate_label_index,
                 source="multi_step_aggregate",
+                runtime_anchor_record=terminal_record,
             )
 
     # 4) terminal 与 auto 共用终态记录计算，避免双分支重复扫描执行图。
-    terminal_record = _select_terminal_business_record(execution_report, anchor_record)
     if multi_step_render_policy == "auto_result":
         aggregated_payload, aggregate_label_index = _build_multi_step_aggregate_payload(execution_report)
         # auto 策略优先保证“多块业务完整性”；不满足再回到 terminal 简洁视图。
@@ -2458,6 +2466,7 @@ def _select_query_ui_payload(
                 aggregated_payload=aggregated_payload,
                 aggregate_label_index=aggregate_label_index,
                 source="multi_step_auto_aggregate",
+                runtime_anchor_record=terminal_record,
             )
         if terminal_record is not None:
             return _build_terminal_selection(terminal_record)
@@ -2466,6 +2475,7 @@ def _select_query_ui_payload(
                 aggregated_payload=aggregated_payload,
                 aggregate_label_index=aggregate_label_index,
                 source="multi_step_auto_aggregate_fallback",
+                runtime_anchor_record=terminal_record,
             )
         summary_rows = _build_multi_step_summary_rows(execution_report)
         return _QueryUISelection(
@@ -2505,6 +2515,7 @@ def _build_multi_step_aggregate_selection(
     aggregated_payload: dict[str, Any],
     aggregate_label_index: dict[str, str],
     source: str,
+    runtime_anchor_record: DagStepExecutionRecord | None,
 ) -> _QueryUISelection:
     """构造聚合渲染选择对象。"""
 
@@ -2512,7 +2523,7 @@ def _build_multi_step_aggregate_selection(
         data_for_ui=[aggregated_payload],
         render_mode="composite",
         source=source,
-        runtime_anchor_record=None,
+        runtime_anchor_record=runtime_anchor_record,
         response_field_label_index=aggregate_label_index,
     )
 

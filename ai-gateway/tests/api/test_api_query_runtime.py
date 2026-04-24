@@ -1240,6 +1240,9 @@ def test_api_query_multi_step_can_render_aggregate_sections(monkeypatch) -> None
     }
     titles = {table["props"]["title"] for table in tables}
     assert {"健康基本信息", "病史", "体检情况"} <= titles
+    # 多步骤聚合场景也应携带完整列表 runtime，供前端二跳能力使用。
+    for table in tables:
+        _assert_runtime_metadata(table["props"], trace_id=body["trace_id"], api_suffix="physical_exam")
 
 
 def test_api_query_multi_step_auto_policy_renders_aggregate_sections(monkeypatch) -> None:
