@@ -18,6 +18,7 @@ from app.services.dynamic_ui_service import DynamicUIService, UISpecBuildResult
 from app.services.ui_catalog_service import UICatalogService
 from app.services.ui_snapshot_service import UISnapshotService
 from app.services.ui_spec_guard import UISpecValidationError, UISpecValidationResult
+from app.core.config import settings
 
 
 @dataclass(slots=True)
@@ -27,6 +28,21 @@ class FakeDynamicUIService:
     result: UISpecBuildResult
 
     async def generate_ui_spec_result(self, **_: object) -> UISpecBuildResult:
+        return self.result
+
+
+@dataclass(slots=True)
+class CaptureDynamicUIService:
+    """可捕获 generate_ui_spec_result 入参的测试替身。"""
+
+    result: UISpecBuildResult
+    captured_data: Any = None
+    captured_context: dict[str, Any] | None = None
+
+    async def generate_ui_spec_result(self, **kwargs: object) -> UISpecBuildResult:
+        self.captured_data = kwargs.get("data")
+        context = kwargs.get("context")
+        self.captured_context = context if isinstance(context, dict) else None
         return self.result
 
 
@@ -143,7 +159,13 @@ async def test_build_execution_response_returns_full_spec() -> None:
     """成功执行时应返回完整响应，并把状态回写到 control state。"""
 
     step_id, plan, record = _build_execution_record()
-    builder = _build_builder(UISpecBuildResult(spec=_build_flat_spec(), frozen=False))
+    dynamic_ui = CaptureDynamicUIService(result=UISpecBuildResult(spec=_build_flat_spec(), frozen=False))
+    builder = ApiQueryResponseBuilder(
+        dynamic_ui=dynamic_ui,
+        snapshot_service=UISnapshotService(),
+        ui_catalog_service=UICatalogService(),
+        registry_source=FakeRegistrySource(),
+    )
     state: ApiQueryState = {
         "request_mode": "nl",
         "query_text": "查询测试客户",
@@ -187,7 +209,13 @@ async def test_build_execution_response_returns_full_spec() -> None:
 async def test_stage2_degrade_response_returns_skipped_notice() -> None:
     """第二阶段降级应返回稳定 SKIPPED 响应，而不是抛裸错误。"""
 
-    builder = _build_builder(UISpecBuildResult(spec=_build_flat_spec(), frozen=False))
+    dynamic_ui = CaptureDynamicUIService(result=UISpecBuildResult(spec=_build_flat_spec(), frozen=False))
+    builder = ApiQueryResponseBuilder(
+        dynamic_ui=dynamic_ui,
+        snapshot_service=UISnapshotService(),
+        ui_catalog_service=UICatalogService(),
+        registry_source=FakeRegistrySource(),
+    )
     state: ApiQueryState = {
         "request_mode": "nl",
         "query_text": "查一下未知对象",
@@ -374,3 +402,227 @@ async def test_build_execution_response_clears_runtime_when_ui_is_frozen() -> No
     assert response.ui_runtime.list.enabled is False
     assert response.ui_runtime.detail.enabled is False
     assert response.ui_runtime.form.enabled is False
+
+
+@pytest.mark.asyncio
+async def test_build_execution_response_multi_step_defaults_to_terminal_result(monkeypatch) -> None:
+    """多步骤查询默认应返回终态业务数据而非步骤汇总。"""
+
+    customer_entry = ApiCatalogEntry(
+        id="customer_list",
+        description="客户列表",
+        domain="crm",
+        operation_safety="query",
+        method="GET",
+        path="/api/customer/list",
+        param_schema=ParamSchema(
+            properties={"ownerId": {"type": "string"}},
+            required=["ownerId"],
+        ),
+    )
+    order_entry = ApiCatalogEntry(
+        id="order_stats",
+        description="订单统计",
+        domain="erp",
+        operation_safety="query",
+        method="GET",
+        path="/api/order/stats",
+        param_schema=ParamSchema(
+            properties={"customerIds": {"type": "array"}},
+            required=["customerIds"],
+        ),
+    )
+    plan = ApiQueryExecutionPlan(
+        plan_id="plan_terminal_001",
+        steps=[
+            ApiQueryPlanStep(
+                step_id="step_customers",
+                api_id="customer_list",
+                api_path=customer_entry.path,
+                params={"ownerId": "E001"},
+                depends_on=[],
+            ),
+            ApiQueryPlanStep(
+                step_id="step_orders",
+                api_id="order_stats",
+                api_path=order_entry.path,
+                params={"customerIds": "$[step_customers.data][*].id"},
+                depends_on=["step_customers"],
+            ),
+        ],
+    )
+    records = {
+        "step_customers": DagStepExecutionRecord(
+            step=plan.steps[0],
+            entry=customer_entry,
+            resolved_params={"ownerId": "E001"},
+            execution_result=ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.SUCCESS,
+                data=[{"id": "C001", "name": "张三"}],
+                total=1,
+                trace_id="trace-terminal",
+            ),
+        ),
+        "step_orders": DagStepExecutionRecord(
+            step=plan.steps[1],
+            entry=order_entry,
+            resolved_params={"customerIds": ["C001"]},
+            execution_result=ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.SUCCESS,
+                data=[{"customerId": "C001", "orderCount": 3}],
+                total=1,
+                trace_id="trace-terminal",
+            ),
+        ),
+    }
+    dynamic_ui = CaptureDynamicUIService(result=UISpecBuildResult(spec=_build_flat_spec(), frozen=False))
+    builder = ApiQueryResponseBuilder(
+        dynamic_ui=dynamic_ui,
+        snapshot_service=UISnapshotService(),
+        ui_catalog_service=UICatalogService(),
+        registry_source=FakeRegistrySource(),
+    )
+    state: ApiQueryState = {
+        "request_mode": "nl",
+        "query_text": "查客户订单",
+        "trace_id": "trace-terminal",
+        "interaction_id": None,
+        "conversation_id": None,
+        "plan": plan,
+    }
+
+    response = await builder.build_execution_response(
+        state=state,
+        runtime_context=ApiQueryRuntimeContext(
+            step_entries={"step_customers": customer_entry, "step_orders": order_entry},
+            log_prefix="api_query[trace=trace-terminal]",
+        ),
+        execution_state={
+            "plan": plan,
+            "trace_id": "trace-terminal",
+            "records_by_step_id": records,
+            "execution_order": ["step_customers", "step_orders"],
+            "errors": [],
+            "aggregate_status": None,
+        },
+        query_domains_hint=["crm", "erp"],
+        business_intent_codes=["none"],
+    )
+
+    assert dynamic_ui.captured_data == [{"customerId": "C001", "orderCount": 3}]
+    assert dynamic_ui.captured_context is not None
+    assert dynamic_ui.captured_context["query_render_mode"] == "table"
+    assert response.ui_runtime is not None
+    assert response.ui_runtime.list.enabled is True
+    assert response.ui_runtime.list.api_id == "order_stats"
+
+
+@pytest.mark.asyncio
+async def test_build_execution_response_multi_step_can_use_summary_policy(monkeypatch) -> None:
+    """多步骤策略切到 summary_table 时应回退步骤汇总表。"""
+
+    monkeypatch.setattr(settings, "api_query_multi_step_render_policy", "summary_table")
+    customer_entry = ApiCatalogEntry(
+        id="customer_list",
+        description="客户列表",
+        domain="crm",
+        operation_safety="query",
+        method="GET",
+        path="/api/customer/list",
+        param_schema=ParamSchema(
+            properties={"ownerId": {"type": "string"}},
+            required=["ownerId"],
+        ),
+    )
+    order_entry = ApiCatalogEntry(
+        id="order_stats",
+        description="订单统计",
+        domain="erp",
+        operation_safety="query",
+        method="GET",
+        path="/api/order/stats",
+        param_schema=ParamSchema(
+            properties={"customerIds": {"type": "array"}},
+            required=["customerIds"],
+        ),
+    )
+    plan = ApiQueryExecutionPlan(
+        plan_id="plan_summary_001",
+        steps=[
+            ApiQueryPlanStep(
+                step_id="step_customers",
+                api_id="customer_list",
+                api_path=customer_entry.path,
+                params={"ownerId": "E001"},
+                depends_on=[],
+            ),
+            ApiQueryPlanStep(
+                step_id="step_orders",
+                api_id="order_stats",
+                api_path=order_entry.path,
+                params={"customerIds": "$[step_customers.data][*].id"},
+                depends_on=["step_customers"],
+            ),
+        ],
+    )
+    records = {
+        "step_customers": DagStepExecutionRecord(
+            step=plan.steps[0],
+            entry=customer_entry,
+            resolved_params={"ownerId": "E001"},
+            execution_result=ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.SUCCESS,
+                data=[{"id": "C001", "name": "张三"}],
+                total=1,
+                trace_id="trace-summary",
+            ),
+        ),
+        "step_orders": DagStepExecutionRecord(
+            step=plan.steps[1],
+            entry=order_entry,
+            resolved_params={"customerIds": ["C001"]},
+            execution_result=ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.SUCCESS,
+                data=[{"customerId": "C001", "orderCount": 3}],
+                total=1,
+                trace_id="trace-summary",
+            ),
+        ),
+    }
+    dynamic_ui = CaptureDynamicUIService(result=UISpecBuildResult(spec=_build_flat_spec(), frozen=False))
+    builder = ApiQueryResponseBuilder(
+        dynamic_ui=dynamic_ui,
+        snapshot_service=UISnapshotService(),
+        ui_catalog_service=UICatalogService(),
+        registry_source=FakeRegistrySource(),
+    )
+    state: ApiQueryState = {
+        "request_mode": "nl",
+        "query_text": "查客户订单",
+        "trace_id": "trace-summary",
+        "interaction_id": None,
+        "conversation_id": None,
+        "plan": plan,
+    }
+
+    await builder.build_execution_response(
+        state=state,
+        runtime_context=ApiQueryRuntimeContext(
+            step_entries={"step_customers": customer_entry, "step_orders": order_entry},
+            log_prefix="api_query[trace=trace-summary]",
+        ),
+        execution_state={
+            "plan": plan,
+            "trace_id": "trace-summary",
+            "records_by_step_id": records,
+            "execution_order": ["step_customers", "step_orders"],
+            "errors": [],
+            "aggregate_status": None,
+        },
+        query_domains_hint=["crm", "erp"],
+        business_intent_codes=["none"],
+    )
+
+    assert dynamic_ui.captured_data[0]["stepId"] == "step_customers"
+    assert dynamic_ui.captured_context is not None
+    assert dynamic_ui.captured_context["query_render_mode"] == "summary_table"

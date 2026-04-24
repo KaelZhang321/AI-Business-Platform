@@ -471,8 +471,18 @@ def _build_request_field_whitelist(runtime: ApiQueryUIRuntime | None) -> tuple[d
             for field_name in fields
             if isinstance(field_name, str) and field_name.strip()
         }
-        whitelist_by_api_id[api_id] = normalized_fields
-        whitelist_by_api[build_runtime_invoke_api(api_id)] = normalized_fields
+        # 同一个 api_id 可能同时承载列表与详情上下文。这里必须做并集，
+        # 避免后注册分支覆盖先注册分支，导致合法字段被误判为不在白名单内。
+        if api_id in whitelist_by_api_id:
+            whitelist_by_api_id[api_id].update(normalized_fields)
+        else:
+            whitelist_by_api_id[api_id] = set(normalized_fields)
+
+        runtime_api = build_runtime_invoke_api(api_id)
+        if runtime_api in whitelist_by_api:
+            whitelist_by_api[runtime_api].update(normalized_fields)
+        else:
+            whitelist_by_api[runtime_api] = set(normalized_fields)
 
     if runtime is None:
         return whitelist_by_api_id, whitelist_by_api
@@ -499,4 +509,3 @@ def _resolve_allowed_request_fields(
     if isinstance(api, str) and api in request_field_whitelist_by_api:
         return request_field_whitelist_by_api[api]
     return None
-

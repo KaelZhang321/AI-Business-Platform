@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+from dataclasses import dataclass
 from typing import Any, Literal
 
 from app.core.config import settings
@@ -87,6 +88,18 @@ _DELETE_DISPLAY_FIELD_PRIORITY = (
 # 这里固定保留 5 条是为了给 Renderer 足够上下文，又避免把大结果集整包塞进生成链路导致注意力失焦。
 _CONTEXT_ROW_LIMIT = 5
 _SELECT_CANDIDATE_ROW_LIMIT = 50
+_DEFAULT_MULTI_STEP_RENDER_POLICY = "summary_table"
+_SUPPORTED_MULTI_STEP_RENDER_POLICIES = {"terminal_result", "composite_result", "summary_table"}
+
+
+@dataclass(frozen=True, slots=True)
+class _QueryUISelection:
+    """封装本次查询读态渲染主数据，确保数据与渲染模式同源。"""
+
+    data_for_ui: list[dict[str, Any]]
+    render_mode: str
+    source: str
+    runtime_anchor_record: DagStepExecutionRecord | None = None
 
 
 class ApiQueryResponseBuilder:
@@ -158,12 +171,19 @@ class ApiQueryResponseBuilder:
         created_by = _normalize_response_created_by(runtime_context.user_context)
 
         # 运行时契约与 UI 主数据必须从同一份执行报告派生，避免前端看到的元数据与表格内容错位。
-        data_for_ui = _build_ui_data_from_execution_report(execution_report, anchor_record)
+        multi_step_render_policy = _resolve_multi_step_render_policy(settings.api_query_multi_step_render_policy)
+        ui_selection = _select_query_ui_payload(
+            execution_report,
+            anchor_record,
+            multi_step_render_policy=multi_step_render_policy,
+        )
+        data_for_ui = ui_selection.data_for_ui
         runtime = _build_runtime_from_execution_report(
             execution_report,
             anchor_record,
             business_intents=business_intents,
             ui_catalog_service=self._ui_catalog_service,
+            runtime_anchor_record=ui_selection.runtime_anchor_record,
         )
         runtime = await _enrich_detail_runtime_request_schema(
             runtime,
@@ -185,7 +205,7 @@ class ApiQueryResponseBuilder:
                 "empty_message": "未查到符合条件的数据，请调整筛选条件后重试。",
                 "skip_message": _build_execution_skip_message(execution_report),
                 "partial_message": "部分步骤执行失败或被短路，当前仅展示可安全返回的数据。",
-                "query_render_mode": _infer_query_render_mode(execution_report, anchor_record),
+                "query_render_mode": ui_selection.render_mode,
                 "flow_num": state["trace_id"],
                 "created_by": created_by,
                 "request_params": dict(anchor_record.resolved_params) if anchor_record is not None else {},
@@ -241,12 +261,15 @@ class ApiQueryResponseBuilder:
             )
 
         logger.info(
-            "%s success mode=%s status=%s api_id=%s step_count=%s",
+            "%s success mode=%s status=%s api_id=%s step_count=%s render_policy=%s render_mode=%s payload_source=%s",
             runtime_context.log_prefix,
             state["request_mode"],
             aggregate_status,
             anchor_record.entry.id if anchor_record else None,
             len(execution_report.records_by_step_id),
+            multi_step_render_policy,
+            ui_selection.render_mode,
+            ui_selection.source,
         )
         response = ApiQueryResponse(
             trace_id=state["trace_id"],
@@ -2129,31 +2152,9 @@ def _normalize_rows(data: list[dict[str, Any]] | dict[str, Any] | None) -> list[
 def _build_ui_data_from_execution_report(
     execution_report: DagExecutionReport,
     anchor_record: DagStepExecutionRecord | None,
-) -> list[dict[str, Any]]:
-    """为当前规则渲染器构造可展示的数据集。"""
-    wait_select_rows = _build_wait_select_rows(execution_report)
-    if wait_select_rows:
-        return wait_select_rows
-
-    if len(execution_report.records_by_step_id) <= 1 and anchor_record is not None:
-        return _normalize_data_for_ui(anchor_record.execution_result)
-
-    summary_rows: list[dict[str, Any]] = []
-    for step_id in execution_report.execution_order:
-        record = execution_report.records_by_step_id[step_id]
-        shaped_data, shaped_meta = _shape_context_data(record.execution_result.data)
-        summary_rows.append(
-            {
-                "stepId": step_id,
-                "domain": record.entry.domain,
-                "apiPath": record.entry.path,
-                "status": record.execution_result.status.value,
-                "recordCount": _count_execution_rows(record.execution_result),
-                "renderCount": shaped_meta["render_row_count"],
-                "truncated": shaped_meta["truncated"],
-            }
-        )
-    return summary_rows
+) -> _QueryUISelection:
+    """为查询读态挑选主数据与渲染模式。"""
+    return _select_query_ui_payload(execution_report, anchor_record, multi_step_render_policy="summary_table")
 
 
 def _build_wait_select_rows(execution_report: DagExecutionReport) -> list[dict[str, Any]]:
@@ -2256,6 +2257,7 @@ def _build_runtime_from_execution_report(
     *,
     business_intents: list[ApiQueryBusinessIntent],
     ui_catalog_service: UICatalogService,
+    runtime_anchor_record: DagStepExecutionRecord | None = None,
 ) -> ApiQueryUIRuntime:
     """根据执行报告推导前端运行时契约。"""
     wait_select_runtime = _build_wait_select_runtime(
@@ -2265,11 +2267,16 @@ def _build_runtime_from_execution_report(
     if wait_select_runtime is not None:
         return wait_select_runtime
 
-    if len(execution_report.records_by_step_id) == 1 and anchor_record is not None:
+    # 终态渲染时 runtime 必须绑定到同一条业务记录，避免“展示终态数据 + 多步骤默认能力”错配触发 Guard 冻结。
+    resolved_runtime_anchor = runtime_anchor_record
+    if resolved_runtime_anchor is None and len(execution_report.records_by_step_id) == 1:
+        resolved_runtime_anchor = anchor_record
+
+    if resolved_runtime_anchor is not None:
         return _build_ui_runtime(
-            anchor_record.entry,
-            anchor_record.execution_result,
-            params=anchor_record.resolved_params,
+            resolved_runtime_anchor.entry,
+            resolved_runtime_anchor.execution_result,
+            params=resolved_runtime_anchor.resolved_params,
             business_intents=business_intents,
             ui_catalog_service=ui_catalog_service,
         )
@@ -2315,19 +2322,146 @@ def _build_wait_select_runtime(
     return None
 
 
+def _resolve_multi_step_render_policy(raw_policy: str | None) -> str:
+    """解析多步骤渲染策略，非法值统一回退到兼容策略。"""
+
+    policy = str(raw_policy or "").strip().lower()
+    if policy in _SUPPORTED_MULTI_STEP_RENDER_POLICIES:
+        return policy
+    return _DEFAULT_MULTI_STEP_RENDER_POLICY
+
+
+def _select_query_ui_payload(
+    execution_report: DagExecutionReport,
+    anchor_record: DagStepExecutionRecord | None,
+    *,
+    multi_step_render_policy: str,
+) -> _QueryUISelection:
+    """按策略选择查询读态的主数据载荷。
+
+    约束：
+        1. WAIT_SELECT_REQUIRED 始终优先，避免被策略分支绕开。
+        2. 多步骤默认采用 terminal_result，直接展示最后一个成功步骤的数据。
+        3. composite_result 在规则渲染阶段先回退到 terminal_result，后续可叠加 LLM 组合视图。
+    """
+    wait_select_rows = _build_wait_select_rows(execution_report)
+    if wait_select_rows:
+        return _QueryUISelection(
+            data_for_ui=wait_select_rows,
+            render_mode="table",
+            source="wait_select_candidates",
+        )
+
+    if len(execution_report.records_by_step_id) <= 1:
+        if anchor_record is None:
+            return _QueryUISelection(data_for_ui=[], render_mode="table", source="empty")
+        rows = _normalize_data_for_ui(anchor_record.execution_result)
+        return _QueryUISelection(
+            data_for_ui=rows,
+            render_mode=_infer_render_mode_from_rows(rows, anchor_record),
+            source="single_step_anchor",
+            runtime_anchor_record=anchor_record,
+        )
+
+    if multi_step_render_policy == "summary_table":
+        summary_rows = _build_multi_step_summary_rows(execution_report)
+        return _QueryUISelection(
+            data_for_ui=summary_rows,
+            render_mode="summary_table",
+            source="multi_step_summary",
+            runtime_anchor_record=None,
+        )
+
+    terminal_record = _select_terminal_business_record(execution_report, anchor_record)
+    if terminal_record is not None:
+        rows = _normalize_data_for_ui(terminal_record.execution_result)
+        return _QueryUISelection(
+            data_for_ui=rows,
+            render_mode=_infer_render_mode_from_rows(rows, terminal_record),
+            source=f"terminal:{terminal_record.step.step_id}",
+            runtime_anchor_record=terminal_record,
+        )
+
+    # 当 terminal/composite 找不到可展示业务数据时，回退到步骤汇总表保证可解释性。
+    summary_rows = _build_multi_step_summary_rows(execution_report)
+    return _QueryUISelection(
+        data_for_ui=summary_rows,
+        render_mode="summary_table",
+        source="multi_step_summary_fallback",
+        runtime_anchor_record=None,
+    )
+
+
+def _select_terminal_business_record(
+    execution_report: DagExecutionReport,
+    anchor_record: DagStepExecutionRecord | None,
+) -> DagStepExecutionRecord | None:
+    """选择多步骤业务终态记录。"""
+
+    preferred_statuses = (
+        ApiQueryExecutionStatus.SUCCESS,
+        ApiQueryExecutionStatus.PARTIAL_SUCCESS,
+        ApiQueryExecutionStatus.EMPTY,
+    )
+    for step_id in reversed(execution_report.execution_order):
+        record = execution_report.records_by_step_id[step_id]
+        if record.execution_result.status not in preferred_statuses:
+            continue
+        if _normalize_data_for_ui(record.execution_result):
+            return record
+        if record.execution_result.status == ApiQueryExecutionStatus.EMPTY:
+            return record
+
+    if anchor_record is None:
+        return None
+    if _normalize_data_for_ui(anchor_record.execution_result):
+        return anchor_record
+    return None
+
+
+def _build_multi_step_summary_rows(execution_report: DagExecutionReport) -> list[dict[str, Any]]:
+    """构造多步骤执行汇总行。"""
+    summary_rows: list[dict[str, Any]] = []
+    for step_id in execution_report.execution_order:
+        record = execution_report.records_by_step_id[step_id]
+        _, shaped_meta = _shape_context_data(record.execution_result.data)
+        summary_rows.append(
+            {
+                "stepId": step_id,
+                "domain": record.entry.domain,
+                "apiPath": record.entry.path,
+                "status": record.execution_result.status.value,
+                "recordCount": _count_execution_rows(record.execution_result),
+                "renderCount": shaped_meta["render_row_count"],
+                "truncated": shaped_meta["truncated"],
+            }
+        )
+    return summary_rows
+
+
+def _infer_render_mode_from_rows(
+    rows: list[dict[str, Any]],
+    record: DagStepExecutionRecord | None,
+) -> str:
+    """根据行数据形态推断渲染模式。"""
+    if not rows:
+        return "table"
+    if len(rows) == 1 and record is not None and isinstance(record.execution_result.data, dict):
+        return "detail"
+    return "table"
+
+
 def _infer_query_render_mode(
     execution_report: DagExecutionReport,
     anchor_record: DagStepExecutionRecord | None,
 ) -> str:
     """推断当前查询结果应使用的读态渲染模式。"""
 
-    if len(execution_report.records_by_step_id) > 1:
-        return "summary_table"
-    if anchor_record is None:
-        return "table"
-    if isinstance(anchor_record.execution_result.data, dict):
-        return "detail"
-    return "table"
+    return _select_query_ui_payload(
+        execution_report,
+        anchor_record,
+        multi_step_render_policy="summary_table",
+    ).render_mode
 
 
 def _build_execution_title(execution_report: DagExecutionReport, anchor_record: DagStepExecutionRecord | None) -> str:

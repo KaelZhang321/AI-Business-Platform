@@ -1545,6 +1545,122 @@ async def test_workflow_predecessor_source_path_relative_or_legacy_root_both_sup
 
 
 @pytest.mark.asyncio
+async def test_workflow_multi_candidate_repairs_required_predecessor_binding_semantic_error() -> None:
+    predecessor_entry = ApiCatalogEntry(
+        id="customer_info_v1",
+        description="客户信息查询",
+        domain="oms",
+        method="GET",
+        path="/leczcore-crm/customerInquiry/getCustomerInfo",
+        status="active",
+        operation_safety="query",
+        response_data_path="result.records",
+    )
+    target_entry = _build_predecessor_target_entry_with_source_path("$.idCard")
+    another_entry = ApiCatalogEntry(
+        id="customer_profile_v1",
+        description="客户概览",
+        domain="oms",
+        method="GET",
+        path="/leczcore-crm/customer/profile",
+        status="active",
+        operation_safety="query",
+    )
+
+    class MultiCandidateBadBindingPlanner:
+        def __init__(self) -> None:
+            self.build_calls = 0
+            self.validate_calls = 0
+
+        async def build_plan(self, query, candidates, user_context, route_hint, predecessor_hints=None, *, trace_id=None):
+            self.build_calls += 1
+            from app.models.schemas import ApiQueryExecutionPlan, ApiQueryPlanStep
+
+            return ApiQueryExecutionPlan(
+                plan_id="dag_query_liuhaijian_prepaid_plan",
+                steps=[
+                    ApiQueryPlanStep(
+                        step_id="step_customer_info_v1",
+                        api_id="customer_info_v1",
+                        api_path="/leczcore-crm/customerInquiry/getCustomerInfo",
+                        params={"customerInfo": "刘海坚"},
+                        depends_on=[],
+                    ),
+                    ApiQueryPlanStep(
+                        step_id="step_stored_plan_v1",
+                        api_id="stored_plan_v1",
+                        api_path="/leczcore-data-manage/dwCustomerArchive/planAssetOverview",
+                        params={"encryptedIdCard": "$[step_customer_info_v1.data].data.idCard"},
+                        depends_on=["step_customer_info_v1"],
+                    ),
+                ],
+            )
+
+        def validate_plan(self, plan, candidates, predecessor_hints=None, *, subgraph_result=None, trace_id=None):
+            self.validate_calls += 1
+            from app.services.api_catalog.dag_planner import ApiDagPlanner
+
+            return ApiDagPlanner().validate_plan(
+                plan,
+                candidates,
+                predecessor_hints=predecessor_hints,
+                subgraph_result=subgraph_result,
+                trace_id=trace_id,
+            )
+
+    class OmsExecutor:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict[str, object]]] = []
+
+        async def call(self, entry, params, user_token=None, trace_id=None, user_id=None):
+            self.calls.append((entry.id, dict(params)))
+            if entry.id == "customer_info_v1":
+                return ApiQueryExecutionResult(
+                    status=ApiQueryExecutionStatus.SUCCESS,
+                    data=[{"idCard": "2512160009"}],
+                    total=1,
+                    trace_id=trace_id,
+                )
+            return ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.SUCCESS,
+                data=[{"encryptedIdCard": params.get("encryptedIdCard")}],
+                total=1,
+                trace_id=trace_id,
+            )
+
+    retriever = StubRetriever([target_entry, another_entry])
+    extractor = StubExtractor(target_entry, {}, business_intents=["none"])
+    executor = OmsExecutor()
+    planner = MultiCandidateBadBindingPlanner()
+    workflow = _build_workflow(
+        retriever=retriever,
+        extractor=extractor,
+        executor=executor,  # type: ignore[arg-type]
+        planner=planner,  # type: ignore[arg-type]
+        registry_source=StubRegistrySource([target_entry, predecessor_entry, another_entry]),
+        ui_result=UISpecBuildResult(spec=_build_flat_spec(), frozen=False),
+    )
+
+    response = await workflow.run(
+        ApiQueryRequest.model_validate({"query": "查询刘海坚的储值方案"}),
+        trace_id="trace-multi-candidate-bad-binding",
+        interaction_id=None,
+        conversation_id=None,
+        user_context={},
+        user_token=None,
+    )
+
+    assert response.execution_status == ApiQueryExecutionStatus.SUCCESS
+    assert planner.build_calls == 1
+    assert planner.validate_calls == 1
+    assert [item[0] for item in executor.calls] == ["customer_info_v1", "stored_plan_v1"]
+    assert executor.calls[-1][1]["encryptedIdCard"] == ["2512160009"]
+    assert response.error is None
+    assert response.execution_plan is not None
+    assert response.execution_plan.steps[1].params["encryptedIdCard"] == "$[step_customer_info_v1.data][*].idCard"
+
+
+@pytest.mark.asyncio
 async def test_workflow_delete_role_returns_candidate_table_when_multiple_matches() -> None:
     delete_entry = _build_role_delete_entry()
     list_entry = _build_role_list_entry()

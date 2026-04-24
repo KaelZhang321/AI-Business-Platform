@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from typing import Any, Generic, TypeVar
@@ -8,6 +9,7 @@ from app.services.workflows.graph_events import GraphEventEnvelope, build_graph_
 from app.services.workflows.types import WorkflowRunContext, WorkflowTraceContext
 
 StateT = TypeVar("StateT")
+logger = logging.getLogger(__name__)
 
 
 class BaseStateGraphWorkflow(ABC, Generic[StateT]):
@@ -49,6 +51,11 @@ class BaseStateGraphWorkflow(ABC, Generic[StateT]):
 
         if self._compiled_graph is None or force_recompile:
             self._compiled_graph = self.build_graph().compile()
+            try:
+                with open("langgraph_flow.png", "wb") as f:
+                    f.write(self._compiled_graph.get_graph().draw_mermaid_png())
+            except Exception as exc:  # pragma: no cover - 仅观测辅助，不影响业务执行
+                logger.warning("skip writing langgraph flow image: %s", exc)
         return self._compiled_graph
 
     def reset_graph(self) -> None:

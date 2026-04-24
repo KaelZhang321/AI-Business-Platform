@@ -392,10 +392,111 @@ def test_validate_plan_rejects_required_predecessor_without_binding() -> None:
         ]
     }
 
-    with pytest.raises(DagPlanValidationError) as exc_info:
-        planner.validate_plan(plan, candidates, predecessor_hints=predecessor_hints)
+    step_entries = planner.validate_plan(plan, candidates, predecessor_hints=predecessor_hints)
 
-    assert exc_info.value.code == "planner_missing_required_predecessor"
+    assert step_entries["step_role_detail"].id == "role_detail_v1"
+    assert plan.steps[1].params["roleId"] == "$[step_role_list.data].id"
+
+
+def test_validate_plan_enforces_required_predecessor_binding_when_llm_returns_wrong_semantic_path() -> None:
+    planner = ApiDagPlanner()
+    detail_entry = _make_entry(entry_id="stored_plan_v1", path="/api/plan/detail", required=["encryptedIdCard"])
+    predecessor_entry = _make_entry(entry_id="customer_info_v1", path="/api/customer/info")
+    predecessor_entry.response_data_path = "result.records"
+    candidates = [
+        ApiCatalogSearchResult(entry=detail_entry, score=0.95),
+        ApiCatalogSearchResult(entry=predecessor_entry, score=0.93),
+    ]
+    plan = ApiQueryExecutionPlan(
+        plan_id="dag_semantic_fix_binding",
+        steps=[
+            ApiQueryPlanStep(
+                step_id="step_customer_info_v1",
+                api_id="customer_info_v1",
+                api_path="/api/customer/info",
+                params={"customerInfo": "刘海坚"},
+                depends_on=[],
+            ),
+            ApiQueryPlanStep(
+                step_id="step_stored_plan_v1",
+                api_id="stored_plan_v1",
+                api_path="/api/plan/detail",
+                params={"encryptedIdCard": "$[step_customer_info_v1.data].data.idCard"},
+                depends_on=["step_customer_info_v1"],
+            ),
+        ],
+    )
+    predecessor_hints = {
+        "stored_plan_v1": [
+            ApiCatalogPredecessorSpec(
+                predecessor_api_id="customer_info_v1",
+                required=True,
+                order=1,
+                param_bindings=[
+                    ApiCatalogPredecessorParamBinding(
+                        target_param="encryptedIdCard",
+                        source_path="$.idCard",
+                        select_mode="single",
+                    )
+                ],
+            )
+        ]
+    }
+
+    step_entries = planner.validate_plan(plan, candidates, predecessor_hints=predecessor_hints)
+
+    assert step_entries["step_stored_plan_v1"].id == "stored_plan_v1"
+    assert plan.steps[1].params["encryptedIdCard"] == "$[step_customer_info_v1.data].idCard"
+
+
+def test_validate_plan_enforces_required_predecessor_binding_and_appends_dependency() -> None:
+    planner = ApiDagPlanner()
+    detail_entry = _make_entry(entry_id="role_detail_v1", path="/api/roles/detail", required=["roleId"])
+    predecessor_entry = _make_entry(entry_id="role_list_v1", path="/api/roles/list")
+    candidates = [
+        ApiCatalogSearchResult(entry=detail_entry, score=0.95),
+        ApiCatalogSearchResult(entry=predecessor_entry, score=0.93),
+    ]
+    plan = ApiQueryExecutionPlan(
+        plan_id="dag_required_predecessor_append_dependency",
+        steps=[
+            ApiQueryPlanStep(
+                step_id="step_role_list",
+                api_id="role_list_v1",
+                api_path="/api/roles/list",
+                params={},
+                depends_on=[],
+            ),
+            ApiQueryPlanStep(
+                step_id="step_role_detail",
+                api_id="role_detail_v1",
+                api_path="/api/roles/detail",
+                params={"roleId": "S1001"},
+                depends_on=[],
+            ),
+        ],
+    )
+    predecessor_hints = {
+        "role_detail_v1": [
+            ApiCatalogPredecessorSpec(
+                predecessor_api_id="role_list_v1",
+                required=True,
+                order=1,
+                param_bindings=[
+                    ApiCatalogPredecessorParamBinding(
+                        target_param="roleId",
+                        source_path="$.id",
+                        select_mode="first",
+                    )
+                ],
+            )
+        ]
+    }
+
+    planner.validate_plan(plan, candidates, predecessor_hints=predecessor_hints)
+
+    assert "step_role_list" in plan.steps[1].depends_on
+    assert plan.steps[1].params["roleId"] == "$[step_role_list.data].id"
 
 
 def test_validate_plan_allows_optional_predecessor_omission() -> None:
@@ -575,9 +676,9 @@ async def test_execute_plan_skips_downstream_when_json_binding_is_empty() -> Non
     assert [call[0] for call in stub_executor.calls] == ["customers"]
     assert report.records_by_step_id["step_customers"].execution_result.status == ApiQueryExecutionStatus.EMPTY
     downstream_result = report.records_by_step_id["step_orders"].execution_result
-    assert downstream_result.status == ApiQueryExecutionStatus.SKIPPED
-    assert downstream_result.skipped_reason == "skipped_due_to_empty_upstream"
-    assert downstream_result.meta["empty_bindings"] == ["$[step_customers.data][*].id"]
+    assert downstream_result.status == ApiQueryExecutionStatus.ERROR
+    assert downstream_result.error_code == "EMPTY_UPSTREAM_BINDING_REQUIRED"
+    assert downstream_result.meta["required_empty_bindings"] == ["$[step_customers.data][*].id"]
 
 
 @pytest.mark.asyncio

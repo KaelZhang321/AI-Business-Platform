@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api.routes import api_query as api_query_routes
+from app.core.config import settings
 from app.models.schemas import (
     ApiQueryExecutionPlan,
     ApiQueryExecutionResult,
@@ -674,7 +675,8 @@ def test_api_query_executes_multi_step_plan_and_returns_multi_step_context_pool(
     children = _get_root_children(body["ui_spec"])
     assert [child["type"] for child in children] == ["PlannerForm", "PlannerTable", "PlannerPagination"]
     table = children[1]
-    assert table["props"]["columns"][0]["dataIndex"] == "stepId"
+    assert table["props"]["columns"][0]["dataIndex"] == "customerId"
+    assert table["props"]["dataSource"][0]["orderCount"] == 3
 
 
 def test_api_query_renders_partial_success_with_notice_and_table(monkeypatch) -> None:
@@ -788,6 +790,116 @@ def test_api_query_renders_partial_success_with_notice_and_table(monkeypatch) ->
     assert body["execution_status"] == "PARTIAL_SUCCESS"
     root = _get_root_element(body["ui_spec"])
     assert "部分步骤执行失败" in root["props"]["subtitle"]
+    table = _get_root_children(body["ui_spec"])[1]
+    assert table["props"]["dataSource"][0]["customerId"] == "C001"
+
+
+def test_api_query_multi_step_can_fallback_to_summary_table_via_policy(monkeypatch) -> None:
+    customer_entry = ApiCatalogEntry(
+        id="customer_list",
+        description="查询客户列表",
+        domain="crm",
+        operation_safety="query",
+        method="GET",
+        path="/api/v1/customers",
+        param_schema={
+            "type": "object",
+            "properties": {"owner_id": {"type": "string"}},
+            "required": ["owner_id"],
+        },
+    )
+    order_entry = ApiCatalogEntry(
+        id="order_stats",
+        description="查询客户订单统计",
+        domain="erp",
+        operation_safety="query",
+        method="GET",
+        path="/api/v1/orders/stats",
+        param_schema={
+            "type": "object",
+            "properties": {"customer_ids": {"type": "array"}},
+            "required": ["customer_ids"],
+        },
+    )
+
+    class MultiRetriever:
+        async def search(self, query: str, top_k: int = 3, score_threshold: float = 0.3, filters=None):
+            return [
+                ApiCatalogSearchResult(entry=customer_entry, score=0.95),
+                ApiCatalogSearchResult(entry=order_entry, score=0.93),
+            ]
+
+        async def search_stratified(self, query: str, *, domains, top_k: int = 3, filters=None, **kwargs):
+            return await self.search(query, top_k=top_k, score_threshold=0.3, filters=filters)
+
+    class RouteOnlyExtractor:
+        async def route_query(self, query: str, user_context: dict[str, object], **kwargs):
+            return ApiQueryRoutingResult(
+                query_domains=["crm", "erp"],
+                business_intents=["none"],
+                is_multi_domain=True,
+                reasoning="summary policy runtime test",
+                route_status="ok",
+            )
+
+    class PlannerStub:
+        async def build_plan(self, query, candidates, user_context, route_hint, **kwargs):
+            return ApiQueryExecutionPlan(
+                plan_id="dag_customer_orders_summary",
+                steps=[
+                    ApiQueryPlanStep(
+                        step_id="step_customers",
+                        api_path="/api/v1/customers",
+                        params={"owner_id": "E8899"},
+                        depends_on=[],
+                    ),
+                    ApiQueryPlanStep(
+                        step_id="step_orders",
+                        api_path="/api/v1/orders/stats",
+                        params={"customer_ids": "$[step_customers.data][*].customerId"},
+                        depends_on=["step_customers"],
+                    ),
+                ],
+            )
+
+        def validate_plan(self, plan, candidates):
+            return {
+                "step_customers": customer_entry,
+                "step_orders": order_entry,
+            }
+
+    class MultiStepExecutor:
+        async def call(self, entry, params, user_token=None, trace_id: str | None = None, user_id: str | None = None):
+            if entry.id == "customer_list":
+                return ApiQueryExecutionResult(
+                    status=ApiQueryExecutionStatus.SUCCESS,
+                    data=[{"customerId": "C001", "customerName": "张三"}],
+                    total=1,
+                    trace_id=trace_id,
+                )
+            return ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.SUCCESS,
+                data=[{"customerId": "C001", "orderCount": 3}],
+                total=1,
+                trace_id=trace_id,
+            )
+
+    monkeypatch.setattr(settings, "api_query_multi_step_render_policy", "summary_table")
+    stub_services = (
+        MultiRetriever(),
+        RouteOnlyExtractor(),
+        MultiStepExecutor(),
+        api_query_routes.DynamicUIService(),
+        PassThroughSnapshotService(),
+    )
+    monkeypatch.setattr(api_query_routes, "_get_services", lambda: stub_services)
+    monkeypatch.setattr(api_query_routes, "_get_planner", lambda: PlannerStub())
+
+    client = TestClient(create_test_app())
+    response = client.post("/api/v1/api-query", json={"query": "查我的客户，并看他们的订单统计"})
+
+    assert response.status_code == 200
+    body = response.json()
     table = _get_root_children(body["ui_spec"])[1]
     assert table["props"]["dataSource"][0]["stepId"] == "step_customers"
 

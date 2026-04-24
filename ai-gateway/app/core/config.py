@@ -91,6 +91,8 @@ class Settings(BaseSettings):
 
     # 动态UI
     llm_ui_spec_enabled: bool = False
+    # 多步骤查询渲染策略：默认展示业务终态，必要时可回退步骤汇总。
+    api_query_multi_step_render_policy: str = "terminal_result"
 
     # API Query 专用 LLM（Volcengine Ark）
     # 这一组配置只服务 `/api/v1/api-query`，避免把网关内其他问答/聊天链路强行绑到同一供应商。
@@ -118,9 +120,9 @@ class Settings(BaseSettings):
     api_query_runtime_timeout_seconds: float = 60.0
     api_query_runtime_enabled: bool = True
     api_query_execution_max_step_count: int = Field(8, ge=1, le=50)
-    api_query_execution_step_timeout_seconds: float = Field(30.0, ge=0.1, le=60.0)
-    api_query_execution_graph_timeout_seconds: float = Field(20.0, ge=0.1, le=120.0)
-    api_query_execution_min_step_budget_seconds: float = Field(0.5, ge=0.1, le=10.0)
+    api_query_execution_step_timeout_seconds: float = Field(600.0, ge=0.1, le=600.0)
+    api_query_execution_graph_timeout_seconds: float = Field(30.0, ge=0.1, le=120.0)
+    api_query_execution_min_step_budget_seconds: float = Field(5, ge=0.1, le=10.0)
 
     # Intent classification
     intent_confidence_threshold: float = Field(0.55, ge=0.0, le=1.0)
