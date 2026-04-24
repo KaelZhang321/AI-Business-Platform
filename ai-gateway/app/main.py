@@ -14,6 +14,7 @@ from app.api.routes import bi, chat, knowledge, query
 from app.api.routes.api_query import router as api_query_router
 from app.api.routes.catalog_governance import router as catalog_governance_router
 from app.api.routes.health_quadrant import get_health_quadrant_service, router as health_quadrant_router
+from app.api.routes.smart_meal_risk import get_smart_meal_risk_service, router as smart_meal_risk_router
 from app.core.config import settings
 from app.core.error_codes import BusinessError, ErrorCode
 from app.models.schemas import HealthResponse
@@ -214,6 +215,14 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.warning("HealthQuadrantService 连接池预热失败: %s", exc)
 
+    # 智能订餐服务预热连接池，降低首请求延迟。
+    smart_meal_risk_service = get_smart_meal_risk_service()
+    try:
+        await smart_meal_risk_service.warmup()
+        logger.info("SmartMealRiskService 连接池预热完成")
+    except Exception as exc:
+        logger.warning("SmartMealRiskService 连接池预热失败: %s", exc)
+
     # ── 启动缓存失效监听器（S5-6 + S5-11 语义缓存联动）────
     cache_task = None
     try:
@@ -274,6 +283,13 @@ async def lifespan(app: FastAPI):
         logger.info("HealthQuadrantService 已关闭")
     except Exception as exc:
         logger.warning("关闭 HealthQuadrantService 失败: %s", exc)
+
+    # 智能订餐服务资源
+    try:
+        await get_smart_meal_risk_service().close()
+        logger.info("SmartMealRiskService 已关闭")
+    except Exception as exc:
+        logger.warning("关闭 SmartMealRiskService 失败: %s", exc)
 
     # Runtime 模型配置服务（MySQL 连接池）
     try:
@@ -407,6 +423,7 @@ app.include_router(bi.router, prefix="/api/v1")
 app.include_router(api_query_router, prefix="/api/v1")
 app.include_router(catalog_governance_router, prefix="/api/v1")
 app.include_router(health_quadrant_router, prefix="/api/v1")
+app.include_router(smart_meal_risk_router, prefix="/api/v1")
 
 # MCP Server 路由
 from app.mcp_server.server import mcp_server  # noqa: E402

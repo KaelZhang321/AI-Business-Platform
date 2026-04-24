@@ -170,6 +170,31 @@ class HealthQuadrantConfirmEnvelopeResponse(BaseModel):
     data: HealthQuadrantConfirmResponse = Field(..., description="确认结果")
 
 
+class SmartMealRiskIdentifyRequest(BaseModel):
+    """智能订餐风险识别请求。"""
+
+    id_card_no: str = Field(..., min_length=1, description="客户明文身份证号")
+    sex: str = Field(..., min_length=1, description="性别")
+    age: int = Field(..., ge=0, le=130, description="年龄")
+    package_code: str = Field(..., min_length=1, description="套餐编码")
+
+
+class SmartMealRiskItem(BaseModel):
+    """智能订餐风险明细。"""
+
+    ingredient: str = Field(..., description="食材名称")
+    intolerance_level: str = Field(..., description="不耐受级别")
+    source_dish: str = Field(..., description="来源菜品")
+
+
+class SmartMealRiskIdentifyEnvelopeResponse(BaseModel):
+    """智能订餐风险识别响应壳。"""
+
+    code: int = Field(0, description="业务状态码，0 表示成功")
+    message: str = Field("ok", description="响应消息")
+    data: list[SmartMealRiskItem] = Field(default_factory=list, description="冲突食材列表")
+
+
 class ApiQueryRequest(BaseModel):
     """`api_query` 的自然语言请求模型。
 
