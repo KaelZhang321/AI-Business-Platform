@@ -5,6 +5,7 @@ export type AppPage =
   | 'dashboard'
   | 'function-square'
   | 'ai-report-comparison'
+  | 'health-report'
   | 'ai-four-quadrant'
   | 'ai-component-management'
   | 'ui-builder'
@@ -33,6 +34,7 @@ export type NavigationIcon =
   | 'layout-dashboard'
   | 'sparkles'
   | 'search'
+  | 'file-heart'
   | 'bell'
   | 'settings';
 
@@ -70,6 +72,11 @@ export const PAGE_DEFINITIONS: Record<AppPage, PageDefinition> = {
   'ai-report-comparison': {
     path: '/ai-report-comparison',
     title: 'AI报告对比',
+    implemented: true,
+  },
+  'health-report': {
+    path: '/health-report',
+    title: '体检报告',
     implemented: true,
   },
   'ai-four-quadrant': {
@@ -204,6 +211,11 @@ export const NAVIGATION_ITEMS: NavigationItemDefinition[] = [
     page: 'customer-search',
     label: '客户查询',
     icon: 'search',
+  },
+  {
+    page: 'health-report',
+    label: '体检报告',
+    icon: 'file-heart',
   },
 ];
 

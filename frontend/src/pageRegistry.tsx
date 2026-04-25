@@ -127,6 +127,12 @@ const AIFourQuadrantView = lazy(async () => {
   return { default: module.AIFourQuadrantView };
 });
 
+/** 体检报告页 */
+const HealthReportView = lazy(async () => {
+  const module = await import('./components/HealthReport/HealthReportView');
+  return { default: module.HealthReportView };
+});
+
 /** 页面加载中的验证动画（Suspense fallback） */
 function PageLoadingFallback() {
   return (
@@ -152,6 +158,13 @@ const PAGE_RENDERERS: Partial<Record<AppPage, PageRenderer>> = {
   ),
   'ai-report-comparison': ({ navigateToPage, isDarkMode, setIsDarkMode }) => (
     <AIReportComparisonDetailView
+      setCurrentPage={navigateToPage}
+      isDarkMode={isDarkMode}
+      setIsDarkMode={setIsDarkMode}
+    />
+  ),
+  'health-report': ({ navigateToPage, isDarkMode, setIsDarkMode }) => (
+    <HealthReportView
       setCurrentPage={navigateToPage}
       isDarkMode={isDarkMode}
       setIsDarkMode={setIsDarkMode}

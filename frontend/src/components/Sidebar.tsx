@@ -2,7 +2,7 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  Home, LayoutDashboard, Sparkles, Search, Bell, Settings,
+  Home, LayoutDashboard, Sparkles, Search, Bell, Settings, FileHeart,
   Sun, Moon, LogOut, Menu, ChevronRight, Activity
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
@@ -47,6 +47,7 @@ const ICON_MAP: Record<NavigationIcon, LucideIcon> = {
   'layout-dashboard': LayoutDashboard,
   sparkles: Sparkles,
   search: Search,
+  'file-heart': FileHeart,
   bell: Bell,
   settings: Settings,
 };
