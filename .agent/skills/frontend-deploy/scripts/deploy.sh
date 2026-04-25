@@ -148,7 +148,7 @@ echo "--- 4. Remote Deployment ---"
 execute_remote() {
     local script_path="$1"
     
-    local env_vars="export ALIYUN_REGISTRY='$ALIYUN_REGISTRY'; export ALIYUN_NAMESPACE='$ALIYUN_NAMESPACE'; export ALIYUN_USER='$ALIYUN_USER'; export ALIYUN_PASSWORD='$ALIYUN_PASSWORD'; export IMAGE_NAME='$IMAGE_NAME'; export IMAGE_TAG='$IMAGE_TAG'; export FULL_IMAGE_NAME='$FULL_IMAGE_NAME'; export REMOTE_DIR='$REMOTE_DIR';"
+    local env_vars="export ALIYUN_REGISTRY='$ALIYUN_REGISTRY'; export ALIYUN_NAMESPACE='$ALIYUN_NAMESPACE'; export ALIYUN_USER='$ALIYUN_USER'; export ALIYUN_PASSWORD='$ALIYUN_PASSWORD'; export IMAGE_NAME='$IMAGE_NAME'; export IMAGE_TAG='$IMAGE_TAG'; export FULL_IMAGE_NAME='$FULL_IMAGE_NAME'; export BUILD_ENV='$BUILD_ENV'; export REMOTE_DIR='$REMOTE_DIR';"
 
     if [ -n "$REMOTE_PASSWORD" ]; then
         if ! command -v sshpass &>/dev/null; then
