@@ -20,6 +20,7 @@ import {
   Filter
 } from 'lucide-react';
 
+/** 护士病房护理任务模拟数据 */
 const WARD_TASKS = [
   { id: '1', patient: '张晓彤', bed: '01', task: '静脉输液', time: '10:30', status: '进行中', priority: '高' },
   { id: '2', patient: '李建国', bed: '05', task: '生命体征测量', time: '11:00', status: '待执行', priority: '中' },
@@ -27,11 +28,17 @@ const WARD_TASKS = [
   { id: '4', patient: '赵强', bed: '12', task: '口服药发放', time: '11:30', status: '待执行', priority: '低' },
 ];
 
+/** 患者体征异常预警模拟数据 */
 const VITAL_ALERTS = [
   { patient: '李建国', bed: '05', type: '心率', value: '112 bpm', time: '3分钟前', level: '警告' },
   { patient: '王芳', bed: '08', type: '体温', value: '38.5 ℃', time: '10分钟前', level: '注意' },
 ];
 
+/**
+ * 护士 AI 工作台视图组件：
+ * 主要面向护士群体，展示病区概况（在院/任务/高危患者统计）、实时体征预警、
+ * 护理任务清单及 AI 护理助手提醒和快捷操作入口。
+ */
 export function NurseAIWorkbench() {
   return (
     <div className="h-full flex flex-col space-y-6">

@@ -5,19 +5,31 @@ import { AnimatedList } from '../../ai-report/AIReportInterpretationDetailView';
 import { CustomerRow } from './CustomerRow';
 import type { CustomerRecord } from './types';
 
+/** 客户选择弹窗组件属性 */
 interface CustomerSelectionModalProps {
+  /** 弹窗是否可见 */
   isOpen: boolean;
+  /** 搜索关键词 */
   searchTerm: string;
+  /** 是否正在加载初始客户数据 */
   isLoadingCustomers?: boolean;
+  /** 是否正在加载更多客户 */
   isLoadingMoreCustomers?: boolean;
+  /** 是否还有更多客户 */
   hasMoreCustomers?: boolean;
+  /** 筛选后的客户列表 */
   filteredCustomers: CustomerRecord[];
+  /** 更新搜索关键词 */
   onSearchTermChange: (value: string) => void;
+  /** 加载更多客户 */
   onLoadMoreCustomers?: () => void;
+  /** 选中客户回调 */
   onSelectCustomer: (customer: CustomerRecord) => void;
+  /** 关闭弹窗 */
   onClose: () => void;
 }
 
+/** 客户选择弹窗组件：支持搜索、无限滚动加载和点击选择客户 */
 export const CustomerSelectionModal: React.FC<CustomerSelectionModalProps> = ({
   isOpen,
   searchTerm,

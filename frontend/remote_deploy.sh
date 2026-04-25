@@ -4,20 +4,17 @@ set -e
 # This script is executed on the REMOTE server.
 # Environment variables like ALIYUN_REGISTRY, FULL_IMAGE_NAME, etc. are passed by the deploy script.
 
-ALIYUN_REGISTRY=crpi-301jbh81iyvo39lb-vpc.cn-beijing.personal.cr.aliyuncs.com
-IMAGE_NAME=ai-web
-IMAGE_TAG=1.0.0
+if [[ "${PROFILES_ACTIVE}" == "dev" ]]; then
+    NAMESPACE="leczcore_dev"
+else
+    NAMESPACE="leczcore_prod"
+fi
 
+IMAGE_NAME="crpi-301jbh81iyvo39lb.cn-beijing.personal.cr.aliyuncs.com/${NAMESPACE}/ai-web"  # 镜像名称
+IMAGE_TAG="1.0.0"                         # 镜像标签
+FULL_IMAGE_NAME="${IMAGE_NAME}:${IMAGE_TAG}"
 echo "=== Remote Deployment for $FULL_IMAGE_NAME ==="
 
-# 1. Login to Aliyun Registry
-echo "Logging into Aliyun Registry on remote..."
-echo "$ALIYUN_PASSWORD" | docker login --username "$ALIYUN_USER" --password-stdin "$ALIYUN_REGISTRY"
-
-# 2. Pull the latest image
-echo "Pulling latest image: $FULL_IMAGE_NAME"
-# Use IMAGE_TAG or default to 'latest'
-IMAGE_TAG=${IMAGE_TAG:-latest}
 
 # 根据 PROFILES_ACTIVE 确定镜像命名空间
 if [[ "${BUILD_ENV}" == "test" ]]; then
@@ -27,8 +24,6 @@ elif [[ "${BUILD_ENV}" == "prod" ]]; then
 else 
     ALIYUN_NAMESPACE="leczcore_dev"
 fi
-
-FULL_IMAGE_NAME="${ALIYUN_REGISTRY}/${ALIYUN_NAMESPACE}/${IMAGE_NAME}:${IMAGE_TAG}"
 
 docker pull "$FULL_IMAGE_NAME"
 

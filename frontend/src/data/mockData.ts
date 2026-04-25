@@ -4,6 +4,7 @@ import {
   HeartPulse, Car, FileText, CheckSquare, BarChart2, Zap, Layers
 } from 'lucide-react';
 
+/** 系统快捷入口列表（首页“系统导航”网格） */
 export const SYSTEMS = [
   { id: 1, name: '到院接待', icon: UserCheck, count: 2, color: 'text-brand', bg: 'bg-brand', text: 'text-white' },
   { id: 2, name: '预约管理', icon: CalendarClock, count: 5, color: 'text-brand' },
@@ -15,6 +16,7 @@ export const SYSTEMS = [
   { id: 8, name: '客户档案', icon: FileText, count: 0, color: 'text-green-500' },
 ];
 
+/** 工作项列表（工作台“我的工作”页签） */
 export const WORKS = [
   {
     id: 1,
@@ -78,6 +80,7 @@ export const WORKS = [
   }
 ];
 
+/** 待办事项列表（工作台“待办事项”页签） */
 export const TODOS = [
   {
     id: 1,
@@ -141,6 +144,7 @@ export const TODOS = [
   }
 ];
 
+/** 通知公告列表（顶部滚动条 + 公告列表页使用） */
 export const NOTICES = [
   {
     id: 1,
@@ -165,6 +169,7 @@ export const NOTICES = [
   }
 ];
 
+/** 风险告警列表（工作台“风险告警”页签） */
 export const RISKS = [
   {
     id: 1,
@@ -213,6 +218,7 @@ export const RISKS = [
   }
 ];
 
+/** 客户列表（AI 报告对比等页面使用） */
 export const CUSTOMERS = [
   { id: 1, name: '张三', gender: '男', age: 42, lastCheckDate: '2026-03-18', aiJudgment: '重点关注', keyAbnormal: '空腹血糖 6.4 ↑ / ALT 65 ↑ / 尿酸 435 ↑' },
   { id: 2, name: '李四', gender: '女', age: 36, lastCheckDate: '2026-03-16', aiJudgment: '持续观察', keyAbnormal: '总胆固醇 5.6 ↑ / HDL-C 0.98 ↓' },
@@ -231,13 +237,16 @@ export const CUSTOMERS = [
   { id: 15, name: '高七', gender: '男', age: 31, lastCheckDate: '2026-02-05', aiJudgment: '平稳正常', keyAbnormal: '关键指标均在参考范围内' },
 ];
 
+/** 功能模块集合（功能广场页分组展示） */
 export const FUNCTION_MODULES = {
+  /** 最新上线模块 */
   latest: [
     { id: 15, title: 'AI四象限健康评估', desc: '多维数据建模，通过四象限分析法直观评估患者健康风险等级', icon: 'https://images.unsplash.com/photo-1505751172876-fa1923c5c528?auto=format&fit=crop&q=80&w=1200&h=800', tag: '评估' },
     { id: 7, title: 'AI报告对比', desc: '秒级解读复杂检验报告，将专业术语转化为易懂的健康建议', icon: 'https://images.unsplash.com/photo-1579154204601-01588f351e67?auto=format&fit=crop&q=80&w=1200&h=800', tag: '智能解读' },
     { id: 3, title: 'AI消耗规划', desc: '智能预测医疗耗材使用趋势，优化库存周转，降低院内物流成本', icon: 'https://images.unsplash.com/photo-1519494026892-80bbd2d6fd0d?auto=format&fit=crop&q=80&w=400&h=200', tag: '运营管理' },
     { id: 18, title: 'AI方案推荐', desc: '基于海量临床案例库，智能匹配并推荐最优治疗方案，辅助医生科学决策', icon: 'https://images.unsplash.com/photo-1581091226825-a6a2a5aee158?auto=format&fit=crop&q=80&w=400&h=200', tag: '精准医疗' },
   ],
+  /** 推荐模块 */
   recommended: [
     { id: 1, title: 'AI辅助诊断', desc: '基于深度学习算法，辅助医生快速识别医学影像异常，提升诊断准确率', icon: 'https://images.unsplash.com/photo-1530497610245-94d3c16cda28?auto=format&fit=crop&q=80&w=400&h=200', tag: '智能医疗' },
     { id: 2, title: 'AI干预方案', desc: '根据患者病历与实时体征，自动生成个性化干预建议与治疗路径', icon: 'https://images.unsplash.com/photo-1576091160550-2173dba999ef?auto=format&fit=crop&q=80&w=400&h=200', tag: '临床决策' },
@@ -247,6 +256,7 @@ export const FUNCTION_MODULES = {
     { id: 8, title: 'AI病历生成', desc: '基于问诊对话自动生成结构化电子病历，减少医生文书工作量', icon: 'https://images.unsplash.com/photo-1450101499163-c8848c66ca85?auto=format&fit=crop&q=80&w=100&h=100', tag: '文书辅助' },
     { id: 9, title: 'AI疗效预测', desc: '利用大数据模型预测不同治疗方案的预后效果，辅助方案优选', icon: 'https://images.unsplash.com/photo-1532938911079-1b06ac7ceec7?auto=format&fit=crop&q=80&w=100&h=100', tag: '精准医疗' },
   ],
+  /** 全部模块 */
   all: [
     { id: 10, title: 'AI时间管理表', desc: '智能排布医生手术、门诊与科研时间，最大化资源利用率', icon: 'https://images.unsplash.com/photo-1506784365847-bbad939e9335?auto=format&fit=crop&q=80&w=100&h=100', tag: '管理' },
     { id: 11, title: 'AI工作量统计', desc: '多维度自动统计医疗团队工作负荷，为绩效考核提供客观依据', icon: 'https://images.unsplash.com/photo-1460925895917-afdab827c52f?auto=format&fit=crop&q=80&w=100&h=100', tag: '管理' },

@@ -12,10 +12,18 @@ import { getPageByPath, isKnownPath, PAGE_PATHS } from './navigation';
 import { renderAppPage } from './pageRegistry';
 import type { DashboardMessage } from './components/DashboardView';
 
+/** 消息角色类型：AI 回复或用户输入 */
 type AppMessageRole = 'ai' | 'user';
 
+/** 消息 ID 自增计数器，保证每条消息的 key 唯一 */
 let messageIdCounter = 0;
 
+/**
+ * 创建一条 Dashboard 消息对象。
+ * @param role - 消息角色（ai / user）
+ * @param content - 消息文本
+ * @returns 带唯一 id 的消息对象
+ */
 function createAppMessage(role: AppMessageRole, content: string): DashboardMessage {
   messageIdCounter += 1;
   return {
@@ -25,9 +33,11 @@ function createAppMessage(role: AppMessageRole, content: string): DashboardMessa
   };
 }
 
+/** 应用根组件：管理登录态、主视图编排、全局状态和路由导航 */
 export function App() {
-  const location = useLocation();
-  const navigate = useNavigate();
+  const location = useLocation();          // 当前路由位置
+  const navigate = useNavigate();          // 路由跳转函数
+  /* ---------- 从全局 Store 读取认证状态与操作 ---------- */
   const isAuthenticated = useAppStore((state) => state.isAuthenticated);
   const token = useAppStore((state) => state.token);
   const user = useAppStore((state) => state.user);
@@ -35,32 +45,51 @@ export function App() {
   const iamLogin = useAppStore((state) => state.iamLogin);
   const logout = useAppStore((state) => state.logout);
   const restoreSession = useAppStore((state) => state.restoreSession);
+
+  /* ---------- 局部 UI 状态 ---------- */
+  /** 标记是否正在恢复登录状态（防止回话恢复期间被重定向） */
   const [isAuthBootstrapping, setIsAuthBootstrapping] = useState(Boolean(token));
+  /** 暗色模式开关 */
   const [isDarkMode, setIsDarkMode] = useState(true);
+  /** 侧边栏是否折叠 */
   const [isCollapsed, setIsCollapsed] = useState(false);
+  /** AI 助手面板是否展开 */
   const [isAIOpen, setIsAIOpen] = useState(false);
+  /** 工作台当前页签：工作 / 待办 / 风险 */
   const [activeTab, setActiveTab] = useState<'work' | 'todo' | 'risk'>('work');
+  /** AI 聊天输入框内容 */
   const [chatInput, setChatInput] = useState('');
+  /** 当前滚动公告索引 */
   const [currentNoticeIndex, setCurrentNoticeIndex] = useState(2);
+  /** 到院接待弹窗开关 */
   const [isReceptionModalOpen, setIsReceptionModalOpen] = useState(false);
+  /** 创建任务弹窗开关 */
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
+  /** 当前选中的任务 ID */
   const [selectedTaskId, setSelectedTaskId] = useState<number | null>(null);
+  /** 到院接待表单默认值 */
   const [receptionForm, setReceptionForm] = useState({
     name: '张三',
     serial: 'REQ-20240125-001',
     details: '客户到院，体温正常，准备进行深度体检方案签署。'
   });
 
+  /** AI 助手对话消息列表（首条为系统欢迎语） */
   const [messages, setMessages] = useState<DashboardMessage[]>([
     createAppMessage(
       'ai',
       '您好，我是丽滋卡尔AI助手。您可以向我查询跨系统数据，例如：“王先生在云仓还剩多少库存？”或“今日下午约车排班”。',
     ),
   ]);
+
+  /** 根据当前 URL 解析出页面标识，默认为 dashboard */
   const currentPage = getPageByPath(location.pathname) ?? 'dashboard';
+  /** 当前 URL 是否为已注册路径 */
   const isKnownRoute = isKnownPath(location.pathname);
+  /** 是否处于会议 BI 页面（会议 BI 采用独立全屏布局） */
   const isMeetingBiPage = currentPage === 'meeting-bi';
 
+  /* ---------- 副作用：滚动公告自动切换（每 4 秒轮播下一条） ---------- */
   useEffect(() => {
     const timer = setInterval(() => {
       setCurrentNoticeIndex((prev) => (prev + 1) % NOTICES.length);
@@ -118,6 +147,11 @@ export function App() {
     }
   }, [isAuthBootstrapping, isAuthenticated, isKnownRoute, location.pathname, navigate]);
 
+  /**
+   * 发送聊天消息：将用户输入加入对话流，并模拟 AI 回复。
+   * 后续可替换为真实聊天接口。
+   * @param overrideText - 可选，如果传入则替代输入框内容
+   */
   const handleSendMessage = (overrideText?: string) => {
     const query = typeof overrideText === 'string' ? overrideText : chatInput;
     if (!query.trim()) return;

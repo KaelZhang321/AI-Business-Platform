@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'react'
-import { getCardIdFromQuery } from '../../utils/cardMatcher'
 import { aiReportApi } from '../../services/api/aiReportApi'
 import { aIFourQuadrantViewApi } from '../../services/api/aIFourQuadrantViewApi'
 import {
@@ -121,23 +120,65 @@ const toQuadrantItems = (items: string[] = [], category?: 'abnormal' | 'recommen
       category,
     }))
 
-const parseQuadrantResult = (response: unknown) => {
-  const data = response as { quadrants?: Array<{ q_code?: string; abnormal_indicators?: string[]; recommendation_plans?: string[] }> } | undefined
-  const quadrants = data?.quadrants ?? []
+type RawQuadrantItem = {
+  q_code?: string
+  abnormal_indicators?: string[]
+  recommendation_plans?: string[]
+}
 
-  const getByCode = (code: string) => quadrants.find((item) => item.q_code === code)
+const QUADRANT_KEY_TO_CODE: Record<keyof QuadrantData, string> = {
+  intervention: 'q1',
+  monitoring: 'q2',
+  prevention: 'q3',
+  maintenance: 'q4',
+}
 
-  const q1 = getByCode('q1')
-  const q2 = getByCode('q2')
-  const q3 = getByCode('q3')
-  const q4 = getByCode('q4')
+const QUADRANT_NAME_BY_CODE: Record<string, string> = {
+  q1: '第一象限（基础筛查）',
+  q2: '第二象限（影像评估）',
+  q3: '第三象限（专项深度筛查）',
+  q4: '第四象限（丽滋特色项目）',
+}
 
-  return {
-    prevention: [...toQuadrantItems(q1?.abnormal_indicators, 'abnormal'), ...toQuadrantItems(q1?.recommendation_plans, 'recommendation')],
-    monitoring: [...toQuadrantItems(q2?.abnormal_indicators, 'abnormal'), ...toQuadrantItems(q2?.recommendation_plans, 'recommendation')],
-    maintenance: [...toQuadrantItems(q3?.abnormal_indicators, 'abnormal'), ...toQuadrantItems(q3?.recommendation_plans, 'recommendation')],
-    intervention: [...toQuadrantItems(q4?.abnormal_indicators, 'abnormal'), ...toQuadrantItems(q4?.recommendation_plans, 'recommendation')],
+const parseQuadrantResult = (response: unknown): QuadrantData => {
+  const payload = response as
+    | { quadrants?: RawQuadrantItem[]; data?: { quadrants?: RawQuadrantItem[] } }
+    | undefined
+
+  const quadrants = Array.isArray(payload?.quadrants)
+    ? payload.quadrants
+    : Array.isArray(payload?.data?.quadrants)
+      ? payload.data.quadrants
+      : []
+
+  const mapped: QuadrantData = {
+    monitoring: [],
+    intervention: [],
+    maintenance: [],
+    prevention: [],
   }
+
+  const codeToKey: Record<string, keyof QuadrantData> = {
+    q1: 'intervention',
+    q2: 'monitoring',
+    q3: 'prevention',
+    q4: 'maintenance',
+  }
+
+  quadrants.forEach((item) => {
+    const code = item.q_code?.trim().toLowerCase()
+    if (!code) return
+    const target = codeToKey[code]
+    if (!target) return
+
+    mapped[target] = [
+      ...mapped[target],
+      ...toQuadrantItems(item.abnormal_indicators, 'abnormal'),
+      ...toQuadrantItems(item.recommendation_plans, 'recommendation'),
+    ]
+  })
+
+  return mapped
 }
 
 export const useFourQuadrantState = (navigationParams: AIFourQuadrantViewProps['navigationParams']) => {
@@ -173,6 +214,13 @@ export const useFourQuadrantState = (navigationParams: AIFourQuadrantViewProps['
 
   const [analysisProgress, setAnalysisProgress] = useState(0)
   const [analysisStep, setAnalysisStep] = useState('')
+  const [lastAnalysisContext, setLastAnalysisContext] = useState<{
+    sex: string
+    age: number
+    study_id: string
+    quadrant_type: string
+    chief_complaint_text: string
+  } | null>(null)
 
   const fetchClients = async (pageNo: number, append = false, keyword = customerKeyword) => {
     if (append) {
@@ -379,13 +427,20 @@ export const useFourQuadrantState = (navigationParams: AIFourQuadrantViewProps['
         sex,
         age: Number.isFinite(age) ? age : 0,
         study_id: '2604150032' || studyId,
-        single_exam_items: [] as string[],
+        single_exam_items: [],
         chief_complaint_text: notes.trim(),
-        quadrant_type: 'exam'
+        quadrant_type: 'exam',
       }
 
       const response = await aIFourQuadrantViewApi.getHealthQuadrantAnalysisApi(payload)
       const mapped = parseQuadrantResult(response)
+      setLastAnalysisContext({
+        sex: payload.sex,
+        age: payload.age,
+        study_id: payload.study_id,
+        quadrant_type: payload.quadrant_type ?? 'exam',
+        chief_complaint_text: payload.chief_complaint_text,
+      })
 
       clearInterval(interval)
       setQuadrantData({
@@ -412,8 +467,8 @@ export const useFourQuadrantState = (navigationParams: AIFourQuadrantViewProps['
     }
   }
 
-  const handleSendMessage = () => {
-    if (!chatInput.trim()) return
+  const handleSendMessage = async () => {
+    if (!chatInput.trim() || !selectedClientId || !selectedReportId) return
 
     const currentInput = chatInput.trim()
     const newUserMsg = { id: Date.now(), sender: 'user' as const, text: currentInput }
@@ -426,45 +481,88 @@ export const useFourQuadrantState = (navigationParams: AIFourQuadrantViewProps['
 
     const interval = setInterval(() => {
       setAnalysisProgress((prev) => {
-        if (prev >= 100) {
-          clearInterval(interval)
-          return 100
+        if (prev >= 95) {
+          return 95
         }
-        return prev + (Math.random() * 20 + 10)
+        return Math.min(prev + (Math.random() * 10 + 3), 95)
       })
     }, 200)
 
-    setTimeout(() => {
+    try {
+      const sex = normalizeSex(selectedClient?.gender)
+      const age = Number(selectedClient?.age ?? 0)
+      const studyId = selectedReport?.studyId?.trim() || String(selectedReportId)
+
+      const payload = {
+        sex,
+        age: Number.isFinite(age) ? age : 0,
+        study_id: '2604150032' || studyId,
+        single_exam_items: [],
+        chief_complaint_text: currentInput,
+        quadrant_type: 'exam',
+      }
+
+      const response = await aIFourQuadrantViewApi.getHealthQuadrantAnalysisApi(payload)
+      const mapped = parseQuadrantResult(response)
+      setLastAnalysisContext({
+        sex: payload.sex,
+        age: payload.age,
+        study_id: payload.study_id,
+        quadrant_type: payload.quadrant_type ?? 'exam',
+        chief_complaint_text: payload.chief_complaint_text,
+      })
+
+      setQuadrantData(mapped)
+      setChatMessages((prev) => [
+        ...prev,
+        { id: Date.now() + 1, sender: 'ai' as const, text: '已基于最新补充信息调用接口并重算四象限结果。' },
+      ])
+      setShowResults(true)
+      setAnalysisProgress(100)
+    } catch (error) {
+      console.error('getHealthQuadrantAnalysisApi (chat) error:', error)
+      setChatMessages((prev) => [
+        ...prev,
+        { id: Date.now() + 1, sender: 'ai' as const, text: '重新生成失败，请稍后重试。' },
+      ])
+      setAnalysisProgress(100)
+    } finally {
       clearInterval(interval)
       setIsAnalyzing(false)
-      setAnalysisProgress(100)
+    }
+  }
 
-      const cardId = getCardIdFromQuery(currentInput)
-      if (cardId) {
-        const aiResponse = { id: Date.now() + 1, sender: 'ai' as const, text: `好的，为您调取相关卡片：\n[CARD:${cardId}]` }
-        setChatMessages((prev) => [...prev, aiResponse])
-        return
+  const handleConfirmQuadrants = async (nextData: QuadrantData) => {
+    if (!lastAnalysisContext) return
+
+    const orderedKeys: Array<keyof QuadrantData> = ['intervention', 'monitoring', 'prevention', 'maintenance']
+    const quadrants = orderedKeys.map((key) => {
+      const qCode = QUADRANT_KEY_TO_CODE[key]
+      const items = nextData[key]
+      return {
+        q_code: qCode,
+        q_name: QUADRANT_NAME_BY_CODE[qCode] ?? '',
+        abnormalIndicators: items
+          .filter((item) => item.category === 'abnormal' || !item.category)
+          .map((item) => item.content),
+        recommendationPlans: items
+          .filter((item) => item.category === 'recommendation')
+          .map((item) => item.content),
       }
+    })
 
-      if (currentInput === '补充窦性心率异常') {
-        const aiResponse = { id: Date.now() + 1, sender: 'ai' as const, text: '已为您将“窦性心率异常”添加到定期检测区。' }
-        setChatMessages((prev) => [...prev, aiResponse])
-
-        setQuadrantData((prev) => ({
-          ...prev,
-          monitoring: [...prev.monitoring, { id: `m-${Date.now()}`, content: '窦性心率异常' }],
-        }))
-        return
-      }
-
-      const aiResponse = { id: Date.now() + 1, sender: 'ai' as const, text: '已收到您的补充信息，并根据最新情况更新了四象限结果。' }
-      setChatMessages((prev) => [...prev, aiResponse])
-
-      setQuadrantData((prev) => ({
-        ...prev,
-        intervention: [...prev.intervention, { id: `i-${Date.now()}`, content: currentInput }],
-      }))
-    }, 2500)
+    try {
+      await aIFourQuadrantViewApi.confirmHealthQuadrantApi({
+        sex: lastAnalysisContext.sex,
+        age: lastAnalysisContext.age,
+        study_id: lastAnalysisContext.study_id,
+        quadrant_type: lastAnalysisContext.quadrant_type,
+        chief_complaint_text: lastAnalysisContext.chief_complaint_text,
+        quadrants,
+      })
+    } catch (error) {
+      console.error('confirmHealthQuadrantApi error:', error)
+    }
   }
 
   return {
@@ -502,5 +600,6 @@ export const useFourQuadrantState = (navigationParams: AIFourQuadrantViewProps['
     analysisStep,
     handleStartAnalysis,
     handleSendMessage,
+    handleConfirmQuadrants,
   }
 }

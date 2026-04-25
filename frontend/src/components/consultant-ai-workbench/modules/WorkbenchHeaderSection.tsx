@@ -1,13 +1,19 @@
 import React from 'react';
 import { Save, Search } from 'lucide-react';
 
+/** 工作台头部组件属性 */
 interface WorkbenchHeaderSectionProps {
+  /** 是否有卡片（决定是否显示保存按钮） */
   hasCards: boolean;
+  /** 布局是否已保存 */
   isLayoutSaved: boolean;
+  /** 保存布局回调 */
   onSaveLayout: () => void;
+  /** 打开客户选择弹窗 */
   onOpenCustomerModal: () => void;
 }
 
+/** 工作台头部组件：展示标题、描述及布局保存按钮 */
 export const WorkbenchHeaderSection: React.FC<WorkbenchHeaderSectionProps> = ({
   hasCards,
   isLayoutSaved,

@@ -16,6 +16,7 @@ import {
   AlertCircle
 } from 'lucide-react';
 
+/** 医疗 AI 工作台模拟患者数据 */
 const PATIENTS = [
   { id: '1', name: '张晓彤', age: 28, gender: '女', condition: '高血压待查', risk: '中', lastVisit: '2024-03-20' },
   { id: '2', name: '李建国', age: 54, gender: '男', condition: '糖尿病', risk: '高', lastVisit: '2024-03-22' },
@@ -23,6 +24,10 @@ const PATIENTS = [
   { id: '4', name: '赵强', age: 35, gender: '男', condition: '急性肠胃炎', risk: '中', lastVisit: '2024-03-23' },
 ];
 
+/**
+ * 医疗 AI 工作台视图组件：
+ * 主要面向医生群体，展示待诊患者列表、AI 临床洞察（预警/诊疗建议）、方案规划及患者动态监测。
+ */
 export function MedicalAIWorkbench() {
   return (
     <div className="h-full flex flex-col space-y-6">

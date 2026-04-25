@@ -70,13 +70,14 @@ export const QuadrantPanel = ({
   hasResult,
 }: QuadrantPanelProps) => {
   const [newItemContent, setNewItemContent] = useState('')
+  const [newItemCategory, setNewItemCategory] = useState<'abnormal' | 'recommendation'>('abnormal')
   const [isAdding, setIsAdding] = useState(false)
   const { setNodeRef } = useDroppable({ id })
   const theme = themeClasses[colorTheme]
 
   const handleAdd = () => {
     if (!newItemContent.trim()) return
-    onAddItem(newItemContent.trim())
+    onAddItem(newItemContent.trim(), newItemCategory)
     setNewItemContent('')
     setIsAdding(false)
   }
@@ -106,6 +107,30 @@ export const QuadrantPanel = ({
           <div className="flex flex-col h-full">
             {isAdding && (
               <div className="mb-3 flex flex-col space-y-2 bg-white dark:bg-slate-800 p-2 rounded-xl border shadow-sm">
+                <div className="flex items-center gap-2 px-1">
+                  <button
+                    type="button"
+                    onClick={() => setNewItemCategory('abnormal')}
+                    className={`px-2.5 py-1 rounded-full text-xs font-medium transition-colors ${
+                      newItemCategory === 'abnormal'
+                        ? 'bg-red-50 text-red-600 border border-red-200 dark:bg-red-900/20 dark:text-red-300 dark:border-red-800/40'
+                        : 'bg-slate-100 text-slate-500 border border-transparent dark:bg-slate-700 dark:text-slate-300'
+                    }`}
+                  >
+                    异常指标
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setNewItemCategory('recommendation')}
+                    className={`px-2.5 py-1 rounded-full text-xs font-medium transition-colors ${
+                      newItemCategory === 'recommendation'
+                        ? 'bg-emerald-50 text-emerald-600 border border-emerald-200 dark:bg-emerald-900/20 dark:text-emerald-300 dark:border-emerald-800/40'
+                        : 'bg-slate-100 text-slate-500 border border-transparent dark:bg-slate-700 dark:text-slate-300'
+                    }`}
+                  >
+                    推荐方案
+                  </button>
+                </div>
                 <div className="flex items-center space-x-2">
                   <input
                     type="text"

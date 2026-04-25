@@ -231,7 +231,7 @@ public class AuthController {
     @GetMapping("/getEmployeeMenus")
     @ResponseStatus(HttpStatus.OK)
     public ResponseDto<List<SysMenuVO>> getEmployeeMenus() {
-		return sysMenuHttpService.getEmployeeMenus(appCode);
+		return sysMenuHttpService.getEmployeeMenusForThird(appCode,AuthUtil.getUserId()+"");
 	}
     
 }

@@ -3,10 +3,13 @@ import React from 'react';
 import { Layers } from 'lucide-react';
 import { SYSTEMS } from '../data/mockData';
 
+/** 常用功能区组件属性 */
 interface CommonFunctionsProps {
+  /** 打开到院接待弹窗的回调 */
   setIsReceptionModalOpen: (open: boolean) => void;
 }
 
+/** 常用功能区组件：展示首页中的快捷入口与业务系统按钮 */
 export function CommonFunctions({ setIsReceptionModalOpen }: CommonFunctionsProps) {
   return (
     <section className="xl:col-span-2 bg-white/40 backdrop-blur-xl border border-white/60 rounded-[32px] p-6 shadow-[0_8px_30px_rgb(0,0,0,0.02)] flex flex-col">

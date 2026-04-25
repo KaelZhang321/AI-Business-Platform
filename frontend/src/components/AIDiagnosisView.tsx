@@ -10,6 +10,11 @@ import {
 } from 'lucide-react';
 import { motion } from 'motion/react';
 
+/**
+ * AI 辅助诊断视图组件：
+ * 提供一个静态的演示页面，包含信息采集（语音输入）、AI 结构化病历生成、
+ * 以及 AI 辅助预分析（预警、缺失提醒等）的流程展示。
+ */
 export function AIDiagnosisView() {
   const [activeStep, setActiveStep] = useState(1);
   const [activeTab, setActiveTab] = useState('主诉');

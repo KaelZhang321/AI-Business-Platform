@@ -2,13 +2,19 @@ import React from 'react';
 import { ChevronLeft, ChevronRight, Sparkles } from 'lucide-react';
 import type { CustomerRecord } from './types';
 
+/** AI 智能洞察面板组件属性 */
 interface InsightsAreaProps {
+  /** 右侧洞察面板是否展开 */
   isRightPanelOpen: boolean;
+  /** 当前选中客户 */
   selectedCustomer: CustomerRecord | null;
+  /** 展开洞察面板 */
   onOpenPanel: () => void;
+  /** 收起洞察面板 */
   onClosePanel: () => void;
 }
 
+/** AI 智能洞察面板组件：展示消耗预测、升单潜力和风险预警三张卡片 */
 export const InsightsArea: React.FC<InsightsAreaProps> = ({
   isRightPanelOpen,
   selectedCustomer,

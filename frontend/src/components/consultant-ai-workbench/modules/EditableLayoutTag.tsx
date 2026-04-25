@@ -3,13 +3,19 @@ import { motion, useMotionValue, useSpring, useTransform } from 'motion/react';
 import { Check, Pencil, Trash2 } from 'lucide-react';
 import type { SavedLayout } from './types';
 
+/** 可编辑布局标签组件属性 */
 interface EditableLayoutTagProps {
+  /** 布局数据 */
   layout: SavedLayout;
+  /** 重命名回调 */
   onRename: (id: string, newName: string) => Promise<void> | void;
+  /** 应用布局回调 */
   onApply: (id: string) => void;
+  /** 删除布局回调 */
   onDelete: (id: string) => Promise<void> | void;
 }
 
+/** 可编辑布局标签组件：支持 3D 悬停效果、在线重命名、应用和删除布局 */
 export const EditableLayoutTag: React.FC<EditableLayoutTagProps> = ({ layout, onRename, onApply, onDelete }) => {
   const [isEditing, setIsEditing] = useState(false);
   const [name, setName] = useState(layout.name);

@@ -1,12 +1,18 @@
 import React from 'react';
 import { AnimatePresence, motion } from 'motion/react';
+import agentGif from '../../../pages/agent.gif';
 
+/** 悬浮 AI 助手气泡组件属性 */
 interface FloatingAssistantBubbleProps {
+  /** 助手是否已收缩 */
   isAssistantShrunk: boolean;
+  /** 当前悬浮提示文案 */
   aiFloatingTip: string;
+  /** 点击展开回调 */
   onExpand: () => void;
 }
 
+/** 悬浮 AI 助手气泡组件：在工作台收缩时展示微波浮动的头像入口和提示气泡 */
 export const FloatingAssistantBubble: React.FC<FloatingAssistantBubbleProps> = ({
   isAssistantShrunk,
   aiFloatingTip,
@@ -37,7 +43,7 @@ export const FloatingAssistantBubble: React.FC<FloatingAssistantBubbleProps> = (
               onClick={onExpand}
               title="点击展开工作台"
             >
-              <img src="/uploads/1744425338166-f28329b3-195c-4235-937b-586b40e947d6.png" alt="AI Assistant" className="h-full w-full object-cover" />
+              <img src={agentGif} alt="AI Assistant" className="h-full w-full object-cover" />
             </motion.div>
             <motion.div
               animate={{ scale: [1, 1.4, 1], opacity: [0.5, 0, 0.5] }}

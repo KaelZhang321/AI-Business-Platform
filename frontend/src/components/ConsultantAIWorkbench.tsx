@@ -3,7 +3,11 @@ import { KeyboardSensor, PointerSensor, type DragEndEvent, useSensor, useSensors
 import { arrayMove, sortableKeyboardCoordinates } from '@dnd-kit/sortable';
 import { apiClient } from '../services/api';
 import { aiReportApi } from '../services/api/aiReportApi';
-import { aiComponentViewApi } from '../services/api/aiComponentViewApi';
+import {
+  aiComponentViewApi,
+  type RoleCardConfig,
+  type RoleCardEndpointRelation,
+} from '../services/api/aiComponentViewApi';
 import { AssistantSidebarPanel } from './consultant-ai-workbench/modules/AssistantSidebarPanel';
 import { CustomerSelectionModal } from './consultant-ai-workbench/modules/CustomerSelectionModal';
 import { ExpandedCardModal } from './consultant-ai-workbench/modules/ExpandedCardModal';
@@ -12,8 +16,6 @@ import { InsightsArea } from './consultant-ai-workbench/modules/InsightsArea';
 import { MainContentPanel } from './consultant-ai-workbench/modules/MainContentPanel';
 import { WorkbenchHeaderSection } from './consultant-ai-workbench/modules/WorkbenchHeaderSection';
 import { AI_CARDS_DATA } from './AICards';
-import resjson from './json-render/res.json'
-
 import type {
   AIResultItem,
   ChatHistoryItem,
@@ -22,6 +24,7 @@ import type {
   SavedLayout,
 } from './consultant-ai-workbench/modules/types';
 
+/** 原始客户列表接口返回的单条客户数据 */
 type RawCustomerItem = {
   customerId?: string | number | null;
   patientName?: string | null;
@@ -38,13 +41,22 @@ type RawCustomerItem = {
   latestExamDate?: string | null;
 };
 
+/** 客户列表 API 响应体（支持多层嵌套格式） */
 type CustomerListApiResponse = {
   data?: RawCustomerItem[] | { data?: RawCustomerItem[]; total?: number | string };
   total?: number | string;
 };
 
+/** 客户分页参数 */
 const CUSTOMER_PAGE_SIZE = 10;
+/** 卡片运行时加载状态 */
+type CardRuntimeStatus = 'loading' | 'ready' | 'empty' | 'error';
+type RuntimeDataByCardId = Record<string, unknown>;
+type RuntimeStatusByCardId = Record<string, CardRuntimeStatus>;
+type RuntimeErrorByCardId = Record<string, string>;
+type CardEndpointMap = Record<string, RoleCardEndpointRelation[]>;
 
+/** 根据最近体检日期判断 AI 评估结果（超过6个月为“优先复查”） */
 function resolveAiJudgment(latestExamDate?: string | null) {
   if (!latestExamDate) return '优先复查';
   const examTime = new Date(latestExamDate).getTime();
@@ -53,6 +65,7 @@ function resolveAiJudgment(latestExamDate?: string | null) {
   return Date.now() - examTime > sixMonthsMs ? '优先复查' : '持续观察';
 }
 
+/** 拼接客户摘要信息（客户类型、门店、带教老师） */
 function resolveCustomerSummary(record: {
   typeName?: string | null;
   storeName?: string | null;
@@ -67,6 +80,7 @@ function resolveCustomerSummary(record: {
   return parts.length > 0 ? parts.join(' · ') : '待补充';
 }
 
+/** 把原始 API 客户数据映射为前端 CustomerRecord */
 function mapApiCustomer(item: RawCustomerItem, index: number): CustomerRecord {
   const id = item.customerId != null ? String(item.customerId) : `api-${Date.now()}-${index}`;
   return {
@@ -90,6 +104,7 @@ function mapApiCustomer(item: RawCustomerItem, index: number): CustomerRecord {
   };
 }
 
+/** 将 AI 消息对象中的 ui_spec 字段统一为 spec */
 function normalizeAiMessageObject(messageObj: Record<string, unknown>): Record<string, unknown> {
   const normalized = { ...messageObj };
   if (!normalized.spec && normalized.ui_spec && typeof normalized.ui_spec === 'object') {
@@ -98,6 +113,7 @@ function normalizeAiMessageObject(messageObj: Record<string, unknown>): Record<s
   return normalized;
 }
 
+/** 尝试将字符串解析为 JSON 对象（非对象返回 null） */
 function parseAiMessageObject(content: unknown): Record<string, unknown> | null {
   if (typeof content !== 'string') {
     return null;
@@ -120,6 +136,7 @@ function parseAiMessageObject(content: unknown): Record<string, unknown> | null 
   return null;
 }
 
+/** 从 AI 消息对象中提取摘要文本 */
 function pickAiSummary(messageObj: Record<string, unknown>): string {
   const candidates = [messageObj.text, messageObj.message, messageObj.summary, messageObj.reply, messageObj.result];
   for (const item of candidates) {
@@ -130,6 +147,7 @@ function pickAiSummary(messageObj: Record<string, unknown>): string {
   return '';
 }
 
+/** 将任意类型的 AI 回复内容统一为字符串 */
 function normalizeAiResponseContent(content: unknown): string {
   if (typeof content === 'string') {
     const parsedObject = parseAiMessageObject(content);
@@ -146,6 +164,7 @@ function normalizeAiResponseContent(content: unknown): string {
   return '';
 }
 
+/** 从 AI 回复中提取摘要显示在聊天气泡中 */
 function extractAiResultSummary(content: unknown, customerName: string): string {
   if (typeof content === 'string' && content.trim()) {
     const parsedObject = parseAiMessageObject(content);
@@ -169,6 +188,7 @@ function extractAiResultSummary(content: unknown, customerName: string): string 
   return `已为您生成 ${customerName} 的对话结果，请在 AI结果显示区查看。`;
 }
 
+/** 解析后端返回的卡片配置 JSON 为卡片 ID 数组 */
 function parseCardSchemaJsonToCards(raw: unknown, validCardIdSet: Set<string>): string[] {
   if (typeof raw !== 'string' || !raw.trim()) {
     return [];
@@ -221,6 +241,7 @@ function parseCardSchemaJsonToCards(raw: unknown, validCardIdSet: Set<string>): 
   }
 }
 
+/** 从后端响应中提取 cardSchemaJson 字段 */
 function pickCardSchemaJson(payload: unknown): unknown {
   if (Array.isArray(payload)) {
     for (const item of payload) {
@@ -242,6 +263,77 @@ function pickCardSchemaJson(payload: unknown): unknown {
   return undefined;
 }
 
+/** 从 API 响应中提取当前登录用户的角色卡片配置 */
+function pickMineRoleConfig(payload: unknown): RoleCardConfig | null {
+  if (Array.isArray(payload)) {
+    for (const item of payload) {
+      if (item && typeof item === 'object') {
+        return item as RoleCardConfig;
+      }
+    }
+    return null;
+  }
+
+  if (payload && typeof payload === 'object') {
+    return payload as RoleCardConfig;
+  }
+
+  return null;
+}
+
+/** 解包运行时接口响应的 data 层 */
+function normalizeRuntimeResponseData(payload: unknown): unknown {
+  if (payload && typeof payload === 'object') {
+    const maybeEnvelope = payload as { data?: unknown };
+    if (maybeEnvelope.data !== undefined) {
+      return maybeEnvelope.data;
+    }
+  }
+  return payload;
+}
+
+function toObjectRecord(value: unknown): Record<string, unknown> {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  return {};
+}
+
+/** 根据角色卡片配置构建卡片 ID → 接口关联的映射表 */
+function buildCardEndpointMap(config: RoleCardConfig | null, validCardIdSet: Set<string>): CardEndpointMap {
+  if (!config?.cardEndpointRelations || typeof config.cardEndpointRelations !== 'object') {
+    return {};
+  }
+
+  const nextMap: CardEndpointMap = {};
+  const relationEntries = Object.entries(config.cardEndpointRelations);
+  for (const [cardId, relations] of relationEntries) {
+    const normalizedCardId = typeof cardId === 'string' ? cardId.trim() : '';
+    if (!normalizedCardId || !validCardIdSet.has(normalizedCardId) || !Array.isArray(relations)) {
+      continue;
+    }
+
+    const normalizedRelations = relations
+      .filter((relation): relation is RoleCardEndpointRelation => Boolean(relation && typeof relation === 'object'))
+      .map((relation) => ({
+        ...relation,
+        endpointId: typeof relation.endpointId === 'string' ? relation.endpointId.trim() : relation.endpointId,
+        sortOrder: typeof relation.sortOrder === 'number' ? relation.sortOrder : Number(relation.sortOrder ?? 0),
+      }))
+      .filter((relation) => Boolean(relation.endpointId));
+
+    if (normalizedRelations.length === 0) {
+      continue;
+    }
+
+    normalizedRelations.sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
+    nextMap[normalizedCardId] = normalizedRelations;
+  }
+
+  return nextMap;
+}
+
+/** 获取客户加密身份证号（用于接口调用） */
 function resolveCustomerIdCardValue(customer: CustomerRecord | null): string {
   if (!customer) {
     return '';
@@ -251,6 +343,10 @@ function resolveCustomerIdCardValue(customer: CustomerRecord | null): string {
   return encryptedIdCard || rawIdCard;
 }
 
+/**
+ * 顾问 AI 工作台主组件：
+ * 集合客户选择、AI 助手对话、卡片布局管理、运行时数据加载和智能洞察面板。
+ */
 export const ConsultantAIWorkbench: React.FC<ConsultantAIWorkbenchProps> = ({
   setCurrentPage = (_page) => { },
   setNavigationParams,
@@ -272,6 +368,10 @@ export const ConsultantAIWorkbench: React.FC<ConsultantAIWorkbenchProps> = ({
   const constraintsRef = useRef<HTMLDivElement | null>(null);
 
   const [dashboardCards, setDashboardCards] = useState<string[]>([]);
+  const [cardEndpointMap, setCardEndpointMap] = useState<CardEndpointMap>({});
+  const [runtimeDataByCardId, setRuntimeDataByCardId] = useState<RuntimeDataByCardId>({});
+  const [runtimeStatusByCardId, setRuntimeStatusByCardId] = useState<RuntimeStatusByCardId>({});
+  const [runtimeErrorByCardId, setRuntimeErrorByCardId] = useState<RuntimeErrorByCardId>({});
   const [isLayoutViewEnabled, setIsLayoutViewEnabled] = useState(false);
   const [isLayoutSaved, setIsLayoutSaved] = useState(false);
   const [expandedCardId, setExpandedCardId] = useState<string | null>(null);
@@ -279,6 +379,7 @@ export const ConsultantAIWorkbench: React.FC<ConsultantAIWorkbenchProps> = ({
 
   const [chatHistory, setChatHistory] = useState<ChatHistoryItem[]>([]);
   const chatRequestPendingRef = useRef(false);
+  const runtimeRequestSeqRef = useRef(0);
 
   const parseCustomerPayload = (payload: CustomerListApiResponse | RawCustomerItem[] | undefined) => {
     let list: RawCustomerItem[] = [];
@@ -499,11 +600,15 @@ export const ConsultantAIWorkbench: React.FC<ConsultantAIWorkbenchProps> = ({
       const mineConfig = await aiComponentViewApi.queryCurrentLoginAvailableCards();
       const cardSchemaJson = pickCardSchemaJson(mineConfig);
       const cardsFromApi = parseCardSchemaJsonToCards(cardSchemaJson, validCardIdSet);
+      const mineRoleConfig = pickMineRoleConfig(mineConfig);
+      const nextEndpointMap = buildCardEndpointMap(mineRoleConfig, validCardIdSet);
 
       setDashboardCards(cardsFromApi);
+      setCardEndpointMap(nextEndpointMap);
     } catch (error) {
       console.error('[ConsultantAIWorkbench] query current login available cards error:', error);
       setDashboardCards([]);
+      setCardEndpointMap({});
     }
   };
 
@@ -546,6 +651,134 @@ export const ConsultantAIWorkbench: React.FC<ConsultantAIWorkbenchProps> = ({
     void loadCustomerLayoutsByApi(customer);
     void applyCardsFromCurrentUserSchema();
   };
+
+  useEffect(() => {
+    const requestSeq = runtimeRequestSeqRef.current + 1;
+    runtimeRequestSeqRef.current = requestSeq;
+
+    if (!selectedCustomer) {
+      setRuntimeDataByCardId({});
+      setRuntimeStatusByCardId({});
+      setRuntimeErrorByCardId({});
+      return;
+    }
+
+    const visibleCards = Array.from(
+      new Set(dashboardCards.map((cardId) => cardId.trim()).filter(Boolean)),
+    ) as string[];
+    if (visibleCards.length === 0) {
+      setRuntimeDataByCardId({});
+      setRuntimeStatusByCardId({});
+      setRuntimeErrorByCardId({});
+      return;
+    }
+
+    const encryptedIdCard = typeof selectedCustomer.encryptedIdCard === 'string' ? selectedCustomer.encryptedIdCard.trim() : '';
+    const initialStatus: RuntimeStatusByCardId = {};
+    const initialErrors: RuntimeErrorByCardId = {};
+    for (const cardId of visibleCards) {
+      const hasRelations = Array.isArray(cardEndpointMap[cardId]) && cardEndpointMap[cardId].length > 0;
+      initialStatus[cardId] = encryptedIdCard && hasRelations ? 'loading' : 'empty';
+      if (!hasRelations) {
+        initialErrors[cardId] = '未配置接口';
+      } else if (!encryptedIdCard) {
+        initialErrors[cardId] = '客户缺少加密身份证';
+      }
+    }
+    setRuntimeStatusByCardId(initialStatus);
+    setRuntimeErrorByCardId(initialErrors);
+    setRuntimeDataByCardId((prev) => {
+      const next: RuntimeDataByCardId = {};
+      for (const cardId of visibleCards) {
+        if (prev[cardId] !== undefined) {
+          next[cardId] = prev[cardId];
+        }
+      }
+      return next;
+    });
+
+    if (!encryptedIdCard) {
+      return;
+    }
+
+    const loadRuntimeData = async () => {
+      const perCardTasks = visibleCards.map(async (cardId) => {
+        const relations = cardEndpointMap[cardId] ?? [];
+        if (relations.length === 0) {
+          return {
+            cardId,
+            status: 'empty' as CardRuntimeStatus,
+            data: undefined,
+            error: '未配置接口',
+          };
+        }
+
+        let merged: Record<string, unknown> = {};
+        for (const relation of relations) {
+          const endpointId = relation.endpointId?.trim();
+          if (!endpointId) {
+            continue;
+          }
+          const response = await aiComponentViewApi.invokeRuntimeEndpoint(endpointId, {
+            flowNum: 1,
+            queryParams: {},
+            body: {
+              encryptedIdCard,
+            },
+            createdBy: '',
+          });
+          const normalized = normalizeRuntimeResponseData(response);
+          merged = { ...merged, ...toObjectRecord(normalized) };
+        }
+
+        return {
+          cardId,
+          status: 'ready' as CardRuntimeStatus,
+          data: merged,
+          error: '',
+        };
+      });
+
+      const settled = await Promise.allSettled(perCardTasks);
+      if (runtimeRequestSeqRef.current !== requestSeq) {
+        return;
+      }
+
+      const nextStatus: RuntimeStatusByCardId = {};
+      const nextErrors: RuntimeErrorByCardId = {};
+      const nextData: RuntimeDataByCardId = {};
+
+      for (const item of settled) {
+        if (item.status === 'fulfilled') {
+          const { cardId, status, data, error } = item.value;
+          nextStatus[cardId] = status;
+          if (error) {
+            nextErrors[cardId] = error;
+          }
+          if (status === 'ready' && data !== undefined) {
+            nextData[cardId] = data;
+          }
+          continue;
+        }
+      }
+
+      for (let i = 0; i < settled.length; i += 1) {
+        const item = settled[i];
+        if (item.status === 'fulfilled') {
+          continue;
+        }
+        const cardId = visibleCards[i];
+        nextStatus[cardId] = 'error';
+        nextErrors[cardId] = '接口请求失败';
+      }
+
+      setRuntimeStatusByCardId(nextStatus);
+      setRuntimeErrorByCardId(nextErrors);
+      setRuntimeDataByCardId(nextData);
+    };
+
+    void loadRuntimeData();
+  }, [cardEndpointMap, dashboardCards, selectedCustomer]);
 
   const handleChatSubmit = async (text?: string) => {
     if (chatRequestPendingRef.current) {
@@ -593,7 +826,6 @@ export const ConsultantAIWorkbench: React.FC<ConsultantAIWorkbenchProps> = ({
     try {
       const response = await apiClient.post('/api/v1/api-query', { query });
       const aiResponseContent = response.data?.data ?? response.data ?? '';
-      // const aiResponseContent = resjson;
       const assistantContent = normalizeAiResponseContent(aiResponseContent);
       const resultSummary = extractAiResultSummary(aiResponseContent, selectedCustomer.name);
       const finalAssistantContent = assistantContent || resultSummary;
@@ -705,6 +937,9 @@ export const ConsultantAIWorkbench: React.FC<ConsultantAIWorkbenchProps> = ({
           aiResults={aiResults}
           latestAssistantMessage={latestAssistantMessage}
           isLayoutViewEnabled={isLayoutViewEnabled}
+          runtimeDataByCardId={runtimeDataByCardId}
+          runtimeStatusByCardId={runtimeStatusByCardId}
+          runtimeErrorByCardId={runtimeErrorByCardId}
         />
 
         <InsightsArea
@@ -734,7 +969,13 @@ export const ConsultantAIWorkbench: React.FC<ConsultantAIWorkbenchProps> = ({
         onExpand={() => setIsAssistantShrunk(false)}
       />
 
-      <ExpandedCardModal expandedCardId={expandedCardId} onClose={() => setExpandedCardId(null)} />
+      <ExpandedCardModal
+        expandedCardId={expandedCardId}
+        onClose={() => setExpandedCardId(null)}
+        runtimeDataByCardId={runtimeDataByCardId}
+        runtimeStatusByCardId={runtimeStatusByCardId}
+        runtimeErrorByCardId={runtimeErrorByCardId}
+      />
     </div>
   );
 };

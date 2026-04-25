@@ -6,14 +6,21 @@ import {
 } from 'lucide-react';
 import { WORKS, TODOS } from '../data/mockData';
 
+/** 任务区组件属性 */
 interface TaskSectionProps {
+  /** 当前活动页签 */
   activeTab: 'work' | 'todo' | 'risk';
+  /** 切换页签 */
   setActiveTab: (tab: 'work' | 'todo' | 'risk') => void;
+  /** 当前选中任务 ID */
   selectedTaskId: number | null;
+  /** 设置选中任务 */
   setSelectedTaskId: (id: number | null) => void;
+  /** 打开创建任务弹窗 */
   setIsCreateModalOpen: (open: boolean) => void;
 }
 
+/** 任务区组件：展示首页中的工作、待办列表和新建任务入口 */
 export function TaskSection({ 
   activeTab, 
   setActiveTab, 
@@ -21,6 +28,7 @@ export function TaskSection({
   setSelectedTaskId, 
   setIsCreateModalOpen 
 }: TaskSectionProps) {
+  /** 根据当前页签切换数据源 */
   const currentTasks = activeTab === 'work' ? WORKS : TODOS;
 
   return (

@@ -3,12 +3,28 @@ import { AnimatePresence, motion } from 'motion/react';
 import { Sparkles, X } from 'lucide-react';
 import { AI_CARDS_DATA } from '../../AICards';
 
+/** 卡片放大预览弹窗组件属性 */
 interface ExpandedCardModalProps {
+  /** 当前放大的卡片 ID（null 表示关闭） */
   expandedCardId: string | null;
+  /** 关闭弹窗回调 */
   onClose: () => void;
+  /** 各卡片的运行时数据 */
+  runtimeDataByCardId?: Record<string, unknown>;
+  /** 各卡片的加载状态 */
+  runtimeStatusByCardId?: Record<string, 'loading' | 'ready' | 'empty' | 'error'>;
+  /** 各卡片的错误信息 */
+  runtimeErrorByCardId?: Record<string, string>;
 }
 
-export const ExpandedCardModal: React.FC<ExpandedCardModalProps> = ({ expandedCardId, onClose }) => {
+/** 卡片放大预览弹窗组件：全屏展示单张卡片的详细内容 */
+export const ExpandedCardModal: React.FC<ExpandedCardModalProps> = ({
+  expandedCardId,
+  onClose,
+  runtimeDataByCardId = {},
+  runtimeStatusByCardId = {},
+  runtimeErrorByCardId = {},
+}) => {
   return (
     <AnimatePresence>
       {expandedCardId && (
@@ -47,7 +63,11 @@ export const ExpandedCardModal: React.FC<ExpandedCardModalProps> = ({ expandedCa
                     </button>
                   </div>
                   <div className="custom-scrollbar flex-1 overflow-y-auto bg-white p-8 dark:bg-slate-900">
-                    <CardComponent />
+                    <CardComponent
+                      runtimeData={expandedCardId ? runtimeDataByCardId[expandedCardId] : undefined}
+                      runtimeStatus={expandedCardId ? runtimeStatusByCardId[expandedCardId] : undefined}
+                      runtimeError={expandedCardId ? runtimeErrorByCardId[expandedCardId] : undefined}
+                    />
                   </div>
                 </>
               );
