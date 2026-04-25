@@ -98,6 +98,16 @@ def _mysql_row() -> dict[str, object]:
             '[{"predecessor_api_id":"role_list_v1","required":true,"order":1,'
             '"param_bindings":[{"target_param":"roleId","source_path":"$.data[*].id","select_mode":"user_select"}]}]'
         ),
+        "listViewMeta": (
+            '{"filter_fields":[{"field":"customerInfo","label":"客户关键词"}],'
+            '"table_fields":[{"field":"name","title":"客户姓名"},{"field":"mainTeacherName","title":"主市场老师"}]}'
+        ),
+        "detailViewMeta": (
+            '{"display_fields":["name","mainTeacherName","phone"],'
+            '"required_fields":["name"],'
+            '"exclude_fields":["phone"],'
+            '"groups":[{"title":"基础信息","fields":["name"]},{"title":"服务归属","fields":["mainTeacherName"]}]}'
+        ),
         "operationSafety": "query",
         "endpointStatus": "active",
         "sourceId": "src_1",
@@ -175,6 +185,13 @@ async def test_registry_source_loads_entries_from_mysql_and_appends_builtin_dict
     assert [profile.field_name for profile in customer_entry.response_field_profiles] == ["customerId"]
     assert customer_entry.response_field_profiles[0].json_path == "data.list[].customerId"
     assert customer_entry.response_field_profiles[0].raw_description == "客户ID"
+    assert [field.field for field in customer_entry.list_view_meta.filter_fields] == ["customerInfo"]
+    assert [field.field for field in customer_entry.list_view_meta.table_fields] == ["name", "mainTeacherName"]
+    assert customer_entry.detail_view_meta.display_fields == ["name", "mainTeacherName", "phone"]
+    assert customer_entry.detail_view_meta.required_fields == ["name"]
+    assert customer_entry.detail_view_meta.exclude_fields == ["phone"]
+    assert customer_entry.detail_view_meta.groups[0].title == "基础信息"
+    assert customer_entry.detail_view_meta.groups[0].fields == ["name"]
     assert len(customer_entry.predecessors) == 1
     predecessor = customer_entry.predecessors[0]
     assert predecessor.predecessor_api_id == "role_list_v1"

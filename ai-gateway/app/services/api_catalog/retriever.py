@@ -24,8 +24,10 @@ from app.core.config import settings
 from app.core.model_source import resolve_model_source
 from app.services.api_catalog.constants import API_CATALOG_COLLECTION
 from app.services.api_catalog.schema import (
+    ApiCatalogDetailViewMeta,
     ApiCatalogDetailHint,
     ApiCatalogEntry,
+    ApiCatalogListViewMeta,
     ApiCatalogPaginationHint,
     ApiCatalogPredecessorSpec,
     ApiCatalogSearchFilters,
@@ -62,6 +64,8 @@ _OUTPUT_FIELDS = [
     "detail_hint",
     "pagination_hint",
     "template_hint",
+    "list_view_meta",
+    "detail_view_meta",
     "predecessors",
 ]
 _LEGACY_OUTPUT_FIELDS = [
@@ -86,6 +90,8 @@ _LEGACY_OUTPUT_FIELDS = [
     "detail_hint_json",
     "pagination_hint_json",
     "template_hint_json",
+    "list_view_meta_json",
+    "detail_view_meta_json",
 ]
 
 
@@ -435,6 +441,12 @@ def _build_entry_from_fields(fields: dict) -> ApiCatalogEntry:
             **_read_json_field(fields, "pagination_hint", "pagination_hint_json", {})
         ),
         template_hint=ApiCatalogTemplateHint(**_read_json_field(fields, "template_hint", "template_hint_json", {})),
+        list_view_meta=ApiCatalogListViewMeta(
+            **_read_json_field(fields, "list_view_meta", "list_view_meta_json", {})
+        ),
+        detail_view_meta=ApiCatalogDetailViewMeta(
+            **_read_json_field(fields, "detail_view_meta", "detail_view_meta_json", {})
+        ),
         predecessors=[
             ApiCatalogPredecessorSpec.model_validate(item)
             for item in _read_json_field(fields, "predecessors", "predecessors_json", [])

@@ -77,6 +77,72 @@ class ApiCatalogTemplateHint(BaseModel):
     fallback_mode: str = Field("dynamic_ui", description="模板未命中的回退模式")
 
 
+class ApiCatalogListViewFilterField(BaseModel):
+    """列表筛选字段元数据。
+
+    功能：
+        该结构只描述“允许出现在首屏筛选区的字段”，不承载请求链路之外的展示策略，
+        目的是把列表筛选入口稳定收敛到元数据白名单，避免每次都从 request_schema 全量推断。
+    """
+
+    field: str = Field(..., min_length=1, description="筛选字段名")
+    label: str | None = Field(None, description="筛选字段展示名；为空时回退 request_schema 标题")
+
+
+class ApiCatalogListViewTableField(BaseModel):
+    """列表表格字段元数据。
+
+    功能：
+        该结构用于声明首屏表格列白名单和显示顺序。运行时只按这里的字段生成列，
+        避免“接口返回字段越来越多，列表无限膨胀”的展示退化问题。
+    """
+
+    field: str = Field(..., min_length=1, description="表格字段名")
+    title: str | None = Field(None, description="列表列标题；为空时回退 response_schema 标签")
+
+
+class ApiCatalogListViewMeta(BaseModel):
+    """列表视图元数据。
+
+    功能：
+        统一描述“列表筛选 + 表格列”的配置入口。若配置为空，运行时回退到历史自动推断逻辑。
+    """
+
+    filter_fields: list[ApiCatalogListViewFilterField] = Field(
+        default_factory=list,
+        description="列表筛选字段白名单（按配置顺序渲染）",
+    )
+    table_fields: list[ApiCatalogListViewTableField] = Field(
+        default_factory=list,
+        description="列表表格字段白名单（按配置顺序渲染）",
+    )
+
+
+class ApiCatalogDetailViewGroup(BaseModel):
+    """详情卡分组定义。"""
+
+    title: str = Field(..., min_length=1, description="分组标题")
+    fields: list[str] = Field(default_factory=list, description="分组内字段名列表")
+
+
+class ApiCatalogDetailViewMeta(BaseModel):
+    """详情视图元数据。
+
+    功能：
+        定义详情页展示字段的准入规则与布局分组，遵循固定优先级：
+        `exclude_fields > required_fields > display_fields`。
+
+    Edge Cases:
+        - `groups` 仅控制布局，不参与字段准入判定
+        - 任何在 `exclude_fields` 中的字段都必须被强制剔除
+    """
+
+    display_fields: list[str] = Field(default_factory=list, description="默认可展示字段")
+    required_fields: list[str] = Field(default_factory=list, description="必须展示字段")
+    exclude_fields: list[str] = Field(default_factory=list, description="强制隐藏字段")
+    groups: list[ApiCatalogDetailViewGroup] = Field(default_factory=list, description="详情分组配置")
+
+
 class ApiCatalogSearchFilters(BaseModel):
     """Milvus 标量过滤器。"""
 
@@ -181,6 +247,14 @@ class ApiCatalogEntry(BaseModel):
     detail_hint: ApiCatalogDetailHint = Field(default_factory=ApiCatalogDetailHint)
     pagination_hint: ApiCatalogPaginationHint = Field(default_factory=ApiCatalogPaginationHint)
     template_hint: ApiCatalogTemplateHint = Field(default_factory=ApiCatalogTemplateHint)
+    list_view_meta: ApiCatalogListViewMeta = Field(
+        default_factory=ApiCatalogListViewMeta,
+        description="列表筛选与列表列的元数据白名单",
+    )
+    detail_view_meta: ApiCatalogDetailViewMeta = Field(
+        default_factory=ApiCatalogDetailViewMeta,
+        description="详情字段展示与分组元数据",
+    )
     request_field_profiles: list[ApiCatalogFieldProfile] = Field(
         default_factory=list,
         description="请求侧原始字段画像，供字段治理与图同步复用",

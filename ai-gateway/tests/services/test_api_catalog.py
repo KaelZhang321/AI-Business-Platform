@@ -800,6 +800,8 @@ class TestIndexerSchema:
         assert field_map["security_rules"].dtype == DataType.JSON
         assert field_map["predecessors"].dtype == DataType.JSON
         assert field_map["example_queries"].dtype == DataType.JSON
+        assert field_map["list_view_meta"].dtype == DataType.JSON
+        assert field_map["detail_view_meta"].dtype == DataType.JSON
         assert field_map["operation_safety"].dtype == DataType.VARCHAR
 
     def test_create_collection_uses_hnsw_and_scalar_indexes(self, monkeypatch):
@@ -1027,6 +1029,16 @@ class TestRetrieverCompatibility:
                 "detail_hint": {"enabled": False},
                 "pagination_hint": {"enabled": True, "page_param": "pageNum"},
                 "template_hint": {"enabled": False},
+                "list_view_meta": {
+                    "filter_fields": [{"field": "customerInfo", "label": "客户关键词"}],
+                    "table_fields": [{"field": "name", "title": "客户姓名"}],
+                },
+                "detail_view_meta": {
+                    "display_fields": ["name", "mainTeacherName"],
+                    "required_fields": ["name"],
+                    "exclude_fields": ["phone"],
+                    "groups": [{"title": "基础信息", "fields": ["name"]}],
+                },
                 "predecessors": [
                     {
                         "predecessor_api_id": "role_list_v1",
@@ -1051,6 +1063,10 @@ class TestRetrieverCompatibility:
         assert entry.field_labels["customerId"] == "客户ID"
         assert entry.operation_safety == "query"
         assert entry.requires_confirmation is False
+        assert [field.field for field in entry.list_view_meta.filter_fields] == ["customerInfo"]
+        assert [field.field for field in entry.list_view_meta.table_fields] == ["name"]
+        assert entry.detail_view_meta.required_fields == ["name"]
+        assert entry.detail_view_meta.exclude_fields == ["phone"]
         assert entry.predecessors[0].predecessor_api_id == "role_list_v1"
         assert entry.predecessors[0].param_bindings[0].select_mode == "user_select"
 

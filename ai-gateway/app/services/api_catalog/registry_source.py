@@ -15,9 +15,11 @@ from app.services.api_catalog.schema_utils import (
     schema_is_array,
 )
 from app.services.api_catalog.schema import (
+    ApiCatalogDetailViewMeta,
     ApiCatalogDetailHint,
     ApiCatalogEntry,
     ApiCatalogFieldProfile,
+    ApiCatalogListViewMeta,
     ApiCatalogPaginationHint,
     ApiCatalogPredecessorParamBinding,
     ApiCatalogPredecessorSpec,
@@ -42,6 +44,8 @@ SELECT
     CAST(e.sample_request AS CHAR) AS sampleRequest,
     CAST(e.sample_response AS CHAR) AS sampleResponse,
     CAST(e.predecessor_specs AS CHAR) AS predecessorSpecs,
+    CAST(e.list_view_meta AS CHAR) AS listViewMeta,
+    CAST(e.detail_view_meta AS CHAR) AS detailViewMeta,
     e.operation_safety AS operationSafety,
     e.status AS endpointStatus,
     s.id AS sourceId,
@@ -266,6 +270,8 @@ def _build_entry_from_mysql_row(row: dict[str, Any]) -> ApiCatalogEntry:
         "sampleRequest": row.get("sampleRequest"),
         "sampleResponse": row.get("sampleResponse"),
         "predecessorSpecs": row.get("predecessorSpecs"),
+        "listViewMeta": row.get("listViewMeta"),
+        "detailViewMeta": row.get("detailViewMeta"),
         "operationSafety": row.get("operationSafety"),
         "status": row.get("endpointStatus"),
     }
@@ -297,6 +303,8 @@ def _build_entry(
     sample_request = load_json_object(endpoint.get("sampleRequest"))
     sample_response = load_json_object(endpoint.get("sampleResponse"))
     predecessors = _parse_predecessor_specs(endpoint.get("predecessorSpecs"))
+    list_view_meta = _parse_list_view_meta(endpoint.get("listViewMeta"))
+    detail_view_meta = _parse_detail_view_meta(endpoint.get("detailViewMeta"))
     operation_safety = _normalize_operation_safety(endpoint.get("operationSafety"))
 
     auth_type = str(source.get("authType") or "").strip()
@@ -354,6 +362,8 @@ def _build_entry(
         detail_hint=ApiCatalogDetailHint(),
         pagination_hint=ApiCatalogPaginationHint(),
         template_hint=ApiCatalogTemplateHint(),
+        list_view_meta=list_view_meta,
+        detail_view_meta=detail_view_meta,
         request_field_profiles=_extract_request_field_profiles(method, _to_param_schema(request_schema)),
         response_field_profiles=_extract_response_field_profiles(response_schema, response_data_path, field_labels),
         predecessors=predecessors,
@@ -505,6 +515,8 @@ def _build_system_dict_entry() -> ApiCatalogEntry:
         detail_hint=ApiCatalogDetailHint(),
         pagination_hint=ApiCatalogPaginationHint(),
         template_hint=ApiCatalogTemplateHint(),
+        list_view_meta=ApiCatalogListViewMeta(),
+        detail_view_meta=ApiCatalogDetailViewMeta(),
         request_field_profiles=_extract_request_field_profiles("GET", param_schema),
         response_field_profiles=_extract_response_field_profiles(response_schema, "data", field_labels),
     )
@@ -765,14 +777,60 @@ def _strip_predecessor_specs_projection(sql: str) -> str:
         line
         for line in lines
         if "predecessor_specs" not in line.lower() and "predecessorspecs" not in line.lower()
+        and "list_view_meta" not in line.lower()
+        and "detail_view_meta" not in line.lower()
+        and "listviewmeta" not in line.lower()
+        and "detailviewmeta" not in line.lower()
     ]
     return "\n".join(filtered)
 
 
 def _is_mysql_unknown_predecessor_column_error(exc: Exception) -> bool:
-    """判断是否为 predecessor 字段不存在导致的 Unknown column。"""
+    """判断是否为 `predecessor_specs/list_view_meta/detail_view_meta` 字段缺失导致的 Unknown column。
+
+    功能：
+        目录元数据是滚动发布，部分环境可能先升级网关代码、后升级数据表字段。
+        这里统一把“元数据增强字段缺失”归并为同类兼容错误，触发回退 SQL，保证老环境可读。
+    """
     message = str(exc).lower()
-    return "unknown column" in message and "predecessor" in message
+    if "unknown column" not in message:
+        return False
+    return any(
+        keyword in message
+        for keyword in ("predecessor", "list_view_meta", "detail_view_meta", "listviewmeta", "detailviewmeta")
+    )
+
+
+def _parse_list_view_meta(raw_value: Any) -> ApiCatalogListViewMeta:
+    """解析列表元数据。
+
+    功能：
+        该解析器必须容忍脏配置和历史空值。元数据错误不能阻断主查询链路，应回退为空配置，
+        让渲染层继续沿用旧逻辑兜底。
+    """
+    payload = load_json_value(raw_value, {})
+    if not isinstance(payload, dict):
+        return ApiCatalogListViewMeta()
+    try:
+        return ApiCatalogListViewMeta.model_validate(payload)
+    except Exception:
+        return ApiCatalogListViewMeta()
+
+
+def _parse_detail_view_meta(raw_value: Any) -> ApiCatalogDetailViewMeta:
+    """解析详情元数据。
+
+    功能：
+        详情字段白名单直接影响最终展示字段集合；当配置不合法时，必须显式回退默认空配置，
+        避免抛异常导致整条目录加载失败。
+    """
+    payload = load_json_value(raw_value, {})
+    if not isinstance(payload, dict):
+        return ApiCatalogDetailViewMeta()
+    try:
+        return ApiCatalogDetailViewMeta.model_validate(payload)
+    except Exception:
+        return ApiCatalogDetailViewMeta()
 
 
 def _compact_list(values: list[Any]) -> list[str]:

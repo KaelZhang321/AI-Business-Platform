@@ -194,6 +194,16 @@ def _get_collection_schema() -> CollectionSchema:
             description="模板匹配提示，标记该接口是否适合走预设 ui_page_templates 快速渲染。",
         ),
         FieldSchema(
+            name="list_view_meta",
+            dtype=DataType.JSON,
+            description="列表首屏元数据，严格约束筛选字段和表格列展示白名单。",
+        ),
+        FieldSchema(
+            name="detail_view_meta",
+            dtype=DataType.JSON,
+            description="详情页元数据，定义字段准入规则与分组布局。",
+        ),
+        FieldSchema(
             name="predecessors",
             dtype=DataType.JSON,
             description="多前置接口依赖定义，供运行时自动拼接 DAG 步骤。",
@@ -459,6 +469,8 @@ class ApiCatalogIndexer:
             [entry.detail_hint.model_dump()],
             [entry.pagination_hint.model_dump()],
             [entry.template_hint.model_dump()],
+            [entry.list_view_meta.model_dump()],
+            [entry.detail_view_meta.model_dump()],
             [entry.predecessors and [item.model_dump() for item in entry.predecessors] or []],
             [embedding],
         ]

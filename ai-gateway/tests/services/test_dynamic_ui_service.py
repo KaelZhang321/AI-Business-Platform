@@ -13,6 +13,7 @@ from app.models.schemas import (
     ApiQueryDetailSourceRuntime,
     ApiQueryListPaginationRuntime,
     ApiQueryListQueryContextRuntime,
+    ApiQueryListTableFieldRuntime,
     ApiQueryListRuntime,
     ApiQueryUIAction,
     ApiQueryUIRuntime,
@@ -778,6 +779,94 @@ async def test_rule_query_spec_table_uses_schema_description_column_titles(monke
     columns = table["props"]["columns"]
     assert columns[0]["title"] == "客户编号"
     assert columns[1]["title"] == "客户姓名"
+
+
+@pytest.mark.asyncio
+async def test_rule_query_spec_table_columns_strictly_follow_runtime_table_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """当 runtime 下发 table_fields 时，列表列必须严格按白名单渲染。"""
+
+    monkeypatch.setattr(settings, "llm_ui_spec_enabled", False)
+    service = DynamicUIService(catalog_service=UICatalogService())
+
+    runtime = _make_list_runtime().model_copy(
+        update={
+            "list": _make_list_runtime().list.model_copy(
+                update={
+                    "table_fields": [
+                        ApiQueryListTableFieldRuntime(name="customerName", title="客户姓名"),
+                        ApiQueryListTableFieldRuntime(name="mainTeacherName", title="主市场老师"),
+                    ]
+                }
+            )
+        }
+    )
+
+    spec = await service.generate_ui_spec(
+        intent="query",
+        data=[{"customerId": "C001", "customerName": "张三", "mainTeacherName": "王雪梅", "age": 65}],
+        context={"question": "查询客户列表"},
+        runtime=runtime,
+    )
+
+    assert spec is not None
+    table = _root_child_by_type(spec, "PlannerTable")
+    columns = table["props"]["columns"]
+    assert [column["dataIndex"] for column in columns] == ["customerName", "mainTeacherName"]
+    assert [column["title"] for column in columns] == ["客户姓名", "主市场老师"]
+
+
+@pytest.mark.asyncio
+async def test_rule_query_spec_detail_applies_detail_view_meta_priority_and_group_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """详情字段应按 exclude>required>display 过滤，并按 groups 排序。"""
+
+    monkeypatch.setattr(settings, "llm_ui_spec_enabled", False)
+    service = DynamicUIService(catalog_service=UICatalogService())
+
+    runtime = _make_runtime().model_copy(
+        update={
+            "detail": ApiQueryDetailRuntime(
+                enabled=True,
+                api_id="customer_detail",
+                route_url="/api/v1/api-query",
+                ui_action="remoteQuery",
+                request=ApiQueryDetailRequestRuntime(
+                    param_source="queryParams",
+                    identifier_param="id",
+                ),
+                source=ApiQueryDetailSourceRuntime(
+                    identifier_field="id",
+                    value_type="string",
+                    required=True,
+                ),
+                detail_view_meta={
+                    "display_fields": ["id", "name", "phone"],
+                    "required_fields": ["id", "mainTeacherName"],
+                    "exclude_fields": ["phone"],
+                    "groups": [
+                        {"title": "服务归属", "fields": ["mainTeacherName"]},
+                        {"title": "基础信息", "fields": ["name", "id"]},
+                    ],
+                },
+            )
+        }
+    )
+
+    spec = await service.generate_ui_spec(
+        intent="query",
+        data=[{"id": "C001", "name": "刘海坚", "phone": "13900000000", "mainTeacherName": "王雪梅", "age": 65}],
+        context={"question": "查询客户详情", "query_render_mode": "detail"},
+        runtime=runtime,
+    )
+
+    assert spec is not None
+    detail_card = _root_child_by_type(spec, "PlannerDetailCard")
+    items = detail_card["props"]["items"]
+    assert [item["label"] for item in items] == ["mainTeacherName", "name", "id"]
+    assert [item["value"] for item in items] == ["王雪梅", "刘海坚", "C001"]
 
 
 @pytest.mark.asyncio

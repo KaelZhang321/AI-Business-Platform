@@ -1567,9 +1567,18 @@ class DynamicUIService:
 
         # 2. detail/composite 属于显式渲染模式，优先分流，避免被后续表格兜底覆盖。
         if render_mode == "detail":
+            detail_view_meta = (
+                runtime.detail.detail_view_meta
+                if runtime and isinstance(runtime.detail.detail_view_meta, dict)
+                else None
+            )
             detail_props = {
                 "title": (context or {}).get("detail_title", "详情信息"),
-                "items": self._build_detail_items(rows[0], label_index=label_index),
+                "items": self._build_detail_items(
+                    rows[0],
+                    label_index=label_index,
+                    detail_view_meta=detail_view_meta,
+                ),
             }
             if runtime and runtime.detail.enabled and runtime.detail.api_id:
                 detail_identifier_field = runtime.detail.source.identifier_field
@@ -1607,6 +1616,11 @@ class DynamicUIService:
         # 仅当结果本身是单对象时才回退详情卡。对多行数据仍应保留表格渲染，
         # 否则 LLM 失败后的规则兜底会把列表误折叠成详情卡，破坏既有列表语义。
         if not (runtime and runtime.list.enabled) and len(rows) <= 1:
+            detail_view_meta = (
+                runtime.detail.detail_view_meta
+                if runtime and isinstance(runtime.detail.detail_view_meta, dict)
+                else None
+            )
             return self._build_flat_card_spec(
                 root_props=root_props,
                 children=[
@@ -1614,7 +1628,11 @@ class DynamicUIService:
                         "type": "PlannerDetailCard",
                         "props": {
                             "title": (context or {}).get("detail_title", "详情信息"),
-                            "items": self._build_detail_items(rows[0] if rows else {}, label_index=label_index),
+                            "items": self._build_detail_items(
+                                rows[0] if rows else {},
+                                label_index=label_index,
+                                detail_view_meta=detail_view_meta,
+                            ),
                         },
                     }
                 ],
@@ -1708,7 +1726,11 @@ class DynamicUIService:
             elements["query-filters"]["children"].extend(["filter_reset", "filter_submit"])
 
         table_props: dict[str, Any] = {
-            "columns": self._build_table_columns(rows[0], label_index=label_index),
+            "columns": self._build_table_columns(
+                rows[0],
+                label_index=label_index,
+                configured_fields=runtime.list.table_fields if runtime else None,
+            ),
             "dataSource": rows,
             **list_request_fields,
         }
@@ -1989,6 +2011,7 @@ class DynamicUIService:
         *,
         label_index: dict[str, str] | None = None,
         field_path_prefix: str = "",
+        configured_fields: list[Any] | None = None,
     ) -> list[dict[str, str]]:
         """把行对象字段映射成 `PlannerTable.columns`。
 
@@ -1998,6 +2021,33 @@ class DynamicUIService:
         """
         resolved_label_index = label_index or {}
         columns: list[dict[str, str]] = []
+        # 业务原因：当 runtime 已经显式下发 table_fields 时，列表列必须严格按白名单渲染，
+        # 不能再由首行数据“猜”列，否则会出现配置失效和敏感字段意外曝光。
+        if configured_fields:
+            for configured_field in configured_fields:
+                key = str(getattr(configured_field, "name", "") or "").strip()
+                if not key:
+                    continue
+                field_path = f"{field_path_prefix}.{key}" if field_path_prefix else key
+                configured_title = getattr(configured_field, "title", None)
+                title = (
+                    configured_title.strip()
+                    if isinstance(configured_title, str) and configured_title.strip()
+                    else DynamicUIService._resolve_field_label(
+                        field_name=key,
+                        label_index=resolved_label_index,
+                        field_path=field_path,
+                    )
+                )
+                columns.append(
+                    {
+                        "key": key,
+                        "title": title,
+                        "dataIndex": key,
+                    }
+                )
+            return columns
+
         for key in sample_row.keys():
             field_path = f"{field_path_prefix}.{key}" if field_path_prefix else key
             columns.append(
@@ -2019,6 +2069,7 @@ class DynamicUIService:
         *,
         label_index: dict[str, str] | None = None,
         field_path_prefix: str = "",
+        detail_view_meta: dict[str, Any] | None = None,
     ) -> list[dict[str, str]]:
         """把对象详情映射成 `PlannerDetailCard.items`。
 
@@ -2029,7 +2080,13 @@ class DynamicUIService:
         """
         resolved_label_index = label_index or {}
         items = []
-        for key, value in row.items():
+        # 1. 先挑选“可展示字段集合”：优先尊重 detail_view_meta，再回退历史自动规则。
+        selected_fields = DynamicUIService._select_detail_fields(
+            row=row,
+            detail_view_meta=detail_view_meta,
+        )
+        for key in selected_fields:
+            value = row.get(key)
             if isinstance(value, (list, dict)):
                 continue
             field_path = f"{field_path_prefix}.{key}" if field_path_prefix else key
@@ -2044,6 +2101,85 @@ class DynamicUIService:
                 }
             )
         return items or [{"label": "提示", "value": "暂无可展示的标量字段"}]
+
+    @staticmethod
+    def _select_detail_fields(
+        *,
+        row: dict[str, Any],
+        detail_view_meta: dict[str, Any] | None,
+    ) -> list[str]:
+        """按详情元数据挑选最终展示字段。
+
+        功能：
+            该方法把 `detail_view_meta` 的四个字段转换成可执行规则，确保详情页展示行为稳定可审计。
+
+        Args:
+            row: 当前详情对象。
+            detail_view_meta: 详情元数据字典（display/required/exclude/groups）。
+
+        Returns:
+            最终展示字段顺序列表。
+
+        Edge Cases:
+            - 元数据缺失或全空：回退到历史行为（按对象 key 顺序）
+            - display/required 都配置但全被 exclude 覆盖：返回空列表，由上层输出“暂无字段”提示
+        """
+
+        if not row:
+            return []
+        if not isinstance(detail_view_meta, dict):
+            return list(row.keys())
+
+        # 1. 先归一化元数据字段，过滤脏值，保证后续集合运算不会被异常输入污染。
+        display_fields = DynamicUIService._normalize_meta_field_list(detail_view_meta.get("display_fields"))
+        required_fields = DynamicUIService._normalize_meta_field_list(detail_view_meta.get("required_fields"))
+        exclude_fields = set(DynamicUIService._normalize_meta_field_list(detail_view_meta.get("exclude_fields")))
+        groups = detail_view_meta.get("groups")
+
+        if not display_fields and not required_fields and not exclude_fields:
+            return list(row.keys())
+
+        # 2. 字段准入优先级固定为：exclude > required > display。
+        allowed_fields: list[str] = []
+        for field_name in required_fields + display_fields:
+            if field_name not in row or field_name in exclude_fields:
+                continue
+            if field_name not in allowed_fields:
+                allowed_fields.append(field_name)
+
+        if not allowed_fields:
+            return []
+
+        # 3. groups 只控制布局顺序，不参与字段准入。这里按分组顺序重排已有字段。
+        if not isinstance(groups, list):
+            return allowed_fields
+        ordered_fields: list[str] = []
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            for field_name in DynamicUIService._normalize_meta_field_list(group.get("fields")):
+                if field_name in allowed_fields and field_name not in ordered_fields:
+                    ordered_fields.append(field_name)
+        for field_name in allowed_fields:
+            if field_name not in ordered_fields:
+                ordered_fields.append(field_name)
+        return ordered_fields
+
+    @staticmethod
+    def _normalize_meta_field_list(raw_fields: Any) -> list[str]:
+        """将元数据字段列表归一化为去重后的字段名数组。"""
+
+        if not isinstance(raw_fields, list):
+            return []
+        normalized: list[str] = []
+        for item in raw_fields:
+            if not isinstance(item, str):
+                continue
+            field_name = item.strip()
+            if not field_name or field_name in normalized:
+                continue
+            normalized.append(field_name)
+        return normalized
 
     @staticmethod
     def _stringify_detail_value(value: Any) -> str:

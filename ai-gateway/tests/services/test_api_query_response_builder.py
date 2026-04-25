@@ -130,6 +130,16 @@ def _build_test_entry() -> ApiCatalogEntry:
             page_size_param="pageSize",
             mutation_target="report-table.props.dataSource",
         ),
+        list_view_meta={
+            "filter_fields": [{"field": "ownerId", "label": "负责人"}],
+            "table_fields": [{"field": "name", "title": "客户姓名"}],
+        },
+        detail_view_meta={
+            "display_fields": ["id", "name", "phone"],
+            "required_fields": ["id", "name"],
+            "exclude_fields": ["phone"],
+            "groups": [{"title": "基础信息", "fields": ["id", "name"]}],
+        },
     )
 
 
@@ -227,6 +237,9 @@ async def test_build_execution_response_returns_full_spec() -> None:
     assert response.ui_runtime is not None
     assert response.ui_runtime.list.enabled is True
     assert response.ui_runtime.list.param_source == "queryParams"
+    assert [field.name for field in response.ui_runtime.list.filters.fields] == ["ownerId"]
+    assert [field.name for field in response.ui_runtime.list.table_fields] == ["name"]
+    assert response.ui_runtime.detail.detail_view_meta["required_fields"] == ["id", "name"]
     assert response.ui_runtime.ui_actions
     assert response.ui_spec == _build_flat_spec()
     assert state["execution_status"] == ApiQueryExecutionStatus.SUCCESS

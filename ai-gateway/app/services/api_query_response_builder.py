@@ -24,6 +24,7 @@ from app.models.schemas import (
     ApiQueryListFiltersRuntime,
     ApiQueryListPaginationRuntime,
     ApiQueryListQueryContextRuntime,
+    ApiQueryListTableFieldRuntime,
     ApiQueryListRuntime,
     ApiQueryResponse,
     ApiQueryUIAction,
@@ -1339,6 +1340,32 @@ def _build_list_filter_fields(
         - 标签优先取 title/label，保证前端不必再猜字段中文名
     """
 
+    # 业务原因：当目录已经配置 list_view_meta.filter_fields 时，应严格以元数据为准，
+    # 防止 request_schema 的“技术参数膨胀”污染首屏筛选体验。
+    if entry.list_view_meta.filter_fields:
+        required_fields = set(entry.param_schema.required)
+        filter_fields: list[ApiQueryListFilterFieldRuntime] = []
+        for filter_field in entry.list_view_meta.filter_fields:
+            field_name = filter_field.field.strip()
+            if not field_name:
+                continue
+            schema = entry.param_schema.properties.get(field_name, {})
+            schema_title = (
+                str(schema.get("title") or "").strip() if isinstance(schema, dict) else ""
+            )
+            label = filter_field.label.strip() if isinstance(filter_field.label, str) and filter_field.label.strip() else (
+                schema_title or field_name
+            )
+            filter_fields.append(
+                ApiQueryListFilterFieldRuntime(
+                    name=field_name,
+                    label=label,
+                    value_type=_normalize_runtime_value_type(schema.get("type") if isinstance(schema, dict) else None),
+                    required=field_name in required_fields,
+                )
+            )
+        return filter_fields
+
     excluded_fields = set(_LIST_FILTER_EXCLUDED_FIELDS)
     if page_param:
         excluded_fields.add(page_param)
@@ -1362,6 +1389,26 @@ def _build_list_filter_fields(
             )
         )
     return filter_fields
+
+
+def _build_list_table_fields(entry: ApiCatalogEntry) -> list[ApiQueryListTableFieldRuntime]:
+    """根据目录元数据构造列表列白名单。
+
+    功能：
+        `list_view_meta.table_fields` 是“首屏展示字段”的最终约束来源。这里转成 runtime 契约后，
+        渲染层就不需要再从 response 行对象猜测列结构。
+
+    Returns:
+        配置为空时返回空列表，表示继续沿用历史自动推断列逻辑。
+    """
+    table_fields: list[ApiQueryListTableFieldRuntime] = []
+    for table_field in entry.list_view_meta.table_fields:
+        field_name = table_field.field.strip()
+        if not field_name:
+            continue
+        title = table_field.title.strip() if isinstance(table_field.title, str) and table_field.title.strip() else None
+        table_fields.append(ApiQueryListTableFieldRuntime(name=field_name, title=title))
+    return table_fields
 
 
 def _has_write_business_intent(business_intents: list[ApiQueryBusinessIntent]) -> bool:
@@ -1416,6 +1463,7 @@ def _build_ui_runtime(
     page_param = pagination_hint.page_param or "pageNum"
     page_size_param = pagination_hint.page_size_param or "pageSize"
     filter_fields = _build_list_filter_fields(entry, page_param=page_param, page_size_param=page_size_param)
+    table_fields = _build_list_table_fields(entry)
     is_list_payload = isinstance(execution_result.data, list)
     pagination_enabled = (
         execution_result.status in {ApiQueryExecutionStatus.SUCCESS, ApiQueryExecutionStatus.EMPTY}
@@ -1474,6 +1522,7 @@ def _build_ui_runtime(
                 mutation_target=pagination_hint.mutation_target if pagination_enabled else None,
             ),
             filters=ApiQueryListFiltersRuntime(enabled=bool(filter_fields), fields=filter_fields),
+            table_fields=table_fields,
             query_context=ApiQueryListQueryContextRuntime(
                 enabled=list_enabled,
                 current_params=current_params,
@@ -1491,6 +1540,7 @@ def _build_ui_runtime(
             render_mode=detail_render_mode if detail_enabled else "dynamic_ui",
             template_code=detail_template_code if detail_enabled else None,
             fallback_mode=detail_fallback_mode if detail_enabled else "dynamic_ui",
+            detail_view_meta=entry.detail_view_meta.model_dump(),
             request=ApiQueryDetailRequestRuntime(
                 param_source=param_source if detail_enabled else None,
                 identifier_param=(detail_hint.query_param or identifier_field) if detail_enabled else None,
