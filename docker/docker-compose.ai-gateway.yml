@@ -2,6 +2,7 @@ services:
   ai-gateway:
     container_name: ai-platform-ai-gateway
     image: ai-platform/ai-gateway:${AI_GATEWAY_IMAGE_TAG:-local}
+    network_mode: host
     build:
       context: ../ai-gateway
       dockerfile: Dockerfile
