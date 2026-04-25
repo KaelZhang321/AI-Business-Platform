@@ -195,6 +195,75 @@ class SmartMealRiskIdentifyEnvelopeResponse(BaseModel):
     data: list[SmartMealRiskItem] = Field(default_factory=list, description="冲突食材列表")
 
 
+class SmartMealMealType(str, Enum):
+    """智能订餐餐次枚举。"""
+
+    BREAKFAST = "BREAKFAST"
+    LUNCH = "LUNCH"
+    DINNER = "DINNER"
+
+
+class SmartMealAbnormalIndicator(BaseModel):
+    """智能订餐异常指标条目。
+
+    功能：
+        承载单项异常指标及其数值，用于“高风险硬禁配”和异常匹配评分。
+
+    Args:
+        type: 指标类型（如 blood_glucose / blood_lipid / kidney_function / weight_condition）。
+        value: 指标数值，允许为空（仅传标签场景）。
+        unit: 指标单位，允许为空。
+    """
+
+    type: str = Field(..., min_length=1, description="异常指标类型编码")
+    value: float | None = Field(None, description="异常指标数值")
+    unit: str | None = Field(None, description="异常指标单位")
+
+
+class SmartMealPackageRecommendRequest(BaseModel):
+    """智能订餐套餐推荐请求。
+
+    功能：
+        定义套餐推荐入口契约。只强制身份证号与餐次必填，其余画像特征按“缺失即缺失”
+        的业务约定传递，不在网关层做兜底补齐，避免把用户显式输入覆盖为历史脏画像。
+
+    Args:
+        id_card_no: 客户身份证号（明文），用于外部接口与行为数据关联。
+        meal_type: 餐次，限定为 BREAKFAST/LUNCH/DINNER。
+        age: 年龄，可选。
+        sex: 性别，可选。
+        health_tags: 健康标签，可选。
+        diet_preferences: 用餐偏好，可选。
+        dietary_restrictions: 忌口自然语言列表，可选。
+        abnormal_indicators: 异常指标列表，可选。
+    """
+
+    id_card_no: str = Field(..., min_length=1, description="客户明文身份证号")
+    meal_type: SmartMealMealType = Field(..., description="餐次")
+    age: int | None = Field(None, ge=0, le=130, description="年龄")
+    sex: str | None = Field(None, description="性别")
+    health_tags: list[str] = Field(default_factory=list, description="健康标签")
+    diet_preferences: list[str] = Field(default_factory=list, description="用餐偏好")
+    dietary_restrictions: list[str] = Field(default_factory=list, description="忌口自然语言")
+    abnormal_indicators: list[SmartMealAbnormalIndicator] = Field(default_factory=list, description="异常指标列表")
+
+
+class SmartMealPackageRecommendItem(BaseModel):
+    """智能订餐套餐推荐项。"""
+
+    package_code: str = Field(..., description="套餐编码")
+    package_name: str = Field(..., description="套餐名称")
+    match_score: float = Field(..., description="匹配度绝对评分，保留两位小数")
+
+
+class SmartMealPackageRecommendEnvelopeResponse(BaseModel):
+    """智能订餐套餐推荐响应壳。"""
+
+    code: int = Field(0, description="业务状态码，0 表示成功")
+    message: str = Field("ok", description="响应消息")
+    data: list[SmartMealPackageRecommendItem] = Field(default_factory=list, description="推荐结果")
+
+
 class ApiQueryRequest(BaseModel):
     """`api_query` 的自然语言请求模型。
 
@@ -433,6 +502,10 @@ class ApiQueryDetailRuntime(BaseModel):
     render_mode: str = Field("dynamic_ui", description="详情渲染策略，template_first 表示模板优先")
     template_code: str | None = Field(None, description="详情模板编码")
     fallback_mode: str = Field("dynamic_ui", description="模板未命中时的兜底模式")
+    detail_view_meta: dict[str, Any] = Field(
+        default_factory=dict,
+        description="详情字段元数据（display/required/exclude/groups）",
+    )
 
 
 class ApiQueryListPaginationRuntime(BaseModel):
@@ -454,6 +527,18 @@ class ApiQueryListFilterFieldRuntime(BaseModel):
     label: str = Field(..., description="筛选字段展示名")
     value_type: str = Field(..., description="筛选字段值类型")
     required: bool = Field(False, description="当前筛选字段是否必填")
+
+
+class ApiQueryListTableFieldRuntime(BaseModel):
+    """列表表格列定义。
+
+    功能：
+        该结构用于把“首屏列表列白名单”提升为显式 runtime 契约，避免渲染层从首行数据猜列导致
+        首屏字段失控。
+    """
+
+    name: str = Field(..., description="列表字段名")
+    title: str | None = Field(None, description="列表列标题")
 
 
 class ApiQueryListFiltersRuntime(BaseModel):
@@ -499,6 +584,10 @@ class ApiQueryListRuntime(BaseModel):
     filters: ApiQueryListFiltersRuntime = Field(
         default_factory=ApiQueryListFiltersRuntime,
         description="列表筛选运行时契约",
+    )
+    table_fields: list[ApiQueryListTableFieldRuntime] = Field(
+        default_factory=list,
+        description="列表列白名单；为空时按历史规则自动推断",
     )
     query_context: ApiQueryListQueryContextRuntime = Field(
         default_factory=ApiQueryListQueryContextRuntime,
