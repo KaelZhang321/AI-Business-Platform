@@ -39,10 +39,11 @@ interface DictOption {
 }
 
 const dictCache = new Map<string, DictOption[]>();
+const EMPTY_ROWS: any[] = [];
 
 const uiTokens = {
   cardShell:
-    'rounded-2xl border border-slate-200/80 bg-gradient-to-b from-white to-slate-50/30 p-5 shadow-[0_2px_10px_-3px_rgba(0,0,0,0.05)] dark:border-slate-700/70 dark:from-slate-800 dark:to-slate-800/60',
+    'mb-6 rounded-2xl border border-slate-200/80 bg-gradient-to-b from-white to-slate-50/30 p-5 shadow-[0_2px_10px_-3px_rgba(0,0,0,0.05)] dark:border-slate-700/70 dark:from-slate-800 dark:to-slate-800/60',
   cardHeader: 'mb-4 border-b border-slate-100 pb-3 dark:border-slate-700/60',
   headerAccent: 'h-4 w-1.5 rounded-full bg-blue-500',
   headerTitle: 'font-bold text-slate-800 dark:text-slate-100',
@@ -487,13 +488,18 @@ export const AssistantRenderer = createRenderer(assistantCatalog, {
       pageSizeParam = 'pageSize',
       queryParams = {},
       body = {},
+      bizFieldKey
     } = element.props;
 
-    const normalizedRows = Array.isArray(rows)
-      ? rows
-      : Array.isArray(dataSource)
-        ? dataSource
-        : [];
+    const normalizedRows = useMemo(() => {
+      if (Array.isArray(rows)) {
+        return rows;
+      }
+      if (Array.isArray(dataSource)) {
+        return dataSource;
+      }
+      return EMPTY_ROWS;
+    }, [rows, dataSource]);
 
     const [data, setData] = useState<any[]>(normalizedRows);
     const [total, setTotal] = useState(typeof staticTotal === 'number' ? staticTotal : normalizedRows.length);
@@ -509,9 +515,16 @@ export const AssistantRenderer = createRenderer(assistantCatalog, {
     const bodyKey = useMemo(() => JSON.stringify(body ?? {}), [body]);
 
     useEffect(() => {
+      if (api) {
+        return;
+      }
+
+      setData(normalizedRows);
+      setTotal(typeof staticTotal === 'number' ? staticTotal : normalizedRows.length);
+    }, [api, normalizedRows, staticTotal]);
+
+    useEffect(() => {
       if (!api) {
-        setData(normalizedRows);
-        setTotal(typeof staticTotal === 'number' ? staticTotal : normalizedRows.length);
         return;
       }
 
@@ -531,18 +544,28 @@ export const AssistantRenderer = createRenderer(assistantCatalog, {
           if (!active) {
             return;
           }
+
           const records =
             res.data?.data?.rows ??
+            res.data?.data?.result ??
             res.data?.data?.data?.records ??
             res.data?.rows ??
             res.data?.data ??
             [];
+
+          const nextRows = Array.isArray(records)
+            ? records
+            : (bizFieldKey && Array.isArray((records as Record<string, unknown>)[bizFieldKey]))
+              ? ((records as Record<string, unknown>)[bizFieldKey] as any[])
+              : EMPTY_ROWS;
+
           const totalCount =
             res.data?.data?.total ??
             res.data?.total ??
-            (Array.isArray(records) ? records.length : 0);
-          setData(Array.isArray(records) ? records : []);
-          setTotal(typeof totalCount === 'number' ? totalCount : 0);
+            nextRows.length;
+
+          setData(nextRows);
+          setTotal(typeof totalCount === 'number' ? totalCount : Number(totalCount) || 0);
           setLoading(false);
         })
         .catch((err) => {
@@ -555,7 +578,7 @@ export const AssistantRenderer = createRenderer(assistantCatalog, {
       return () => {
         active = false;
       };
-    }, [api, bodyKey, normalizedRows, page, pageParam, pageSize, pageSizeParam, queryParamsKey, staticTotal]);
+    }, [api, bodyKey, page, pageParam, pageSize, pageSizeParam, queryParamsKey, title, bizFieldKey]);
 
     useEffect(() => {
       const handleDataUpdate = (event: Event) => {
