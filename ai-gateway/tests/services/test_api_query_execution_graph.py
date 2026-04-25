@@ -467,6 +467,8 @@ async def test_execution_graph_wait_select_required_skips_downstream() -> None:
     assert downstream_result.meta["pause_type"] == "WAIT_SELECT"
     options = downstream_result.meta["options_by_binding"]
     assert options["roles:role_id:id"] == ["S1001", "S1002"]
+    option_rows = downstream_result.meta["option_rows_by_binding"]
+    assert option_rows["roles:role_id:id"] == [{"id": "S1001"}, {"id": "S1002"}]
 
 
 @pytest.mark.asyncio

@@ -1447,3 +1447,128 @@ async def test_build_execution_response_multi_step_auto_policy_prefers_aggregate
             "physicalExam": [{"latestExamDate": "2025-04-08"}],
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_build_execution_response_wait_select_rows_include_full_candidate_fields() -> None:
+    """WAIT_SELECT 候选表应尽量透传上游候选行的完整字段，避免只展示主键。"""
+
+    role_list_entry = ApiCatalogEntry(
+        id="roles",
+        description="角色列表",
+        domain="iam",
+        operation_safety="query",
+        method="GET",
+        path="/api/iam/roles",
+    )
+    role_detail_entry = ApiCatalogEntry(
+        id="role_detail",
+        description="角色详情",
+        domain="iam",
+        operation_safety="query",
+        method="GET",
+        path="/api/iam/roles/detail",
+        param_schema=ParamSchema(
+            properties={"roleId": {"type": "string"}},
+            required=["roleId"],
+        ),
+    )
+    plan = ApiQueryExecutionPlan(
+        plan_id="plan_wait_select_full_rows",
+        steps=[
+            ApiQueryPlanStep(
+                step_id="step_roles",
+                api_id="roles",
+                api_path=role_list_entry.path,
+                params={"keyword": "健管师"},
+                depends_on=[],
+            ),
+            ApiQueryPlanStep(
+                step_id="step_role_detail",
+                api_id="role_detail",
+                api_path=role_detail_entry.path,
+                params={"roleId": "$[step_roles.data][*].id"},
+                depends_on=["step_roles"],
+            ),
+        ],
+    )
+
+    candidate_rows = [
+        {"id": "S1001", "name": "健管师", "deptName": "治疗部"},
+        {"id": "S1002", "name": "健管师", "deptName": "康养部"},
+    ]
+    wait_binding_key = "roles:roleId:id"
+    records = {
+        "step_roles": DagStepExecutionRecord(
+            step=plan.steps[0],
+            entry=role_list_entry,
+            resolved_params={"keyword": "健管师"},
+            execution_result=ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.SUCCESS,
+                data=candidate_rows,
+                total=2,
+                trace_id="trace-wait-select-full-rows",
+            ),
+        ),
+        "step_role_detail": DagStepExecutionRecord(
+            step=plan.steps[1],
+            entry=role_detail_entry,
+            resolved_params={},
+            execution_result=ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.SKIPPED,
+                data=[],
+                total=0,
+                error="命中多个候选值，请先选择后继续。",
+                error_code="WAIT_SELECT_REQUIRED",
+                trace_id="trace-wait-select-full-rows",
+                skipped_reason="wait_select_required",
+                meta={
+                    "pause_type": "WAIT_SELECT",
+                    "options_by_binding": {wait_binding_key: ["S1001", "S1002"]},
+                    "option_rows_by_binding": {wait_binding_key: candidate_rows},
+                },
+            ),
+        ),
+    }
+
+    dynamic_ui = CaptureDynamicUIService(result=UISpecBuildResult(spec=_build_flat_spec(), frozen=False))
+    builder = ApiQueryResponseBuilder(
+        dynamic_ui=dynamic_ui,
+        snapshot_service=UISnapshotService(),
+        ui_catalog_service=UICatalogService(),
+        registry_source=FakeRegistrySource(),
+    )
+    state: ApiQueryState = {
+        "request_mode": "nl",
+        "query_text": "查询健管师角色详情",
+        "trace_id": "trace-wait-select-full-rows",
+        "interaction_id": None,
+        "conversation_id": None,
+        "plan": plan,
+    }
+
+    await builder.build_execution_response(
+        state=state,
+        runtime_context=ApiQueryRuntimeContext(
+            step_entries={"step_roles": role_list_entry, "step_role_detail": role_detail_entry},
+            log_prefix="api_query[trace=trace-wait-select-full-rows]",
+        ),
+        execution_state={
+            "plan": plan,
+            "trace_id": "trace-wait-select-full-rows",
+            "records_by_step_id": records,
+            "execution_order": ["step_roles", "step_role_detail"],
+            "errors": [],
+            "aggregate_status": None,
+        },
+        query_domains_hint=["iam"],
+        business_intent_codes=["none"],
+    )
+
+    assert dynamic_ui.captured_data is not None
+    assert len(dynamic_ui.captured_data) == 2
+    first_row = dynamic_ui.captured_data[0]
+    assert first_row["candidateValue"] == "S1001"
+    assert first_row["name"] == "健管师"
+    assert first_row["deptName"] == "治疗部"
+    assert first_row["candidateRow"] == candidate_rows[0]

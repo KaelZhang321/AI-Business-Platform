@@ -1115,6 +1115,7 @@ def _build_wait_select_required_result(
     from app.services.api_catalog.dag_bindings import parse_binding_expression
 
     options_by_binding: dict[str, list[Any]] = {}
+    option_rows_by_binding: dict[str, list[dict[str, Any]]] = {}
     for param_name, raw_value in step.params.items():
         if not is_dag_binding(raw_value):
             continue
@@ -1138,6 +1139,16 @@ def _build_wait_select_required_result(
         binding_key = f"{upstream_record.entry.id}:{param_name}:{source_path}"
         options_by_binding[binding_key] = normalized_options
 
+        upstream_data = upstream_record.execution_result.data
+        if isinstance(upstream_data, list):
+            upstream_rows = [row for row in upstream_data if isinstance(row, dict)]
+        elif isinstance(upstream_data, dict):
+            upstream_rows = [upstream_data]
+        else:
+            upstream_rows = []
+        if upstream_rows:
+            option_rows_by_binding[binding_key] = [dict(row) for row in upstream_rows]
+
     if not options_by_binding:
         return None
 
@@ -1155,6 +1166,7 @@ def _build_wait_select_required_result(
             "pause_type": "WAIT_SELECT",
             "selection_mode": "single",
             "options_by_binding": options_by_binding,
+            "option_rows_by_binding": option_rows_by_binding,
         },
     )
 

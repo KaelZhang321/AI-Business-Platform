@@ -2,21 +2,22 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
+import re
 from collections import defaultdict
 from typing import Any
 
 import aiomysql
 import httpx
 
-from app.core.mysql import build_business_mysql_conn_params
-from app.services.llm_service import LLMService
+from app.core.config import settings
+from app.services.health_quadrant_mysql_pools import HealthQuadrantMySQLPools
+from app.services.smart_meal_llm_service import SmartMealLLMService
 from app.utils.json_utils import parse_dirty_json_object
 
 logger = logging.getLogger(__name__)
 
-_INTOLERANCE_ENDPOINT = "https://www.leczcore.com/api/v1/food-intolerance-items"
+_INTOLERANCE_ENDPOINT = f"{settings.dw_route_url.rstrip('/')}/food-intolerance-items"
 _INTOLERANCE_INGREDIENT_KEYS = (
     "ingredient",
     "ingredient_name",
@@ -53,16 +54,21 @@ class SmartMealRiskServiceError(RuntimeError):
 class SmartMealRiskService:
     """智能订餐风险识别服务。"""
 
-    def __init__(self, *, llm_service: LLMService | None = None) -> None:
-        self._llm_service = llm_service or LLMService()
+    def __init__(
+        self,
+        *,
+        llm_service: SmartMealLLMService | None = None,
+        mysql_pools: HealthQuadrantMySQLPools | None = None,
+    ) -> None:
+        self._llm_service = llm_service or SmartMealLLMService()
         self._http_client: httpx.AsyncClient | None = None
-        self._pool: aiomysql.Pool | None = None
-        self._pool_lock = asyncio.Lock()
+        self._mysql_pools = mysql_pools or HealthQuadrantMySQLPools(minsize=1, maxsize=3)
+        self._owned_mysql_pools = mysql_pools is None
 
     async def warmup(self) -> None:
         """预热数据库连接池。"""
 
-        await self._get_pool()
+        await self._mysql_pools.get_business_pool()
 
     async def close(self) -> None:
         """关闭服务资源。"""
@@ -71,10 +77,8 @@ class SmartMealRiskService:
             await self._http_client.aclose()
             self._http_client = None
 
-        if self._pool is not None:
-            self._pool.close()
-            await self._pool.wait_closed()
-            self._pool = None
+        if self._owned_mysql_pools:
+            await self._mysql_pools.close()
 
         await self._llm_service.close()
 
@@ -122,23 +126,19 @@ class SmartMealRiskService:
         sex: str,
         age: int,
         trace_id: str | None = None,
-    ) -> list[dict[str, str]]:
+    ) -> list[str]:
         client = self._get_http_client()
-        payload = {
-            "idCardNo": id_card_no,
-            "idcardNo": id_card_no,
-            "id_card_no": id_card_no,
-            "sex": sex,
-            "age": age,
+        params = {
+            "idcard_no": id_card_no
         }
         headers: dict[str, str] = {}
         if trace_id:
             headers["X-Trace-Id"] = trace_id
         try:
-            response = await client.post(_INTOLERANCE_ENDPOINT, json=payload, headers=headers)
+            response = await client.get(_INTOLERANCE_ENDPOINT, params=params, headers=headers)
             response.raise_for_status()
             raw = response.json()
-            return self._extract_intolerance_items(raw)
+            return raw["rows"]
         except httpx.TimeoutException as exc:
             raise SmartMealRiskServiceError("external_timeout: 食物不耐受接口超时") from exc
         except Exception as exc:
@@ -162,7 +162,7 @@ class SmartMealRiskService:
               AND d.status = 1
               AND i.status = 1
         """
-        pool = await self._get_pool()
+        pool = await self._mysql_pools.get_ods_pool()
         try:
             async with pool.acquire() as conn:
                 async with conn.cursor(aiomysql.DictCursor) as cursor:
@@ -188,7 +188,7 @@ class SmartMealRiskService:
     async def _identify_risk_items_with_llm(
         self,
         *,
-        intolerance_items: list[dict[str, str]],
+        intolerance_items: list[str],
         package_ingredients: list[dict[str, str]],
         trace_id: str | None = None,
     ) -> list[dict[str, str]]:
@@ -223,13 +223,12 @@ class SmartMealRiskService:
     def _identify_risk_items_by_rule(
         self,
         *,
-        intolerance_items: list[dict[str, str]],
+        intolerance_items: list[str],
         package_ingredients: list[dict[str, str]],
     ) -> list[dict[str, str]]:
         intolerance_index: list[tuple[str, str]] = []
         for item in intolerance_items:
-            ingredient = _normalize_text(item.get("ingredient"))
-            level = _normalize_text(item.get("intolerance_level")) or "未知"
+            ingredient, level = self._parse_intolerance_item(item)
             if ingredient:
                 intolerance_index.append((ingredient, level))
 
@@ -361,34 +360,70 @@ class SmartMealRiskService:
             lines.append(f"{dish_name}：{ingredients}")
         return "\n".join(lines)
 
-    def _build_intolerance_text(self, intolerance_items: list[dict[str, str]]) -> str:
+    def _build_intolerance_text(self, intolerance_items: list[str]) -> str:
         lines = []
         for item in intolerance_items:
-            ingredient = _normalize_text(item.get("ingredient"))
-            level = _normalize_text(item.get("intolerance_level")) or "未知"
+            ingredient, level = self._parse_intolerance_item(item)
             if ingredient:
-                lines.append(f"{ingredient}（{level}）")
+                lines.append(f"{ingredient}（{level}）" if level != "未知" else ingredient)
         return "\n".join(lines)
 
+    def _parse_intolerance_item(self, raw_item: str) -> tuple[str, str]:
+        text = _normalize_text(raw_item)
+        if not text:
+            return "", "未知"
+
+        match = re.match(r"^(?P<ingredient>.+?)[（(](?P<level>[^()（）]+)[)）]\s*$", text)
+        if match:
+            ingredient = _normalize_text(match.group("ingredient"))
+            level = _normalize_text(match.group("level")) or "未知"
+            return ingredient, level
+
+        for sep in ("：", ":", "|", "｜", ";", "；", ",", "，"):
+            if sep not in text:
+                continue
+            left, right = text.split(sep, 1)
+            ingredient = _normalize_text(left)
+            level = _normalize_text(right)
+            if ingredient:
+                if level and ("级" in level or "igg" in level.lower() or "level" in level.lower()):
+                    return ingredient, level
+                return ingredient, "未知"
+
+        return text, "未知"
+
     def _build_llm_prompt(self, *, meal_text: str, intolerance_text: str) -> str:
-        return (
-            "# Task\n"
-            "请分析餐食描述文本与食物不耐受清单，识别冲突食材。\n"
-            "要求：\n"
-            "1. 识别显性食材与常见隐性辅料。\n"
-            "2. 输出 risk_items，只保留命中项。\n"
-            "3. 同一食材出现多次时，source_dish 合并为逗号分隔。\n"
-            "4. 仅输出 JSON 对象。\n\n"
-            "JSON Schema:\n"
-            "{\n"
-            '  "has_risk": true,\n'
-            '  "risk_items": [\n'
-            '    {"ingredient":"", "intolerance_level":"", "source_dish":""}\n'
-            "  ]\n"
-            "}\n\n"
-            f"餐食描述文本：\n{meal_text}\n\n"
-            f"食物不耐受清单：\n{intolerance_text}\n"
-        )
+        return ("""
+            # Task
+            请分析【餐食描述文本】，并与该客户的【食物不耐受清单】进行严格比对，精准识别出这顿餐食中是否含有客户不耐受的食材，并以严格的 JSON 格式输出。
+            
+            # Workflow & Rules
+            1. 深度语义拆解（关键步骤）：
+               - 提取文本中直接写明的食材（如“炒西兰花”提取“西兰花”）。
+               - 依靠烹饪常识，推理并拆解复杂菜名中必定或极大概率包含的“隐性辅料”（例如：看到“意大利面”必须拆解出“小麦/麸质”；看到“红烧肉”必须考虑到“酱油/大豆、糖”；看到“沙拉酱”需考虑“鸡蛋、大豆油”等）。
+            2. 交叉比对：将拆解出的所有明线与暗线食材，与【食物不耐受清单】进行逐一精确核对。
+            3. 提取分级：如果命中不耐受食材，必须从报告中准确提取其对应的具体级别（如：“1级”、“2级”或“IgG抗体3级”等）。
+            4. 绝对去重：同一种不耐受食材如果在多个菜品中出现，在输出的风险清单中只保留一项，并在 source_dish 中用逗号合并菜名。
+            5. 格式约束：仅输出合法的 JSON 字符串，禁止输出任何 Markdown 格式（严禁包含 ```json 标签）或前言后语。
+            
+            # Output JSON Schema
+            {
+              "reasoning": "推理过程：1. 列出你从餐食文本中拆解出的所有显性与隐性食材；2. 说明哪些食材命中了不耐受清单及原因。",
+              "has_risk": true, 
+              "risk_items": [
+                {
+                  "ingredient": "具体的食材名称（如：西兰花）",
+                  "intolerance_level": "不耐受级别（如：1级）",
+                  "source_dish": "该食材来源于哪道菜（如：蒜蓉西兰花）"
+                }
+              ],
+              "dietary_advice": "针对这顿餐食，给客户的一句话专业健康替换建议（无风险则给予鼓励）"
+            }
+            
+            # Inputs
+            "餐食描述文本：\n{meal_text}\n\n"
+            "食物不耐受清单：\n{intolerance_text}\n"
+        """)
 
     def _is_ingredient_match(self, *, meal_ingredient: str, intolerance_ingredient: str) -> bool:
         left = meal_ingredient.strip().lower()
@@ -407,16 +442,6 @@ class SmartMealRiskService:
         if self._http_client is None:
             self._http_client = httpx.AsyncClient(timeout=15.0)
         return self._http_client
-
-    async def _get_pool(self) -> aiomysql.Pool:
-        if self._pool is not None:
-            return self._pool
-        async with self._pool_lock:
-            if self._pool is not None:
-                return self._pool
-            self._pool = await aiomysql.create_pool(minsize=1, maxsize=3, **build_business_mysql_conn_params())
-            return self._pool
-
 
 def _normalize_text(value: Any) -> str:
     if value is None:

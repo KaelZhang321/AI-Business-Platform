@@ -1395,6 +1395,11 @@ def _build_ui_runtime(
     param_source = _infer_param_source(entry.method)
 
     detail_hint = entry.detail_hint
+    detail_template_code = detail_hint.template_code.strip() if isinstance(detail_hint.template_code, str) else None
+    detail_fallback_mode = (
+        detail_hint.fallback_mode.strip() if isinstance(detail_hint.fallback_mode, str) and detail_hint.fallback_mode.strip() else "dynamic_ui"
+    )
+    detail_render_mode = "template_first" if detail_template_code else "dynamic_ui"
     identifier_field = detail_hint.identifier_field or _infer_identifier_field(rows)
     detail_enabled = (
         execution_result.status == ApiQueryExecutionStatus.SUCCESS
@@ -1479,6 +1484,9 @@ def _build_ui_runtime(
             api_id=(detail_hint.api_id or entry.id) if detail_enabled else None,
             route_url="/api/v1/api-query" if detail_enabled else None,
             ui_action=(detail_hint.ui_action or "remoteQuery") if detail_enabled else None,
+            render_mode=detail_render_mode if detail_enabled else "dynamic_ui",
+            template_code=detail_template_code if detail_enabled else None,
+            fallback_mode=detail_fallback_mode if detail_enabled else "dynamic_ui",
             request=ApiQueryDetailRequestRuntime(
                 param_source=param_source if detail_enabled else None,
                 identifier_param=(detail_hint.query_param or identifier_field) if detail_enabled else None,
@@ -2193,21 +2201,44 @@ def _build_wait_select_rows(execution_report: DagExecutionReport) -> list[dict[s
         options_by_binding = execution_result.meta.get("options_by_binding")
         if not isinstance(options_by_binding, dict):
             continue
+        option_rows_by_binding = execution_result.meta.get("option_rows_by_binding")
+        normalized_option_rows_by_binding = (
+            option_rows_by_binding if isinstance(option_rows_by_binding, dict) else {}
+        )
         rows: list[dict[str, Any]] = []
         for binding_key, options in options_by_binding.items():
             if not isinstance(options, list):
                 continue
+            option_rows = normalized_option_rows_by_binding.get(binding_key)
+            option_rows_list = option_rows if isinstance(option_rows, list) else []
+            value_to_row: dict[str, dict[str, Any]] = {}
+            for candidate_row in option_rows_list:
+                if not isinstance(candidate_row, dict):
+                    continue
+                for candidate_value in candidate_row.values():
+                    if candidate_value in (None, ""):
+                        continue
+                    key = _build_wait_select_candidate_key(candidate_value)
+                    value_to_row.setdefault(key, dict(candidate_row))
             for index, value in enumerate(options[:_SELECT_CANDIDATE_ROW_LIMIT], start=1):
+                matched_row = value_to_row.get(_build_wait_select_candidate_key(value), {})
                 rows.append(
                     {
                         "bindingKey": binding_key,
                         "candidateIndex": index,
                         "candidateValue": value,
+                        "candidateRow": matched_row,
                         "bindingMap": {binding_key: value},
+                        **matched_row,
                     }
                 )
         return rows
     return []
+
+
+def _build_wait_select_candidate_key(value: Any) -> str:
+    """将候选值标准化为可匹配键，兼容基础类型差异。"""
+    return str(value)
 
 
 def _build_wait_select_row_actions(execution_report: DagExecutionReport) -> list[dict[str, Any]]:

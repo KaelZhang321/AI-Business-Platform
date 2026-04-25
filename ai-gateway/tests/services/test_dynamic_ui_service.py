@@ -571,6 +571,9 @@ async def test_rule_query_spec_exposes_runtime_metadata_for_list_components(
     assert row_action["action"] == "remoteQuery"
     assert "type" not in row_action
     assert row_action["params"]["api"] == "/api/v1/ui-builder/runtime/endpoints/customer_detail/invoke"
+    assert row_action["params"]["renderMode"] == "dynamic_ui"
+    assert row_action["params"]["fallbackMode"] == "dynamic_ui"
+    assert "templateCode" not in row_action["params"]
     assert row_action["params"]["queryParams"] == {"customerId": {"$bindRow": "customerId"}}
     assert row_action["params"]["body"] == {}
     assert row_action["params"]["flowNum"] == "trace-query-001"
@@ -775,6 +778,44 @@ async def test_rule_query_spec_table_uses_schema_description_column_titles(monke
     columns = table["props"]["columns"]
     assert columns[0]["title"] == "客户编号"
     assert columns[1]["title"] == "客户姓名"
+
+
+@pytest.mark.asyncio
+async def test_rule_query_spec_table_row_action_exposes_template_first_strategy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """详情配置了模板编码时，row action 需显式透传模板优先与动态兜底策略。"""
+
+    monkeypatch.setattr(settings, "llm_ui_spec_enabled", False)
+    service = DynamicUIService(catalog_service=StubUICatalogService())
+
+    runtime = _make_list_runtime().model_copy(
+        update={
+            "detail": _make_list_runtime().detail.model_copy(
+                update={
+                    "render_mode": "template_first",
+                    "template_code": "customer_detail_template",
+                    "fallback_mode": "dynamic_ui",
+                }
+            )
+        }
+    )
+
+    spec = await service.generate_ui_spec(
+        intent="query",
+        data=[{"customerId": "C001", "customerName": "张三"}],
+        context={
+            "question": "查询客户列表",
+            "flow_num": "trace-template-001",
+            "created_by": "user-001",
+        },
+        runtime=runtime,
+    )
+
+    assert spec is not None
+    table = _root_child_by_type(spec, "PlannerTable")
+    row_action = table["props"]["rowActions"][0]
+    assert row_action["params"]["renderMode"] == "template_first"
+    assert row_action["params"]["templateCode"] == "customer_detail_template"
+    assert row_action["params"]["fallbackMode"] == "dynamic_ui"
 
 @pytest.mark.asyncio
 async def test_mutation_form_skipped_status_still_renders_planner_form() -> None:

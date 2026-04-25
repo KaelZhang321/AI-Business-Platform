@@ -288,6 +288,7 @@ class DynamicUIService:
                 created_by=context.get("created_by"),
                 request_schema_fields=runtime.list.request_schema_fields,
             )
+            detail_runtime_strategy_fields = self._build_detail_runtime_strategy_fields(runtime)
             filter_fields = list(runtime.list.filters.fields)
             filter_submit_request_fields = _build_runtime_request_fields(
                 runtime.list.api_id,
@@ -328,6 +329,7 @@ class DynamicUIService:
                                 "label": "查看详情",
                                 "params": {
                                     "api_id": runtime.detail.api_id,
+                                    **detail_runtime_strategy_fields,
                                     **_build_runtime_request_fields(
                                         runtime.detail.api_id,
                                         param_source=runtime.detail.request.param_source,
@@ -1716,12 +1718,14 @@ class DynamicUIService:
             table_props["rowActions"] = self._normalize_row_actions(context_row_actions)
         elif runtime and runtime.detail.enabled:
             # 详情动作只下发运行时契约，不在网关 UI 层硬编码具体业务参数。
+            detail_runtime_strategy_fields = self._build_detail_runtime_strategy_fields(runtime)
             table_props["rowActions"] = [
                 {
                     "action": runtime.detail.ui_action or "remoteQuery",
                     "label": "查看详情",
                     "params": {
                         "api_id": runtime.detail.api_id,
+                        **detail_runtime_strategy_fields,
                         **_build_runtime_request_fields(
                             runtime.detail.api_id,
                             param_source=runtime.detail.request.param_source,
@@ -1756,6 +1760,19 @@ class DynamicUIService:
             "state": {"filters": filters_state},
             "elements": elements,
         }
+
+    @staticmethod
+    def _build_detail_runtime_strategy_fields(runtime: ApiQueryUIRuntime) -> dict[str, Any]:
+        """提取详情跳转所需的模板优先/动态兜底策略字段。"""
+
+        detail_runtime = runtime.detail
+        params: dict[str, Any] = {
+            "renderMode": detail_runtime.render_mode or "dynamic_ui",
+            "fallbackMode": detail_runtime.fallback_mode or "dynamic_ui",
+        }
+        if detail_runtime.template_code:
+            params["templateCode"] = detail_runtime.template_code
+        return params
 
     def _notice_spec(self, title: str, message: str, tone: str) -> dict[str, Any]:
         """构造统一 `PlannerNotice` 读态卡片。

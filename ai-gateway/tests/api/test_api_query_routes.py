@@ -181,12 +181,19 @@ class StubDynamicUI:
         )
         row_actions = []
         if runtime and runtime.detail.enabled:
+            detail_strategy_params: dict[str, object] = {
+                "renderMode": runtime.detail.render_mode,
+                "fallbackMode": runtime.detail.fallback_mode,
+            }
+            if runtime.detail.template_code:
+                detail_strategy_params["templateCode"] = runtime.detail.template_code
             row_actions.append(
                 {
                     "action": "remoteQuery",
                     "label": "查看详情",
                     "params": {
                         "api_id": runtime.detail.api_id,
+                        **detail_strategy_params,
                         **runtime_metadata(
                             runtime.detail.api_id,
                             param_source=runtime.detail.request.param_source,
@@ -662,6 +669,9 @@ def test_api_query_returns_runtime_contract(monkeypatch) -> None:
     assert table["props"]["rowActions"][0]["action"] == "remoteQuery"
     assert "type" not in table["props"]["rowActions"][0]
     assert table["props"]["rowActions"][0]["params"]["api_id"] == "customer_detail"
+    assert table["props"]["rowActions"][0]["params"]["renderMode"] == "template_first"
+    assert table["props"]["rowActions"][0]["params"]["templateCode"] == "customer_detail_template"
+    assert table["props"]["rowActions"][0]["params"]["fallbackMode"] == "dynamic_ui"
     _assert_runtime_metadata(
         table["props"]["rowActions"][0]["params"],
         trace_id="trace-query-001",

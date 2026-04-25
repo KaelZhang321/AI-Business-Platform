@@ -430,6 +430,9 @@ class ApiQueryDetailRuntime(BaseModel):
         default_factory=ApiQueryDetailSourceRuntime,
         description="详情主键取值约束",
     )
+    render_mode: str = Field("dynamic_ui", description="详情渲染策略，template_first 表示模板优先")
+    template_code: str | None = Field(None, description="详情模板编码")
+    fallback_mode: str = Field("dynamic_ui", description="模板未命中时的兜底模式")
 
 
 class ApiQueryListPaginationRuntime(BaseModel):
