@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from collections import defaultdict
@@ -151,16 +152,14 @@ class SmartMealRiskService:
                 p.package_type AS package_type,
                 d.dish_name AS dish_name,
                 d.dish_type AS dish_type,
-                i.ingredient_name AS ingredient_name
+                d.ingredient_json AS ingredient_json
             FROM meal_package AS p
             JOIN meal_package_dish_binding AS db ON p.id = db.package_id
             JOIN meal_dish AS d ON db.dish_id = d.id
-            JOIN meal_dish_ingredient AS i ON d.id = i.dish_id
             WHERE p.package_code = %s
               AND p.status = 1
               AND db.status = 1
               AND d.status = 1
-              AND i.status = 1
         """
         pool = await self._mysql_pools.get_ods_pool()
         try:
@@ -174,15 +173,9 @@ class SmartMealRiskService:
         normalized_rows: list[dict[str, str]] = []
         for row in rows:
             dish_name = _normalize_text(row.get("dish_name"))
-            ingredient_name = _normalize_text(row.get("ingredient_name"))
-            if not dish_name or not ingredient_name:
+            if not dish_name:
                 continue
-            normalized_rows.append(
-                {
-                    "dish_name": dish_name,
-                    "ingredient_name": ingredient_name,
-                }
-            )
+            normalized_rows.extend(_extract_dish_ingredients(dish_name=dish_name, ingredient_json=row.get("ingredient_json")))
         return normalized_rows
 
     async def _identify_risk_items_with_llm(
@@ -252,28 +245,6 @@ class SmartMealRiskService:
                     )
         return risk_items
 
-    def _extract_intolerance_items(self, payload: Any) -> list[dict[str, str]]:
-        extracted: list[dict[str, str]] = []
-
-        def _walk(node: Any) -> None:
-            if isinstance(node, dict):
-                ingredient = _pick_first_text(node, _INTOLERANCE_INGREDIENT_KEYS)
-                if ingredient:
-                    extracted.append(
-                        {
-                            "ingredient": ingredient,
-                            "intolerance_level": _pick_first_text(node, _INTOLERANCE_LEVEL_KEYS) or "未知",
-                        }
-                    )
-                for value in node.values():
-                    _walk(value)
-            elif isinstance(node, list):
-                for item in node:
-                    _walk(item)
-
-        _walk(payload)
-        return self._normalize_intolerance_items(extracted)
-
     def _extract_risk_items(self, payload: dict[str, Any]) -> list[dict[str, str]]:
         result: list[dict[str, str]] = []
 
@@ -297,24 +268,6 @@ class SmartMealRiskService:
 
         _walk(payload)
         return result
-
-    def _normalize_intolerance_items(self, items: list[dict[str, str]]) -> list[dict[str, str]]:
-        level_by_ingredient: dict[str, str] = {}
-        for item in items:
-            ingredient = _normalize_text(item.get("ingredient"))
-            if not ingredient:
-                continue
-            level = _normalize_text(item.get("intolerance_level")) or "未知"
-            existed = level_by_ingredient.get(ingredient)
-            if existed is None or existed == "未知":
-                level_by_ingredient[ingredient] = level
-        return [
-            {
-                "ingredient": ingredient,
-                "intolerance_level": level_by_ingredient[ingredient],
-            }
-            for ingredient in sorted(level_by_ingredient.keys())
-        ]
 
     def _normalize_risk_items(self, items: list[dict[str, str]]) -> list[dict[str, str]]:
         merged: dict[str, dict[str, Any]] = {}
@@ -393,7 +346,7 @@ class SmartMealRiskService:
         return text, "未知"
 
     def _build_llm_prompt(self, *, meal_text: str, intolerance_text: str) -> str:
-        return ("""
+        return (f"""
             # Task
             请分析【餐食描述文本】，并与该客户的【食物不耐受清单】进行严格比对，精准识别出这顿餐食中是否含有客户不耐受的食材，并以严格的 JSON 格式输出。
             
@@ -407,22 +360,22 @@ class SmartMealRiskService:
             5. 格式约束：仅输出合法的 JSON 字符串，禁止输出任何 Markdown 格式（严禁包含 ```json 标签）或前言后语。
             
             # Output JSON Schema
-            {
+            {{
               "reasoning": "推理过程：1. 列出你从餐食文本中拆解出的所有显性与隐性食材；2. 说明哪些食材命中了不耐受清单及原因。",
               "has_risk": true, 
               "risk_items": [
-                {
+                {{
                   "ingredient": "具体的食材名称（如：西兰花）",
                   "intolerance_level": "不耐受级别（如：1级）",
                   "source_dish": "该食材来源于哪道菜（如：蒜蓉西兰花）"
-                }
+                }}
               ],
               "dietary_advice": "针对这顿餐食，给客户的一句话专业健康替换建议（无风险则给予鼓励）"
-            }
+            }}
             
             # Inputs
-            "餐食描述文本：\n{meal_text}\n\n"
-            "食物不耐受清单：\n{intolerance_text}\n"
+            餐食描述文本：\n{meal_text}\n\n
+            食物不耐受清单：\n{intolerance_text}\n
         """)
 
     def _is_ingredient_match(self, *, meal_ingredient: str, intolerance_ingredient: str) -> bool:
@@ -469,3 +422,42 @@ def _split_source_dishes(raw: str | None) -> set[str]:
     for sep in ("，", ",", "、", ";", "；", "|", "/"):
         normalized = normalized.replace(sep, ",")
     return {part.strip() for part in normalized.split(",") if part.strip()}
+
+
+def _extract_dish_ingredients(*, dish_name: str, ingredient_json: Any) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for ingredient in _parse_ingredient_json(ingredient_json):
+        ingredient_name = _pick_first_text(ingredient, ("ingredientName", "ingredient_name", "ingredient", "name"))
+        ingredient_category = _pick_first_text(
+            ingredient,
+            ("ingredientCategory", "ingredient_category", "category", "ingredientType", "ingredient_type"),
+        )
+        if not ingredient_name:
+            continue
+        rows.append(
+            {
+                "dish_name": dish_name,
+                "ingredient_name": ingredient_name,
+                "ingredient_category": ingredient_category,
+            }
+        )
+    return rows
+
+
+def _parse_ingredient_json(raw_value: Any) -> list[dict[str, Any]]:
+    value = raw_value
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode("utf-8", errors="ignore")
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return []
+        try:
+            value = json.loads(text)
+        except json.JSONDecodeError:
+            return []
+    if isinstance(value, dict):
+        value = [value]
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]

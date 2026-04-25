@@ -785,6 +785,7 @@ async def test_rule_query_spec_table_row_action_exposes_template_first_strategy(
     """详情配置了模板编码时，row action 需显式透传模板优先与动态兜底策略。"""
 
     monkeypatch.setattr(settings, "llm_ui_spec_enabled", False)
+    monkeypatch.setattr(settings, "api_query_template_first_enabled", True)
     service = DynamicUIService(catalog_service=StubUICatalogService())
 
     runtime = _make_list_runtime().model_copy(

@@ -91,6 +91,10 @@ class Settings(BaseSettings):
 
     # 动态UI
     llm_ui_spec_enabled: bool = False
+    # 详情页模板优先策略总开关：
+    # - false: 全量走 dynamic_ui 详情渲染（不下发 templateCode）
+    # - true: 下发 template_first 策略（templateCode/fallbackMode 由目录 hint 提供）
+    api_query_template_first_enabled: bool = False
     # 多步骤查询渲染策略：
     # - auto_result: 自动在 terminal / aggregate 间切换（推荐默认值）
     # - terminal_result/composite_result: 兼容旧值，运行期会自动归一到 auto_result

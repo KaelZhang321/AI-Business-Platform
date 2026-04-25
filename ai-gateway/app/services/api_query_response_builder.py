@@ -1395,11 +1395,15 @@ def _build_ui_runtime(
     param_source = _infer_param_source(entry.method)
 
     detail_hint = entry.detail_hint
-    detail_template_code = detail_hint.template_code.strip() if isinstance(detail_hint.template_code, str) else None
+    detail_template_code = (
+        detail_hint.template_code.strip()
+        if settings.api_query_template_first_enabled and isinstance(detail_hint.template_code, str) and detail_hint.template_code.strip()
+        else None
+    )
     detail_fallback_mode = (
         detail_hint.fallback_mode.strip() if isinstance(detail_hint.fallback_mode, str) and detail_hint.fallback_mode.strip() else "dynamic_ui"
     )
-    detail_render_mode = "template_first" if detail_template_code else "dynamic_ui"
+    detail_render_mode = "template_first" if settings.api_query_template_first_enabled else "dynamic_ui"
     identifier_field = detail_hint.identifier_field or _infer_identifier_field(rows)
     detail_enabled = (
         execution_result.status == ApiQueryExecutionStatus.SUCCESS

@@ -234,6 +234,79 @@ async def test_build_execution_response_returns_full_spec() -> None:
 
 
 @pytest.mark.asyncio
+async def test_build_execution_response_detail_render_mode_respects_global_switch(monkeypatch: pytest.MonkeyPatch) -> None:
+    """全局开关关闭时，即使目录配置模板编码，也应强制走 dynamic_ui。"""
+
+    monkeypatch.setattr(settings, "api_query_template_first_enabled", False)
+    entry = _build_test_entry().model_copy(
+        update={
+            "detail_hint": _build_test_entry().detail_hint.model_copy(
+                update={
+                    "enabled": True,
+                    "api_id": "customer_detail",
+                    "identifier_field": "id",
+                    "query_param": "id",
+                    "template_code": "customer_detail_template",
+                    "fallback_mode": "dynamic_ui",
+                }
+            )
+        }
+    )
+    step_id = f"step_{entry.id}"
+    plan = _build_test_plan(step_id)
+    record = DagStepExecutionRecord(
+        step=plan.steps[0],
+        entry=entry,
+        resolved_params={"ownerId": "E001", "pageNum": 1, "pageSize": 20},
+        execution_result=ApiQueryExecutionResult(
+            status=ApiQueryExecutionStatus.SUCCESS,
+            data=[{"id": "27", "name": "测试客户"}],
+            total=1,
+            trace_id="trace-template-switch-off",
+            meta={},
+        ),
+    )
+    dynamic_ui = CaptureDynamicUIService(result=UISpecBuildResult(spec=_build_flat_spec(), frozen=False))
+    builder = ApiQueryResponseBuilder(
+        dynamic_ui=dynamic_ui,
+        snapshot_service=UISnapshotService(),
+        ui_catalog_service=UICatalogService(),
+        registry_source=FakeRegistrySource(),
+    )
+    state: ApiQueryState = {
+        "request_mode": "nl",
+        "query_text": "查询测试客户",
+        "trace_id": "trace-template-switch-off",
+        "interaction_id": None,
+        "conversation_id": None,
+        "plan": plan,
+    }
+
+    response = await builder.build_execution_response(
+        state=state,
+        runtime_context=ApiQueryRuntimeContext(
+            step_entries={step_id: record.entry},
+            log_prefix="api_query[trace=trace-template-switch-off]",
+        ),
+        execution_state={
+            "plan": plan,
+            "trace_id": "trace-template-switch-off",
+            "records_by_step_id": {step_id: record},
+            "execution_order": [step_id],
+            "errors": [],
+            "aggregate_status": None,
+        },
+        query_domains_hint=["crm"],
+        business_intent_codes=["none"],
+    )
+
+    assert response.ui_runtime is not None
+    assert response.ui_runtime.detail.render_mode == "dynamic_ui"
+    assert response.ui_runtime.detail.template_code is None
+    assert response.ui_runtime.detail.fallback_mode == "dynamic_ui"
+
+
+@pytest.mark.asyncio
 async def test_stage2_degrade_response_returns_skipped_notice() -> None:
     """第二阶段降级应返回稳定 SKIPPED 响应，而不是抛裸错误。"""
 

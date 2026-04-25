@@ -4,6 +4,7 @@ import pytest
 
 from app.services.smart_meal_risk_service import (
     SmartMealRiskService,
+    _extract_dish_ingredients,
 )
 
 
@@ -141,3 +142,33 @@ async def test_identify_risks_fallback_to_rule_match_when_llm_empty(monkeypatch:
             "source_dish": "奶香意面",
         },
     ]
+
+
+def test_extract_dish_ingredients_from_ingredient_json() -> None:
+    rows = _extract_dish_ingredients(
+        dish_name="清蒸香菇鸡腿肉",
+        ingredient_json=[
+            {"seqNo": 1, "ingredientName": "鸡腿肉", "ingredientCategory": "肉类"},
+            {"seqNo": 2, "ingredientName": "香菇", "ingredientCategory": "菌菇类"},
+            {"seqNo": 3, "ingredientName": "", "ingredientCategory": "蔬菜"},
+            {"seqNo": 4, "ingredientCategory": "蔬菜"},
+        ],
+    )
+    assert rows == [
+        {
+            "dish_name": "清蒸香菇鸡腿肉",
+            "ingredient_name": "鸡腿肉",
+            "ingredient_category": "肉类",
+        },
+        {
+            "dish_name": "清蒸香菇鸡腿肉",
+            "ingredient_name": "香菇",
+            "ingredient_category": "菌菇类",
+        },
+    ]
+
+
+def test_extract_dish_ingredients_handles_invalid_payload() -> None:
+    assert _extract_dish_ingredients(dish_name="A", ingredient_json="invalid-json") == []
+    assert _extract_dish_ingredients(dish_name="A", ingredient_json="") == []
+    assert _extract_dish_ingredients(dish_name="A", ingredient_json=None) == []

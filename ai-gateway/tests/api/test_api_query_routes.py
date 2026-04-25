@@ -626,6 +626,7 @@ def _make_entry(**overrides) -> ApiCatalogEntry:
 
 
 def test_api_query_returns_runtime_contract(monkeypatch) -> None:
+    monkeypatch.setattr(api_query_routes.settings, "api_query_template_first_enabled", True)
     entry = _make_entry()
     stub_retriever = StubRetriever(entry)
     stub_services = (
@@ -683,6 +684,39 @@ def test_api_query_returns_runtime_contract(monkeypatch) -> None:
         "statuses": ["active"],
         "tag_names": [],
     }
+
+
+def test_api_query_global_template_first_switch_off_forces_dynamic_fallback(monkeypatch) -> None:
+    monkeypatch.setattr(api_query_routes.settings, "api_query_template_first_enabled", False)
+    entry = _make_entry()
+    stub_services = (
+        StubRetriever(entry),
+        StubExtractor(entry, {"pageNum": 1, "pageSize": 1}),
+        StubExecutor(
+            ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.SUCCESS,
+                data=[{"customerId": "C001", "customerName": "张三"}],
+                total=8,
+            )
+        ),
+        StubDynamicUI(),
+        StubSnapshotService(),
+    )
+    monkeypatch.setattr(api_query_routes, "_get_services", lambda: stub_services)
+
+    client = TestClient(create_test_app())
+    response = client.post(
+        "/api/v1/api-query",
+        json={"query": "查询张三客户"},
+        headers={"X-Trace-Id": "trace-query-002", "X-Interaction-Id": "ia-query-002"},
+    )
+
+    assert response.status_code == 200
+    table = response.json()["ui_spec"]["elements"]["report-table"]
+    row_action_params = table["props"]["rowActions"][0]["params"]
+    assert row_action_params["renderMode"] == "dynamic_ui"
+    assert row_action_params["fallbackMode"] == "dynamic_ui"
+    assert "templateCode" not in row_action_params
 
 
 def test_api_query_passes_env_and_tag_filters_to_retriever(monkeypatch) -> None:
