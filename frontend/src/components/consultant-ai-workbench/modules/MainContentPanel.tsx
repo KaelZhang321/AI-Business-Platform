@@ -54,6 +54,8 @@ interface MainContentPanelProps {
   runtimeStatusByCardId: Record<string, 'loading' | 'ready' | 'empty' | 'error'>;
   /** 各卡片的错误信息 */
   runtimeErrorByCardId: Record<string, string>;
+  /** 卡片触发运行时保存（用于 mutation 接口） */
+  onRuntimeCardSave?: (cardId: string, payload: Record<string, unknown>) => Promise<void> | void;
 }
 
 /** 主内容面板组件：展示客户信息头部、布局标签、AI 结果卡片和拖拽排序工作区 */
@@ -80,6 +82,7 @@ export const MainContentPanel: React.FC<MainContentPanelProps> = ({
   runtimeDataByCardId,
   runtimeStatusByCardId,
   runtimeErrorByCardId,
+  onRuntimeCardSave,
 }) => {
   const hasConversationOutput = Boolean(latestAssistantMessage) && aiResults.length > 0;
   const showConversationOutputOnly = hasConversationOutput && !isLayoutViewEnabled;
@@ -253,8 +256,12 @@ export const MainContentPanel: React.FC<MainContentPanelProps> = ({
                           >
                             <CardComponent
                               runtimeData={runtimeDataByCardId[id]}
+                              runtimeDataByCardId={runtimeDataByCardId}
                               runtimeStatus={runtimeStatusByCardId[id]}
                               runtimeError={runtimeErrorByCardId[id]}
+                              onRuntimeSave={(payload: Record<string, unknown>) => {
+                                void onRuntimeCardSave?.(id, payload);
+                              }}
                             />
                           </SortableCard>
                         );

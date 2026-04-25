@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useMemo, useState } from 'react';
+import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import {
   Activity,
   AlertTriangle,
@@ -49,8 +49,10 @@ type CardRuntimeProps = {
   title?: string;
   hideHeader?: boolean;
   onEdit?: () => void;
+  onRuntimeSave?: (payload: Record<string, unknown>) => Promise<void> | void;
   context?: CardContext;
   runtimeData?: unknown;
+  runtimeDataByCardId?: Record<string, unknown>;
   runtimeStatus?: CardRuntimeStatus;
   runtimeError?: string;
 };
@@ -210,10 +212,10 @@ const LABEL_KEY_MAP: Record<string, string[]> = {
   '项目效果满意度': ['projectSatisfaction'],
   '隐私交流情况': ['privacyCommunication'],
   '是否了解客户收入': ['knowsCustomerIncome'],
-  '消费习惯': ['consumptionHabits'],
+  '消费习惯': ['consumptionHabit'],
   '最在乎的人和事': ['mostCareAbout'],
-  '沟通喜好': ['communicationPreferences'],
-  '沟通禁忌': ['communicationTaboos'],
+  '沟通喜好': ['communicationPreference'],
+  '沟通禁忌': ['communicationTaboo'],
   '问题汇总': ['issueSummary'],
   '原因分析（观念引导）': ['causeAnalysis'],
   '咨询建议（抛方案）': ['consultationAdvice'],
@@ -369,24 +371,152 @@ type NormalizedEducationRecord = {
   feedback: unknown;
 };
 
+const extractEducationContentByRound = (record: Record<string, unknown>, round: unknown): unknown => {
+  const directContent = record.content ?? record.text ?? record.summary ?? record.educationContent;
+  if (!isEmptyValue(directContent)) {
+    return directContent;
+  }
+
+  const normalizedRound = normalizeKey(toDisplayText(round));
+  if (normalizedRound.includes('第1次') || normalizedRound.endsWith('1次') || normalizedRound === '1') {
+    if (!isEmptyValue(record.firstTime)) {
+      return record.firstTime;
+    }
+  }
+  if (normalizedRound.includes('第2次') || normalizedRound.endsWith('2次') || normalizedRound === '2') {
+    if (!isEmptyValue(record.secondTime)) {
+      return record.secondTime;
+    }
+  }
+  if (normalizedRound.includes('第3次') || normalizedRound.endsWith('3次') || normalizedRound === '3') {
+    if (!isEmptyValue(record.thirdTime)) {
+      return record.thirdTime;
+    }
+  }
+  if (normalizedRound.includes('项目') || normalizedRound.includes('价格') || normalizedRound.includes('铺垫')) {
+    if (!isEmptyValue(record.projectPricePrepared)) {
+      return record.projectPricePrepared;
+    }
+  }
+
+  return record.firstTime ?? record.secondTime ?? record.thirdTime ?? record.projectPricePrepared;
+};
+
+const resolveEducationRound = (record: Record<string, unknown>): unknown => {
+  const explicitRound = record.round ?? record.times ?? record.sequence ?? record.index ?? record.count;
+  if (!isEmptyValue(explicitRound)) {
+    return explicitRound;
+  }
+  if (!isEmptyValue(record.firstTime)) {
+    return '第1次';
+  }
+  if (!isEmptyValue(record.secondTime)) {
+    return '第2次';
+  }
+  if (!isEmptyValue(record.thirdTime)) {
+    return '第3次';
+  }
+  if (!isEmptyValue(record.projectPricePrepared)) {
+    return '项目及价格是否铺垫';
+  }
+  return undefined;
+};
+
 const normalizeEducationRecords = (value: unknown): NormalizedEducationRecord[] => {
-  if (!Array.isArray(value)) {
+  const sourceRows: unknown[] = Array.isArray(value)
+    ? value
+    : isEmptyValue(value)
+      ? []
+      : [value];
+
+  if (sourceRows.length === 0) {
     return [];
   }
 
-  return value
+  return sourceRows
     .map((item, index) => {
       const record = toObjectRecord(item);
       const id = toDisplayText(record.id ?? record.recordId ?? index + 1);
+      const round = resolveEducationRound(record);
       return {
         id,
-        round: record.round ?? record.times ?? record.sequence ?? record.index ?? record.count,
+        round,
         time: record.time ?? record.date ?? record.createdAt ?? record.createdTime ?? record.visitTime,
-        content: record.content ?? record.text ?? record.summary ?? record.educationContent,
+        content: extractEducationContentByRound(record, round),
         feedback: record.feedback ?? record.result ?? record.response ?? record.effect,
       };
     })
     .filter((item) => Boolean(item.id));
+};
+
+type PrecautionsFormData = typeof precautions;
+
+const EMPTY_PRECAUTIONS_FORM: PrecautionsFormData = {
+  consumptionHabits: '',
+  mostCareAbout: '',
+  communicationPreferences: '',
+  communicationTaboos: '',
+};
+
+const toInputText = (value: unknown): string => {
+  if (isEmptyValue(value)) {
+    return '';
+  }
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => toInputText(item))
+      .filter(Boolean)
+      .join('、');
+  }
+  if (typeof value === 'object') {
+    return JSON.stringify(value);
+  }
+  return String(value);
+};
+
+const buildPrecautionsFormData = (
+  runtimeData: unknown,
+  fallback: PrecautionsFormData,
+): PrecautionsFormData => {
+  const payload = pickRuntimeResultObject(runtimeData);
+  if (Object.keys(payload).length === 0) {
+    return { ...fallback };
+  }
+
+  const resolveField = (label: string, candidates: string[], fallbackValue: string) => {
+    const candidateValue = pickValueByCandidates(payload, candidates);
+    if (candidateValue !== undefined) {
+      const text = toInputText(candidateValue);
+      if (text) {
+        return text;
+      }
+    }
+
+    const labelValue = resolveRuntimeValueByLabel(payload, label);
+    if (labelValue !== undefined) {
+      const text = toInputText(labelValue);
+      if (text) {
+        return text;
+      }
+    }
+
+    return fallbackValue;
+  };
+
+  return {
+    consumptionHabits: resolveField('消费习惯', ['consumptionHabit', 'consumptionHabits'], fallback.consumptionHabits),
+    mostCareAbout: resolveField('最在乎的人和事', ['mostCareAbout'], fallback.mostCareAbout),
+    communicationPreferences: resolveField(
+      '沟通喜好',
+      ['communicationPreference', 'communicationPreferences'],
+      fallback.communicationPreferences,
+    ),
+    communicationTaboos: resolveField(
+      '沟通禁忌',
+      ['communicationTaboo', 'communicationTaboos'],
+      fallback.communicationTaboos,
+    ),
+  };
 };
 
 const RuntimeState = ({ status, error }: { status: CardRuntimeStatus; error?: string }) => {
@@ -602,37 +732,94 @@ export const IdentityContactCard = ({ title = "身份与联系信息", hideHeade
   </InnerCardWrapper>
 );
 
-export const BasicHealthDataCard = ({ title = "健康基础数据", hideHeader = false, onEdit, context = 'management', runtimeData, runtimeStatus, runtimeError }: CardRuntimeProps) => (
-  <InnerCardWrapper title={title} onEdit={onEdit} hideHeader={hideHeader} showEdit={context === 'management'} context={context} runtimeData={runtimeData} runtimeStatus={runtimeStatus} runtimeError={runtimeError}>
-    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-      <div className="grid grid-cols-[repeat(auto-fit,minmax(150px,1fr))] gap-y-4 gap-x-4">
-        <InfoItem label="身高 (CM)" value={basicHealthData.height} />
-        <InfoItem label="体重 (KG)" value={basicHealthData.weight} />
-        <InfoItem label="BMI" value={basicHealthData.bmi} />
-        <InfoItem label="血压 (MMHG)" value={basicHealthData.bloodPressure} />
-        <InfoItem label="血糖 (MMOL/L)" value={basicHealthData.bloodSugar} />
-        <InfoItem label="血脂 (总胆固醇/甘油三酯等)" value={basicHealthData.bloodLipids} />
-        <InfoItem label="尿酸 (MMOL/L)" value={basicHealthData.uricAcid} />
-        <InfoItem label="心率 (次/分)" value={basicHealthData.heartRate} />
-        <InfoItem label="最近一次测量日期" value={basicHealthData.lastMeasurementDate} />
-      </div>
-      <div className="space-y-6">
-        <div className="md:border-l md:pl-6 border-slate-100 dark:border-slate-700/50">
-          <h4 className="text-sm font-bold text-slate-800 dark:text-slate-200 mb-3">女性健康</h4>
-          <div className="grid grid-cols-[repeat(auto-fit,minmax(150px,1fr))] gap-y-4 gap-x-4">
-            <InfoItem label="月经是否正常" value={basicHealthData.menstruationNormal} />
-            <InfoItem label="经期描述/问题" value={basicHealthData.menstrualDescription} />
-            <InfoItem label="孕产史" value={basicHealthData.pregnancyHistory} />
-            <InfoItem label="私密项目需求/记录" value={basicHealthData.privateProjectNeeds} />
+export const BasicHealthDataCard = ({
+  title = "健康基础数据",
+  hideHeader = false,
+  onEdit,
+  context = 'management',
+  runtimeData,
+  runtimeDataByCardId,
+  runtimeStatus,
+  runtimeError,
+}: CardRuntimeProps) => {
+  const genderText = useMemo(() => {
+    if (context === 'workbench') {
+      const identityCardPayload = pickRuntimeResultObject(runtimeDataByCardId?.['identity-contact']);
+      const identityGender = pickValueByCandidates(identityCardPayload, ['gender', 'sex']);
+      const identityGenderText = toInputText(identityGender).trim();
+      if (identityGenderText) {
+        return identityGenderText;
+      }
+
+      const selfPayload = pickRuntimeResultObject(runtimeData);
+      const selfGender = pickValueByCandidates(selfPayload, ['gender', 'sex']);
+      const selfGenderText = toInputText(selfGender).trim();
+      if (selfGenderText) {
+        return selfGenderText;
+      }
+    }
+
+    return String(identityContactInfo.gender ?? '');
+  }, [context, runtimeData, runtimeDataByCardId]);
+
+  const normalizedGender = genderText.trim().toLowerCase();
+  const isMale = (
+    normalizedGender === '男' ||
+    normalizedGender === '男性' ||
+    normalizedGender === 'male' ||
+    normalizedGender === 'm' ||
+    normalizedGender === 'false' ||
+    normalizedGender === '0' ||
+    normalizedGender === '1' ||
+    normalizedGender.includes('男') ||
+    normalizedGender.includes('male')
+  );
+  const isFemale = (
+    normalizedGender === '女' ||
+    normalizedGender === '女性' ||
+    normalizedGender === 'female' ||
+    normalizedGender === 'f' ||
+    normalizedGender === '2' ||
+    normalizedGender.includes('女') ||
+    normalizedGender.includes('female')
+  );
+  const showFemaleHealth = isFemale && !isMale;
+
+  return (
+    <InnerCardWrapper title={title} onEdit={onEdit} hideHeader={hideHeader} showEdit={context === 'management'} context={context} runtimeData={runtimeData} runtimeStatus={runtimeStatus} runtimeError={runtimeError}>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div className="grid grid-cols-[repeat(auto-fit,minmax(150px,1fr))] gap-y-4 gap-x-4">
+          <InfoItem label="身高 (CM)" value={basicHealthData.height} />
+          <InfoItem label="体重 (KG)" value={basicHealthData.weight} />
+          <InfoItem label="BMI" value={basicHealthData.bmi} />
+          <InfoItem label="血压 (MMHG)" value={basicHealthData.bloodPressure} />
+          <InfoItem label="血糖 (MMOL/L)" value={basicHealthData.bloodSugar} />
+          <InfoItem label="血脂 (总胆固醇/甘油三酯等)" value={basicHealthData.bloodLipids} />
+          <InfoItem label="尿酸 (MMOL/L)" value={basicHealthData.uricAcid} />
+          <InfoItem label="心率 (次/分)" value={basicHealthData.heartRate} />
+          <InfoItem label="最近一次测量日期" value={basicHealthData.lastMeasurementDate} />
+        </div>
+
+        <div className="space-y-6">
+          {showFemaleHealth && (
+            <div className="md:border-l md:pl-6 border-slate-100 dark:border-slate-700/50">
+              <h4 className="text-sm font-bold text-slate-800 dark:text-slate-200 mb-3">女性健康</h4>
+              <div className="grid grid-cols-[repeat(auto-fit,minmax(150px,1fr))] gap-y-4 gap-x-4">
+                <InfoItem label="月经是否正常" value={basicHealthData.menstruationNormal} />
+                <InfoItem label="经期描述/问题" value={basicHealthData.menstrualDescription} />
+                <InfoItem label="孕产史" value={basicHealthData.pregnancyHistory} />
+                <InfoItem label="私密项目需求/记录" value={basicHealthData.privateProjectNeeds} />
+              </div>
+            </div>
+          )}
+          <div className="md:border-l md:pl-6 pt-4 border-slate-100 dark:border-slate-700/50">
+            <InfoItem label="功能医学检测结果（如有）" value={basicHealthData.functionalMedicineResults} />
           </div>
         </div>
-        <div className="md:border-l md:pl-6 pt-4 border-t border-slate-100 dark:border-slate-700/50">
-          <InfoItem label="功能医学检测结果（如有）" value={basicHealthData.functionalMedicineResults} />
-        </div>
       </div>
-    </div>
-  </InnerCardWrapper>
-);
+    </InnerCardWrapper>
+  );
+};
 
 export const HealthStatusMedicalHistoryCard = ({ title = "健康状况与医疗史", hideHeader = false, onEdit, context = 'management', runtimeData, runtimeStatus, runtimeError }: CardRuntimeProps) => (
   <InnerCardWrapper title={title} onEdit={onEdit} hideHeader={hideHeader} showEdit={context === 'management'} context={context} runtimeData={runtimeData} runtimeStatus={runtimeStatus} runtimeError={runtimeError}>
@@ -976,11 +1163,14 @@ export const EducationRecordsCard = ({ title = "教育铺垫记录", hideHeader 
     const payload = pickRuntimeResultObject(runtimeDataRef);
     const runtimeRowsRaw = pickValueByCandidates(payload, [
       'educationRecords',
+      'educationPreparationRecords',
+      'educationPreparationRecordList',
       'records',
       'rows',
       'list',
       'items',
       'educationRecordList',
+      'result',
     ]);
     const normalized = normalizeEducationRecords(runtimeRowsRaw);
     if (normalized.length === 0) {
@@ -1023,11 +1213,41 @@ export const EducationRecordsCard = ({ title = "教育铺垫记录", hideHeader 
   );
 };
 
-export const PrecautionsCard = ({ title = "注意事项", hideHeader = false, onEdit, context = 'management', runtimeData, runtimeStatus, runtimeError }: CardRuntimeProps) => {
+export const PrecautionsCard = ({ title = "注意事项", hideHeader = false, onEdit, onRuntimeSave, context = 'management', runtimeData, runtimeStatus, runtimeError }: CardRuntimeProps) => {
   const [isEditing, setIsEditing] = useState(false);
-  const [formData, setFormData] = useState(precautions);
+  const [isSaving, setIsSaving] = useState(false);
+  const [formData, setFormData] = useState<PrecautionsFormData>(() => (
+    context === 'workbench' ? { ...EMPTY_PRECAUTIONS_FORM } : { ...precautions }
+  ));
 
-  const handleSave = () => {
+  useEffect(() => {
+    if (context !== 'workbench' || runtimeStatus !== 'ready' || isEditing) {
+      return;
+    }
+    setFormData((prev) => buildPrecautionsFormData(runtimeData, prev));
+  }, [context, isEditing, runtimeData, runtimeStatus]);
+
+  const handleSave = async () => {
+    if (context === 'workbench' && onRuntimeSave) {
+      const payload = pickRuntimeResultObject(runtimeData);
+      setIsSaving(true);
+      try {
+        await Promise.resolve(onRuntimeSave({
+          pkId: payload.pkId ?? payload.id ?? '',
+          customerMasterId: payload.customerMasterId ?? '',
+          attentionNote: payload.attentionNote ?? payload.remark ?? '',
+          consumptionHabit: formData.consumptionHabits,
+          mostCareAbout: formData.mostCareAbout,
+          communicationPreference: formData.communicationPreferences,
+          communicationTaboo: formData.communicationTaboos,
+          remark: payload.remark ?? '',
+          owner: payload.owner ?? payload.ownerName ?? '',
+          executionDate: payload.executionDate ?? '',
+        }));
+      } finally {
+        setIsSaving(false);
+      }
+    }
     setIsEditing(false);
   };
 
@@ -1035,7 +1255,10 @@ export const PrecautionsCard = ({ title = "注意事项", hideHeader = false, on
     if (context === 'management') {
       if (onEdit) onEdit();
     } else {
-      setIsEditing(!isEditing);
+      if (!isEditing && runtimeStatus === 'ready') {
+        setFormData((prev) => buildPrecautionsFormData(runtimeData, prev));
+      }
+      setIsEditing((prev) => !prev);
     }
   };
 
@@ -1061,7 +1284,7 @@ export const PrecautionsCard = ({ title = "注意事项", hideHeader = false, on
           <div className="flex items-center space-x-2">
             {hideHeader && context === 'workbench' && (
               <button
-                onClick={() => setIsEditing(!isEditing)}
+                onClick={handleEditClick}
                 className="p-1 text-orange-400 hover:text-orange-600 transition-colors"
                 title="编辑注意事项"
               >
@@ -1070,10 +1293,11 @@ export const PrecautionsCard = ({ title = "注意事项", hideHeader = false, on
             )}
             {isEditing && (
               <button
-                onClick={handleSave}
-                className="px-3 py-1 bg-orange-500 text-white text-[10px] font-bold rounded-lg hover:bg-orange-600 transition-colors shadow-sm"
+                onClick={() => { void handleSave(); }}
+                disabled={isSaving}
+                className="px-3 py-1 bg-orange-500 disabled:bg-orange-300 text-white text-[10px] font-bold rounded-lg hover:bg-orange-600 transition-colors shadow-sm"
               >
-                保存
+                {isSaving ? '保存中...' : '保存'}
               </button>
             )}
           </div>
@@ -1111,8 +1335,9 @@ export const PrecautionsCard = ({ title = "注意事项", hideHeader = false, on
 };
 
 export const ConsultationRecordsCard = ({ title = "综合分析及咨询记录", hideHeader = false, onEdit, context = 'management', runtimeData, runtimeStatus, runtimeError }: CardRuntimeProps) => {
-  const consultant = useRuntimeFieldValue('咨询顾问', consultationRecords.consultant, ['consultant', 'consultantName']);
-  const consultationDate = useRuntimeFieldValue('咨询日期', consultationRecords.consultationDate, ['consultationDate', 'date']);
+  const consultant = useRuntimeFieldValue('咨询顾问', EMPTY_PLACEHOLDER, ['consultant', 'consultantName']);
+  const consultationDate = useRuntimeFieldValue('咨询日期', EMPTY_PLACEHOLDER, ['consultationDate', 'date']);
+  const consultantInitial = consultant === EMPTY_PLACEHOLDER ? EMPTY_PLACEHOLDER : consultant.charAt(0);
 
   return (
     <InnerCardWrapper title={title} onEdit={onEdit} hideHeader={hideHeader} showEdit={context === 'management'} context={context} runtimeData={runtimeData} runtimeStatus={runtimeStatus} runtimeError={runtimeError}>
@@ -1135,7 +1360,7 @@ export const ConsultationRecordsCard = ({ title = "综合分析及咨询记录",
         <div className="flex items-center justify-between bg-slate-50 dark:bg-slate-800/50 p-3 rounded-xl border border-slate-100 dark:border-slate-700/50">
           <div className="flex items-center space-x-3">
             <div className="w-8 h-8 rounded-full bg-blue-100 dark:bg-blue-900/50 flex items-center justify-center text-blue-600 dark:text-blue-400 font-bold text-xs">
-              {consultant.charAt(0)}
+              {consultantInitial}
             </div>
             <div>
               <div className="text-sm text-slate-500 dark:text-slate-400">咨询顾问</div>
@@ -1165,16 +1390,17 @@ export const RemarksCard = ({ title = "备注", hideHeader = false, onEdit, cont
 };
 
 export const ExecutionDateCard = ({ title = "负责人及执行日期", hideHeader = false, onEdit, context = 'management', runtimeData, runtimeStatus, runtimeError }: CardRuntimeProps) => {
-  const responsiblePerson = useRuntimeFieldValue('负责人', executionDate.responsiblePerson, ['responsiblePerson', 'ownerName']);
-  const executionDateText = useRuntimeFieldValue('执行日期', executionDate.executionDate, ['executionDate']);
-  const lastUpdateDate = useRuntimeFieldValue('最近更新', executionDate.lastUpdateDate, ['lastUpdateDate', 'updatedAt']);
+  const responsiblePerson = useRuntimeFieldValue('负责人', EMPTY_PLACEHOLDER, ['owner', 'responsiblePerson', 'ownerName']);
+  const executionDateText = useRuntimeFieldValue('执行日期', EMPTY_PLACEHOLDER, ['executionDate']);
+  const lastUpdateDate = useRuntimeFieldValue('最近更新', EMPTY_PLACEHOLDER, ['lastUpdateDate', 'updatedAt']);
+  const responsibleInitial = responsiblePerson === EMPTY_PLACEHOLDER ? EMPTY_PLACEHOLDER : responsiblePerson.charAt(0);
 
   return (
     <InnerCardWrapper title={title} onEdit={onEdit} hideHeader={hideHeader} showEdit={context === 'management'} context={context} runtimeData={runtimeData} runtimeStatus={runtimeStatus} runtimeError={runtimeError}>
       <div className="flex items-center justify-between bg-slate-50 dark:bg-slate-800/50 p-4 rounded-xl border border-slate-100 dark:border-slate-700/50">
         <div className="flex items-center space-x-3">
           <div className="w-10 h-10 rounded-full bg-indigo-100 dark:bg-indigo-900/50 flex items-center justify-center text-indigo-600 dark:text-indigo-400 font-bold text-sm">
-            {responsiblePerson.charAt(0)}
+            {responsibleInitial}
           </div>
           <div>
             <div className="text-sm text-slate-500 dark:text-slate-400">负责人</div>

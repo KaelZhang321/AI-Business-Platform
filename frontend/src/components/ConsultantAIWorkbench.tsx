@@ -16,6 +16,7 @@ import { InsightsArea } from './consultant-ai-workbench/modules/InsightsArea';
 import { MainContentPanel } from './consultant-ai-workbench/modules/MainContentPanel';
 import { WorkbenchHeaderSection } from './consultant-ai-workbench/modules/WorkbenchHeaderSection';
 import { AI_CARDS_DATA } from './AICards';
+import localStructuredFallbackRaw from './json-render/aa.txt?raw';
 import type {
   AIResultItem,
   ChatHistoryItem,
@@ -49,12 +50,108 @@ type CustomerListApiResponse = {
 
 /** 客户分页参数 */
 const CUSTOMER_PAGE_SIZE = 10;
+/** 客户搜索防抖时长（毫秒） */
+const CUSTOMER_SEARCH_DEBOUNCE_MS = 400;
 /** 卡片运行时加载状态 */
 type CardRuntimeStatus = 'loading' | 'ready' | 'empty' | 'error';
 type RuntimeDataByCardId = Record<string, unknown>;
 type RuntimeStatusByCardId = Record<string, CardRuntimeStatus>;
 type RuntimeErrorByCardId = Record<string, string>;
 type CardEndpointMap = Record<string, RoleCardEndpointRelation[]>;
+
+const PRECAUTIONS_CARD_ID = 'precautions';
+
+function resolveRelationOperationSafety(relation: RoleCardEndpointRelation): string {
+  const candidates = [
+    relation.operationSafety,
+    relation.endpointOperationSafety,
+  ];
+
+  for (const item of candidates) {
+    if (typeof item === 'string' && item.trim()) {
+      return item.trim().toLowerCase();
+    }
+  }
+  return 'query';
+}
+
+function isMutationRelation(relation: RoleCardEndpointRelation): boolean {
+  return resolveRelationOperationSafety(relation) === 'mutation';
+}
+
+function isQueryLikeRelation(relation: RoleCardEndpointRelation): boolean {
+  const safety = resolveRelationOperationSafety(relation);
+  return safety === 'query' || safety === 'list' || !safety;
+}
+
+function buildRuntimeRequestBodyByCard(
+  cardId: string,
+  selectedCustomer: CustomerRecord,
+  customPayload?: Record<string, unknown>,
+): Record<string, unknown> {
+  const encryptedIdCard = typeof selectedCustomer.encryptedIdCard === 'string' ? selectedCustomer.encryptedIdCard.trim() : '';
+  // const idcardCode = typeof selectedCustomer.idCard === 'string' ? selectedCustomer.idCard.trim() : '';
+
+  const baseBody: Record<string, unknown> = {};
+  if (encryptedIdCard) {
+    baseBody.encryptedIdCard = encryptedIdCard;
+  }
+  // if (idcardCode) {
+  //   baseBody.idcardCode = idcardCode;
+  // }
+
+  if (cardId === PRECAUTIONS_CARD_ID) {
+    return {
+      ...baseBody,
+      ...customPayload,
+    };
+  }
+
+  return {
+    ...baseBody,
+    ...customPayload,
+  };
+}
+
+async function invokeCardRuntimeRelations(
+  cardId: string,
+  relations: RoleCardEndpointRelation[],
+  selectedCustomer: CustomerRecord,
+  customPayload?: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const baseBody = buildRuntimeRequestBodyByCard(cardId, selectedCustomer, customPayload);
+  let merged: Record<string, unknown> = {};
+
+  for (const relation of relations) {
+    const endpointId = relation.endpointId?.trim();
+    if (!endpointId) {
+      continue;
+    }
+
+    const response = await aiComponentViewApi.invokeRuntimeEndpoint(endpointId, {
+      flowNum: 1,
+      queryParams: {},
+      body: baseBody,
+      createdBy: '',
+    });
+    const normalized = normalizeRuntimeResponseData(response);
+    merged = { ...merged, ...toObjectRecord(normalized) };
+  }
+
+  return merged;
+}
+
+async function loadRuntimeDataForSingleCard(
+  cardId: string,
+  relations: RoleCardEndpointRelation[],
+  selectedCustomer: CustomerRecord,
+): Promise<Record<string, unknown>> {
+  const queryRelations = relations.filter((relation) => isQueryLikeRelation(relation));
+  if (queryRelations.length === 0) {
+    return {};
+  }
+  return invokeCardRuntimeRelations(cardId, queryRelations, selectedCustomer);
+}
 
 /** 根据最近体检日期判断 AI 评估结果（超过6个月为“优先复查”） */
 function resolveAiJudgment(latestExamDate?: string | null) {
@@ -318,6 +415,12 @@ function buildCardEndpointMap(config: RoleCardConfig | null, validCardIdSet: Set
       .map((relation) => ({
         ...relation,
         endpointId: typeof relation.endpointId === 'string' ? relation.endpointId.trim() : relation.endpointId,
+        operationSafety: typeof relation.operationSafety === 'string'
+          ? relation.operationSafety.trim().toLowerCase()
+          : relation.operationSafety,
+        endpointOperationSafety: typeof relation.endpointOperationSafety === 'string'
+          ? relation.endpointOperationSafety.trim().toLowerCase()
+          : relation.endpointOperationSafety,
         sortOrder: typeof relation.sortOrder === 'number' ? relation.sortOrder : Number(relation.sortOrder ?? 0),
       }))
       .filter((relation) => Boolean(relation.endpointId));
@@ -475,7 +578,12 @@ export const ConsultantAIWorkbench: React.FC<ConsultantAIWorkbenchProps> = ({
     if (!isModalOpen) {
       return;
     }
-    void fetchCustomerPage(1, false, searchTerm.trim());
+
+    const timer = window.setTimeout(() => {
+      void fetchCustomerPage(1, false, searchTerm.trim());
+    }, CUSTOMER_SEARCH_DEBOUNCE_MS);
+
+    return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchTerm, isModalOpen]);
 
@@ -673,16 +781,14 @@ export const ConsultantAIWorkbench: React.FC<ConsultantAIWorkbenchProps> = ({
       return;
     }
 
-    const encryptedIdCard = typeof selectedCustomer.encryptedIdCard === 'string' ? selectedCustomer.encryptedIdCard.trim() : '';
     const initialStatus: RuntimeStatusByCardId = {};
     const initialErrors: RuntimeErrorByCardId = {};
     for (const cardId of visibleCards) {
       const hasRelations = Array.isArray(cardEndpointMap[cardId]) && cardEndpointMap[cardId].length > 0;
-      initialStatus[cardId] = encryptedIdCard && hasRelations ? 'loading' : 'empty';
+      const queryRelations = (cardEndpointMap[cardId] ?? []).filter((relation) => !isMutationRelation(relation));
+      initialStatus[cardId] = hasRelations ? (queryRelations.length > 0 ? 'loading' : 'ready') : 'empty';
       if (!hasRelations) {
         initialErrors[cardId] = '未配置接口';
-      } else if (!encryptedIdCard) {
-        initialErrors[cardId] = '客户缺少加密身份证';
       }
     }
     setRuntimeStatusByCardId(initialStatus);
@@ -697,10 +803,6 @@ export const ConsultantAIWorkbench: React.FC<ConsultantAIWorkbenchProps> = ({
       return next;
     });
 
-    if (!encryptedIdCard) {
-      return;
-    }
-
     const loadRuntimeData = async () => {
       const perCardTasks = visibleCards.map(async (cardId) => {
         const relations = cardEndpointMap[cardId] ?? [];
@@ -713,23 +815,17 @@ export const ConsultantAIWorkbench: React.FC<ConsultantAIWorkbenchProps> = ({
           };
         }
 
-        let merged: Record<string, unknown> = {};
-        for (const relation of relations) {
-          const endpointId = relation.endpointId?.trim();
-          if (!endpointId) {
-            continue;
-          }
-          const response = await aiComponentViewApi.invokeRuntimeEndpoint(endpointId, {
-            flowNum: 1,
-            queryParams: {},
-            body: {
-              encryptedIdCard,
-            },
-            createdBy: '',
-          });
-          const normalized = normalizeRuntimeResponseData(response);
-          merged = { ...merged, ...toObjectRecord(normalized) };
+        const queryRelations = relations.filter((relation) => isQueryLikeRelation(relation));
+        if (queryRelations.length === 0) {
+          return {
+            cardId,
+            status: 'ready' as CardRuntimeStatus,
+            data: {},
+            error: '',
+          };
         }
+
+        const merged = await loadRuntimeDataForSingleCard(cardId, relations, selectedCustomer);
 
         return {
           cardId,
@@ -779,6 +875,44 @@ export const ConsultantAIWorkbench: React.FC<ConsultantAIWorkbenchProps> = ({
 
     void loadRuntimeData();
   }, [cardEndpointMap, dashboardCards, selectedCustomer]);
+
+  const handleRuntimeCardSave = async (cardId: string, payload: Record<string, unknown>) => {
+    if (!selectedCustomer) {
+      return;
+    }
+
+    const relations = cardEndpointMap[cardId] ?? [];
+    if (relations.length === 0) {
+      setRuntimeStatusByCardId((prev) => ({ ...prev, [cardId]: 'empty' }));
+      setRuntimeErrorByCardId((prev) => ({ ...prev, [cardId]: '未配置接口' }));
+      return;
+    }
+
+    const mutationRelations = relations.filter((relation) => isMutationRelation(relation));
+    if (mutationRelations.length === 0) {
+      return;
+    }
+
+    setRuntimeStatusByCardId((prev) => ({ ...prev, [cardId]: 'loading' }));
+    setRuntimeErrorByCardId((prev) => {
+      const next = { ...prev };
+      delete next[cardId];
+      return next;
+    });
+
+    try {
+      const merged = await invokeCardRuntimeRelations(cardId, mutationRelations, selectedCustomer, payload);
+      setRuntimeDataByCardId((prev) => ({ ...prev, [cardId]: merged }));
+      setRuntimeStatusByCardId((prev) => ({ ...prev, [cardId]: 'ready' }));
+
+      const refreshed = await loadRuntimeDataForSingleCard(cardId, relations, selectedCustomer);
+      setRuntimeDataByCardId((prev) => ({ ...prev, [cardId]: refreshed }));
+    } catch (error) {
+      console.error('[ConsultantAIWorkbench] mutation runtime invoke error:', error);
+      setRuntimeStatusByCardId((prev) => ({ ...prev, [cardId]: 'error' }));
+      setRuntimeErrorByCardId((prev) => ({ ...prev, [cardId]: '接口请求失败' }));
+    }
+  };
 
   const handleChatSubmit = async (text?: string) => {
     if (chatRequestPendingRef.current) {
@@ -850,16 +984,17 @@ export const ConsultantAIWorkbench: React.FC<ConsultantAIWorkbenchProps> = ({
     } catch (error) {
       console.error('[ConsultantAIWorkbench] API Query error:', error);
       const fallbackMessage = '服务暂不可用，已切换为本地结构化示例。';
+      const fallbackStructuredContent = normalizeAiResponseContent(localStructuredFallbackRaw) || fallbackMessage;
 
       setIsLayoutViewEnabled(false);
-      setLatestAssistantMessage(fallbackMessage);
+      setLatestAssistantMessage(fallbackStructuredContent);
 
       setAiResults((prev) => [
         {
           id: Date.now(),
           type: 'AI对话结果',
           title: 'AI对话结果',
-          content: fallbackMessage,
+          content: fallbackStructuredContent,
         },
         ...prev,
       ]);
@@ -940,6 +1075,7 @@ export const ConsultantAIWorkbench: React.FC<ConsultantAIWorkbenchProps> = ({
           runtimeDataByCardId={runtimeDataByCardId}
           runtimeStatusByCardId={runtimeStatusByCardId}
           runtimeErrorByCardId={runtimeErrorByCardId}
+          onRuntimeCardSave={handleRuntimeCardSave}
         />
 
         <InsightsArea
@@ -975,6 +1111,7 @@ export const ConsultantAIWorkbench: React.FC<ConsultantAIWorkbenchProps> = ({
         runtimeDataByCardId={runtimeDataByCardId}
         runtimeStatusByCardId={runtimeStatusByCardId}
         runtimeErrorByCardId={runtimeErrorByCardId}
+        onRuntimeCardSave={handleRuntimeCardSave}
       />
     </div>
   );

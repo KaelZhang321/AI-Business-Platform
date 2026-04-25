@@ -1,0 +1,1985 @@
+{
+    "trace_id": "f9f573b8ff0647f795f852575bb2a9c4",
+    "execution_status": "SUCCESS",
+    "execution_plan": {
+        "plan_id": "dag_liuhaijian_recharge_plan_query",
+        "steps": [
+            {
+                "step_id": "step_get_customer_base",
+                "api_id": "6bbc18329c3dde651603182a651569ab",
+                "api_path": "/leczcore-crm/customerInquiry/getCustomerInfo",
+                "params": {
+                    "pageNo": 1,
+                    "pageSize": 10,
+                    "customerInfo": "刘海坚"
+                },
+                "depends_on": []
+            },
+            {
+                "step_id": "step_get_recharge_plan",
+                "api_id": "fa969d461ef059ab82f1dd6d3c2aa116",
+                "api_path": "/leczcore-data-manage/dwCustomerArchive/planAssetOverview",
+                "params": {
+                    "encryptedIdCard": "$[step_get_customer_base.data][*].idCard"
+                },
+                "depends_on": [
+                    "step_get_customer_base"
+                ]
+            }
+        ]
+    },
+    "ui_spec": {
+        "root": "root",
+        "state": {},
+        "elements": {
+            "root": {
+                "type": "PlannerCard",
+                "props": {
+                    "title": "查询客户刘海坚的储值方案",
+                    "subtitle": "当前展示复合结果（概览指标 + 明细列表）"
+                },
+                "children": [
+                    "child_1",
+                    "child_2",
+                    "child_3"
+                ]
+            },
+            "child_1": {
+                "type": "PlannerInfoGrid",
+                "props": {
+                    "items": [
+                        {
+                            "label": "客户ID",
+                            "value": "1675218389653693282"
+                        },
+                        {
+                            "label": "身份证号",
+                            "value": "kdxU1k6LlgVyeEtBEk+osiKORU+yMascJD7Heg6B7jw="
+                        },
+                        {
+                            "label": "储值方案项目金数量",
+                            "value": "12"
+                        },
+                        {
+                            "label": "可用规划金额",
+                            "value": "13245060.0"
+                        },
+                        {
+                            "label": "可用规划治疗金额",
+                            "value": "11954620.0"
+                        },
+                        {
+                            "label": "冻结金额",
+                            "value": "1290440.0"
+                        },
+                        {
+                            "label": "剩余储值方案现金剩余总价值",
+                            "value": "3170065.0293"
+                        },
+                        {
+                            "label": "体检项目金剩余",
+                            "value": "6201430.0"
+                        },
+                        {
+                            "label": "其他项目金剩余",
+                            "value": "10000.0"
+                        },
+                        {
+                            "label": "新医疗项目金总和",
+                            "value": "-"
+                        },
+                        {
+                            "label": "新医疗项目金已使用",
+                            "value": "-"
+                        },
+                        {
+                            "label": "新医疗项目金剩余",
+                            "value": "-"
+                        },
+                        {
+                            "label": "新医疗项目金可用",
+                            "value": "-"
+                        },
+                        {
+                            "label": "新医疗项目金锁定",
+                            "value": "-"
+                        },
+                        {
+                            "label": "治疗规划剩余数量",
+                            "value": "25"
+                        }
+                    ],
+                    "bizFieldKey": "summaryCard"
+                }
+            },
+            "child_2": {
+                "type": "PlannerTable",
+                "props": {
+                    "title": "历史购买储值方案",
+                    "columns": [
+                        {
+                            "key": "source",
+                            "title": "来源：OLDORDER/ERP",
+                            "dataIndex": "source"
+                        },
+                        {
+                            "key": "deliveryDate",
+                            "title": "交付日期",
+                            "dataIndex": "deliveryDate"
+                        },
+                        {
+                            "key": "isTemporaryStorage",
+                            "title": "是否为暂存状态 0-否 1-是",
+                            "dataIndex": "isTemporaryStorage"
+                        },
+                        {
+                            "key": "isPlanDelivery",
+                            "title": "是否为规划交付 0-否 1-是",
+                            "dataIndex": "isPlanDelivery"
+                        },
+                        {
+                            "key": "deliveryProject",
+                            "title": "交付项目",
+                            "dataIndex": "deliveryProject"
+                        },
+                        {
+                            "key": "deliveryAmount",
+                            "title": "交付金额",
+                            "dataIndex": "deliveryAmount"
+                        },
+                        {
+                            "key": "deliveryDepartment",
+                            "title": "交付科室",
+                            "dataIndex": "deliveryDepartment"
+                        },
+                        {
+                            "key": "ownership",
+                            "title": "方案归属",
+                            "dataIndex": "ownership"
+                        },
+                        {
+                            "key": "deliveredBy",
+                            "title": "交付人",
+                            "dataIndex": "deliveredBy"
+                        }
+                    ],
+                    "dataSource": [
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-10-01T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "肝脏解毒支持（白金版）",
+                            "deliveryAmount": 27103.46,
+                            "deliveryDepartment": "天津总院治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-10-01T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "丽滋卡尔健康跟踪指导",
+                            "deliveryAmount": 0.0,
+                            "deliveryDepartment": "天津总院治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-10-01T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "丽滋卡尔健康跟踪指导",
+                            "deliveryAmount": 0.0,
+                            "deliveryDepartment": "天津总院治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-10-01T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "免疫功能调理",
+                            "deliveryAmount": 20000.0,
+                            "deliveryDepartment": "天津总院治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-09-30T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "免疫功能调理",
+                            "deliveryAmount": 20000.0,
+                            "deliveryDepartment": "天津总院治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-09-30T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "丽滋卡尔健康跟踪指导",
+                            "deliveryAmount": 0.0,
+                            "deliveryDepartment": "天津总院治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-09-28T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "海南Gaea智慧康养抗衰老疗养七天六夜，五年，一年一次（配送2名）：39.8万",
+                            "deliveryAmount": 18322.72,
+                            "deliveryDepartment": "生命源康养会务部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "邱俊"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-09-28T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "海南Gaea智慧康养抗衰老疗养七天六夜，五年，一年一次（配送2名）：39.8万",
+                            "deliveryAmount": 18322.72,
+                            "deliveryDepartment": "生命源康养会务部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-09-27T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "SGB神经免疫调理-白金版",
+                            "deliveryAmount": 8533.33,
+                            "deliveryDepartment": "海梅治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-09-26T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "胎生态·前列腺养护",
+                            "deliveryAmount": 27943.37,
+                            "deliveryDepartment": "海梅医疗双美部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-09-26T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "回注",
+                            "deliveryAmount": 0.0,
+                            "deliveryDepartment": "海梅医疗双美部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-09-26T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "SGB神经免疫调理-白金版",
+                            "deliveryAmount": 8533.33,
+                            "deliveryDepartment": "海梅治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-09-26T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "A003毛发新生-AD调理（静滴）",
+                            "deliveryAmount": 113333.33,
+                            "deliveryDepartment": "海梅医疗双美部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-09-26T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "A003毛发新生-AD调理（局部注射）",
+                            "deliveryAmount": 113333.33,
+                            "deliveryDepartment": "海梅医疗双美部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-09-25T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "SGB神经免疫调理-白金版",
+                            "deliveryAmount": 8533.33,
+                            "deliveryDepartment": "海梅治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-09-25T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "海南抗衰老Z",
+                            "deliveryAmount": 129946.46,
+                            "deliveryDepartment": "海梅治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "邱俊"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-09-25T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "PMR微循环调理",
+                            "deliveryAmount": 7466.97,
+                            "deliveryDepartment": "生命源康养部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-09-24T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "A023自体定制重编程调理",
+                            "deliveryAmount": 1980000.0,
+                            "deliveryDepartment": "海梅治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-09-24T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "CS14自体30年IPSC存储",
+                            "deliveryAmount": 30000.0,
+                            "deliveryDepartment": "海梅治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-09-24T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "丽滋卡尔健康跟踪指导",
+                            "deliveryAmount": 0.0,
+                            "deliveryDepartment": "海梅治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-09-24T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "免疫功能调理",
+                            "deliveryAmount": 20000.0,
+                            "deliveryDepartment": "海梅治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-09-24T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "LIFE能量检测",
+                            "deliveryAmount": 4551.79,
+                            "deliveryDepartment": "海梅治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-09-24T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "SGB神经免疫调理-白金版",
+                            "deliveryAmount": 8533.33,
+                            "deliveryDepartment": "海梅治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-09-23T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "肝胆双益",
+                            "deliveryAmount": 8260.65,
+                            "deliveryDepartment": "海梅治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-09-23T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "丽滋卡尔健康跟踪指导",
+                            "deliveryAmount": 0.0,
+                            "deliveryDepartment": "海梅治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-09-23T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "SGB神经免疫调理-白金版",
+                            "deliveryAmount": 8533.33,
+                            "deliveryDepartment": "海梅治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-09-23T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "LIFE能量检测",
+                            "deliveryAmount": 5533.47,
+                            "deliveryDepartment": "海梅治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-09-23T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "胎生态·膝关节养护",
+                            "deliveryAmount": 19800.0,
+                            "deliveryDepartment": "海梅医疗双美部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "邱俊"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-09-14T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "抗氧化治疗（不含静脉注射）",
+                            "deliveryAmount": 6589.15,
+                            "deliveryDepartment": "天津总院治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "邱俊"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-09-14T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "丽滋卡尔健康跟踪指导",
+                            "deliveryAmount": 0.0,
+                            "deliveryDepartment": "天津总院治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-09-14T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "LIFE能量检测",
+                            "deliveryAmount": 4571.61,
+                            "deliveryDepartment": "天津总院治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-09-14T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "肝胆双益",
+                            "deliveryAmount": 8260.65,
+                            "deliveryDepartment": "天津总院治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-09-14T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "代谢综合症肾损伤调理(24升级版)",
+                            "deliveryAmount": 57242.66,
+                            "deliveryDepartment": "天津总院治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-09-03T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "PETMR全身核磁平扫检查",
+                            "deliveryAmount": 13500.0,
+                            "deliveryDepartment": "天津总院体检科",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-08-19T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "SGB神经免疫调理-白金版",
+                            "deliveryAmount": 8533.33,
+                            "deliveryDepartment": "天津总院治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-08-19T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "四维磁场调理",
+                            "deliveryAmount": 3032.5,
+                            "deliveryDepartment": "天津总院治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-08-18T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "SGB神经免疫调理-白金版",
+                            "deliveryAmount": 8533.33,
+                            "deliveryDepartment": "天津总院治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-08-18T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "四维磁场调理",
+                            "deliveryAmount": 3019.35,
+                            "deliveryDepartment": "天津总院治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-08-17T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "抗氧化治疗（不含静脉注射）",
+                            "deliveryAmount": 6589.15,
+                            "deliveryDepartment": "天津总院治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "邱俊"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-08-17T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "抗氧化治疗（不含静脉注射）",
+                            "deliveryAmount": 6589.15,
+                            "deliveryDepartment": "天津总院治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-08-17T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "LIFE能量检测",
+                            "deliveryAmount": 4571.61,
+                            "deliveryDepartment": "天津总院治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-08-17T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "SGB神经免疫调理-白金版",
+                            "deliveryAmount": 8533.33,
+                            "deliveryDepartment": "天津总院治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-08-16T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "抗氧化治疗（不含静脉注射）",
+                            "deliveryAmount": 6589.15,
+                            "deliveryDepartment": "天津总院治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-08-16T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "四维磁场调理",
+                            "deliveryAmount": 3442.71,
+                            "deliveryDepartment": "天津总院治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-08-16T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "抗氧化治疗（不含静脉注射）",
+                            "deliveryAmount": 6589.15,
+                            "deliveryDepartment": "天津总院治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "邱俊"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-08-16T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "丽滋卡尔健康跟踪指导",
+                            "deliveryAmount": 0.0,
+                            "deliveryDepartment": "天津总院治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-08-16T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "免疫功能调理",
+                            "deliveryAmount": 20000.0,
+                            "deliveryDepartment": "天津总院治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-08-16T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "SGB神经免疫调理-白金版",
+                            "deliveryAmount": 8533.33,
+                            "deliveryDepartment": "天津总院治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-08-15T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "SGB神经免疫调理-白金版",
+                            "deliveryAmount": 8533.33,
+                            "deliveryDepartment": "天津总院治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-08-15T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "丽滋卡尔健康跟踪指导",
+                            "deliveryAmount": 0.0,
+                            "deliveryDepartment": "天津总院治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-08-15T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "肝脏解毒支持（白金版）",
+                            "deliveryAmount": 27103.48,
+                            "deliveryDepartment": "天津总院治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-08-15T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "四维磁场调理",
+                            "deliveryAmount": 3442.72,
+                            "deliveryDepartment": "天津总院治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-08-15T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "抗氧化治疗（不含静脉注射）",
+                            "deliveryAmount": 6589.15,
+                            "deliveryDepartment": "天津总院治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-08-15T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "抗氧化治疗（不含静脉注射）",
+                            "deliveryAmount": 6622.07,
+                            "deliveryDepartment": "天津总院治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "邱俊"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-08-10T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "抗氧化治疗（不含静脉注射）",
+                            "deliveryAmount": 6622.07,
+                            "deliveryDepartment": "天津总院治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "邱俊"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-08-10T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "代谢综合症肾损伤调理(24升级版)",
+                            "deliveryAmount": 57242.66,
+                            "deliveryDepartment": "天津总院治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-08-10T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "丽滋卡尔健康跟踪指导",
+                            "deliveryAmount": 0.0,
+                            "deliveryDepartment": "天津总院治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-08-10T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "肝胆双益",
+                            "deliveryAmount": 8260.65,
+                            "deliveryDepartment": "天津总院治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-08-10T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "LIFE能量修复",
+                            "deliveryAmount": 2882.8,
+                            "deliveryDepartment": "天津总院治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-08-10T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "抗氧化治疗（不含静脉注射）",
+                            "deliveryAmount": 6589.15,
+                            "deliveryDepartment": "天津总院治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-07-30T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "海南Gaea智慧康养抗衰老疗养七天六夜，五年，一年一次（配送2名）：39.8万",
+                            "deliveryAmount": 22903.4,
+                            "deliveryDepartment": "生命源康养会务部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "邱俊"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-07-30T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "海南Gaea智慧康养抗衰老疗养七天六夜，五年，一年一次（配送2名）：39.8万",
+                            "deliveryAmount": 22903.4,
+                            "deliveryDepartment": "生命源康养会务部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-07-26T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "LIFE能量修复",
+                            "deliveryAmount": 2882.8,
+                            "deliveryDepartment": "海梅治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-07-26T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "全身抗衰老-尊享版",
+                            "deliveryAmount": 0.0,
+                            "deliveryDepartment": "海梅治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "邱俊"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-07-26T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "ADSC-骨关节管理",
+                            "deliveryAmount": 160000.0,
+                            "deliveryDepartment": "海梅医疗双美部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-07-25T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "LIFE能量修复",
+                            "deliveryAmount": 2882.8,
+                            "deliveryDepartment": "生命源康养部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-07-25T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "LIFE能量修复",
+                            "deliveryAmount": 2993.42,
+                            "deliveryDepartment": "海梅治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-07-25T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "SGB神经免疫调理-白金版",
+                            "deliveryAmount": 8533.33,
+                            "deliveryDepartment": "海梅治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-07-25T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "BTL前列腺调理",
+                            "deliveryAmount": 1856.64,
+                            "deliveryDepartment": "生命源康养部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-07-24T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "皮膜逆龄Z",
+                            "deliveryAmount": 21510.59,
+                            "deliveryDepartment": "海梅医疗双美部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-07-24T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "术前血检包",
+                            "deliveryAmount": 0.0,
+                            "deliveryDepartment": "海梅医疗双美部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-07-24T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "A008 幼态颜-F调理",
+                            "deliveryAmount": 498000.0,
+                            "deliveryDepartment": "海梅医疗双美部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-07-24T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "气血平衡针",
+                            "deliveryAmount": 12574.87,
+                            "deliveryDepartment": "海梅医疗双美部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-07-24T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "SGB神经免疫调理-白金版",
+                            "deliveryAmount": 8533.33,
+                            "deliveryDepartment": "海梅治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-07-24T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "LIFE能量修复",
+                            "deliveryAmount": 2993.42,
+                            "deliveryDepartment": "海梅治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-07-23T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "SGB神经免疫调理-白金版",
+                            "deliveryAmount": 8533.33,
+                            "deliveryDepartment": "海梅治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-07-23T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "LIFE能量检测",
+                            "deliveryAmount": 5190.02,
+                            "deliveryDepartment": "海梅治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-07-22T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "LIFE能量修复",
+                            "deliveryAmount": 2993.43,
+                            "deliveryDepartment": "海梅治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-07-22T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "丽滋卡尔健康跟踪指导",
+                            "deliveryAmount": 0.0,
+                            "deliveryDepartment": "海梅治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "邱俊"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-07-22T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "肠道粘膜修复支持",
+                            "deliveryAmount": 19800.0,
+                            "deliveryDepartment": "海梅治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "邱俊"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-07-22T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "SGB神经免疫调理-白金版",
+                            "deliveryAmount": 8533.33,
+                            "deliveryDepartment": "海梅治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-07-22T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "丽滋卡尔健康跟踪指导",
+                            "deliveryAmount": 0.0,
+                            "deliveryDepartment": "海梅治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-07-22T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "肝脏解毒支持（白金版）",
+                            "deliveryAmount": 27103.46,
+                            "deliveryDepartment": "海梅治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-07-22T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "脑早衰调理",
+                            "deliveryAmount": 25128.2,
+                            "deliveryDepartment": "海梅治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-07-22T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "丽滋卡尔健康跟踪指导",
+                            "deliveryAmount": 0.0,
+                            "deliveryDepartment": "海梅治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-07-21T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "LIFE能量修复",
+                            "deliveryAmount": 2923.07,
+                            "deliveryDepartment": "海梅治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-07-21T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "SGB神经免疫调理-白金版",
+                            "deliveryAmount": 8533.38,
+                            "deliveryDepartment": "海梅治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-07-21T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "丽滋卡尔健康跟踪指导",
+                            "deliveryAmount": 0.0,
+                            "deliveryDepartment": "海梅治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-07-21T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "肝脏解毒支持（白金版）",
+                            "deliveryAmount": 27103.46,
+                            "deliveryDepartment": "海梅治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-07-21T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "丽滋卡尔健康跟踪指导",
+                            "deliveryAmount": 0.0,
+                            "deliveryDepartment": "海梅治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-07-21T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "肠道粘膜修复支持",
+                            "deliveryAmount": 19800.0,
+                            "deliveryDepartment": "海梅治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "邱俊"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-07-21T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "丽滋卡尔健康跟踪指导",
+                            "deliveryAmount": 0.0,
+                            "deliveryDepartment": "海梅治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "邱俊"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-07-21T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "肠道粘膜修复支持",
+                            "deliveryAmount": 19800.0,
+                            "deliveryDepartment": "海梅治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-07-19T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "丽滋卡尔健康跟踪指导",
+                            "deliveryAmount": 0.0,
+                            "deliveryDepartment": "天津总院治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-07-19T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "肝胆双益",
+                            "deliveryAmount": 8260.65,
+                            "deliveryDepartment": "天津总院治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-07-19T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "丽滋卡尔健康跟踪指导",
+                            "deliveryAmount": 0.0,
+                            "deliveryDepartment": "天津总院治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-07-19T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "免疫功能调理",
+                            "deliveryAmount": 20000.0,
+                            "deliveryDepartment": "天津总院治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-07-09T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "肠道粘膜修复支持",
+                            "deliveryAmount": 19800.0,
+                            "deliveryDepartment": "天津总院治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-07-09T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "丽滋卡尔健康跟踪指导",
+                            "deliveryAmount": 0.0,
+                            "deliveryDepartment": "天津总院治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        },
+                        {
+                            "source": "ERP",
+                            "deliveryDate": "2024-07-09T00:00",
+                            "isTemporaryStorage": 0,
+                            "isPlanDelivery": 0,
+                            "deliveryProject": "代谢综合症肾损伤调理(24升级版)",
+                            "deliveryAmount": 57242.66,
+                            "deliveryDepartment": "天津总院治疗部",
+                            "ownership": "刘海坚",
+                            "deliveredBy": "刘海坚"
+                        }
+                    ],
+                    "bizFieldKey": "deliveryRecords",
+                    "api": "/api/v1/ui-builder/runtime/endpoints/fa969d461ef059ab82f1dd6d3c2aa116/invoke",
+                    "queryParams": {},
+                    "body": {
+                        "encryptedIdCard": "kdxU1k6LlgVyeEtBEk+osiKORU+yMascJD7Heg6B7jw="
+                    },
+                    "flowNum": "f9f573b8ff0647f795f852575bb2a9c4",
+                    "createdBy": "2"
+                }
+            },
+            "child_3": {
+                "type": "PlannerTable",
+                "props": {
+                    "title": "规划方案",
+                    "columns": [
+                        {
+                            "key": "fid",
+                            "title": "fid",
+                            "dataIndex": "fid"
+                        },
+                        {
+                            "key": "fcreateTime",
+                            "title": "fcreateTime",
+                            "dataIndex": "fcreateTime"
+                        },
+                        {
+                            "key": "fproductBillProjectName",
+                            "title": "fproductBillProjectName",
+                            "dataIndex": "fproductBillProjectName"
+                        },
+                        {
+                            "key": "fdeliveryStatus",
+                            "title": "fdeliveryStatus",
+                            "dataIndex": "fdeliveryStatus"
+                        },
+                        {
+                            "key": "fprojectAmount",
+                            "title": "fprojectAmount",
+                            "dataIndex": "fprojectAmount"
+                        },
+                        {
+                            "key": "fdevAmountTotal",
+                            "title": "fdevAmountTotal",
+                            "dataIndex": "fdevAmountTotal"
+                        }
+                    ],
+                    "dataSource": [
+                        {
+                            "fid": "2087649408446376960",
+                            "fcreateTime": "2024-11-20T09:44",
+                            "fproductBillProjectName": "免疫力改善-C治疗",
+                            "fdeliveryStatus": 1,
+                            "fprojectAmount": 298000.0,
+                            "fdevAmountTotal": 0.0
+                        },
+                        {
+                            "fid": "2087647970764806144",
+                            "fcreateTime": "2024-11-20T09:42:04",
+                            "fproductBillProjectName": "免疫力改善-C治疗",
+                            "fdeliveryStatus": 1,
+                            "fprojectAmount": 298000.0,
+                            "fdevAmountTotal": 0.0
+                        },
+                        {
+                            "fid": "2050721524230412288",
+                            "fcreateTime": "2024-09-30T10:56:27",
+                            "fproductBillProjectName": "肝脏解毒支持（白金版）-三次",
+                            "fdeliveryStatus": 2,
+                            "fprojectAmount": 188000.0,
+                            "fdevAmountTotal": 27103.46
+                        },
+                        {
+                            "fid": "2050720862520236032",
+                            "fcreateTime": "2024-09-30T10:54:18",
+                            "fproductBillProjectName": "免疫功能调理-单次",
+                            "fdeliveryStatus": 1,
+                            "fprojectAmount": 60000.0,
+                            "fdevAmountTotal": 0.0
+                        },
+                        {
+                            "fid": "2048550740804262912",
+                            "fcreateTime": "2024-09-27T11:03:32",
+                            "fproductBillProjectName": "ADSC-骨关节管理(双膝)-三次",
+                            "fdeliveryStatus": 1,
+                            "fprojectAmount": 480000.0,
+                            "fdevAmountTotal": 0.0
+                        },
+                        {
+                            "fid": "2016620432207134720",
+                            "fcreateTime": "2024-08-14T09:42:32",
+                            "fproductBillProjectName": "SGB神经免疫调理-白金版",
+                            "fdeliveryStatus": 2,
+                            "fprojectAmount": 128000.0,
+                            "fdevAmountTotal": 85333.3
+                        },
+                        {
+                            "fid": "2001646379247611904",
+                            "fcreateTime": "2024-07-24T17:48:15",
+                            "fproductBillProjectName": "IPSC-存储自体-30年",
+                            "fdeliveryStatus": 3,
+                            "fprojectAmount": 30000.0,
+                            "fdevAmountTotal": 30000.0
+                        },
+                        {
+                            "fid": "2001643198002245632",
+                            "fcreateTime": "2024-07-24T17:45:28",
+                            "fproductBillProjectName": "IPSC-自体定制重编程调理",
+                            "fdeliveryStatus": 3,
+                            "fprojectAmount": 1980000.0,
+                            "fdevAmountTotal": 1980000.0
+                        },
+                        {
+                            "fid": "1965865964197130240",
+                            "fcreateTime": "2024-06-05T09:03:34",
+                            "fproductBillProjectName": "丽颜圣品逆龄方案—青春再现",
+                            "fdeliveryStatus": 2,
+                            "fprojectAmount": 398000.0,
+                            "fdevAmountTotal": 46660.33
+                        },
+                        {
+                            "fid": "1965398870640832512",
+                            "fcreateTime": "2024-06-04T17:35:04",
+                            "fproductBillProjectName": "光电仪器：双氧补水",
+                            "fdeliveryStatus": 1,
+                            "fprojectAmount": 3800.0,
+                            "fdevAmountTotal": 0.0
+                        },
+                        {
+                            "fid": "1965397973881871360",
+                            "fcreateTime": "2024-06-04T17:33:28",
+                            "fproductBillProjectName": "AD-毛发新生-三次",
+                            "fdeliveryStatus": 2,
+                            "fprojectAmount": 680000.0,
+                            "fdevAmountTotal": 226666.66
+                        },
+                        {
+                            "fid": "1965397173793206272",
+                            "fcreateTime": "2024-06-04T17:27:27",
+                            "fproductBillProjectName": "幼态颜-F调理-疗程",
+                            "fdeliveryStatus": 3,
+                            "fprojectAmount": 498000.0,
+                            "fdevAmountTotal": 498000.0
+                        },
+                        {
+                            "fid": "1952220075087905792",
+                            "fcreateTime": "2024-05-17T13:11:48",
+                            "fproductBillProjectName": "肝胆双益",
+                            "fdeliveryStatus": 2,
+                            "fprojectAmount": 98000.0,
+                            "fdevAmountTotal": 49262.14
+                        },
+                        {
+                            "fid": "1952219517044147200",
+                            "fcreateTime": "2024-05-17T13:10:45",
+                            "fproductBillProjectName": "代谢综合症肾损伤调理(24升级版)-三次",
+                            "fdeliveryStatus": 1,
+                            "fprojectAmount": 218000.0,
+                            "fdevAmountTotal": 0.0
+                        },
+                        {
+                            "fid": "1952218976037651456",
+                            "fcreateTime": "2024-05-17T13:09:35",
+                            "fproductBillProjectName": "代谢综合症肾损伤调理(24升级版)-三次",
+                            "fdeliveryStatus": 2,
+                            "fprojectAmount": 218000.0,
+                            "fdevAmountTotal": 180708.24
+                        },
+                        {
+                            "fid": "1952218403984917504",
+                            "fcreateTime": "2024-05-17T13:08:08",
+                            "fproductBillProjectName": "免疫功能调理-单次",
+                            "fdeliveryStatus": 2,
+                            "fprojectAmount": 120000.0,
+                            "fdevAmountTotal": 100000.0
+                        },
+                        {
+                            "fid": "1952217670770246656",
+                            "fcreateTime": "2024-05-17T13:06:59",
+                            "fproductBillProjectName": "肠道粘膜修复支持-三次",
+                            "fdeliveryStatus": 3,
+                            "fprojectAmount": 59400.0,
+                            "fdevAmountTotal": 59400.0
+                        },
+                        {
+                            "fid": "1952217097887040512",
+                            "fcreateTime": "2024-05-17T13:04:42",
+                            "fproductBillProjectName": "肠道粘膜修复支持-三次",
+                            "fdeliveryStatus": 3,
+                            "fprojectAmount": 59400.0,
+                            "fdevAmountTotal": 59400.0
+                        },
+                        {
+                            "fid": "1931868747459478528",
+                            "fcreateTime": "2024-04-19T11:17:43",
+                            "fproductBillProjectName": "X hair固发-抗炎再生管理-五次",
+                            "fdeliveryStatus": 3,
+                            "fprojectAmount": 19800.0,
+                            "fdevAmountTotal": 19800.0
+                        },
+                        {
+                            "fid": "1931868210026530816",
+                            "fcreateTime": "2024-04-19T11:16:20",
+                            "fproductBillProjectName": "X hair固发-纳米止脱管理-十次",
+                            "fdeliveryStatus": 3,
+                            "fprojectAmount": 39800.0,
+                            "fdevAmountTotal": 39800.0
+                        },
+                        {
+                            "fid": "1931811538453153792",
+                            "fcreateTime": "2024-04-19T09:23:52",
+                            "fproductBillProjectName": "睡眠管理之脑早衰调理-三次",
+                            "fdeliveryStatus": 2,
+                            "fprojectAmount": 98000.0,
+                            "fdevAmountTotal": 84153.85
+                        },
+                        {
+                            "fid": "1930600836673587200",
+                            "fcreateTime": "2024-04-17T17:15:50",
+                            "fproductBillProjectName": "SGB神经免疫调理-白金版",
+                            "fdeliveryStatus": 2,
+                            "fprojectAmount": 128000.0,
+                            "fdevAmountTotal": 127999.95
+                        },
+                        {
+                            "fid": "1929873303606936576",
+                            "fcreateTime": "2024-04-16T17:12:57",
+                            "fproductBillProjectName": "ADSC-全身抗衰-两次",
+                            "fdeliveryStatus": 3,
+                            "fprojectAmount": 680000.0,
+                            "fdevAmountTotal": 680000.0
+                        },
+                        {
+                            "fid": "1924642619711826944",
+                            "fcreateTime": "2024-04-09T11:59:41",
+                            "fproductBillProjectName": "ADSC-脂肪储存-30年",
+                            "fdeliveryStatus": 3,
+                            "fprojectAmount": 98000.0,
+                            "fdevAmountTotal": 98000.0
+                        },
+                        {
+                            "fid": "1924641705118685184",
+                            "fcreateTime": "2024-04-09T11:58:19",
+                            "fproductBillProjectName": "ADSC-脂肪提取",
+                            "fdeliveryStatus": 3,
+                            "fprojectAmount": 69800.0,
+                            "fdevAmountTotal": 69800.0
+                        },
+                        {
+                            "fid": "1924641004711860224",
+                            "fcreateTime": "2024-04-09T11:51:09",
+                            "fproductBillProjectName": "ADSC-骨关节管理-三次",
+                            "fdeliveryStatus": 3,
+                            "fprojectAmount": 480000.0,
+                            "fdevAmountTotal": 480000.0
+                        },
+                        {
+                            "fid": "1924636861754529792",
+                            "fcreateTime": "2024-04-09T11:47:49",
+                            "fproductBillProjectName": "肝脏解毒支持（白金版）-三次",
+                            "fdeliveryStatus": 2,
+                            "fprojectAmount": 188000.0,
+                            "fdevAmountTotal": 172481.83
+                        },
+                        {
+                            "fid": "1924635729787377664",
+                            "fcreateTime": "2024-04-09T11:41:52",
+                            "fproductBillProjectName": "肺康免疫调理尊享版",
+                            "fdeliveryStatus": 3,
+                            "fprojectAmount": 158000.0,
+                            "fdevAmountTotal": 158000.0
+                        },
+                        {
+                            "fid": "1852538717168744448",
+                            "fcreateTime": "2024-01-01T00:20:39",
+                            "fproductBillProjectName": "SVF幼态颜-三次",
+                            "fdeliveryStatus": 3,
+                            "fprojectAmount": 498000.0,
+                            "fdevAmountTotal": 498000.0
+                        },
+                        {
+                            "fid": "1825989978560148480",
+                            "fcreateTime": "2023-11-25T09:15:01",
+                            "fproductBillProjectName": "代谢综合征肾损伤早期逆转-三次",
+                            "fdeliveryStatus": 2,
+                            "fprojectAmount": 188000.0,
+                            "fdevAmountTotal": 151929.97
+                        },
+                        {
+                            "fid": "1750077551230857216",
+                            "fcreateTime": "2023-08-12T15:30:39",
+                            "fproductBillProjectName": "肠道粘膜修复支持-三次",
+                            "fdeliveryStatus": 3,
+                            "fprojectAmount": 59400.0,
+                            "fdevAmountTotal": 59400.0
+                        },
+                        {
+                            "fid": "1750076877583691776",
+                            "fcreateTime": "2023-08-12T15:29:05",
+                            "fproductBillProjectName": "肠道粘膜修复支持-三次",
+                            "fdeliveryStatus": 3,
+                            "fprojectAmount": 59400.0,
+                            "fdevAmountTotal": 59400.0
+                        },
+                        {
+                            "fid": "1750075580117692416",
+                            "fcreateTime": "2023-08-12T15:26:14",
+                            "fproductBillProjectName": "肠道粘膜修复支持-三次",
+                            "fdeliveryStatus": 3,
+                            "fprojectAmount": 59400.0,
+                            "fdevAmountTotal": 59400.0
+                        },
+                        {
+                            "fid": "1749942588745473024",
+                            "fcreateTime": "2023-08-12T10:59:55",
+                            "fproductBillProjectName": "NKM综合免疫调理-三次",
+                            "fdeliveryStatus": 3,
+                            "fprojectAmount": 798000.0,
+                            "fdevAmountTotal": 798000.0
+                        },
+                        {
+                            "fid": "1749939693241261056",
+                            "fcreateTime": "2023-08-12T10:56:14",
+                            "fproductBillProjectName": "肠道粘膜修复支持-单次",
+                            "fdeliveryStatus": 3,
+                            "fprojectAmount": 19800.0,
+                            "fdevAmountTotal": 19800.0
+                        },
+                        {
+                            "fid": "1749938562725326848",
+                            "fcreateTime": "2023-08-12T10:53:37",
+                            "fproductBillProjectName": "MK 脑活力养护（白金版）-三次",
+                            "fdeliveryStatus": 2,
+                            "fprojectAmount": 348000.0,
+                            "fdevAmountTotal": 336988.39
+                        },
+                        {
+                            "fid": "1749893018791456768",
+                            "fcreateTime": "2023-08-12T09:23:44",
+                            "fproductBillProjectName": "全口活动义齿（单一齿弓）-普通",
+                            "fdeliveryStatus": 3,
+                            "fprojectAmount": 28000.0,
+                            "fdevAmountTotal": 28000.0
+                        },
+                        {
+                            "fid": "1740542179329190912",
+                            "fcreateTime": "2023-07-30T11:45:40",
+                            "fproductBillProjectName": "AMS—RNA定制抗衰-单次",
+                            "fdeliveryStatus": 3,
+                            "fprojectAmount": 0.0,
+                            "fdevAmountTotal": 0.0
+                        },
+                        {
+                            "fid": "1691175810431466496",
+                            "fcreateTime": "2023-05-23T09:01:54",
+                            "fproductBillProjectName": "肠道粘膜修复支持-三次",
+                            "fdeliveryStatus": 3,
+                            "fprojectAmount": 59400.0,
+                            "fdevAmountTotal": 59400.0
+                        },
+                        {
+                            "fid": "1691174477666205696",
+                            "fcreateTime": "2023-05-23T09:00:48",
+                            "fproductBillProjectName": "肠道粘膜修复支持-三次",
+                            "fdeliveryStatus": 3,
+                            "fprojectAmount": 59400.0,
+                            "fdevAmountTotal": 59400.0
+                        },
+                        {
+                            "fid": "1691173897426189312",
+                            "fcreateTime": "2023-05-23T08:59:25",
+                            "fproductBillProjectName": "斑块调理-小疗程",
+                            "fdeliveryStatus": 2,
+                            "fprojectAmount": 188000.0,
+                            "fdevAmountTotal": 182508.28
+                        },
+                        {
+                            "fid": "1691173168238051328",
+                            "fcreateTime": "2023-05-23T08:58",
+                            "fproductBillProjectName": "肝脏功能优化增强-三次",
+                            "fdeliveryStatus": 3,
+                            "fprojectAmount": 188000.0,
+                            "fdevAmountTotal": 188000.0
+                        },
+                        {
+                            "fid": "1691172505772900352",
+                            "fcreateTime": "2023-05-23T08:56:11",
+                            "fproductBillProjectName": "代谢综合征肾损伤早期逆转-三次",
+                            "fdeliveryStatus": 2,
+                            "fprojectAmount": 188000.0,
+                            "fdevAmountTotal": 156501.59
+                        },
+                        {
+                            "fid": "1691171579410530304",
+                            "fcreateTime": "2023-05-23T08:54:38",
+                            "fproductBillProjectName": "代谢综合征肾损伤早期逆转-三次",
+                            "fdeliveryStatus": 2,
+                            "fprojectAmount": 188000.0,
+                            "fdevAmountTotal": 167001.05
+                        },
+                        {
+                            "fid": "1658629585010438144",
+                            "fcreateTime": "2023-04-08T11:19:56",
+                            "fproductBillProjectName": "定颜针：单部位定颜针（轻度）",
+                            "fdeliveryStatus": 3,
+                            "fprojectAmount": 39800.0,
+                            "fdevAmountTotal": 39800.0
+                        },
+                        {
+                            "fid": "1c1a7406-7c7f-4a78-ab07-38dc047c6a8c",
+                            "fcreateTime": "2023-04-07T18:02:39",
+                            "fproductBillProjectName": "AMS—RNA定制抗衰-十次",
+                            "fdeliveryStatus": null,
+                            "fprojectAmount": 398000.0,
+                            "fdevAmountTotal": null
+                        },
+                        {
+                            "fid": "1648555314133352448",
+                            "fcreateTime": "2023-03-25T13:44:02",
+                            "fproductBillProjectName": "100万\"318好物大礼包\"一周完款奖励(不包含门票)",
+                            "fdeliveryStatus": 1,
+                            "fprojectAmount": 0.0,
+                            "fdevAmountTotal": 0.0
+                        },
+                        {
+                            "fid": "1648554422583704576",
+                            "fcreateTime": "2023-03-25T13:42:31",
+                            "fproductBillProjectName": "100万\"318好物大礼包\"一周完款奖励(不包含门票)",
+                            "fdeliveryStatus": 3,
+                            "fprojectAmount": 0.0,
+                            "fdevAmountTotal": 0.0
+                        },
+                        {
+                            "fid": "1648553463019225088",
+                            "fcreateTime": "2023-03-25T13:40:53",
+                            "fproductBillProjectName": "100万\"318好物大礼包\"一周完款奖励(不包含门票)",
+                            "fdeliveryStatus": 3,
+                            "fprojectAmount": 0.0,
+                            "fdevAmountTotal": 0.0
+                        },
+                        {
+                            "fid": "1648552858133478400",
+                            "fcreateTime": "2023-03-25T13:39:44",
+                            "fproductBillProjectName": "100万\"318好物大礼包\"一周完款奖励(不包含门票)",
+                            "fdeliveryStatus": 3,
+                            "fprojectAmount": 0.0,
+                            "fdevAmountTotal": 0.0
+                        },
+                        {
+                            "fid": "1648552235187059712",
+                            "fcreateTime": "2023-03-25T13:37:18",
+                            "fproductBillProjectName": "合伙人100万\"318好物大礼包\"一周完款奖励",
+                            "fdeliveryStatus": 3,
+                            "fprojectAmount": 0.0,
+                            "fdevAmountTotal": 0.0
+                        },
+                        {
+                            "fid": "1648550853851757568",
+                            "fcreateTime": "2023-03-25T13:35:27",
+                            "fproductBillProjectName": "白金合伙人-100万",
+                            "fdeliveryStatus": 2,
+                            "fprojectAmount": 1000000.0,
+                            "fdevAmountTotal": 259892.92
+                        },
+                        {
+                            "fid": "1643350959545401344",
+                            "fcreateTime": "2023-03-18T09:22:02",
+                            "fproductBillProjectName": "骨骼系统修复调理（轻度）3次",
+                            "fdeliveryStatus": 3,
+                            "fprojectAmount": 498000.0,
+                            "fdevAmountTotal": 498000.0
+                        },
+                        {
+                            "fid": "1636117700155552768",
+                            "fcreateTime": "2023-03-08T09:53",
+                            "fproductBillProjectName": "科利心调理-尊享版",
+                            "fdeliveryStatus": 3,
+                            "fprojectAmount": 598000.0,
+                            "fdevAmountTotal": 598000.0
+                        },
+                        {
+                            "fid": "1636117211795961856",
+                            "fcreateTime": "2023-03-08T09:51:56",
+                            "fproductBillProjectName": "肝脏解毒支持（白金版）-三次",
+                            "fdeliveryStatus": 3,
+                            "fprojectAmount": 188000.0,
+                            "fdevAmountTotal": 188000.0
+                        },
+                        {
+                            "fid": "1636116647418803200",
+                            "fcreateTime": "2023-03-08T09:50:17",
+                            "fproductBillProjectName": "MK 脑活力养护（尊享版）-三次",
+                            "fdeliveryStatus": 3,
+                            "fprojectAmount": 268000.0,
+                            "fdevAmountTotal": 268000.0
+                        },
+                        {
+                            "fid": "1612198645879289856",
+                            "fcreateTime": "2023-02-03T09:50",
+                            "fproductBillProjectName": "异体免疫调理",
+                            "fdeliveryStatus": 3,
+                            "fprojectAmount": 298000.0,
+                            "fdevAmountTotal": 298000.0
+                        },
+                        {
+                            "fid": "1612197532450961408",
+                            "fcreateTime": "2023-02-03T09:46:08",
+                            "fproductBillProjectName": "异体免疫调理",
+                            "fdeliveryStatus": 3,
+                            "fprojectAmount": 298000.0,
+                            "fdevAmountTotal": 298000.0
+                        },
+                        {
+                            "fid": "1612194941092508672",
+                            "fcreateTime": "2023-02-03T09:39:10",
+                            "fproductBillProjectName": "异体免疫调理",
+                            "fdeliveryStatus": 3,
+                            "fprojectAmount": 298000.0,
+                            "fdevAmountTotal": 298000.0
+                        },
+                        {
+                            "fid": "1600584090073970688",
+                            "fcreateTime": "2023-01-18T09:09:12",
+                            "fproductBillProjectName": "代谢调理-三次",
+                            "fdeliveryStatus": 3,
+                            "fprojectAmount": 188000.0,
+                            "fdevAmountTotal": 188000.0
+                        },
+                        {
+                            "fid": "1589721574217364480",
+                            "fcreateTime": "2023-01-03T09:31:19",
+                            "fproductBillProjectName": "战疫一号尊享版市场价",
+                            "fdeliveryStatus": 3,
+                            "fprojectAmount": 79600.0,
+                            "fdevAmountTotal": 79600.0
+                        },
+                        {
+                            "fid": "1587883994890908672",
+                            "fcreateTime": "2022-12-31T20:41:30",
+                            "fproductBillProjectName": "2022公益盛典一次性完款奖励(100万)",
+                            "fdeliveryStatus": 3,
+                            "fprojectAmount": 0.0,
+                            "fdevAmountTotal": 0.0
+                        },
+                        {
+                            "fid": "1587883515465184256",
+                            "fcreateTime": "2022-12-31T20:40:36",
+                            "fproductBillProjectName": "ZD-2022公益大礼包一周完款奖励(100万)",
+                            "fdeliveryStatus": 3,
+                            "fprojectAmount": 0.0,
+                            "fdevAmountTotal": 0.0
+                        },
+                        {
+                            "fid": "1585482699320080384",
+                            "fcreateTime": "2022-12-28T13:10:05",
+                            "fproductBillProjectName": "2022406胎生态·前列腺养护+BTL前列理调理-十次",
+                            "fdeliveryStatus": 2,
+                            "fprojectAmount": 298000.0,
+                            "fdevAmountTotal": 296143.37
+                        },
+                        {
+                            "fid": "b7574c44-da86-4225-bb83-42d8dc221a56",
+                            "fcreateTime": "2022-12-23T10:10",
+                            "fproductBillProjectName": "20220474战疫一号尊享版",
+                            "fdeliveryStatus": null,
+                            "fprojectAmount": 39800.0,
+                            "fdevAmountTotal": null
+                        },
+                        {
+                            "fid": "1581749902927474688",
+                            "fcreateTime": "2022-12-23T09:33:05",
+                            "fproductBillProjectName": "战疫一号尊享版市场价",
+                            "fdeliveryStatus": 3,
+                            "fprojectAmount": 39800.0,
+                            "fdevAmountTotal": 39800.0
+                        },
+                        {
+                            "fid": "1566010997829811200",
+                            "fcreateTime": "2022-12-01T16:21:06",
+                            "fproductBillProjectName": "全身抗衰老（尊享）",
+                            "fdeliveryStatus": 3,
+                            "fprojectAmount": 0.0,
+                            "fdevAmountTotal": 0.0
+                        },
+                        {
+                            "fid": "1558819416559333376",
+                            "fcreateTime": "2022-11-21T18:11:23",
+                            "fproductBillProjectName": "2022406胎生态·膝关节养护-十次",
+                            "fdeliveryStatus": 2,
+                            "fprojectAmount": 198000.0,
+                            "fdevAmountTotal": 118800.0
+                        },
+                        {
+                            "fid": "605ae423-bbf1-4360-abdf-b0e9da5c6136",
+                            "fcreateTime": "2022-11-01T10:13:03",
+                            "fproductBillProjectName": "补牙",
+                            "fdeliveryStatus": null,
+                            "fprojectAmount": 680.0,
+                            "fdevAmountTotal": null
+                        },
+                        {
+                            "fid": "40fa253a-2079-4f93-9926-6ea2455ad3df",
+                            "fcreateTime": "2022-10-04T13:49:26",
+                            "fproductBillProjectName": "肠道粘膜修复支持",
+                            "fdeliveryStatus": null,
+                            "fprojectAmount": 59400.0,
+                            "fdevAmountTotal": null
+                        },
+                        {
+                            "fid": "84cbdd80-c9bb-44fd-aeff-73ffd9277579",
+                            "fcreateTime": "2022-10-04T13:46:48",
+                            "fproductBillProjectName": "肠道粘膜修复支持",
+                            "fdeliveryStatus": null,
+                            "fprojectAmount": 59400.0,
+                            "fdevAmountTotal": null
+                        },
+                        {
+                            "fid": "53201234-0c2d-4eed-b76b-129b9bfa1abc",
+                            "fcreateTime": "2022-10-04T13:31:07",
+                            "fproductBillProjectName": "筋膜整复顺势整合疗法",
+                            "fdeliveryStatus": null,
+                            "fprojectAmount": 49000.0,
+                            "fdevAmountTotal": null
+                        },
+                        {
+                            "fid": "8d5cfdea-c29e-4532-b0f1-15a2438df043",
+                            "fcreateTime": "2022-09-17T11:20:25",
+                            "fproductBillProjectName": "微循环调理",
+                            "fdeliveryStatus": null,
+                            "fprojectAmount": 298000.0,
+                            "fdevAmountTotal": null
+                        },
+                        {
+                            "fid": "47e7c787-7c6b-4a60-bc22-639c7bb42add",
+                            "fcreateTime": "2022-09-17T11:17:25",
+                            "fproductBillProjectName": "MK氧疗",
+                            "fdeliveryStatus": null,
+                            "fprojectAmount": 108000.0,
+                            "fdevAmountTotal": null
+                        },
+                        {
+                            "fid": "ee4325de-a2ea-4301-a63c-a77f3d055d24",
+                            "fcreateTime": "2022-09-17T11:15:09",
+                            "fproductBillProjectName": "肝脏功能优化增强",
+                            "fdeliveryStatus": null,
+                            "fprojectAmount": 188000.0,
+                            "fdevAmountTotal": null
+                        },
+                        {
+                            "fid": "7f623f21-5c58-486e-94fb-3258b39081b2",
+                            "fcreateTime": "2022-09-17T11:10:29",
+                            "fproductBillProjectName": "代谢管理 ",
+                            "fdeliveryStatus": null,
+                            "fprojectAmount": 188000.0,
+                            "fdevAmountTotal": null
+                        },
+                        {
+                            "fid": "9f75a31e-cd41-4570-a932-0ff952977089",
+                            "fcreateTime": "2022-06-25T13:04:43",
+                            "fproductBillProjectName": "全口水激光",
+                            "fdeliveryStatus": null,
+                            "fprojectAmount": 42800.0,
+                            "fdevAmountTotal": null
+                        },
+                        {
+                            "fid": "c76b62a1-f9df-4176-878a-5e52ccd5e412",
+                            "fcreateTime": "2022-06-18T10:22:23",
+                            "fproductBillProjectName": "氢离子活化排毒",
+                            "fdeliveryStatus": null,
+                            "fprojectAmount": 19800.0,
+                            "fdevAmountTotal": null
+                        },
+                        {
+                            "fid": "c28b6b65-8816-4667-930a-03786d520738",
+                            "fcreateTime": "2022-06-13T13:40:39",
+                            "fproductBillProjectName": "口腔方案",
+                            "fdeliveryStatus": null,
+                            "fprojectAmount": 14960.0,
+                            "fdevAmountTotal": null
+                        },
+                        {
+                            "fid": "8a8a5cb5-77ac-4d4e-8375-041eead2578c",
+                            "fcreateTime": "2022-06-13T11:55:29",
+                            "fproductBillProjectName": "代谢管理 ",
+                            "fdeliveryStatus": null,
+                            "fprojectAmount": 188000.0,
+                            "fdevAmountTotal": null
+                        },
+                        {
+                            "fid": "d708dbfb-5b5e-4920-bf04-11267ea794fd",
+                            "fcreateTime": "2022-06-13T11:54:37",
+                            "fproductBillProjectName": "甲状腺代谢调理",
+                            "fdeliveryStatus": null,
+                            "fprojectAmount": 188000.0,
+                            "fdevAmountTotal": null
+                        },
+                        {
+                            "fid": "cdf3f3e6-09c3-434a-a047-fd07ab101c5b",
+                            "fcreateTime": "2022-06-13T11:53:42",
+                            "fproductBillProjectName": "肝脏解毒支持白金版",
+                            "fdeliveryStatus": null,
+                            "fprojectAmount": 188000.0,
+                            "fdevAmountTotal": null
+                        }
+                    ],
+                    "bizFieldKey": "curePlanRecords",
+                    "api": "/api/v1/ui-builder/runtime/endpoints/fa969d461ef059ab82f1dd6d3c2aa116/invoke",
+                    "queryParams": {},
+                    "body": {
+                        "encryptedIdCard": "kdxU1k6LlgVyeEtBEk+osiKORU+yMascJD7Heg6B7jw="
+                    },
+                    "flowNum": "f9f573b8ff0647f795f852575bb2a9c4",
+                    "createdBy": "2"
+                }
+            }
+        }
+    },
+    "error": null
+}
