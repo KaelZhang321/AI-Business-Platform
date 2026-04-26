@@ -1,7 +1,7 @@
 import type {
   RawReportResponse, RawItem, ParsedItem, AbnormalStatus,
   ClinicalGroup, ClinicalSubGroup, ConclusionItem, ImagingSection,
-  HealthReportData,
+  HealthReportData, ExamRecord, MetricSeries,
 } from '../../types/healthReport';
 
 // ============================================================
@@ -430,4 +430,194 @@ export function mapReportData(raw: RawReportResponse): HealthReportData {
     totalItems,
     totalAbnormal,
   };
+}
+
+type RawSessionItem = {
+  majorItemCode?: string | null;
+  majorItemName?: string | null;
+  itemCode?: string | null;
+  itemName?: string | null;
+  itemNameEn?: string | null;
+  resultValue?: string | null;
+  unit?: string | null;
+  referenceRange?: string | null;
+  abnormalFlag?: string | null;
+};
+
+type RawSessionDepartment = {
+  departmentCode?: string | null;
+  departmentName?: string | null;
+  sourceTable?: string | null;
+  items?: RawSessionItem[] | null;
+};
+
+type RawSessionResponse = {
+  studyId?: string | null;
+  orderCode?: string | null;
+  examTime?: string | null;
+  packageCode?: string | null;
+  packageName?: string | null;
+  abnormalSummary?: string | null;
+  finalConclusion?: string | null;
+  abnormalCount?: number | null;
+  departments?: RawSessionDepartment[] | null;
+};
+
+function normalizeSession(raw: RawSessionResponse): RawReportResponse | null {
+  const studyId = raw.studyId?.trim();
+  const examTime = raw.examTime?.trim();
+  const packageName = raw.packageName?.trim();
+
+  if (!studyId || !examTime || !packageName) {
+    return null;
+  }
+
+  return {
+    code: 0,
+    message: 'ok',
+    data: {
+      studyId,
+      orderCode: raw.orderCode?.trim() || null,
+      examTime,
+      packageCode: raw.packageCode?.trim() || '',
+      packageName,
+      abnormalSummary: raw.abnormalSummary?.trim() || '',
+      finalConclusion: raw.finalConclusion?.trim() || '',
+      abnormalCount: raw.abnormalCount ?? 0,
+      departments: (raw.departments || []).map((department) => ({
+        departmentCode: department.departmentCode?.trim() || '',
+        departmentName: department.departmentName?.trim() || '',
+        sourceTable: department.sourceTable?.trim() || '',
+        items: (department.items || []).map((item) => ({
+          majorItemCode: item.majorItemCode?.trim() || null,
+          majorItemName: item.majorItemName?.trim() || null,
+          itemCode: item.itemCode?.trim() || '',
+          itemName: item.itemName?.trim() || '',
+          itemNameEn: item.itemNameEn?.trim() || '',
+          resultValue: item.resultValue ?? null,
+          unit: item.unit?.trim() || '',
+          referenceRange: item.referenceRange?.trim() || null,
+          abnormalFlag: item.abnormalFlag?.trim() || null,
+        })),
+      })),
+    },
+  };
+}
+
+export function mapSingleSessionToHealthReportData(raw: RawSessionResponse): HealthReportData | null {
+  const normalized = normalizeSession(raw);
+  if (!normalized) {
+    return null;
+  }
+  return mapReportData(normalized);
+}
+
+export function mapReportSessionsToExamRecords(rawSessions: RawSessionResponse[]): ExamRecord[] {
+  return rawSessions
+    .map((session) => {
+      const reportData = mapSingleSessionToHealthReportData(session);
+      if (!reportData) {
+        return null;
+      }
+
+      return {
+        id: reportData.studyId,
+        examTime: reportData.examTime,
+        examDate: reportData.examTime.split(' ')[0],
+        year: reportData.examTime.split('-')[0],
+        packageName: reportData.packageName,
+        reportData,
+      } satisfies ExamRecord;
+    })
+    .filter((record): record is ExamRecord => Boolean(record))
+    .sort((a, b) => b.examTime.localeCompare(a.examTime));
+}
+
+function buildTrendText(values: Array<{ year: string; numericValue: number }>, latestStatus: AbnormalStatus): string {
+  if (values.length < 2) {
+    if (latestStatus === 'high') return '当前高于参考范围';
+    if (latestStatus === 'low') return '当前低于参考范围';
+    return '暂无明显趋势';
+  }
+
+  const first = values[0].numericValue;
+  const last = values[values.length - 1].numericValue;
+  const delta = last - first;
+  if (Math.abs(delta) < Number.EPSILON * 100) {
+    return latestStatus === 'normal' ? '整体保持稳定' : '异常状态相对稳定';
+  }
+  return delta > 0 ? '整体呈上升趋势' : '整体呈下降趋势';
+}
+
+export function mapMetricSeriesFromExamRecords(examRecords: ExamRecord[]): MetricSeries[] {
+  if (examRecords.length === 0) {
+    return [];
+  }
+
+  const recordMap = new Map<string, {
+    name: string;
+    unit: string;
+    refRange: string;
+    values: Record<string, number | string>;
+    latestStatus: AbnormalStatus;
+    latestValue: number | string | null;
+    abnormalYears: string[];
+    numericValues: Array<{ year: string; numericValue: number }>;
+  }>();
+
+  examRecords.forEach((record) => {
+    const year = record.year;
+    const allItems = record.reportData.clinicalGroups.flatMap((group) => group.subGroups.flatMap((subGroup) => subGroup.items));
+
+    allItems.forEach((item) => {
+      if (!item.itemName || item.numericValue === null) {
+        return;
+      }
+
+      const key = `${item.itemName}|${item.unit}|${item.referenceRange}`;
+      const existing = recordMap.get(key) ?? {
+        name: item.itemName,
+        unit: item.unit,
+        refRange: item.referenceRange,
+        values: {},
+        latestStatus: item.abnormalStatus,
+        latestValue: item.numericValue,
+        abnormalYears: [],
+        numericValues: [],
+      };
+
+      existing.values[year] = item.numericValue;
+      existing.numericValues.push({ year, numericValue: item.numericValue });
+      if (record.id === examRecords[0].id) {
+        existing.latestStatus = item.abnormalStatus;
+        existing.latestValue = item.numericValue;
+      }
+      if (item.abnormalStatus && item.abnormalStatus !== 'normal') {
+        existing.abnormalYears.push(year);
+      }
+
+      recordMap.set(key, existing);
+    });
+  });
+
+  return Array.from(recordMap.values())
+    .map((metric) => {
+      metric.numericValues.sort((a, b) => a.year.localeCompare(b.year));
+
+      return {
+        name: metric.name,
+        unit: metric.unit,
+        refRange: metric.refRange,
+        values: metric.values,
+        judgment: metric.latestStatus === 'high' ? 'high' : metric.latestStatus === 'low' ? 'low' : 'normal',
+        trend: buildTrendText(metric.numericValues, metric.latestStatus),
+        latestValue: metric.latestValue,
+        abnormalYears: Array.from(new Set(metric.abnormalYears)).sort(),
+      } satisfies MetricSeries;
+    })
+    .sort((a, b) => {
+      const abnormalDelta = b.abnormalYears.length - a.abnormalYears.length;
+      if (abnormalDelta !== 0) return abnormalDelta;
+      return a.name.localeCompare(b.name, 'zh-CN');
+    });
 }

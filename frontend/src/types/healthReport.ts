@@ -116,3 +116,14 @@ export interface ExamRecord {
 }
 
 export type DisplayMode = 'all' | 'abnormal';
+
+export interface MetricSeries {
+  name: string;
+  unit: string;
+  refRange: string;
+  values: Record<string, number | string>;
+  judgment: 'high' | 'low' | 'normal';
+  trend: string;
+  latestValue: number | string | null;
+  abnormalYears: string[];
+}
