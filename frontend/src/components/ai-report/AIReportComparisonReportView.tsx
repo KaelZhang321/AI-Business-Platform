@@ -70,11 +70,11 @@ function buildAiContext(examRecords: ExamRecord[]) {
   return {
     patient: latest
       ? {
-          examDate: latest.examDate,
-          packageName: latest.packageName,
-          totalAbnormal: latest.reportData?.totalAbnormal ?? 0,
-          conclusions: latest.reportData?.conclusions.map((item) => item.text).slice(0, 10) ?? [],
-        }
+        examDate: latest.examDate,
+        packageName: latest.packageName,
+        totalAbnormal: latest.reportData?.totalAbnormal ?? 0,
+        conclusions: latest.reportData?.conclusions.map((item) => item.text).slice(0, 10) ?? [],
+      }
       : null,
     metrics: metrics.map((metric) => ({
       name: metric.name,
@@ -339,11 +339,10 @@ export const AIReportComparisonReportView: React.FC<AIReportComparisonReportView
                       key={record.id}
                       type="button"
                       onClick={() => toggleExamSelection(record.id)}
-                      className={`w-full rounded-2xl border px-4 py-3 text-left transition-all ${
-                        isSelected
-                          ? 'border-brand bg-brand/5 shadow-sm'
-                          : 'border-slate-200 bg-white hover:border-slate-300 dark:border-slate-700 dark:bg-slate-800/60 dark:hover:border-slate-600'
-                      }`}
+                      className={`w-full rounded-2xl border px-4 py-3 text-left transition-all ${isSelected
+                        ? 'border-brand bg-brand/5 shadow-sm'
+                        : 'border-slate-200 bg-white hover:border-slate-300 dark:border-slate-700 dark:bg-slate-800/60 dark:hover:border-slate-600'
+                        }`}
                     >
                       <div className="flex items-center justify-between gap-3">
                         <div>
@@ -369,11 +368,10 @@ export const AIReportComparisonReportView: React.FC<AIReportComparisonReportView
                 {messages.map((message, index) => (
                   <div key={`${message.role}-${index}`} className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                     <div
-                      className={`max-w-[90%] rounded-2xl px-4 py-3 text-sm leading-6 ${
-                        message.role === 'user'
-                          ? 'bg-brand text-white'
-                          : 'border border-slate-200 bg-white text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200'
-                      }`}
+                      className={`max-w-[90%] rounded-2xl px-4 py-3 text-sm leading-6 ${message.role === 'user'
+                        ? 'bg-brand text-white'
+                        : 'border border-slate-200 bg-white text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200'
+                        }`}
                     >
                       {message.content}
                     </div>
@@ -401,7 +399,7 @@ export const AIReportComparisonReportView: React.FC<AIReportComparisonReportView
           </div>
         </section>
 
-        <section className="min-h-0 overflow-hidden rounded-[32px] border border-slate-200 bg-white/80 shadow-sm dark:border-slate-800 dark:bg-slate-900/80">
+        <section className="p-10 box-border min-h-0 overflow-hidden rounded-[32px] border border-slate-200 bg-white/80 shadow-sm dark:border-slate-800 dark:bg-slate-900/80">
           <HealthReportView
             setCurrentPage={() => undefined}
             reportData={latestReport}

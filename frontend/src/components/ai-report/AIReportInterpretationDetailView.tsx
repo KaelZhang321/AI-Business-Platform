@@ -132,7 +132,7 @@ export const AIReportComparisonDetailView: React.FC<AIReportComparisonDetailView
       const res = await aiReportApi.getcustomersListApi({
         queryParams: {},
         body: {
-          customerInfo: '李新',
+          customerInfo: '刘向丽',
         },
         page: String(pageNo),
         size: String(PAGE_SIZE),

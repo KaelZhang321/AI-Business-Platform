@@ -3,7 +3,10 @@ import { apiClient } from '../api'
 /** 后端统一响应包装 */
 type ApiEnvelope<T> = {
   /** 业务数据 */
-  data?: T
+  data?: {
+    data?: T
+    total?: number
+  }
 }
 
 /** 体检记录查询参数 */
@@ -54,7 +57,7 @@ export const aiReportApi = {
    */
   async getPatientExamSessionsApi(params: PatientExamSessionsQueryInput) {
     const response = await apiClient.post<ApiEnvelope<unknown[]>>('/bs/api/v1/patient-exams/sessions/query', params)
-    return response.data?.data ?? response.data
+    return response.data?.data?.data ?? response.data?.data ?? response.data
   },
   /**
    * 获取客户列表
