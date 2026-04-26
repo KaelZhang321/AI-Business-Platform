@@ -111,22 +111,20 @@ export const QuadrantPanel = ({
                   <button
                     type="button"
                     onClick={() => setNewItemCategory('abnormal')}
-                    className={`px-2.5 py-1 rounded-full text-xs font-medium transition-colors ${
-                      newItemCategory === 'abnormal'
+                    className={`px-2.5 py-1 rounded-full text-xs font-medium transition-colors ${newItemCategory === 'abnormal'
                         ? 'bg-red-50 text-red-600 border border-red-200 dark:bg-red-900/20 dark:text-red-300 dark:border-red-800/40'
                         : 'bg-slate-100 text-slate-500 border border-transparent dark:bg-slate-700 dark:text-slate-300'
-                    }`}
+                      }`}
                   >
                     异常指标
                   </button>
                   <button
                     type="button"
                     onClick={() => setNewItemCategory('recommendation')}
-                    className={`px-2.5 py-1 rounded-full text-xs font-medium transition-colors ${
-                      newItemCategory === 'recommendation'
+                    className={`px-2.5 py-1 rounded-full text-xs font-medium transition-colors ${newItemCategory === 'recommendation'
                         ? 'bg-emerald-50 text-emerald-600 border border-emerald-200 dark:bg-emerald-900/20 dark:text-emerald-300 dark:border-emerald-800/40'
                         : 'bg-slate-100 text-slate-500 border border-transparent dark:bg-slate-700 dark:text-slate-300'
-                    }`}
+                      }`}
                   >
                     推荐方案
                   </button>
@@ -151,40 +149,47 @@ export const QuadrantPanel = ({
               </div>
             )}
 
-            <SortableContext id={id} items={items.map((i) => i.id)} strategy={verticalListSortingStrategy}>
-              <div className="flex-1 min-h-[50px]">
-                {items.map((item, index) => {
-                  const prevItem = items[index - 1]
-                  const showAbnormalHeader = item.category === 'abnormal' && prevItem?.category !== 'abnormal'
-                  const showRecommendationHeader =
-                    item.category === 'recommendation' && prevItem?.category !== 'recommendation'
-
-                  return (
-                    <div key={item.id}>
-                      {showAbnormalHeader && (
-                        <div className={`text-xs font-bold mb-2 ${index > 0 ? 'mt-4' : ''} flex items-center ${theme.text}`}>
-                          <div className="w-1.5 h-1.5 rounded-full mr-1.5 bg-current" />
-                          异常指标
-                        </div>
-                      )}
-                      {showRecommendationHeader && (
-                        <div className={`text-xs font-bold mb-2 ${index > 0 ? 'mt-4' : ''} flex items-center ${theme.text}`}>
-                          <div className="w-1.5 h-1.5 rounded-full mr-1.5 bg-current" />
-                          推荐方案
-                        </div>
-                      )}
-                      <SortableItem
-                        id={item.id}
-                        content={item.content}
-                        onRemove={onRemoveItem}
-                        colorClass={theme.itemColor}
-                        handleColorClass={theme.handleColor}
-                      />
-                    </div>
-                  )
-                })}
+            {items.length === 0 ? (
+              <div className="flex-1 flex flex-col justify-center items-center text-center px-4 bg-white/50 dark:bg-slate-800/30 rounded-xl border border-white/50 dark:border-slate-700/30">
+                <h5 className="text-slate-500 dark:text-slate-400 font-bold mb-1 text-sm">暂无数据</h5>
+                <p className="text-xs text-slate-400 dark:text-slate-500">未识别到象限内容。</p>
               </div>
-            </SortableContext>
+            ) : (
+              <SortableContext id={id} items={items.map((i) => i.id)} strategy={verticalListSortingStrategy}>
+                <div className="flex-1 min-h-[50px]">
+                  {items.map((item, index) => {
+                    const prevItem = items[index - 1]
+                    const showAbnormalHeader = item.category === 'abnormal' && prevItem?.category !== 'abnormal'
+                    const showRecommendationHeader =
+                      item.category === 'recommendation' && prevItem?.category !== 'recommendation'
+
+                    return (
+                      <div key={item.id}>
+                        {showAbnormalHeader && (
+                          <div className={`text-xs font-bold mb-2 ${index > 0 ? 'mt-4' : ''} flex items-center ${theme.text}`}>
+                            <div className="w-1.5 h-1.5 rounded-full mr-1.5 bg-current" />
+                            异常指标
+                          </div>
+                        )}
+                        {showRecommendationHeader && (
+                          <div className={`text-xs font-bold mb-2 ${index > 0 ? 'mt-4' : ''} flex items-center ${theme.text}`}>
+                            <div className="w-1.5 h-1.5 rounded-full mr-1.5 bg-current" />
+                            推荐方案
+                          </div>
+                        )}
+                        <SortableItem
+                          id={item.id}
+                          content={item.content}
+                          onRemove={onRemoveItem}
+                          colorClass={theme.itemColor}
+                          handleColorClass={theme.handleColor}
+                        />
+                      </div>
+                    )
+                  })}
+                </div>
+              </SortableContext>
+            )}
           </div>
         ) : (
           <div className="flex flex-col justify-center items-center h-full text-center px-4 bg-white/50 dark:bg-slate-800/30 rounded-xl border border-white/50 dark:border-slate-700/30">

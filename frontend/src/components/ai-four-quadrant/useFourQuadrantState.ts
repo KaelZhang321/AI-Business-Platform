@@ -4,7 +4,6 @@ import { aIFourQuadrantViewApi } from '../../services/api/aIFourQuadrantViewApi'
 import {
   ANALYSIS_STEPS,
   EMPTY_QUADRANT_DATA,
-  INITIAL_ANALYSIS_RESULTS,
   INITIAL_CHAT_MESSAGES,
 } from './constants'
 import type { AIFourQuadrantViewProps, ClientOption, QuadrantData, ReportOption } from './types'
@@ -443,23 +442,13 @@ export const useFourQuadrantState = (navigationParams: AIFourQuadrantViewProps['
       })
 
       clearInterval(interval)
-      setQuadrantData({
-        monitoring: mapped.monitoring.length > 0 ? mapped.monitoring : [...INITIAL_ANALYSIS_RESULTS.monitoring],
-        intervention: mapped.intervention.length > 0 ? mapped.intervention : [...INITIAL_ANALYSIS_RESULTS.intervention],
-        maintenance: mapped.maintenance.length > 0 ? mapped.maintenance : [...INITIAL_ANALYSIS_RESULTS.maintenance],
-        prevention: mapped.prevention.length > 0 ? mapped.prevention : [...INITIAL_ANALYSIS_RESULTS.prevention],
-      })
+      setQuadrantData(mapped)
       setAnalysisProgress(100)
       setShowResults(true)
     } catch (error) {
       console.error('getHealthQuadrantAnalysisApi error:', error)
       clearInterval(interval)
-      setQuadrantData({
-        monitoring: [...INITIAL_ANALYSIS_RESULTS.monitoring],
-        intervention: [...INITIAL_ANALYSIS_RESULTS.intervention],
-        maintenance: [...INITIAL_ANALYSIS_RESULTS.maintenance],
-        prevention: [...INITIAL_ANALYSIS_RESULTS.prevention],
-      })
+      setQuadrantData(EMPTY_QUADRANT_DATA)
       setAnalysisProgress(100)
       setShowResults(true)
     } finally {
