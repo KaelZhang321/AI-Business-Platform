@@ -16,7 +16,7 @@ export const FilterToolbar: React.FC<FilterToolbarProps> = ({
   onViewModeChange,
 }) => {
   return (
-    <div className="mb-6">
+    <div className="mb-6 mt-1">
       <div className="flex items-center justify-between">
         <h3 className="text-lg font-bold text-slate-900 dark:text-white">客户检索与筛选</h3>
         <div className="flex items-center space-x-4">

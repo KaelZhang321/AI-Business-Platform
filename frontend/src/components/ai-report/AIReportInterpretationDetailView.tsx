@@ -1,4 +1,4 @@
-import React, { useMemo, useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import type { AppPage } from '../../navigation';
 import { AIReportComparisonReportView } from './AIReportComparisonReportView';
@@ -117,7 +117,7 @@ export const AIReportComparisonDetailView: React.FC<AIReportComparisonDetailView
     };
   };
 
-  const fetchCustomers = async (pageNo: number, append = false) => {
+  const fetchCustomers = async (pageNo: number, append = false, keyword = searchTerm) => {
     if (append) {
       if (isLoadingMoreCustomers || isLoadingCustomers || !hasMoreCustomers) {
         return;
@@ -132,7 +132,7 @@ export const AIReportComparisonDetailView: React.FC<AIReportComparisonDetailView
       const res = await aiReportApi.getcustomersListApi({
         queryParams: {},
         body: {
-          customerInfo: '刘向丽',
+          customerInfo: keyword.trim(),
         },
         page: String(pageNo),
         size: String(PAGE_SIZE),
@@ -182,20 +182,20 @@ export const AIReportComparisonDetailView: React.FC<AIReportComparisonDetailView
     }
   };
 
-  // 首屏获取客户列表
+  // 搜索词变化时请求客户列表
   useEffect(() => {
-    fetchCustomers(1, false);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    const timer = window.setTimeout(() => {
+      fetchCustomers(1, false, searchTerm);
+    }, 300);
 
-  const filteredCustomers = useMemo(() => {
-    const keyword = searchTerm.trim();
-    if (!keyword) return customers;
-    return customers.filter((customer) => customer.name.includes(keyword));
-  }, [customers, searchTerm]);
+    return () => {
+      window.clearTimeout(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchTerm]);
 
   const handleLoadMoreCustomers = () => {
-    fetchCustomers(currentPageNo + 1, true);
+    fetchCustomers(currentPageNo + 1, true, searchTerm);
   };
 
   return (
@@ -252,12 +252,12 @@ export const AIReportComparisonDetailView: React.FC<AIReportComparisonDetailView
                   <div className="py-16 text-center text-slate-500 dark:text-slate-400">客户列表加载中...</div>
                 ) : loadError ? (
                   <div className="py-16 text-center text-rose-500 dark:text-rose-400">{loadError}</div>
-                ) : filteredCustomers.length === 0 ? (
+                ) : customers.length === 0 ? (
                   <div className="py-16 text-center text-slate-500 dark:text-slate-400">暂无匹配客户</div>
                 ) : null}
                 <CustomerResults
                   viewMode={viewMode}
-                  customers={filteredCustomers}
+                  customers={customers}
                   onViewDetails={setSelectedCustomer}
                   onLoadMore={handleLoadMoreCustomers}
                   hasMore={hasMoreCustomers}
