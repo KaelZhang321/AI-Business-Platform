@@ -6,9 +6,9 @@ ApiCatalogSearchResult: 带相似度分数的检索结果
 """
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any, Literal, Self
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class ParamSchema(BaseModel):
@@ -77,6 +77,9 @@ class ApiCatalogTemplateHint(BaseModel):
     fallback_mode: str = Field("dynamic_ui", description="模板未命中的回退模式")
 
 
+ListViewFilterComponent = Literal["input", "number", "select"]
+
+
 class ApiCatalogListViewFilterField(BaseModel):
     """列表筛选字段元数据。
 
@@ -87,6 +90,10 @@ class ApiCatalogListViewFilterField(BaseModel):
 
     field: str = Field(..., min_length=1, description="筛选字段名")
     label: str | None = Field(None, description="筛选字段展示名；为空时回退 request_schema 标题")
+    component: ListViewFilterComponent = Field(
+        "input",
+        description="筛选组件类型。仅允许 input/number/select 三种已落地组件。",
+    )
 
 
 class ApiCatalogListViewTableField(BaseModel):
@@ -97,8 +104,26 @@ class ApiCatalogListViewTableField(BaseModel):
         避免“接口返回字段越来越多，列表无限膨胀”的展示退化问题。
     """
 
-    field: str = Field(..., min_length=1, description="表格字段名")
+    field: str | list[str] | None = Field(None, description="表格字段名；历史组合列可能用数组表示")
+    fields: list[str] = Field(default_factory=list, description="组合列字段名列表")
     title: str | None = Field(None, description="列表列标题；为空时回退 response_schema 标签")
+    separator: str = Field("", description="组合列字段之间的连接符")
+    empty_value: str = Field("-", description="组合列所有字段为空时的展示值")
+
+    @model_validator(mode="after")
+    def normalize_field_shape(self) -> Self:
+        """归一化单字段列与组合列配置。"""
+        normalized_fields = [item.strip() for item in self.fields if isinstance(item, str) and item.strip()]
+        if isinstance(self.field, list):
+            normalized_fields = [item.strip() for item in self.field if isinstance(item, str) and item.strip()]
+            self.field = None
+        elif isinstance(self.field, str):
+            self.field = self.field.strip() or None
+
+        self.fields = list(dict.fromkeys(normalized_fields))
+        if self.field is None and not self.fields:
+            raise ValueError("table field requires either field or fields")
+        return self
 
 
 class ApiCatalogListViewMeta(BaseModel):

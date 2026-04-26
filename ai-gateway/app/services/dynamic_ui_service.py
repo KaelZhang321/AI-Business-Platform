@@ -1686,15 +1686,7 @@ class DynamicUIService:
         for index, field in enumerate(filter_fields, start=1):
             element_id = f"filter_field_{index}"
             elements["query-filters"]["children"].append(element_id)
-            elements[element_id] = {
-                "type": "PlannerInput",
-                "props": {
-                    "label": field.label,
-                    "value": {"$bindState": f"/filters/{field.name}"},
-                    "placeholder": f"请输入{field.label}",
-                    "required": field.required,
-                },
-            }
+            elements[element_id] = self._build_query_filter_element(field)
 
         if runtime and runtime.list.enabled:
             elements["filter_reset"] = {
@@ -1725,13 +1717,15 @@ class DynamicUIService:
             }
             elements["query-filters"]["children"].extend(["filter_reset", "filter_submit"])
 
+        configured_table_fields = runtime.list.table_fields if runtime else None
+        table_rows = self._build_table_rows(rows, configured_fields=configured_table_fields)
         table_props: dict[str, Any] = {
             "columns": self._build_table_columns(
-                rows[0],
+                table_rows[0],
                 label_index=label_index,
-                configured_fields=runtime.list.table_fields if runtime else None,
+                configured_fields=configured_table_fields,
             ),
-            "dataSource": rows,
+            "dataSource": table_rows,
             **list_request_fields,
         }
         context_row_actions = (context or {}).get("row_actions")
@@ -1795,6 +1789,50 @@ class DynamicUIService:
         if detail_runtime.template_code:
             params["templateCode"] = detail_runtime.template_code
         return params
+
+    @staticmethod
+    def _build_query_filter_element(field: ApiQueryListFilterFieldRuntime) -> dict[str, Any]:
+        """将筛选字段 runtime 契约映射为具体组件。
+
+        功能：
+            `list_view_meta.filter_fields.component` 的设计目标不是装饰性配置，而是让目录元数据
+            真正控制首屏筛选控件形态。这里仅开放当前渲染层已具备稳定语义的三类组件：
+            `input / number / select`。
+
+        Args:
+            field: 已归一化的筛选字段 runtime。
+
+        Returns:
+            单个筛选组件的 flat spec 节点。
+
+        Edge Cases:
+            - 未知组件值统一回退为 `PlannerInput`，保证旧数据或脏数据不打断列表页渲染
+            - `select` 目前只表达组件语义，不强制要求 options；后续可再补 dict/options 源
+        """
+
+        bind_state = {"$bindState": f"/filters/{field.name}"}
+        if field.component == "select":
+            return {
+                "type": "PlannerSelect",
+                "props": {
+                    "label": field.label,
+                    "value": bind_state,
+                    "placeholder": f"请选择{field.label}",
+                    "required": field.required,
+                },
+            }
+
+        input_mode = "number" if field.component == "number" else "text"
+        return {
+            "type": "PlannerInput",
+            "props": {
+                "label": field.label,
+                "value": bind_state,
+                "placeholder": f"请输入{field.label}",
+                "required": field.required,
+                "inputMode": input_mode,
+            },
+        }
 
     def _notice_spec(self, title: str, message: str, tone: str) -> dict[str, Any]:
         """构造统一 `PlannerNotice` 读态卡片。
@@ -2064,6 +2102,55 @@ class DynamicUIService:
         return columns
 
     @staticmethod
+    def _build_table_rows(
+        rows: list[dict[str, Any]],
+        *,
+        configured_fields: list[Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        """按列表列元数据补齐表格派生列。
+
+        功能：
+            组合列是 UI 展示层能力，不应该污染业务接口原始响应。这里复制行对象后写入
+            `__combined_N` 这类派生字段，让 `PlannerTable.columns.dataIndex` 仍保持简单字符串，
+            前端无需理解组合列规则也能稳定展示。
+        """
+        if not configured_fields:
+            return rows
+
+        rendered_rows: list[dict[str, Any]] = []
+        for row in rows:
+            rendered_row = dict(row)
+            for field in configured_fields:
+                source_fields = list(getattr(field, "source_fields", []) or [])
+                if not source_fields:
+                    continue
+                column_key = str(getattr(field, "name", "") or "").strip()
+                if not column_key:
+                    continue
+                rendered_row[column_key] = DynamicUIService._compose_table_field_value(row, field)
+            rendered_rows.append(rendered_row)
+        return rendered_rows
+
+    @staticmethod
+    def _compose_table_field_value(row: dict[str, Any], field: Any) -> str:
+        """把组合列来源字段折叠成单元格文本。
+
+        功能：
+            组合列用于“省市区”“主诊-主责-主治”等弱结构展示。空值应被跳过，只有
+            所有来源字段都为空时才显示 `empty_value`，避免出现连续分隔符或无意义空白。
+        """
+        source_fields = list(getattr(field, "source_fields", []) or [])
+        separator = getattr(field, "separator", "")
+        empty_value = getattr(field, "empty_value", "-")
+        values: list[str] = []
+        for source_field in source_fields:
+            value = row.get(source_field)
+            if value is None or value == "":
+                continue
+            values.append(DynamicUIService._stringify_detail_value(value))
+        return str(separator).join(values) if values else str(empty_value or "-")
+
+    @staticmethod
     def _build_detail_items(
         row: dict[str, Any],
         *,
@@ -2075,8 +2162,11 @@ class DynamicUIService:
 
         功能：
             详情视图的目标是“稳定展示事实”，不是透传原始对象结构。
-            对嵌套 list/dict 在详情视图中直接跳过，避免把结构化明细压成超长字符串；
-            这类字段应由 composite 模式拆分成表格或指标区展示。
+            对复杂嵌套结构仍保持跳过，避免把结构化明细压成超长字符串；
+            但 `list[string]` 这类“多值标签集合”在健康档案、风险标签等详情页里非常常见，
+            若一律跳过会导致元数据虽已声明展示字段，用户却完全看不到内容。因此这里单独
+            放通“标量数组”，统一折叠为一行文本；真正的 `list[object]` / `dict` 仍交给
+            composite 模式拆分成表格或指标区展示。
         """
         resolved_label_index = label_index or {}
         items = []
@@ -2087,7 +2177,9 @@ class DynamicUIService:
         )
         for key in selected_fields:
             value = row.get(key)
-            if isinstance(value, (list, dict)):
+            # 业务原因：详情卡允许 `list[string]` 这类轻量多值字段按“标签集合”展示，
+            # 但必须继续拦截 dict / list[object]，避免把结构化数据错误压平成难读长串。
+            if isinstance(value, dict) or DynamicUIService._is_non_scalar_detail_list(value):
                 continue
             field_path = f"{field_path_prefix}.{key}" if field_path_prefix else key
             items.append(
@@ -2183,7 +2275,17 @@ class DynamicUIService:
 
     @staticmethod
     def _stringify_detail_value(value: Any) -> str:
-        """将详情值折叠为可展示文本。"""
+        """将详情值折叠为可展示文本。
+
+        功能：
+            详情卡本质上是“单值事实面板”，因此这里会把可安全压平的值统一转成字符串。
+            其中 `list[string] / list[number] / list[bool]` 统一用顿号拼接，满足中文场景下
+            多标签字段的紧凑阅读需求；复杂对象数组则由上游 `_build_detail_items` 继续拦截。
+
+        Edge Cases:
+            - 空数组统一展示为 `-`，避免前端出现空白值
+            - 数组里夹杂空串/None 时自动过滤，减少由脏数据造成的多余分隔符
+        """
         if value is None:
             return "-"
         if isinstance(value, bool):
@@ -2192,7 +2294,40 @@ class DynamicUIService:
             return str(value)
         if isinstance(value, str):
             return value
+        if isinstance(value, list):
+            scalar_items = [DynamicUIService._stringify_detail_value(item) for item in value if item not in (None, "")]
+            return "、".join(item for item in scalar_items if item and item != "-") or "-"
         return str(value)
+
+    @staticmethod
+    def _is_non_scalar_detail_list(value: Any) -> bool:
+        """判断详情字段是否属于不应在详情卡压平展示的复杂数组。
+
+        功能：
+            `PlannerDetailCard` 只适合展示轻量事实值。这里把数组再分成两类：
+            1. 标量数组：允许继续展示，例如异常指标、标签、症状清单；
+            2. 复杂数组：必须拦截，例如 `list[object]`、嵌套数组、混合结构脏数据。
+
+        Args:
+            value: 待判断的字段值。
+
+        Returns:
+            `True` 表示应跳过该字段；`False` 表示可以交给 `_stringify_detail_value` 压平展示。
+
+        Edge Cases:
+            - 空数组视为可展示，最终会被格式化为 `-`
+            - 混入 dict/list 的脏数组按复杂结构处理，避免输出不可预测字符串
+        """
+
+        if not isinstance(value, list):
+            return False
+        for item in value:
+            if item is None:
+                continue
+            if isinstance(item, (str, int, float, bool)):
+                continue
+            return True
+        return False
 
     @staticmethod
     def _build_query_subtitle(

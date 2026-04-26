@@ -121,13 +121,12 @@ async def recommend_smart_meal_package(
     try:
         recommendations = await _package_recommend_service.recommend_packages(
             id_card_no=request_body.id_card_no,
-            meal_type=request_body.meal_type.value,
             age=request_body.age,
             sex=request_body.sex,
             health_tags=request_body.health_tags,
             diet_preferences=request_body.diet_preferences,
             dietary_restrictions=request_body.dietary_restrictions,
-            abnormal_indicators=[item.model_dump() for item in request_body.abnormal_indicators],
+            abnormal_indicators=request_body.abnormal_indicators,
             trace_id=trace_id,
         )
         if not recommendations:

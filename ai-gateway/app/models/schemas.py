@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Any, List, Literal
+from typing import Any, Dict, List, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -173,7 +173,7 @@ class HealthQuadrantConfirmEnvelopeResponse(BaseModel):
 class SmartMealRiskIdentifyRequest(BaseModel):
     """智能订餐风险识别请求。"""
 
-    id_card_no: str = Field(..., min_length=1, description="客户明文身份证号")
+    id_card_no: str = Field(..., min_length=1, description="客户密文身份证号")
     sex: str = Field(..., min_length=1, description="性别")
     age: int = Field(..., ge=0, le=130, description="年龄")
     package_code: str = Field(..., min_length=1, description="套餐编码")
@@ -203,23 +203,6 @@ class SmartMealMealType(str, Enum):
     DINNER = "DINNER"
 
 
-class SmartMealAbnormalIndicator(BaseModel):
-    """智能订餐异常指标条目。
-
-    功能：
-        承载单项异常指标及其数值，用于“高风险硬禁配”和异常匹配评分。
-
-    Args:
-        type: 指标类型（如 blood_glucose / blood_lipid / kidney_function / weight_condition）。
-        value: 指标数值，允许为空（仅传标签场景）。
-        unit: 指标单位，允许为空。
-    """
-
-    type: str = Field(..., min_length=1, description="异常指标类型编码")
-    value: float | None = Field(None, description="异常指标数值")
-    unit: str | None = Field(None, description="异常指标单位")
-
-
 class SmartMealPackageRecommendRequest(BaseModel):
     """智能订餐套餐推荐请求。
 
@@ -228,24 +211,28 @@ class SmartMealPackageRecommendRequest(BaseModel):
         的业务约定传递，不在网关层做兜底补齐，避免把用户显式输入覆盖为历史脏画像。
 
     Args:
-        id_card_no: 客户身份证号（明文），用于外部接口与行为数据关联。
-        meal_type: 餐次，限定为 BREAKFAST/LUNCH/DINNER。
+        id_card_no: 客户身份证号（密文），用于外部接口与行为数据关联。
         age: 年龄，可选。
         sex: 性别，可选。
         health_tags: 健康标签，可选。
         diet_preferences: 用餐偏好，可选。
         dietary_restrictions: 忌口自然语言列表，可选。
-        abnormal_indicators: 异常指标列表，可选。
+        abnormal_indicators: 异常指标字典，可选。键为异常类别，值为该类别下的异常描述列表。
+            示例：
+            {
+              "血糖异常": ["糖化HbA1c升高", "空腹血糖8.3"],
+              "体重": ["超重"],
+              "血脂异常": ["甘油三酯升高", "HDL-C升高"]
+            }
     """
 
-    id_card_no: str = Field(..., min_length=1, description="客户明文身份证号")
-    meal_type: SmartMealMealType = Field(..., description="餐次")
+    id_card_no: str = Field(..., min_length=1, description="客户密文身份证号")
     age: int | None = Field(None, ge=0, le=130, description="年龄")
     sex: str | None = Field(None, description="性别")
     health_tags: list[str] = Field(default_factory=list, description="健康标签")
     diet_preferences: list[str] = Field(default_factory=list, description="用餐偏好")
     dietary_restrictions: list[str] = Field(default_factory=list, description="忌口自然语言")
-    abnormal_indicators: list[SmartMealAbnormalIndicator] = Field(default_factory=list, description="异常指标列表")
+    abnormal_indicators: Dict[str, List[str]] = Field(default_factory=dict, description="异常指标字典")
 
 
 class SmartMealPackageRecommendItem(BaseModel):
@@ -254,6 +241,7 @@ class SmartMealPackageRecommendItem(BaseModel):
     package_code: str = Field(..., description="套餐编码")
     package_name: str = Field(..., description="套餐名称")
     match_score: float = Field(..., description="匹配度绝对评分，保留两位小数")
+    reason: str = Field(..., description="推荐理由")
 
 
 class SmartMealPackageRecommendEnvelopeResponse(BaseModel):
@@ -526,6 +514,10 @@ class ApiQueryListFilterFieldRuntime(BaseModel):
     name: str = Field(..., description="筛选字段名")
     label: str = Field(..., description="筛选字段展示名")
     value_type: str = Field(..., description="筛选字段值类型")
+    component: Literal["input", "number", "select"] = Field(
+        "input",
+        description="筛选组件类型，仅暴露当前渲染层已支持的组件集合。",
+    )
     required: bool = Field(False, description="当前筛选字段是否必填")
 
 
@@ -534,11 +526,14 @@ class ApiQueryListTableFieldRuntime(BaseModel):
 
     功能：
         该结构用于把“首屏列表列白名单”提升为显式 runtime 契约，避免渲染层从首行数据猜列导致
-        首屏字段失控。
+        首屏字段失控。组合列通过 `source_fields` 显式表达来源字段，由渲染层生成派生列。
     """
 
-    name: str = Field(..., description="列表字段名")
+    name: str = Field(..., description="列表字段名或组合列派生字段名")
     title: str | None = Field(None, description="列表列标题")
+    source_fields: list[str] = Field(default_factory=list, description="组合列来源字段；为空表示普通单字段列")
+    separator: str = Field("", description="组合列字段之间的连接符")
+    empty_value: str = Field("-", description="组合列所有字段为空时的展示值")
 
 
 class ApiQueryListFiltersRuntime(BaseModel):

@@ -100,7 +100,9 @@ def _mysql_row() -> dict[str, object]:
         ),
         "listViewMeta": (
             '{"filter_fields":[{"field":"customerInfo","label":"客户关键词"}],'
-            '"table_fields":[{"field":"name","title":"客户姓名"},{"field":"mainTeacherName","title":"主市场老师"}]}'
+            '"table_fields":[{"field":"name","title":"客户姓名"},'
+            '{"field":["province","city","county"],"title":"地址","separator":"","empty_value":"-"},'
+            '{"fields":["mainTeacherName","mainTeacherNo"],"title":"主市场老师","separator":" / ","empty_value":"-"}]}'
         ),
         "detailViewMeta": (
             '{"display_fields":["name","mainTeacherName","phone"],'
@@ -186,7 +188,12 @@ async def test_registry_source_loads_entries_from_mysql_and_appends_builtin_dict
     assert customer_entry.response_field_profiles[0].json_path == "data.list[].customerId"
     assert customer_entry.response_field_profiles[0].raw_description == "客户ID"
     assert [field.field for field in customer_entry.list_view_meta.filter_fields] == ["customerInfo"]
-    assert [field.field for field in customer_entry.list_view_meta.table_fields] == ["name", "mainTeacherName"]
+    assert customer_entry.list_view_meta.table_fields[0].field == "name"
+    assert customer_entry.list_view_meta.table_fields[1].field is None
+    assert customer_entry.list_view_meta.table_fields[1].fields == ["province", "city", "county"]
+    assert customer_entry.list_view_meta.table_fields[1].separator == ""
+    assert customer_entry.list_view_meta.table_fields[2].fields == ["mainTeacherName", "mainTeacherNo"]
+    assert customer_entry.list_view_meta.table_fields[2].separator == " / "
     assert customer_entry.detail_view_meta.display_fields == ["name", "mainTeacherName", "phone"]
     assert customer_entry.detail_view_meta.required_fields == ["name"]
     assert customer_entry.detail_view_meta.exclude_fields == ["phone"]

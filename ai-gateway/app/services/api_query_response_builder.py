@@ -1361,6 +1361,7 @@ def _build_list_filter_fields(
                     name=field_name,
                     label=label,
                     value_type=_normalize_runtime_value_type(schema.get("type") if isinstance(schema, dict) else None),
+                    component=filter_field.component,
                     required=field_name in required_fields,
                 )
             )
@@ -1385,6 +1386,7 @@ def _build_list_filter_fields(
                 name=field_name,
                 label=label,
                 value_type=_normalize_runtime_value_type(field_schema.get("type")),
+                component="number" if _normalize_runtime_value_type(field_schema.get("type")) == "number" else "input",
                 required=field_name in required_fields,
             )
         )
@@ -1402,11 +1404,24 @@ def _build_list_table_fields(entry: ApiCatalogEntry) -> list[ApiQueryListTableFi
         配置为空时返回空列表，表示继续沿用历史自动推断列逻辑。
     """
     table_fields: list[ApiQueryListTableFieldRuntime] = []
-    for table_field in entry.list_view_meta.table_fields:
-        field_name = table_field.field.strip()
+    for index, table_field in enumerate(entry.list_view_meta.table_fields, start=1):
+        title = table_field.title.strip() if isinstance(table_field.title, str) and table_field.title.strip() else None
+        if table_field.fields:
+            field_name = table_field.field or f"__combined_{index}"
+            table_fields.append(
+                ApiQueryListTableFieldRuntime(
+                    name=field_name,
+                    title=title,
+                    source_fields=list(table_field.fields),
+                    separator=table_field.separator,
+                    empty_value=table_field.empty_value,
+                )
+            )
+            continue
+
+        field_name = table_field.field.strip() if isinstance(table_field.field, str) else ""
         if not field_name:
             continue
-        title = table_field.title.strip() if isinstance(table_field.title, str) and table_field.title.strip() else None
         table_fields.append(ApiQueryListTableFieldRuntime(name=field_name, title=title))
     return table_fields
 

@@ -818,6 +818,69 @@ async def test_rule_query_spec_table_columns_strictly_follow_runtime_table_field
 
 
 @pytest.mark.asyncio
+async def test_rule_query_spec_table_renders_combined_runtime_field(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """组合列应生成派生 dataIndex，并按配置折叠来源字段。"""
+
+    monkeypatch.setattr(settings, "llm_ui_spec_enabled", False)
+    service = DynamicUIService(catalog_service=UICatalogService())
+
+    runtime = _make_list_runtime().model_copy(
+        update={
+            "list": _make_list_runtime().list.model_copy(
+                update={
+                    "table_fields": [
+                        ApiQueryListTableFieldRuntime(name="customerName", title="客户姓名"),
+                        ApiQueryListTableFieldRuntime(
+                            name="__combined_2",
+                            title="地址",
+                            source_fields=["province", "city", "county"],
+                            separator="",
+                            empty_value="-",
+                        ),
+                        ApiQueryListTableFieldRuntime(
+                            name="__combined_3",
+                            title="主市场老师",
+                            source_fields=["mainTeacherName", "mainTeacherNo"],
+                            separator=" / ",
+                            empty_value="-",
+                        ),
+                    ]
+                }
+            )
+        }
+    )
+
+    spec = await service.generate_ui_spec(
+        intent="query",
+        data=[
+            {
+                "customerName": "刘海坚",
+                "province": None,
+                "city": "和平区",
+                "county": None,
+                "mainTeacherName": "王雪梅",
+                "mainTeacherNo": "MK405829",
+                "age": 65,
+            }
+        ],
+        context={"question": "查询客户列表"},
+        runtime=runtime,
+    )
+
+    assert spec is not None
+    table = _root_child_by_type(spec, "PlannerTable")
+    columns = table["props"]["columns"]
+    row = table["props"]["dataSource"][0]
+    assert [column["dataIndex"] for column in columns] == ["customerName", "__combined_2", "__combined_3"]
+    assert [column["title"] for column in columns] == ["客户姓名", "地址", "主市场老师"]
+    assert row["__combined_2"] == "和平区"
+    assert row["__combined_3"] == "王雪梅 / MK405829"
+
+
+
+@pytest.mark.asyncio
 async def test_rule_query_spec_detail_applies_detail_view_meta_priority_and_group_order(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -867,6 +930,55 @@ async def test_rule_query_spec_detail_applies_detail_view_meta_priority_and_grou
     items = detail_card["props"]["items"]
     assert [item["label"] for item in items] == ["mainTeacherName", "name", "id"]
     assert [item["value"] for item in items] == ["王雪梅", "刘海坚", "C001"]
+
+
+@pytest.mark.asyncio
+async def test_rule_query_spec_detail_stringifies_scalar_array_with_chinese_delimiter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """详情卡应展示 list[string] 字段，并用顿号折叠为单行文本。"""
+
+    monkeypatch.setattr(settings, "llm_ui_spec_enabled", False)
+    service = DynamicUIService(catalog_service=UICatalogService())
+
+    runtime = _make_runtime().model_copy(
+        update={
+            "detail": _make_runtime().detail.model_copy(
+                update={
+                    "detail_view_meta": {
+                        "display_fields": ["physicalExamPackage", "keyAbnormalIndicators", "doctorAdvice"],
+                        "required_fields": [],
+                        "exclude_fields": [],
+                        "groups": [
+                            {
+                                "title": "体检情况",
+                                "fields": ["physicalExamPackage", "keyAbnormalIndicators", "doctorAdvice"],
+                            }
+                        ],
+                    }
+                }
+            )
+        }
+    )
+
+    spec = await service.generate_ui_spec(
+        intent="query",
+        data=[
+            {
+                "physicalExamPackage": "个性定制体检套餐",
+                "keyAbnormalIndicators": ["食物不耐受", "甲状腺结节", "糖尿病前期"],
+                "doctorAdvice": "建议复查",
+            }
+        ],
+        context={"question": "查询客户体检情况", "query_render_mode": "detail"},
+        runtime=runtime,
+    )
+
+    assert spec is not None
+    detail_card = _root_child_by_type(spec, "PlannerDetailCard")
+    items = detail_card["props"]["items"]
+    assert [item["label"] for item in items] == ["physicalExamPackage", "keyAbnormalIndicators", "doctorAdvice"]
+    assert [item["value"] for item in items] == ["个性定制体检套餐", "食物不耐受、甲状腺结节、糖尿病前期", "建议复查"]
 
 
 @pytest.mark.asyncio

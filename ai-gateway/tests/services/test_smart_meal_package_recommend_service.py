@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
-
 import pytest
 
 from app.services.smart_meal_package_recommend_service import (
@@ -67,72 +65,235 @@ async def test_recommend_packages_returns_empty_when_no_candidates(monkeypatch: 
     async def stub_safe_fetch_intolerance_terms(**kwargs):  # noqa: ANN003
         return set(), "ok"
 
-    async def stub_query_candidates_by_meal_type(**kwargs):  # noqa: ANN003
+    async def stub_query_candidates(**kwargs):  # noqa: ANN003
         return []
 
     monkeypatch.setattr(service, "_safe_fetch_diagnoses", stub_safe_fetch_diagnoses)
     monkeypatch.setattr(service, "_safe_fetch_intolerance_terms", stub_safe_fetch_intolerance_terms)
-    monkeypatch.setattr(service, "_query_candidates_by_meal_type", stub_query_candidates_by_meal_type)
+    monkeypatch.setattr(service, "_query_candidates", stub_query_candidates)
 
     result = await service.recommend_packages(
         id_card_no="110101199001011234",
-        meal_type="LUNCH",
         age=52,
         sex="男",
         health_tags=["慢病管理"],
         diet_preferences=["清淡"],
         dietary_restrictions=["花生过敏"],
-        abnormal_indicators=[{"type": "blood_glucose", "value": 11.2, "unit": "mmol/L"}],
+        abnormal_indicators={"血糖异常": ["空腹血糖8.3"]},
         trace_id="trace-service-1",
     )
 
     assert result == []
 
 
-def test_detect_high_risk_types_uses_thresholds() -> None:
+def test_detect_high_risk_types_uses_category_mapping() -> None:
     high_risk_types = _detect_high_risk_types(
-        [
-            {"type": "blood_glucose", "value": 11.2},
-            {"type": "blood_lipid", "value": 5.9},
-            {"type": "kidney_function", "value": 201},
-        ]
+        {
+            "血糖异常": ["空腹血糖8.3"],
+            "血脂异常": ["甘油三酯升高"],
+            "肾功": ["肌酐升高"],
+            "体重": ["超重"],
+        }
     )
-    assert high_risk_types == {"blood_glucose", "kidney_function"}
+    assert high_risk_types == {"blood_glucose", "blood_lipid", "kidney_function"}
 
 
-def test_rerank_respects_tie_breaking_and_top3_limit() -> None:
+@pytest.mark.asyncio
+async def test_fetch_diagnoses_accepts_mixed_row_types(monkeypatch: pytest.MonkeyPatch) -> None:
     service = SmartMealPackageRecommendService(mysql_pools=StubMysqlPools())
 
+    class _StubResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {
+                "rows": [
+                    {"label_value": "高血压", "record_date": "2026-04-01"},
+                    "糖尿病",
+                    {"diagnosis": "高血脂", "diagnosis_time": "2026-03-20"},
+                ]
+            }
+
+    class _StubClient:
+        async def get(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            return _StubResponse()
+
+    monkeypatch.setattr(service, "_get_http_client", lambda: _StubClient())
+
+    signals = await service._fetch_diagnoses(id_card_no="enc-id-card", trace_id="trace-001")
+
+    assert len(signals) == 3
+    names = {signal.name for signal in signals}
+    assert names == {"高血压", "糖尿病", "高血脂"}
+
+
+def test_score_candidates_uses_trimmed_weights_without_behavior_features() -> None:
+    service = SmartMealPackageRecommendService(mysql_pools=StubMysqlPools())
+    from app.services.smart_meal_package_recommend_service import _DiagnosisSignal, _PackageCandidate
+
     candidates = [
-        _build_scored(package_code="PKG_B", package_type="RECOVERY", score=85.0),
-        _build_scored(package_code="PKG_A", package_type="RECOVERY", score=85.0),
-        _build_scored(package_code="PKG_C", package_type="STANDARD", score=84.0),
-        _build_scored(package_code="PKG_D", package_type="STANDARD", score=83.0),
+        _PackageCandidate(
+            package_code="PKG_B",
+            package_name="控糖轻脂餐",
+            package_type="RECOVERY",
+            applicable_people="慢病管理人群",
+            core_target="控糖",
+            nutrition_feature="轻脂",
+            dish_names={"低糖餐"},
+            ingredient_names={"燕麦"},
+        ),
+        _PackageCandidate(
+            package_code="PKG_A",
+            package_name="控糖轻脂餐",
+            package_type="RECOVERY",
+            applicable_people="慢病管理人群",
+            core_target="控糖",
+            nutrition_feature="轻脂",
+            dish_names={"低糖餐"},
+            ingredient_names={"燕麦"},
+        ),
+    ]
+    diagnoses = [_DiagnosisSignal(name="控糖轻脂餐", days_since=0)]
+
+    scored = service._score_candidates(
+        candidates=candidates,
+        health_tags=["控糖"],
+        diet_preferences=["轻脂"],
+        abnormal_indicators={},
+        diagnoses=diagnoses,
+        age=66,
+        sex="男",
+    )
+
+    assert len(scored) == 2
+    assert scored[0]["package_code"] == "PKG_A"
+    assert scored[0]["match_score"] == 100.0
+    assert isinstance(scored[0]["reason"], str)
+
+
+@pytest.mark.asyncio
+async def test_recommend_packages_prefers_llm_rank_result(monkeypatch: pytest.MonkeyPatch) -> None:
+    service = SmartMealPackageRecommendService(mysql_pools=StubMysqlPools())
+
+    async def stub_safe_fetch_diagnoses(**kwargs):  # noqa: ANN003
+        return [], "ok"
+
+    async def stub_safe_fetch_intolerance_terms(**kwargs):  # noqa: ANN003
+        return set(), "ok"
+
+    async def stub_query_candidates(**kwargs):  # noqa: ANN003
+        from app.services.smart_meal_package_recommend_service import _PackageCandidate
+
+        return [
+            _PackageCandidate(
+                package_code="PKG_A",
+                package_name="套餐A",
+                package_type="RECOVERY",
+                applicable_people="慢病管理人群",
+                core_target="控糖",
+                nutrition_feature="清淡",
+                dish_names={"菜品A"},
+                ingredient_names={"食材A"},
+            ),
+            _PackageCandidate(
+                package_code="PKG_B",
+                package_name="套餐B",
+                package_type="RECOVERY",
+                applicable_people="慢病管理人群",
+                core_target="控脂",
+                nutrition_feature="低脂",
+                dish_names={"菜品B"},
+                ingredient_names={"食材B"},
+            ),
+        ]
+
+    async def stub_rank_candidates_with_llm(**kwargs):  # noqa: ANN003
+        return (
+            [
+                {
+                    "package_code": "PKG_B",
+                    "package_name": "套餐B",
+                    "match_score": 91.2,
+                    "reason": "更贴合当前诊断与营养目标。",
+                }
+            ],
+            "ok",
+            "",
+        )
+
+    monkeypatch.setattr(service, "_safe_fetch_diagnoses", stub_safe_fetch_diagnoses)
+    monkeypatch.setattr(service, "_safe_fetch_intolerance_terms", stub_safe_fetch_intolerance_terms)
+    monkeypatch.setattr(service, "_query_candidates", stub_query_candidates)
+    monkeypatch.setattr(service, "_rank_candidates_with_llm", stub_rank_candidates_with_llm)
+
+    result = await service.recommend_packages(
+        id_card_no="110101199001011234",
+        age=52,
+        sex="男",
+        health_tags=["慢病管理"],
+        diet_preferences=["清淡"],
+        dietary_restrictions=[],
+        abnormal_indicators={},
+        trace_id="trace-service-llm",
+    )
+
+    assert result == [
+        {
+            "package_code": "PKG_B",
+            "package_name": "套餐B",
+            "match_score": 91.2,
+            "reason": "更贴合当前诊断与营养目标。",
+        }
     ]
 
-    reranked = service._rerank_candidates(scored_candidates=candidates, behavior_signals=[])
 
-    assert len(reranked) == 3
-    # PKG_A / PKG_B 同分时按 package_code 升序稳定输出。
-    assert reranked[0].package.package_code == "PKG_A"
+@pytest.mark.asyncio
+async def test_recommend_packages_falls_back_to_rule_rank_when_llm_invalid(monkeypatch: pytest.MonkeyPatch) -> None:
+    service = SmartMealPackageRecommendService(mysql_pools=StubMysqlPools())
 
+    async def stub_safe_fetch_diagnoses(**kwargs):  # noqa: ANN003
+        return [], "ok"
 
-def _build_scored(*, package_code: str, package_type: str, score: float):
-    """构造重排测试用评分对象。
+    async def stub_safe_fetch_intolerance_terms(**kwargs):  # noqa: ANN003
+        return set(), "ok"
 
-    功能：
-        统一测试数据构造方式，避免每个测试重复拼装内部 dataclass，降低维护成本。
-    """
+    async def stub_query_candidates(**kwargs):  # noqa: ANN003
+        from app.services.smart_meal_package_recommend_service import _PackageCandidate
 
-    from app.services.smart_meal_package_recommend_service import _PackageCandidate, _ScoredPackage
+        return [
+            _PackageCandidate(
+                package_code="PKG_A",
+                package_name="控糖轻脂餐",
+                package_type="RECOVERY",
+                applicable_people="慢病管理人群",
+                core_target="控糖",
+                nutrition_feature="清淡",
+                dish_names={"低糖餐"},
+                ingredient_names={"燕麦"},
+            )
+        ]
 
-    candidate = _PackageCandidate(
-        package_code=package_code,
-        package_name=package_code,
-        package_type=package_type,
-        meal_type="LUNCH",
-        create_time=datetime.now() - timedelta(days=30),
-        dish_names={"菜品A"},
-        ingredient_names={"食材A"},
+    async def stub_rank_candidates_with_llm(**kwargs):  # noqa: ANN003
+        return None, "invalid_json", "llm_invalid_json"
+
+    monkeypatch.setattr(service, "_safe_fetch_diagnoses", stub_safe_fetch_diagnoses)
+    monkeypatch.setattr(service, "_safe_fetch_intolerance_terms", stub_safe_fetch_intolerance_terms)
+    monkeypatch.setattr(service, "_query_candidates", stub_query_candidates)
+    monkeypatch.setattr(service, "_rank_candidates_with_llm", stub_rank_candidates_with_llm)
+
+    result = await service.recommend_packages(
+        id_card_no="110101199001011234",
+        age=52,
+        sex="男",
+        health_tags=["控糖"],
+        diet_preferences=["清淡"],
+        dietary_restrictions=[],
+        abnormal_indicators={},
+        trace_id="trace-service-fallback",
     )
-    return _ScoredPackage(package=candidate, match_score=score)
+
+    assert len(result) == 1
+    assert result[0]["package_code"] == "PKG_A"
+    assert result[0]["match_score"] == 52.0
+    assert isinstance(result[0]["reason"], str)

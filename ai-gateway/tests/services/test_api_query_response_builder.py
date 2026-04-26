@@ -132,7 +132,10 @@ def _build_test_entry() -> ApiCatalogEntry:
         ),
         list_view_meta={
             "filter_fields": [{"field": "ownerId", "label": "负责人"}],
-            "table_fields": [{"field": "name", "title": "客户姓名"}],
+            "table_fields": [
+                {"field": "name", "title": "客户姓名"},
+                {"fields": ["province", "city", "county"], "title": "地址", "separator": "", "empty_value": "-"},
+            ],
         },
         detail_view_meta={
             "display_fields": ["id", "name", "phone"],
@@ -238,7 +241,9 @@ async def test_build_execution_response_returns_full_spec() -> None:
     assert response.ui_runtime.list.enabled is True
     assert response.ui_runtime.list.param_source == "queryParams"
     assert [field.name for field in response.ui_runtime.list.filters.fields] == ["ownerId"]
-    assert [field.name for field in response.ui_runtime.list.table_fields] == ["name"]
+    assert [field.name for field in response.ui_runtime.list.table_fields] == ["name", "__combined_2"]
+    assert response.ui_runtime.list.table_fields[1].source_fields == ["province", "city", "county"]
+    assert response.ui_runtime.list.table_fields[1].title == "地址"
     assert response.ui_runtime.detail.detail_view_meta["required_fields"] == ["id", "name"]
     assert response.ui_runtime.ui_actions
     assert response.ui_spec == _build_flat_spec()
