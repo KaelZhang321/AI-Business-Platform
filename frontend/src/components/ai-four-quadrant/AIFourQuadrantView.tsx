@@ -1,5 +1,4 @@
 import TargetCursor from './TargetCursor'
-import { INITIAL_ANALYSIS_RESULTS } from './constants'
 import { FourQuadrantHeader, QuadrantWorkspace, ResultSidebar, SelectionPanel, StatusBanner } from './components'
 import { useFourQuadrantState } from './useFourQuadrantState'
 import type { AIFourQuadrantViewProps } from './types'
@@ -100,7 +99,17 @@ export const AIFourQuadrantView = ({
               />
             ) : (
               <ResultSidebar
-                analysis={INITIAL_ANALYSIS_RESULTS}
+                analysis={{
+                  monitoring: [],
+                  intervention: [],
+                  maintenance: [],
+                  prevention: [],
+                  conclusion: '',
+                  clientInfo: '',
+                  reportInfo: '',
+                  riskLevel: '',
+                  score: 0,
+                }}
                 selectedClient={selectedClient}
                 selectedReport={selectedReport}
                 chatMessages={chatMessages}
