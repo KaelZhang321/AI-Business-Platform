@@ -303,7 +303,7 @@ class SmartMealPackageRecommendService:
                 ],
                 temperature=0.1,
                 response_format={"type": "json_object"},
-                timeout_seconds=45.0,
+                timeout_seconds=settings.smart_meal_recommend_llm_timeout_seconds,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("smart meal recommend llm failed trace_id=%s error=%r", trace_id, exc)

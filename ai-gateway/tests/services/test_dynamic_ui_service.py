@@ -621,6 +621,7 @@ async def test_rule_query_spec_composite_renders_metrics_and_tables_without_stri
             ],
             "curePlanRecords": [
                 {
+                    "fid": "P001",
                     "fcreateTime": "2024-11-20T09:44",
                     "fproductBillProjectName": "免疫力改善-C治疗",
                     "fprojectAmount": 298000.0,
@@ -640,6 +641,10 @@ async def test_rule_query_spec_composite_renders_metrics_and_tables_without_stri
                 "deliveryRecords": "交付记录",
                 "deliveryRecords[].deliveryDate": "交付日期",
                 "curePlanRecords": "调理方案记录",
+                "curePlanRecords[].fId": "订单ID",
+                "curePlanRecords[].fCreateTime": "创建时间",
+                "curePlanRecords[].fProductBillProjectName": "治疗项目名称",
+                "curePlanRecords[].fProjectAmount": "方案金额",
             },
         },
         runtime=_make_runtime(),
@@ -674,6 +679,19 @@ async def test_rule_query_spec_composite_renders_metrics_and_tables_without_stri
     assert delivery_table["props"]["dataSource"][0]["deliveryProject"] == "肝脏解毒支持（白金版）"
     cure_plan_table = next(table for table in tables if table["props"].get("title") == "调理方案记录")
     assert cure_plan_table["props"]["bizFieldKey"] == "curePlanRecords"
+    cure_plan_columns = cure_plan_table["props"]["columns"]
+    assert [column["dataIndex"] for column in cure_plan_columns] == [
+        "fid",
+        "fcreateTime",
+        "fproductBillProjectName",
+        "fprojectAmount",
+    ]
+    assert [column["title"] for column in cure_plan_columns] == [
+        "订单ID",
+        "创建时间",
+        "治疗项目名称",
+        "方案金额",
+    ]
 
 
 @pytest.mark.asyncio

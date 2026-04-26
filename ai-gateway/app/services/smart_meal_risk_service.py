@@ -202,7 +202,7 @@ class SmartMealRiskService:
                 ],
                 temperature=0.1,
                 response_format={"type": "json_object"},
-                timeout_seconds=45.0,
+                timeout_seconds=settings.smart_meal_risk_llm_timeout_seconds,
             )
         except Exception as exc:
             logger.warning("smart meal risk llm failed trace_id=%s error=%r", trace_id, exc)

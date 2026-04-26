@@ -111,6 +111,8 @@ class Settings(BaseSettings):
     # Runtime LLM 配置（MySQL 驱动）
     llm_runtime_config_table: str = "llm_service_backend_config"
     llm_runtime_config_cache_ttl_seconds: int = Field(60, ge=1, le=3600)
+    smart_meal_risk_llm_timeout_seconds: float = Field(45.0, ge=0.1, le=600.0)
+    smart_meal_recommend_llm_timeout_seconds: float = Field(45.0, ge=0.1, le=600.0)
 
     # API Query Stage-2
     api_query_route_timeout_seconds: float = 60.0

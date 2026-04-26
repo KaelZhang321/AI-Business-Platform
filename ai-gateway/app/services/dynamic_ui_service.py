@@ -2523,9 +2523,24 @@ class DynamicUIService:
         label_index: dict[str, str],
         field_path: str,
     ) -> str:
-        """解析字段展示名，优先使用 schema description/title。"""
+        """解析字段展示名，优先使用 schema description/title。
 
-        return label_index.get(field_path) or label_index.get(field_name) or field_name
+        业务接口的 response_schema 和真实响应偶尔只存在大小写差异，例如
+        schema 声明 `fId`，但响应返回 `fid`。这里必须保留精确匹配优先，
+        再做大小写无关兜底，避免此类脏契约让表头退回技术字段名。
+        """
+
+        exact_label = label_index.get(field_path) or label_index.get(field_name)
+        if exact_label:
+            return exact_label
+
+        normalized_field_path = field_path.casefold()
+        normalized_field_name = field_name.casefold()
+        for raw_path, label in label_index.items():
+            normalized_path = raw_path.casefold()
+            if normalized_path in {normalized_field_path, normalized_field_name}:
+                return label
+        return field_name
 
     @staticmethod
     def _extract_table_rows(value: Any) -> list[dict[str, Any]]:
