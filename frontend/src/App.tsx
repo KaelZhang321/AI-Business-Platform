@@ -1,6 +1,7 @@
 // 应用主入口：负责登录态切换、会话恢复以及工作台主视图编排。
 import React, { useState, useEffect } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
+import { ConfigProvider, theme as antdTheme } from 'antd';
 import type { AppPage } from './navigation';
 import { Sidebar } from './components/Sidebar';
 import { Header } from './components/Header';
@@ -35,6 +36,7 @@ function createAppMessage(role: AppMessageRole, content: string): DashboardMessa
 
 /** 应用根组件：管理登录态、主视图编排、全局状态和路由导航 */
 export function App() {
+  const THEME_STORAGE_KEY = 'ai_platform_theme';
   const location = useLocation();          // 当前路由位置
   const navigate = useNavigate();          // 路由跳转函数
   /* ---------- 从全局 Store 读取认证状态与操作 ---------- */
@@ -50,7 +52,19 @@ export function App() {
   /** 标记是否正在恢复登录状态（防止回话恢复期间被重定向） */
   const [isAuthBootstrapping, setIsAuthBootstrapping] = useState(Boolean(token));
   /** 暗色模式开关 */
-  const [isDarkMode, setIsDarkMode] = useState(true);
+  const [isDarkMode, setIsDarkMode] = useState(() => {
+    if (typeof window === 'undefined') {
+      return true;
+    }
+    const savedTheme = window.localStorage.getItem(THEME_STORAGE_KEY);
+    if (savedTheme === 'light') {
+      return false;
+    }
+    if (savedTheme === 'dark') {
+      return true;
+    }
+    return true;
+  });
   /** 侧边栏是否折叠 */
   const [isCollapsed, setIsCollapsed] = useState(false);
   /** AI 助手面板是否展开 */
@@ -88,6 +102,7 @@ export function App() {
   const isKnownRoute = isKnownPath(location.pathname);
   /** 是否处于会议 BI 页面（会议 BI 采用独立全屏布局） */
   const isMeetingBiPage = currentPage === 'meeting-bi';
+  const antdAlgorithm = isDarkMode ? antdTheme.darkAlgorithm : antdTheme.defaultAlgorithm;
 
   /* ---------- 副作用：滚动公告自动切换（每 4 秒轮播下一条） ---------- */
   useEffect(() => {
@@ -129,6 +144,12 @@ export function App() {
       window.removeEventListener('auth:logout', handleAuthLogout);
     };
   }, [logout]);
+
+  useEffect(() => {
+    const root = document.documentElement;
+    root.classList.toggle('dark', isDarkMode);
+    window.localStorage.setItem(THEME_STORAGE_KEY, isDarkMode ? 'dark' : 'light');
+  }, [isDarkMode]);
 
   useEffect(() => {
     // 会话恢复期间不做跳转，避免刷新时先被重定向导致丢失当前路由。
@@ -177,8 +198,8 @@ export function App() {
 
   if (isAuthBootstrapping) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-[#010107] text-white">
-        <div className="rounded-2xl border border-white/10 bg-white/5 px-6 py-4 text-sm backdrop-blur-xl">
+      <div className="flex min-h-screen items-center justify-center bg-slate-100 text-slate-900 transition-colors duration-300 dark:bg-[#010107] dark:text-white">
+        <div className="rounded-2xl border border-slate-200 bg-white/80 px-6 py-4 text-sm backdrop-blur-xl dark:border-white/10 dark:bg-white/5">
           正在恢复登录状态...
         </div>
       </div>
@@ -202,94 +223,104 @@ export function App() {
 
   if (isMeetingBiPage) {
     return (
-      <div id="root-app-container" className="h-screen bg-[#050f24] text-slate-100">
-        {renderAppPage(currentPage, {
-          navigateToPage: (page: AppPage) => navigate(PAGE_PATHS[page]),
-          isDarkMode,
-          setIsDarkMode,
-          dashboard: {
-            activeTab,
-            setActiveTab,
-            selectedTaskId,
-            setSelectedTaskId,
-            setIsCreateModalOpen,
-            messages,
-            chatInput,
-            setChatInput,
-            handleSendMessage,
-            isAIOpen,
-            setIsAIOpen,
-            setIsReceptionModalOpen,
-          },
-        })}
-      </div>
+      <ConfigProvider theme={{ algorithm: antdAlgorithm }}>
+        <div id="root-app-container" className="h-screen bg-[#050f24] text-slate-100">
+          {renderAppPage(currentPage, {
+            navigateToPage: (page: AppPage) => navigate(PAGE_PATHS[page]),
+            isDarkMode,
+            setIsDarkMode,
+            dashboard: {
+              activeTab,
+              setActiveTab,
+              selectedTaskId,
+              setSelectedTaskId,
+              setIsCreateModalOpen,
+              messages,
+              chatInput,
+              setChatInput,
+              handleSendMessage,
+              isAIOpen,
+              setIsAIOpen,
+              setIsReceptionModalOpen,
+            },
+          })}
+        </div>
+      </ConfigProvider>
     );
   }
 
   return (
-    <div id="root-app-container" className="flex h-screen bg-[#F4F6F8] font-sans text-slate-800 overflow-hidden">
+    <ConfigProvider theme={{ algorithm: antdAlgorithm }}>
+      <div
+        id="root-app-container"
+        className="flex h-screen overflow-hidden bg-[#F4F6F8] font-sans text-slate-800 transition-colors duration-300 dark:bg-slate-950 dark:text-slate-100"
+      >
 
-      <Sidebar
-        isDarkMode={isDarkMode}
-        setIsDarkMode={setIsDarkMode}
-        isCollapsed={isCollapsed}
-        setIsCollapsed={setIsCollapsed}
-        currentPage={currentPage}
-        userName={user?.displayName}
-        userRole={user?.role}
-        onLogout={() => {
-          logout();
-          localStorage.removeItem('rememberedEmail');
-          navigate(PAGE_PATHS.dashboard, { replace: true });
-        }}
-      />
+        <Sidebar
+          isDarkMode={isDarkMode}
+          setIsDarkMode={setIsDarkMode}
+          isCollapsed={isCollapsed}
+          setIsCollapsed={setIsCollapsed}
+          currentPage={currentPage}
+          userName={user?.displayName}
+          userRole={user?.role}
+          onLogout={() => {
+            logout();
+            localStorage.removeItem('rememberedEmail');
+            navigate(PAGE_PATHS.dashboard, { replace: true });
+          }}
+        />
 
-      <div className="flex-1 flex flex-col h-screen overflow-hidden relative">
+        <div className="relative flex h-screen flex-1 flex-col overflow-hidden">
         {/* <Header
           currentNoticeIndex={currentNoticeIndex}
           currentPage={currentPage}
           currentUserName={user?.displayName}
         /> */}
 
-        <main id="main-content-area" className={`flex-1 overflow-y-auto pb-8 relative px-8 ${currentPage === 'dashboard' ? 'pt-4' : 'pt-8'}`}>
-          <div className="absolute top-0 left-0 w-full h-[500px] bg-gradient-to-br from-brand-light/40 via-brand-light/20 to-transparent pointer-events-none -z-10"></div>
+          <main
+            id="main-content-area"
+            className={`relative flex-1 overflow-y-auto px-8 pb-8 ${currentPage === 'dashboard' ? 'pt-4' : 'pt-8'}`}
+          >
+            <div className="pointer-events-none absolute left-0 top-0 -z-10 h-[500px] w-full bg-gradient-to-br from-brand-light/40 via-brand-light/20 to-transparent dark:from-brand/12 dark:via-brand/5 dark:to-transparent"></div>
 
-          <div className="max-w-[1720px] mx-auto space-y-6 h-full">
-            {renderAppPage(currentPage, {
-              navigateToPage: (page: AppPage) => navigate(PAGE_PATHS[page]),
-              isDarkMode,
-              setIsDarkMode,
-              dashboard: {
-                activeTab,
-                setActiveTab,
-                selectedTaskId,
-                setSelectedTaskId,
-                setIsCreateModalOpen,
-                messages,
-                chatInput,
-                setChatInput,
-                handleSendMessage,
-                isAIOpen,
-                setIsAIOpen,
-                setIsReceptionModalOpen,
-              },
-            })}
-          </div>
-        </main>
+            <div className="max-w-[1720px] mx-auto space-y-6 h-full">
+              {renderAppPage(currentPage, {
+                navigateToPage: (page: AppPage) => navigate(PAGE_PATHS[page]),
+                isDarkMode,
+                setIsDarkMode,
+                dashboard: {
+                  activeTab,
+                  setActiveTab,
+                  selectedTaskId,
+                  setSelectedTaskId,
+                  setIsCreateModalOpen,
+                  messages,
+                  chatInput,
+                  setChatInput,
+                  handleSendMessage,
+                  isAIOpen,
+                  setIsAIOpen,
+                  setIsReceptionModalOpen,
+                },
+              })}
+            </div>
+          </main>
+        </div>
+
+        <ReceptionModal
+          isOpen={isReceptionModalOpen}
+          onClose={() => setIsReceptionModalOpen(false)}
+          form={receptionForm}
+          setForm={setReceptionForm}
+        />
+
+        <CreateTaskModal
+          isOpen={isCreateModalOpen}
+          onClose={() => setIsCreateModalOpen(false)}
+        />
+
       </div>
-
-      <ReceptionModal
-        isOpen={isReceptionModalOpen}
-        onClose={() => setIsReceptionModalOpen(false)}
-        form={receptionForm}
-        setForm={setReceptionForm}
-      />
-
-      <CreateTaskModal
-        isOpen={isCreateModalOpen}
-        onClose={() => setIsCreateModalOpen(false)}
-      />
-
-    </div>
+    </ConfigProvider>
   );
 }
