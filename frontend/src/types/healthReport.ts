@@ -97,6 +97,8 @@ export interface HealthReportData {
   studyId: string;
   examTime: string;
   packageName: string;
+  patientName?: string;
+  gender?: string;
   abnormalCount: number;
   conclusions: ConclusionItem[];
   abnormalSummary: string;
