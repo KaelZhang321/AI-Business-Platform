@@ -1532,9 +1532,9 @@ def _looks_like_imaging(item_name: str, category: str | None) -> bool:
     return False
 
 
-def _finalize_exam_recommendations(chief_complaint_text: str, buckets: list[dict[str, Any]]) -> None:
+def _finalize_exam_recommendations(chief_complaint_items: list, buckets: list[dict[str, Any]]) -> None:
     # 规则解释：保留前序链路已经写入的个性化推荐项，再补默认推荐模板，避免覆盖业务输入。
-    if len(chief_complaint_text.strip()) > 0:
+    if len(chief_complaint_items) > 0:
         _merge_recommendation_defaults(buckets[3], ["全基因检测"])
     for bucket in buckets:
         bucket["abnormal_indicators"] = _deduplicate_text_list(bucket["abnormal_indicators"])
