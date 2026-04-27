@@ -1,4 +1,4 @@
-import client, { type ApiResponse } from './client'
+import { apiClient as client, type ApiResponse } from './client';
 import { apiBasePath } from '../utils/base-path'
 
 export type ChartValue = string | number | null

@@ -1,4 +1,5 @@
-import client, { type ApiResponse } from './client'
+// 业绩相关接口
+import { apiClient as client, type ApiResponse } from './client';
 
 export interface AchievementBar {
   region: string
@@ -19,10 +20,10 @@ export interface AchievementRow {
 }
 
 export const fetchAchievementChart = () =>
-  client.get<ApiResponse<AchievementBar[]>>('/v1/achievement/chart').then(r => r.data.data)
+  client.get<ApiResponse<AchievementBar[]>>('/api/v1/bi/achievement/chart').then(r => r.data.data)
 
 export const fetchAchievementTable = () =>
-  client.get<ApiResponse<AchievementRow[]>>('/v1/achievement/table').then(r => r.data.data)
+  client.get<ApiResponse<AchievementRow[]>>('/api/v1/bi/achievement/table').then(r => r.data.data)
 
 export interface AchievementDetail {
   customer_name: string | null
@@ -37,4 +38,4 @@ export interface AchievementDetail {
 }
 
 export const fetchAchievementDetail = (region?: string) =>
-  client.get<ApiResponse<AchievementDetail[]>>('/v1/achievement/detail', { params: { region } }).then(r => r.data.data)
+  client.get<ApiResponse<AchievementDetail[]>>('/api/v1/bi/achievement/detail', { params: { region } }).then(r => r.data.data)

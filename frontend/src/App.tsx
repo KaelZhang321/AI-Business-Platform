@@ -262,7 +262,7 @@ export function App() {
           isCollapsed={isCollapsed}
           setIsCollapsed={setIsCollapsed}
           currentPage={currentPage}
-          userName={user?.displayName}
+          userName={user?.username}
           userRole={user?.role}
           onLogout={() => {
             logout();
@@ -272,7 +272,7 @@ export function App() {
         />
 
         <div className="relative flex h-screen flex-1 flex-col overflow-hidden">
-        {/* <Header
+          {/* <Header
           currentNoticeIndex={currentNoticeIndex}
           currentPage={currentPage}
           currentUserName={user?.displayName}

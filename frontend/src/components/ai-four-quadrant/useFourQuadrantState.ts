@@ -183,10 +183,13 @@ const parseQuadrantResult = (response: unknown): QuadrantData => {
 export const useFourQuadrantState = (navigationParams: AIFourQuadrantViewProps['navigationParams']) => {
   const CLIENT_PAGE_SIZE = 20
   const DEFAULT_CUSTOMER_KEYWORD = ''
+  const navCustomerName = typeof navigationParams?.customerName === 'string'
+    ? navigationParams.customerName.trim()
+    : ''
   const [selectedClientId, setSelectedClientId] = useState<string | null>(null)
   const [selectedReportId, setSelectedReportId] = useState<string | null>(null)
   const [notes, setNotes] = useState('')
-  const [customerKeyword, setCustomerKeyword] = useState(DEFAULT_CUSTOMER_KEYWORD)
+  const [customerKeyword, setCustomerKeyword] = useState(navCustomerName || DEFAULT_CUSTOMER_KEYWORD)
 
   const [isClientDropdownOpen, setIsClientDropdownOpen] = useState(false)
   const [isReportDropdownOpen, setIsReportDropdownOpen] = useState(false)
@@ -260,6 +263,14 @@ export const useFourQuadrantState = (navigationParams: AIFourQuadrantViewProps['
           return
         }
 
+        if (navCustomerName) {
+          const matchedByName = mapped.find((item) => item.name === navCustomerName)
+          if (matchedByName) {
+            setSelectedClientId(matchedByName.id)
+            return
+          }
+        }
+
         if (navigationParams?.customerId) {
           const idFromNav = String(navigationParams.customerId)
           const exists = mapped.some((item) => item.id === idFromNav)
@@ -310,7 +321,15 @@ export const useFourQuadrantState = (navigationParams: AIFourQuadrantViewProps['
       mounted = false
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [navigationParams])
+  }, [navigationParams, navCustomerName])
+
+  useEffect(() => {
+    if (!navCustomerName) {
+      return
+    }
+
+    setCustomerKeyword((prev) => (prev === navCustomerName ? prev : navCustomerName))
+  }, [navCustomerName])
 
   useEffect(() => {
     const timer = window.setTimeout(() => {

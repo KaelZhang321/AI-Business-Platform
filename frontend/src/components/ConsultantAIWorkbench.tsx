@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { KeyboardSensor, PointerSensor, type DragEndEvent, useSensor, useSensors } from '@dnd-kit/core';
 import { arrayMove, sortableKeyboardCoordinates } from '@dnd-kit/sortable';
+import { useNavigate } from 'react-router-dom';
 import { apiClient } from '../services/api';
 import { aiReportApi } from '../services/api/aiReportApi';
 import {
@@ -8,6 +9,7 @@ import {
   type RoleCardConfig,
   type RoleCardEndpointRelation,
 } from '../services/api/aiComponentViewApi';
+import { PAGE_PATHS } from '../navigation';
 import { AssistantSidebarPanel } from './consultant-ai-workbench/modules/AssistantSidebarPanel';
 import { CustomerSelectionModal } from './consultant-ai-workbench/modules/CustomerSelectionModal';
 import { ExpandedCardModal } from './consultant-ai-workbench/modules/ExpandedCardModal';
@@ -454,6 +456,7 @@ export const ConsultantAIWorkbench: React.FC<ConsultantAIWorkbenchProps> = ({
   setCurrentPage = (_page) => { },
   setNavigationParams,
 }) => {
+  const navigate = useNavigate();
   const [customerPool, setCustomerPool] = useState<CustomerRecord[]>([]);
   const [isCustomersLoading, setIsCustomersLoading] = useState(false);
   const [isLoadingMoreCustomers, setIsLoadingMoreCustomers] = useState(false);
@@ -1059,10 +1062,15 @@ export const ConsultantAIWorkbench: React.FC<ConsultantAIWorkbenchProps> = ({
             setCurrentPage('ai-report-comparison');
           }}
           onNavigateToFourQuadrant={() => {
+            const customerName = typeof selectedCustomer?.name === 'string' ? selectedCustomer.name.trim() : '';
             if (setNavigationParams && selectedCustomer) {
-              setNavigationParams({ customerId: selectedCustomer.id });
+              setNavigationParams({ customerId: selectedCustomer.id, customerName });
             }
-            setCurrentPage('ai-four-quadrant');
+            const basePath = PAGE_PATHS['ai-four-quadrant'];
+            const targetPath = customerName
+              ? `${basePath}?customerName=${encodeURIComponent(customerName)}`
+              : basePath;
+            navigate(targetPath);
           }}
           dashboardCards={dashboardCards}
           dndSensors={sensors}

@@ -155,8 +155,10 @@ const ThreadComposer: React.FC<{
   placeholder: string;
   onChange: (v: string) => void;
   onSubmit: () => void;
-}> = ({ value, placeholder, onChange, onSubmit }) => {
+  disabled?: boolean;
+}> = ({ value, placeholder, onChange, onSubmit, disabled = false }) => {
   const isEmpty = !value.trim();
+  const isSubmitDisabled = disabled || isEmpty;
 
   return (
     <div className="border-t border-slate-100 bg-white/60 p-3 backdrop-blur-sm transition-colors duration-300 dark:border-slate-700/50 dark:bg-slate-800/60">
@@ -164,6 +166,7 @@ const ThreadComposer: React.FC<{
         <input
           type="text"
           value={value}
+          disabled={disabled}
           onChange={(e) => onChange(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
@@ -172,13 +175,15 @@ const ThreadComposer: React.FC<{
             }
           }}
           placeholder={placeholder}
-          className="min-h-[20px] flex-1 resize-none border-none bg-transparent px-1 py-0.5 text-sm text-slate-900 placeholder-slate-400 focus:outline-none dark:text-white dark:placeholder-slate-500"
+          className={`min-h-[20px] flex-1 resize-none border-none bg-transparent px-1 py-0.5 text-sm text-slate-900 placeholder-slate-400 focus:outline-none dark:text-white dark:placeholder-slate-500 ${
+            disabled ? 'cursor-not-allowed text-slate-400 dark:text-slate-500' : ''
+          }`}
         />
         <button
           onClick={() => onSubmit()}
-          disabled={isEmpty}
+          disabled={isSubmitDisabled}
           className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-xl transition-all duration-200 ${
-            isEmpty
+            isSubmitDisabled
               ? 'cursor-not-allowed bg-slate-100 text-slate-400 dark:bg-slate-800 dark:text-slate-600'
               : 'bg-gradient-to-br from-blue-500 to-blue-600 text-white shadow-sm hover:scale-105 hover:shadow-md active:scale-95'
           }`}
@@ -316,6 +321,7 @@ export const AssistantSidebarPanel: React.FC<AssistantSidebarPanelProps> = ({
           placeholder={!selectedCustomer ? '输入客户姓名/手机号/身份证号...' : '给小智下达指令...'}
           onChange={onChatMessageChange}
           onSubmit={onChatSubmit}
+          disabled={!selectedCustomer}
         />
       </div>
     </div>

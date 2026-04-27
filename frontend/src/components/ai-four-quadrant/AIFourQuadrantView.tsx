@@ -1,7 +1,9 @@
+import { useMemo } from 'react'
 import TargetCursor from './TargetCursor'
 import { FourQuadrantHeader, QuadrantWorkspace, ResultSidebar, SelectionPanel, StatusBanner } from './components'
 import { useFourQuadrantState } from './useFourQuadrantState'
 import type { AIFourQuadrantViewProps } from './types'
+import { useLocation } from 'react-router-dom'
 
 export const AIFourQuadrantView = ({
   setCurrentPage,
@@ -10,6 +12,18 @@ export const AIFourQuadrantView = ({
   hideHeader = false,
   navigationParams,
 }: AIFourQuadrantViewProps) => {
+  const location = useLocation()
+  const urlParams = new URLSearchParams(location.search)
+  const customerNameFromUrl = urlParams.get('customerName')?.trim() || ''
+
+  const mergedNavigationParams = useMemo(
+    () => ({
+      ...navigationParams,
+      ...(customerNameFromUrl ? { customerName: customerNameFromUrl } : {}),
+    }),
+    [navigationParams, customerNameFromUrl],
+  )
+
   const {
     selectedClientId,
     setSelectedClientId,
@@ -46,7 +60,7 @@ export const AIFourQuadrantView = ({
     handleStartAnalysis,
     handleSendMessage,
     handleConfirmQuadrants,
-  } = useFourQuadrantState(navigationParams)
+  } = useFourQuadrantState(mergedNavigationParams)
 
   return (
     <div className="space-y-6 pb-12 h-full flex flex-col relative">

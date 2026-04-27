@@ -176,7 +176,7 @@ export const MainContentPanel: React.FC<MainContentPanelProps> = ({
         )}
 
         <div className="flex flex-1 min-h-0 flex-col p-6">
-          <div className="mb-6 flex items-center justify-between">
+          <div className="mb-3 flex items-center justify-between">
             <h3 className="text-lg font-bold text-slate-900 dark:text-white">AI结果显示区</h3>
             {!selectedCustomer ? (
               <span className="rounded-full bg-red-50 px-3 py-1 text-[10px] font-medium text-red-500">待客户激活</span>
@@ -226,7 +226,7 @@ export const MainContentPanel: React.FC<MainContentPanelProps> = ({
                       最新回复
                     </span>
                   </div> */}
-                  <div className="rounded-xl border border-white/70 bg-white/80 p-3 dark:border-slate-700 dark:bg-slate-900/70">
+                  <div>
                     <AssistantMessageContent content={latestAssistantMessage} />
                   </div>
                   <p className="mt-3 text-[11px] text-slate-500 dark:text-slate-400">
