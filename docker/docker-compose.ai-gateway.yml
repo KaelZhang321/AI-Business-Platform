@@ -22,7 +22,7 @@ services:
       EMBEDDING_MODEL_PATH: ${EMBEDDING_MODEL_PATH:-/app/BAAI/bge-m3}
     volumes:
       - /data/ai_platform_infra/chroma:/opt/model-cache/.cache/chroma
-      - ../ai-gateway:/app:ro
+      - ../ai-gateway:/app
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
       interval: 30s
