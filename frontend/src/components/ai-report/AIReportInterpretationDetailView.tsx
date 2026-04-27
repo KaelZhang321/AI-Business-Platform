@@ -248,11 +248,11 @@ export const AIReportComparisonDetailView: React.FC<AIReportComparisonDetailView
               />
 
               <div className="w-full flex-1 min-h-0 text-sm overflow-hidden">
-                {isLoadingCustomers ? (
+                {isLoadingCustomers && viewMode !== 'list' ? (
                   <div className="py-16 text-center text-slate-500 dark:text-slate-400">客户列表加载中...</div>
                 ) : loadError ? (
                   <div className="py-16 text-center text-rose-500 dark:text-rose-400">{loadError}</div>
-                ) : customers.length === 0 ? (
+                ) : customers.length === 0 && viewMode !== 'list' ? (
                   <div className="py-16 text-center text-slate-500 dark:text-slate-400">暂无匹配客户</div>
                 ) : null}
                 <CustomerResults
@@ -261,6 +261,7 @@ export const AIReportComparisonDetailView: React.FC<AIReportComparisonDetailView
                   onViewDetails={setSelectedCustomer}
                   onLoadMore={handleLoadMoreCustomers}
                   hasMore={hasMoreCustomers}
+                  isLoading={isLoadingCustomers}
                   isLoadingMore={isLoadingMoreCustomers}
                 />
               </div>

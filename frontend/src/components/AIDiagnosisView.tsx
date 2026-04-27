@@ -48,9 +48,9 @@ export function AIDiagnosisView() {
   ] as const;
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full text-slate-900 dark:text-slate-100">
       {/* Stepper / Sub-header */}
-      <div className="bg-white/60 backdrop-blur-xl border-b border-white/80 px-8 py-4 flex items-center justify-center shrink-0 shadow-sm">
+      <div className="bg-white/60 dark:bg-slate-900/70 backdrop-blur-xl border-b border-white/80 dark:border-slate-700 px-8 py-4 flex items-center justify-center shrink-0 shadow-sm">
         <div className="flex items-center space-x-12">
           {steps.map((step) => (
             <div key={step.id} className="flex items-center space-x-3">
@@ -59,12 +59,12 @@ export function AIDiagnosisView() {
                   ? 'bg-brand text-white shadow-lg shadow-brand/30 ring-4 ring-brand/10' 
                   : activeStep > step.id 
                     ? 'bg-brand/10 text-brand' 
-                    : 'bg-slate-100 text-slate-400'
+                    : 'bg-slate-100 dark:bg-slate-800 text-slate-400 dark:text-slate-500'
               }`}>
                 {activeStep > step.id ? <CheckCircle2 className="w-5 h-5" /> : step.id}
               </div>
               <span className={`text-sm font-medium ${
-                activeStep === step.id ? 'text-slate-900' : 'text-slate-400'
+                activeStep === step.id ? 'text-slate-900 dark:text-slate-100' : 'text-slate-400 dark:text-slate-500'
               }`}>{step.label}</span>
             </div>
           ))}
@@ -75,65 +75,65 @@ export function AIDiagnosisView() {
         {/* Left Sidebar: Patient Info */}
         <aside className="w-80 flex flex-col gap-6 overflow-y-auto custom-scrollbar shrink-0">
           {/* Patient Card */}
-          <div className="bg-white/60 backdrop-blur-xl rounded-3xl p-6 shadow-sm border border-white/80">
+          <div className="bg-white/60 dark:bg-slate-900/70 backdrop-blur-xl rounded-3xl p-6 shadow-sm border border-white/80 dark:border-slate-700">
             <div className="flex items-start justify-between mb-6">
               <div className="flex items-center space-x-4">
                 <div className="w-14 h-14 rounded-2xl bg-brand-light/30 flex items-center justify-center text-brand">
                   <User className="w-8 h-8" />
                 </div>
                 <div>
-                  <h2 className="text-lg font-bold text-slate-900">张丽华</h2>
-                  <p className="text-sm text-slate-500">女 · 45岁 · 初诊</p>
+                  <h2 className="text-lg font-bold text-slate-900 dark:text-slate-100">张丽华</h2>
+                  <p className="text-sm text-slate-500 dark:text-slate-400">女 · 45岁 · 初诊</p>
                 </div>
               </div>
-              <button className="p-2 text-slate-400 hover:text-brand transition-colors">
+              <button className="p-2 text-slate-400 dark:text-slate-500 hover:text-brand transition-colors">
                 <Info className="w-5 h-5" />
               </button>
             </div>
 
             <div className="space-y-4">
               <div className="flex justify-between text-sm">
-                <span className="text-slate-400">病历号</span>
-                <span className="font-mono font-medium text-slate-900">MR-2026-04521</span>
+                <span className="text-slate-400 dark:text-slate-500">病历号</span>
+                <span className="font-mono font-medium text-slate-900 dark:text-slate-100">MR-2026-04521</span>
               </div>
               <div className="flex justify-between text-sm">
-                <span className="text-slate-400">预约科目</span>
-                <span className="font-medium text-slate-900">内分泌科</span>
+                <span className="text-slate-400 dark:text-slate-500">预约科目</span>
+                <span className="font-medium text-slate-900 dark:text-slate-100">内分泌科</span>
               </div>
               <div className="flex justify-between text-sm">
-                <span className="text-slate-400">就诊时间</span>
-                <span className="font-medium text-slate-900">2026-03-20 09:30</span>
+                <span className="text-slate-400 dark:text-slate-500">就诊时间</span>
+                <span className="font-medium text-slate-900 dark:text-slate-100">2026-03-20 09:30</span>
               </div>
               <div className="flex justify-between text-sm">
-                <span className="text-slate-400">家族史</span>
-                <span className="font-medium text-slate-900">父: 2型糖尿病</span>
+                <span className="text-slate-400 dark:text-slate-500">家族史</span>
+                <span className="font-medium text-slate-900 dark:text-slate-100">父: 2型糖尿病</span>
               </div>
             </div>
           </div>
 
           {/* Allergy Alert */}
-          <div className="bg-red-50/80 backdrop-blur-xl rounded-3xl p-6 border border-red-100 shadow-sm">
-            <div className="flex items-center space-x-2 text-red-600 mb-3">
+          <div className="bg-red-50/80 dark:bg-red-950/30 backdrop-blur-xl rounded-3xl p-6 border border-red-100 dark:border-red-900/50 shadow-sm">
+            <div className="flex items-center space-x-2 text-red-600 dark:text-red-400 mb-3">
               <ShieldAlert className="w-5 h-5" />
               <h3 className="font-bold">过敏史警示</h3>
             </div>
-            <p className="text-sm text-red-700 font-medium leading-relaxed">
+            <p className="text-sm text-red-700 dark:text-red-300 font-medium leading-relaxed">
               青霉素类 — 严重过敏（皮疹+呼吸困难）
             </p>
           </div>
 
           {/* Data Sources */}
-          <div className="bg-white/60 backdrop-blur-xl rounded-3xl p-6 shadow-sm border border-white/80">
+          <div className="bg-white/60 dark:bg-slate-900/70 backdrop-blur-xl rounded-3xl p-6 shadow-sm border border-white/80 dark:border-slate-700">
             <div className="flex items-center space-x-2 mb-6">
-              <Database className="w-5 h-5 text-slate-400" />
-              <h3 className="font-bold text-slate-900">数据源接入状态</h3>
+              <Database className="w-5 h-5 text-slate-400 dark:text-slate-500" />
+              <h3 className="font-bold text-slate-900 dark:text-slate-100">数据源接入状态</h3>
             </div>
             <div className="space-y-5">
               {dataSources.map((source) => (
                 <div key={source.id} className="flex items-center justify-between text-sm">
                   <div className="flex items-center space-x-3">
                     <div className={`w-2 h-2 rounded-full ${source.color.replace('text', 'bg')}`}></div>
-                    <span className="text-slate-600">{source.label}</span>
+                    <span className="text-slate-600 dark:text-slate-300">{source.label}</span>
                   </div>
                   <span className={`font-medium ${source.color}`}>{source.status}</span>
                 </div>
@@ -145,11 +145,11 @@ export function AIDiagnosisView() {
         {/* Main Content Area */}
         <main className="flex-1 flex flex-col gap-6 overflow-hidden">
           {/* Voice Consultation */}
-          <section className="bg-white/60 backdrop-blur-xl rounded-3xl p-8 shadow-sm border border-white/80 flex flex-col shrink-0">
+          <section className="bg-white/60 dark:bg-slate-900/70 backdrop-blur-xl rounded-3xl p-8 shadow-sm border border-white/80 dark:border-slate-700 flex flex-col shrink-0">
             <div className="flex items-center justify-between mb-8">
               <div className="flex items-center space-x-3">
                 <Mic className="w-6 h-6 text-brand" />
-                <h3 className="text-lg font-bold text-slate-900">语音问诊采集</h3>
+                <h3 className="text-lg font-bold text-slate-900 dark:text-slate-100">语音问诊采集</h3>
               </div>
               {isRecording && (
                 <div className="flex items-center space-x-2 px-3 py-1.5 bg-red-50 text-red-600 rounded-full text-xs font-bold animate-pulse">
@@ -159,7 +159,7 @@ export function AIDiagnosisView() {
               )}
             </div>
 
-            <div className="bg-slate-50 rounded-2xl p-8 mb-6 flex flex-col items-center justify-center min-h-[120px] relative overflow-hidden">
+            <div className="bg-slate-50 dark:bg-slate-800 rounded-2xl p-8 mb-6 flex flex-col items-center justify-center min-h-[120px] relative overflow-hidden">
               {/* Waveform Visualization */}
               <div className="flex items-center space-x-1 h-12">
                 {[...Array(24)].map((_, i) => (
@@ -180,10 +180,10 @@ export function AIDiagnosisView() {
             </div>
 
             <div className="space-y-4">
-              <div className="flex items-center space-x-2 text-slate-400">
+              <div className="flex items-center space-x-2 text-slate-400 dark:text-slate-500">
                 <span className="text-xs font-bold uppercase tracking-wider">实时转写</span>
               </div>
-              <p className="text-slate-700 leading-relaxed">
+              <p className="text-slate-700 dark:text-slate-300 leading-relaxed">
                 患者张丽华，女性，45岁，主诉口渴多饮多尿3个月，伴体重下降约5公斤。近期感觉乏力明显，视物模糊。既往体健，否认高血压史。家族史：父亲有2型糖尿病病史...
               </p>
             </div>
@@ -191,7 +191,7 @@ export function AIDiagnosisView() {
             <div className="flex items-center justify-end space-x-4 mt-8">
               <button 
                 onClick={() => setIsRecording(!isRecording)}
-                className="flex items-center space-x-2 px-6 py-3 bg-slate-100 text-slate-600 rounded-2xl font-bold hover:bg-slate-200 transition-all"
+                className="flex items-center space-x-2 px-6 py-3 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-200 rounded-2xl font-bold hover:bg-slate-200 dark:hover:bg-slate-700 transition-all"
               >
                 {isRecording ? <Pause className="w-5 h-5" /> : <Play className="w-5 h-5" />}
                 <span>{isRecording ? '暂停' : '继续'}</span>
@@ -204,11 +204,11 @@ export function AIDiagnosisView() {
           </section>
 
           {/* Structured Medical Record */}
-          <section className="bg-white/60 backdrop-blur-xl rounded-3xl p-8 shadow-sm border border-white/80 flex-1 flex flex-col overflow-hidden">
+          <section className="bg-white/60 dark:bg-slate-900/70 backdrop-blur-xl rounded-3xl p-8 shadow-sm border border-white/80 dark:border-slate-700 flex-1 flex flex-col overflow-hidden">
             <div className="flex items-center justify-between mb-8 shrink-0">
               <div className="flex items-center space-x-3">
                 <FileText className="w-6 h-6 text-brand" />
-                <h3 className="text-lg font-bold text-slate-900">AI结构化病历（实时生成中）</h3>
+                <h3 className="text-lg font-bold text-slate-900 dark:text-slate-100">AI结构化病历（实时生成中）</h3>
               </div>
               <button className="flex items-center space-x-2 px-4 py-2 bg-brand-light/20 text-brand rounded-xl text-sm font-bold hover:bg-brand-light/30 transition-all">
                 <Zap className="w-4 h-4" />
@@ -216,13 +216,13 @@ export function AIDiagnosisView() {
               </button>
             </div>
 
-            <div className="flex items-center space-x-2 mb-8 border-b border-slate-100 shrink-0">
+            <div className="flex items-center space-x-2 mb-8 border-b border-slate-100 dark:border-slate-700 shrink-0">
               {tabs.map((tab) => (
                 <button
                   key={tab}
                   onClick={() => setActiveTab(tab)}
                   className={`px-6 py-3 text-sm font-bold transition-all relative ${
-                    activeTab === tab ? 'text-brand' : 'text-slate-400 hover:text-slate-600'
+                    activeTab === tab ? 'text-brand' : 'text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300'
                   }`}
                 >
                   {tab}
@@ -234,8 +234,8 @@ export function AIDiagnosisView() {
             </div>
 
             <div className="flex-1 overflow-y-auto custom-scrollbar">
-              <div className="bg-slate-50 rounded-2xl p-6 min-h-[100px]">
-                <p className="text-slate-900 font-medium text-lg">口渴多饮、多尿3个月，体重下降5kg</p>
+              <div className="bg-slate-50 dark:bg-slate-800 rounded-2xl p-6 min-h-[100px]">
+                <p className="text-slate-900 dark:text-slate-100 font-medium text-lg">口渴多饮、多尿3个月，体重下降5kg</p>
               </div>
             </div>
 
@@ -259,25 +259,25 @@ export function AIDiagnosisView() {
         {/* Right Sidebar: AI Analysis */}
         <aside className="w-96 flex flex-col gap-6 overflow-y-auto custom-scrollbar shrink-0">
           {/* AI Preliminary Analysis */}
-          <div className="bg-white/60 backdrop-blur-xl rounded-3xl p-8 shadow-sm border border-white/80">
+          <div className="bg-white/60 dark:bg-slate-900/70 backdrop-blur-xl rounded-3xl p-8 shadow-sm border border-white/80 dark:border-slate-700">
             <div className="flex items-center justify-between mb-6">
               <div className="flex items-center space-x-3">
                 <Sparkles className="w-6 h-6 text-brand" />
-                <h3 className="text-lg font-bold text-slate-900">AI预分析</h3>
+                <h3 className="text-lg font-bold text-slate-900 dark:text-slate-100">AI预分析</h3>
               </div>
               <span className="px-2 py-1 bg-brand-light/20 text-brand rounded text-[10px] font-bold">分析中</span>
             </div>
-            <p className="text-sm text-slate-500 leading-relaxed mb-8">
+            <p className="text-sm text-slate-500 dark:text-slate-400 leading-relaxed mb-8">
               基于WiNGPT医疗模型，AI正在实时分析语音转写内容，提取关键症状特征...
             </p>
 
             <div className="space-y-6">
-              <div className="text-sm font-bold text-slate-400 mb-3">已提取关键信息</div>
+              <div className="text-sm font-bold text-slate-400 dark:text-slate-500 mb-3">已提取关键信息</div>
               <div className="space-y-4">
                 {extractedItems.map((item) => (
                   <div key={item.id} className="flex items-start space-x-4">
                     <span className={`px-2 py-1 rounded text-xs font-bold shrink-0 ${item.color}`}>{item.label}</span>
-                    <span className="text-sm text-slate-700 font-medium">{item.value}</span>
+                    <span className="text-sm text-slate-700 dark:text-slate-300 font-medium">{item.value}</span>
                   </div>
                 ))}
               </div>
@@ -285,13 +285,13 @@ export function AIDiagnosisView() {
           </div>
 
           {/* Data Completeness */}
-          <div className="bg-white/60 backdrop-blur-xl rounded-3xl p-8 shadow-sm border border-white/80">
+          <div className="bg-white/60 dark:bg-slate-900/70 backdrop-blur-xl rounded-3xl p-8 shadow-sm border border-white/80 dark:border-slate-700">
             <div className="flex items-center justify-between mb-6">
-              <h3 className="text-lg font-bold text-slate-900">数据完整度</h3>
+              <h3 className="text-lg font-bold text-slate-900 dark:text-slate-100">数据完整度</h3>
               <span className="text-brand font-bold text-xl">68%</span>
             </div>
             
-            <div className="w-full h-2 bg-slate-100 rounded-full mb-8 overflow-hidden">
+            <div className="w-full h-2 bg-slate-100 dark:bg-slate-800 rounded-full mb-8 overflow-hidden">
               <motion.div 
                 initial={{ width: 0 }}
                 animate={{ width: '68%' }}
@@ -304,11 +304,11 @@ export function AIDiagnosisView() {
                 <div key={item.id} className="flex items-center justify-between text-sm">
                   <div className="flex items-center space-x-3">
                     <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center ${
-                      item.status === '完整' ? 'bg-green-500 border-green-500 text-white' : 'border-slate-200'
+                      item.status === '完整' ? 'bg-green-500 border-green-500 text-white' : 'border-slate-200 dark:border-slate-700'
                     }`}>
                       {item.status === '完整' && <CheckCircle2 className="w-3 h-3" />}
                     </div>
-                    <span className="text-slate-600">{item.label}</span>
+                    <span className="text-slate-600 dark:text-slate-300">{item.label}</span>
                   </div>
                   <span className={`font-bold ${item.color}`}>{item.status}</span>
                 </div>
@@ -317,10 +317,10 @@ export function AIDiagnosisView() {
           </div>
 
           {/* AI Initial Findings */}
-          <div className="bg-white/60 backdrop-blur-xl rounded-3xl p-8 shadow-sm border border-white/80 space-y-6">
+          <div className="bg-white/60 dark:bg-slate-900/70 backdrop-blur-xl rounded-3xl p-8 shadow-sm border border-white/80 dark:border-slate-700 space-y-6">
             <div className="flex items-center space-x-3">
               <Zap className="w-6 h-6 text-brand" />
-              <h3 className="text-lg font-bold text-slate-900">AI初步发现</h3>
+              <h3 className="text-lg font-bold text-slate-900 dark:text-slate-100">AI初步发现</h3>
             </div>
 
             <div className="space-y-4">

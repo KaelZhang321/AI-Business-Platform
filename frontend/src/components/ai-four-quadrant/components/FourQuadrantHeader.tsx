@@ -38,15 +38,14 @@ export const FourQuadrantHeader = ({
       </div>
       <div className="flex items-center space-x-3">
         <div className="flex items-center space-x-2">
-          <span className="px-3 py-1 bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400 text-xs rounded-full border border-blue-100 dark:border-blue-800">
+          {/* <span className="px-3 py-1 bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400 text-xs rounded-full border border-blue-100 dark:border-blue-800">
             医生身份
-          </span>
+          </span> */}
           <span
-            className={`px-3 py-1 text-xs rounded-full border ${
-              selectedClient
-                ? 'bg-green-50 text-green-600 dark:bg-green-900/30 dark:text-green-400 border-green-100 dark:border-green-800'
-                : 'bg-red-50 text-red-500 dark:bg-red-900/30 dark:text-red-400 border-red-100 dark:border-red-800'
-            }`}
+            className={`px-3 py-1 text-xs rounded-full border ${selectedClient
+              ? 'bg-green-50 text-green-600 dark:bg-green-900/30 dark:text-green-400 border-green-100 dark:border-green-800'
+              : 'bg-red-50 text-red-500 dark:bg-red-900/30 dark:text-red-400 border-red-100 dark:border-red-800'
+              }`}
           >
             {selectedClient ? '已选中客户' : '未选中客户'}
           </span>
@@ -54,12 +53,12 @@ export const FourQuadrantHeader = ({
             等待AI分析
           </span>
         </div>
-        <button
+        {/* <button
           onClick={() => setIsDarkMode(!isDarkMode)}
           className="p-2 text-slate-400 dark:text-slate-500 hover:text-brand dark:hover:text-brand-400 hover:bg-brand-light dark:hover:bg-brand-900/30 rounded-xl transition-all"
         >
           {isDarkMode ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
-        </button>
+        </button> */}
       </div>
     </div>
   )
