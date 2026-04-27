@@ -1,4 +1,5 @@
 import { apiClient } from '../api'
+import type { PatientExamCleanedResultResponse } from '../../types/patientExamCleanedResult'
 
 /** 后端统一响应包装 */
 type ApiEnvelope<T> = {
@@ -58,6 +59,14 @@ export const aiReportApi = {
   async getPatientExamSessionsApi(params: PatientExamSessionsQueryInput) {
     const response = await apiClient.post<ApiEnvelope<unknown[]>>('/bs/api/v1/patient-exams/sessions/query', params)
     return response.data?.data?.data ?? response.data?.data ?? response.data
+  },
+  /**
+   * 获取单次体检清洗结果
+   * GET /bs/api/v1/patient-exams/{studyId}/cleaned-result
+   */
+  async getPatientExamCleanedResultApi(studyId: string) {
+    const response = await apiClient.get<PatientExamCleanedResultResponse>(`/bs/api/v1/patient-exams/${studyId}/cleaned-result`)
+    return response.data
   },
   /**
    * 获取客户列表
