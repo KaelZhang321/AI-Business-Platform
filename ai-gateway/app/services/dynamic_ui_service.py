@@ -2420,6 +2420,9 @@ class DynamicUIService:
                     "props": {
                         "items": info_grid_items,
                         **({"bizFieldKey": summary_field_key} if summary_field_key else {}),
+                        # 概览卡与明细表来自同一个业务接口，必须携带同一份二跳元数据，
+                        # 否则前端只能刷新表格而无法按分区刷新或追踪概览数据来源。
+                        **list_request_fields,
                     },
                 }
             )

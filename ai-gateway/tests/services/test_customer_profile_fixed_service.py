@@ -113,7 +113,9 @@ async def test_customer_profile_fixed_waits_when_lookup_returns_multiple_custome
     assert response is not None
     assert response.execution_status == ApiQueryExecutionStatus.SKIPPED
     assert [api_id for api_id, _ in executor.calls] == [_CUSTOMER_LOOKUP_API_ID]
-    table = response.ui_spec["elements"]["customer_candidates"]
+    root = response.ui_spec["elements"]["root"]
+    assert root["children"] == ["child_1"]
+    table = response.ui_spec["elements"]["child_1"]
     assert table["type"] == "PlannerTable"
     assert table["props"]["waitSelect"]["errorCode"] == "WAIT_SELECT_REQUIRED"
     assert table["props"]["dataSource"][0]["bindingMap"]["customerRow"]["id"] == "C001"
@@ -172,11 +174,19 @@ async def test_customer_profile_fixed_resumes_with_selected_customer(monkeypatch
     assert response.execution_status == ApiQueryExecutionStatus.SUCCESS
     assert [api_id for api_id, _ in executor.calls] == [_CUSTOMER_LOOKUP_API_ID, "identity", "asset"]
     assert executor.calls[1][1] == {"encryptedIdCard": "ENC002"}
-    assert response.ui_spec["elements"]["root"]["props"]["renderMode"] == "customer_profile_fixed"
-    assert response.ui_spec["elements"]["section_identity_contact"]["type"] == "PlannerDetailCard"
-    assert response.ui_spec["elements"]["section_asset_summary"]["type"] == "PlannerInfoGrid"
-    assert response.ui_spec["elements"]["section_asset_delivery_records"]["type"] == "PlannerTable"
-    assert response.ui_spec["elements"]["section_asset_cure_plan_records"]["props"]["title"] == "规划方案"
+    elements = response.ui_spec["elements"]
+    root = elements["root"]
+    assert root["props"]["renderMode"] == "customer_profile_fixed"
+    assert root["children"] == ["child_1", "child_2", "child_3", "child_4"]
+    assert "section_identity_contact" not in elements
+    assert elements["child_1"]["type"] == "PlannerDetailCard"
+    assert elements["child_1"]["props"]["bizFieldKey"] == "identity_contact"
+    assert elements["child_2"]["type"] == "PlannerInfoGrid"
+    assert elements["child_2"]["props"]["bizFieldKey"] == "summaryCard"
+    assert elements["child_3"]["type"] == "PlannerTable"
+    assert elements["child_3"]["props"]["bizFieldKey"] == "deliveryRecords"
+    assert elements["child_4"]["props"]["title"] == "规划方案"
+    assert elements["child_4"]["props"]["bizFieldKey"] == "curePlanRecords"
 
 
 def build_test_catalog() -> CustomerProfileEndpointCatalog:

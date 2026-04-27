@@ -619,15 +619,14 @@ def build_customer_profile_success_response(
         单个分区失败不会移除该分区，而是保留错误占位，避免页面结构随接口稳定性漂移。
     """
     elements: dict[str, Any] = {}
-    child_ids: list[str] = []
+    children: list[dict[str, Any]] = []
     has_error = False
 
     for section, entry, result, params in section_results:
         if result.status == ApiQueryExecutionStatus.ERROR:
             has_error = True
-        child_ids.extend(
+        children.extend(
             build_section_elements(
-                elements=elements,
                 section=section,
                 entry=entry,
                 result=result,
@@ -636,6 +635,7 @@ def build_customer_profile_success_response(
             )
         )
 
+    child_ids = materialize_customer_profile_children(elements, children)
     elements["root"] = {
         "type": "PlannerCard",
         "props": {
@@ -695,49 +695,48 @@ def build_wait_select_response(
     if not columns:
         columns = [{"key": "candidateIndex", "title": "候选序号", "dataIndex": "candidateIndex"}]
 
-    table_id = "customer_candidates"
-    elements = {
-        "root": {
-            "type": "PlannerCard",
-            "props": {
-                "title": f"请选择客户：{trigger.customer_value}",
-                "subtitle": "命中多个客户，请先选择一个客户后继续展示档案。",
-                "renderMode": "customer_profile_wait_select",
-            },
-            "children": [table_id],
-        },
-        table_id: {
-            "type": "PlannerTable",
-            "props": {
-                "title": "候选客户",
-                "columns": columns,
-                "dataSource": data_source,
-                "apiId": lookup_entry.id,
-                "api": f"/api/v1/ui-builder/runtime/endpoints/{lookup_entry.id}/invoke",
-                "queryParams": {},
-                "body": dict(lookup_params),
-                "flowNum": trace_id,
-                "rowActions": [
-                    {
-                        "action": "remoteQuery",
-                        "label": "使用该客户继续",
-                        "params": {
-                            "api": "/api/v1/api-query",
-                            "queryParams": {},
-                            "body": {
-                                "query": query,
-                                "selection_context": {"user_select": {"$bindRow": "bindingMap"}},
-                            },
+    table = {
+        "type": "PlannerTable",
+        "props": {
+            "title": "候选客户",
+            "columns": columns,
+            "dataSource": data_source,
+            "apiId": lookup_entry.id,
+            "api": f"/api/v1/ui-builder/runtime/endpoints/{lookup_entry.id}/invoke",
+            "queryParams": {},
+            "body": dict(lookup_params),
+            "flowNum": trace_id,
+            "rowActions": [
+                {
+                    "action": "remoteQuery",
+                    "label": "使用该客户继续",
+                    "params": {
+                        "api": "/api/v1/api-query",
+                        "queryParams": {},
+                        "body": {
+                            "query": query,
+                            "selection_context": {"user_select": {"$bindRow": "bindingMap"}},
                         },
-                    }
-                ],
-                "waitSelect": {
-                    "pauseType": "WAIT_SELECT",
-                    "selectionMode": "single",
-                    "errorCode": "WAIT_SELECT_REQUIRED",
-                },
+                    },
+                }
+            ],
+            "waitSelect": {
+                "pauseType": "WAIT_SELECT",
+                "selectionMode": "single",
+                "errorCode": "WAIT_SELECT_REQUIRED",
             },
         },
+    }
+    elements: dict[str, Any] = {}
+    child_ids = materialize_customer_profile_children(elements, [table])
+    elements["root"] = {
+        "type": "PlannerCard",
+        "props": {
+            "title": f"请选择客户：{trigger.customer_value}",
+            "subtitle": "命中多个客户，请先选择一个客户后继续展示档案。",
+            "renderMode": "customer_profile_wait_select",
+        },
+        "children": child_ids,
     }
     return ApiQueryResponse(
         trace_id=trace_id,
@@ -779,17 +778,15 @@ def build_customer_profile_error_response(
 
 def build_section_elements(
     *,
-    elements: dict[str, Any],
     section: CustomerProfileSection,
     entry: ApiCatalogEntry,
     result: ApiQueryExecutionResult,
     params: dict[str, Any],
     trace_id: str,
-) -> list[str]:
-    """把单个档案分区执行结果转换成 UI 元素。
+) -> list[dict[str, Any]]:
+    """把单个档案分区执行结果转换成待挂载 UI 元素。
 
     Args:
-        elements: 正在组装的 flat spec 元素池。
         section: 当前固定展示分区。
         entry: 分区接口元数据。
         result: 该接口执行结果。
@@ -797,48 +794,44 @@ def build_section_elements(
         trace_id: 当前链路追踪 ID。
 
     Returns:
-        当前分区新增的元素 ID 列表。
+        当前分区新增的元素 payload 列表；调用方统一分配 `child_*` ID。
 
     Edge Cases:
         资产分区是一个接口返回三块业务数据，因此拆成 `PlannerInfoGrid + 两个 PlannerTable`。
     """
     if section.key == "asset_overview":
-        return build_asset_section_elements(elements, section=section, entry=entry, result=result, params=params, trace_id=trace_id)
+        return build_asset_section_elements(section=section, entry=entry, result=result, params=params, trace_id=trace_id)
 
-    element_id = f"section_{section.key}"
     if result.status == ApiQueryExecutionStatus.ERROR:
-        elements[element_id] = build_error_detail_card(section, entry, result)
-        return [element_id]
+        return [build_error_detail_card(section, entry, result)]
 
     row = first_result_row(result.data)
-    elements[element_id] = {
-        "type": "PlannerDetailCard",
-        "props": {
-            "title": section.title,
-            "bizFieldKey": section.key,
-            "apiId": entry.id,
-            "status": result.status.value,
-            "items": build_detail_items(entry, row),
-            **runtime_invoke_props(entry, params=params, trace_id=trace_id),
-        },
-    }
-    return [element_id]
+    return [
+        {
+            "type": "PlannerDetailCard",
+            "props": {
+                "title": section.title,
+                "bizFieldKey": section.key,
+                "apiId": entry.id,
+                "status": result.status.value,
+                "items": build_detail_items(entry, row),
+                **runtime_invoke_props(entry, params=params, trace_id=trace_id),
+            },
+        }
+    ]
 
 
 def build_asset_section_elements(
-    elements: dict[str, Any],
     *,
     section: CustomerProfileSection,
     entry: ApiCatalogEntry,
     result: ApiQueryExecutionResult,
     params: dict[str, Any],
     trace_id: str,
-) -> list[str]:
+) -> list[dict[str, Any]]:
     """构造资产组合区元素。"""
     if result.status == ApiQueryExecutionStatus.ERROR:
-        element_id = f"section_{section.key}"
-        elements[element_id] = build_error_detail_card(section, entry, result)
-        return [element_id]
+        return [build_error_detail_card(section, entry, result)]
 
     payload = first_result_row(result.data)
     summary = payload.get("summaryCard") if isinstance(payload.get("summaryCard"), dict) else {}
@@ -846,10 +839,7 @@ def build_asset_section_elements(
     cure_plan_records = payload.get("curePlanRecords") if isinstance(payload.get("curePlanRecords"), list) else []
     label_index = extract_field_labels(entry.response_schema)
 
-    summary_id = "section_asset_summary"
-    delivery_id = "section_asset_delivery_records"
-    cure_plan_id = "section_asset_cure_plan_records"
-    elements[summary_id] = {
+    summary_element = {
         "type": "PlannerInfoGrid",
         "props": {
             "title": "资产概览",
@@ -862,7 +852,7 @@ def build_asset_section_elements(
             **runtime_invoke_props(entry, params=params, trace_id=trace_id),
         },
     }
-    elements[delivery_id] = build_table_element(
+    delivery_element = build_table_element(
         title="历史购买储值方案",
         biz_field_key="deliveryRecords",
         api_id=entry.id,
@@ -870,7 +860,7 @@ def build_asset_section_elements(
         label_index=label_index,
         runtime_props=runtime_invoke_props(entry, params=params, trace_id=trace_id),
     )
-    elements[cure_plan_id] = build_table_element(
+    cure_plan_element = build_table_element(
         title="规划方案",
         biz_field_key="curePlanRecords",
         api_id=entry.id,
@@ -878,7 +868,7 @@ def build_asset_section_elements(
         label_index=label_index,
         runtime_props=runtime_invoke_props(entry, params=params, trace_id=trace_id),
     )
-    return [summary_id, delivery_id, cure_plan_id]
+    return [summary_element, delivery_element, cure_plan_element]
 
 
 def build_detail_items(entry: ApiCatalogEntry, row: dict[str, Any]) -> list[dict[str, str]]:
@@ -901,6 +891,28 @@ def select_detail_fields(entry: ApiCatalogEntry, row: dict[str, Any]) -> list[st
     if ordered_fields:
         return ordered_fields
     return [field for field in row if field not in entry.detail_view_meta.exclude_fields]
+
+
+def materialize_customer_profile_children(elements: dict[str, Any], children: list[dict[str, Any]]) -> list[str]:
+    """把固定档案子节点写入 flat spec 元素池。
+
+    Args:
+        elements: `ui_spec.elements` 的可变元素池。
+        children: 已按业务顺序排好的子节点 payload。
+
+    Returns:
+        root.children 需要引用的 `child_*` ID 列表。
+
+    Edge Cases:
+        固定档案分支不再用 `section_*` 作为元素 ID，避免和通用动态 UI 的 flat spec 约定分裂；
+        业务语义保留在 `props.bizFieldKey`，前端仍可按业务键定位分区。
+    """
+    child_ids: list[str] = []
+    for index, child in enumerate(children, start=1):
+        child_id = f"child_{index}"
+        elements[child_id] = child
+        child_ids.append(child_id)
+    return child_ids
 
 
 def build_table_element(

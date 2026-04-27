@@ -636,6 +636,8 @@ async def test_rule_query_spec_composite_renders_metrics_and_tables_without_stri
         context={
             "question": "查询刘海坚的储值方案",
             "query_render_mode": "composite",
+            "flow_num": "trace-query-001",
+            "created_by": "user-001",
             "response_field_label_index": {
                 "summaryCard.storeLeftFunds": "储值总余额",
                 "deliveryRecords": "交付记录",
@@ -647,7 +649,20 @@ async def test_rule_query_spec_composite_renders_metrics_and_tables_without_stri
                 "curePlanRecords[].fProjectAmount": "方案金额",
             },
         },
-        runtime=_make_runtime(),
+        runtime=_make_runtime().model_copy(
+            update={
+                "list": ApiQueryListRuntime(
+                    enabled=True,
+                    api_id="fa969d461ef059ab82f1dd6d3c2aa116",
+                    param_source="body",
+                    request_schema_fields=["encryptedIdCard"],
+                    query_context=ApiQueryListQueryContextRuntime(
+                        enabled=True,
+                        current_params={"encryptedIdCard": "ENC001", "展示标签": "SHOULD_DROP"},
+                    ),
+                )
+            }
+        ),
     )
 
     assert spec is not None
@@ -666,6 +681,11 @@ async def test_rule_query_spec_composite_renders_metrics_and_tables_without_stri
     info_items = {(item["label"], item["value"]) for item in info_grid["props"]["items"]}
     assert ("储值总余额", "13245060.0") in info_items
     assert info_grid["props"]["bizFieldKey"] == "summaryCard"
+    assert info_grid["props"]["api"] == "/api/v1/ui-builder/runtime/endpoints/fa969d461ef059ab82f1dd6d3c2aa116/invoke"
+    assert info_grid["props"]["queryParams"] == {}
+    assert info_grid["props"]["body"] == {"encryptedIdCard": "ENC001"}
+    assert info_grid["props"]["flowNum"] == "trace-query-001"
+    assert info_grid["props"]["createdBy"] == "user-001"
 
     tables = [elements[child_id] for child_id in child_ids if elements[child_id]["type"] == "PlannerTable"]
     table_titles = [table["props"].get("title") for table in tables]
