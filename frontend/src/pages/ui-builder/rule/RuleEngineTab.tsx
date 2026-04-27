@@ -19,6 +19,7 @@ import {
   Tag,
   Tabs,
   Typography,
+  message,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import {
@@ -266,10 +267,10 @@ function applyRuleStatusLocally(
   setSelectedRuleDetail: React.Dispatch<React.SetStateAction<RuleRecord | undefined>>,
 ) {
   setRules((prev) => prev.map((item) => (
-    item.id === ruleId ? { ...item, status } : item
+    String(item.id) === String(ruleId) ? { ...item, status } : item
   )))
   setSelectedRuleDetail((prev) => (
-    prev?.id === ruleId ? { ...prev, status } : prev
+    String(prev?.id) === String(ruleId) ? { ...prev, status } : prev
   ))
 }
 
@@ -282,15 +283,14 @@ function applyRuleLocally(
     return
   }
   setRules((prev) => prev.map((item) => (
-    item.id === nextRule.id ? { ...item, ...nextRule } : item
+    String(item.id) === String(nextRule.id) ? { ...item, ...nextRule } : item
   )))
   setSelectedRuleDetail((prev) => (
-    prev?.id === nextRule.id ? { ...prev, ...nextRule } : prev
+    String(prev?.id) === String(nextRule.id) ? { ...prev, ...nextRule } : prev
   ))
 }
 
 export function RuleEngineTab() {
-  const { message } = App.useApp()
   const [rules, setRules] = useState<RuleRecord[]>([])
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -350,8 +350,8 @@ export function RuleEngineTab() {
       dataIndex: 'status',
       key: 'status',
       width: 120,
-      render: (status: string | undefined) => {
-        const meta = STATUS_META[status ?? '0'] ?? { color: 'default', label: status || '未知' }
+      render: (status: string | number | undefined) => {
+        const meta = STATUS_META[String(status ?? '0')] ?? { color: 'default', label: String(status || '未知') }
         return <Tag color={meta.color}>{meta.label}</Tag>
       },
     },
@@ -585,19 +585,30 @@ export function RuleEngineTab() {
     if (!rule.id) {
       return
     }
-    const nextStatus = rule.status === '1' ? '0' : '1'
+    const nextStatus = String(rule.status) === '1' ? '0' : '1'
     setTogglingRuleId(rule.id)
     try {
       applyRuleStatusLocally(rule.id, nextStatus, setRules, setSelectedRuleDetail)
 
       const response = await ruleApi.enableRule(rule.id)
-      if (!response.success) {
+      console.log('Toggle status response:', response)
+      
+      if (!response) {
+        Modal.error({ title: 'Debug', content: 'Response is completely empty!' })
         applyRuleStatusLocally(rule.id, rule.status, setRules, setSelectedRuleDetail)
-        message.error(response.message || '切换状态失败')
         return
       }
-      if (response.data?.id) {
-        applyRuleLocally(response.data, setRules, setSelectedRuleDetail)
+
+      if (response.success === false || (response as any).code !== undefined && String((response as any).code) !== '200' && String((response as any).code) !== '00000') {
+        Modal.error({ title: 'Debug: API Failed', content: JSON.stringify(response) })
+        applyRuleStatusLocally(rule.id, rule.status, setRules, setSelectedRuleDetail)
+        message.error(response.message || (response as any).msg || '切换状态失败')
+        return
+      }
+      
+      const responseData = (response as any).data || response
+      if (responseData && responseData.id) {
+        applyRuleLocally(responseData, setRules, setSelectedRuleDetail)
       } else {
         applyRuleStatusLocally(rule.id, nextStatus, setRules, setSelectedRuleDetail)
       }
@@ -607,6 +618,7 @@ export function RuleEngineTab() {
         await handleSelectRule(rule.id, true)
       }
     } catch (error) {
+      Modal.error({ title: 'Debug: Exception', content: error instanceof Error ? error.message : String(error) })
       applyRuleStatusLocally(rule.id, rule.status, setRules, setSelectedRuleDetail)
       message.error(error instanceof Error ? error.message : '切换状态失败')
     } finally {
@@ -746,11 +758,12 @@ export function RuleEngineTab() {
     setDebugging(true)
     try {
       const response = await ruleApi.executeRule(selectedRule.ruleCode, version, parsedPayload)
-      setDebugResult(formatDebugOutput(response))
       if (!response.success) {
+        setDebugResult(formatDebugOutput(response))
         message.error(response.message || '规则调试失败')
         return
       }
+      setDebugResult(formatDebugOutput((response as any).data ?? response))
       message.success('规则调试完成')
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : '规则调试失败'
@@ -869,8 +882,8 @@ export function RuleEngineTab() {
                     </div>
                     <div className="flex items-center">
                       <span className="mr-2 text-slate-400">状态:</span>
-                      <Tag color={STATUS_META[selectedRule.status ?? '0']?.color ?? 'default'}>
-                        {STATUS_META[selectedRule.status ?? '0']?.label ?? (selectedRule.status || '-')}
+                      <Tag color={STATUS_META[String(selectedRule.status ?? '0')]?.color ?? 'default'}>
+                        {STATUS_META[String(selectedRule.status ?? '0')]?.label ?? (String(selectedRule.status) || '-')}
                       </Tag>
                     </div>
                     <div>
