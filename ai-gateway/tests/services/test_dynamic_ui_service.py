@@ -52,6 +52,7 @@ class StubUICatalogService:
     def get_component_catalog(self, *, intent: str | None = None, requested_codes=None) -> dict[str, str]:
         if intent == "query":
             return {
+                "PlannerBlankContainer": "自定义空白容器说明",
                 "PlannerCard": "自定义卡片说明",
                 "PlannerInfoGrid": "自定义信息网格说明",
                 "PlannerTable": "自定义表格说明",
@@ -70,6 +71,7 @@ class StubUICatalogService:
     def get_component_codes(self, *, intent: str | None = None, requested_codes=None) -> list[str]:
         if intent == "query":
             return [
+                "PlannerBlankContainer",
                 "PlannerCard",
                 "PlannerInfoGrid",
                 "PlannerTable",
@@ -84,6 +86,7 @@ class StubUICatalogService:
 
     def get_all_component_codes(self) -> set[str]:
         return {
+            "PlannerBlankContainer",
             "PlannerCard",
             "PlannerInfoGrid",
             "PlannerTable",
@@ -115,6 +118,7 @@ class StubUICatalogService:
 def _make_runtime() -> ApiQueryUIRuntime:
     return ApiQueryUIRuntime(
         components=[
+            "PlannerBlankContainer",
             "PlannerCard",
             "PlannerMetric",
             "PlannerInfoGrid",
@@ -196,19 +200,29 @@ def _root_element(spec: dict[str, object]) -> dict[str, object]:
 
 
 def _root_child_by_type(spec: dict[str, object], component_type: str) -> dict[str, object]:
-    """按根卡片下的组件类型取回元素，便于断言规则回退是否命中。"""
-    root = _root_element(spec)
+    """按组件类型递归取回元素，兼容根空容器下的二跳业务组件。"""
     elements = spec["elements"]
-    child_ids = root.get("children", [])
+    assert isinstance(elements, dict)
+    for element in elements.values():
+        assert isinstance(element, dict)
+        if element.get("type") == component_type:
+            return element
+    raise AssertionError(f"missing child type: {component_type}")
+
+
+def _children_of(spec: dict[str, object], element: dict[str, object]) -> list[dict[str, object]]:
+    """按元素 children 顺序取回直接子元素。"""
+    elements = spec["elements"]
+    child_ids = element.get("children", [])
     assert isinstance(elements, dict)
     assert isinstance(child_ids, list)
+    children: list[dict[str, object]] = []
     for child_id in child_ids:
         assert isinstance(child_id, str)
         child = elements[child_id]
         assert isinstance(child, dict)
-        if child.get("type") == component_type:
-            return child
-    raise AssertionError(f"missing child type: {component_type}")
+        children.append(child)
+    return children
 
 
 @pytest.mark.asyncio
@@ -293,7 +307,8 @@ async def test_generate_ui_spec_uses_renderer_prompt_json_mode_and_pruned_contex
     assert "context_pool" in user_prompt
     assert "C004" not in user_prompt
     assert "resolved_params" not in user_prompt
-    assert spec["elements"]["root"]["props"]["title"] == "LLM 详情视图"
+    assert _root_element(spec)["type"] == "PlannerBlankContainer"
+    assert _root_child_by_type(spec, "PlannerCard")["props"]["title"] == "LLM 详情视图"
 
 
 @pytest.mark.asyncio
@@ -331,7 +346,8 @@ async def test_generate_ui_spec_retries_without_json_mode_when_backend_rejects_r
     assert len(service._llm_service.calls) == 2
     assert service._llm_service.calls[0]["response_format"] == {"type": "json_object"}
     assert service._llm_service.calls[1]["response_format"] is None
-    assert spec["elements"]["root"]["props"]["title"] == "纯文本兜底成功"
+    assert _root_element(spec)["type"] == "PlannerBlankContainer"
+    assert _root_child_by_type(spec, "PlannerCard")["props"]["title"] == "纯文本兜底成功"
 
 
 @pytest.mark.asyncio
@@ -369,7 +385,8 @@ async def test_generate_ui_spec_parses_dirty_renderer_json_payload(
     )
 
     assert spec is not None
-    assert spec["elements"]["root"]["props"]["title"] == "脏 JSON 也要能解析"
+    assert _root_element(spec)["type"] == "PlannerBlankContainer"
+    assert _root_child_by_type(spec, "PlannerCard")["props"]["title"] == "脏 JSON 也要能解析"
     assert spec["state"] == {}
 
 
@@ -449,7 +466,7 @@ async def test_generate_ui_spec_sanitizes_llm_detail_request_keys_to_request_sch
 
     assert result.frozen is False
     assert result.spec is not None
-    detail = _root_child_by_type(result.spec, "PlannerDetailCard")
+    detail = _root_child_by_type(result.spec, "PlannerInfoGrid")
     assert detail["props"]["queryParams"] == {"id": 71593}
     assert detail["props"]["body"] == {}
 
@@ -519,7 +536,8 @@ async def test_generate_ui_spec_result_freezes_invalid_renderer_spec(
     assert result.validation.is_valid is False
     assert result.spec is not None
     notice = _root_child_by_type(result.spec, "PlannerNotice")
-    assert result.spec["elements"]["root"]["props"]["title"] == "客户详情"
+    assert _root_element(result.spec)["type"] == "PlannerBlankContainer"
+    assert _root_child_by_type(result.spec, "PlannerCard")["props"]["title"] == "客户详情"
     assert "已冻结当前操作视图" in notice["props"]["text"]
 
 
@@ -547,7 +565,9 @@ async def test_rule_query_spec_exposes_runtime_metadata_for_list_components(
 
     assert spec is not None
     root = _root_element(spec)
-    assert root["children"] == ["query-filters", "report-table", "report-pagination"]
+    assert root["type"] == "PlannerBlankContainer"
+    card = _root_child_by_type(spec, "PlannerCard")
+    assert card["children"] == ["query-filters", "report-table", "report-pagination"]
 
     elements = spec["elements"]
     assert isinstance(elements, dict)
@@ -667,17 +687,16 @@ async def test_rule_query_spec_composite_renders_metrics_and_tables_without_stri
 
     assert spec is not None
     root = _root_element(spec)
-    child_ids = root.get("children", [])
-    assert isinstance(child_ids, list)
-    elements = spec["elements"]
-    assert isinstance(elements, dict)
-    child_types = [elements[child_id]["type"] for child_id in child_ids if isinstance(child_id, str)]
+    assert root["type"] == "PlannerBlankContainer"
+    card = _root_child_by_type(spec, "PlannerCard")
+    children = _children_of(spec, card)
+    child_types = [child["type"] for child in children]
 
     assert "PlannerInfoGrid" in child_types
     assert child_types.count("PlannerTable") >= 2
     assert "PlannerDetailCard" not in child_types
 
-    info_grid = next(elements[child_id] for child_id in child_ids if elements[child_id]["type"] == "PlannerInfoGrid")
+    info_grid = next(child for child in children if child["type"] == "PlannerInfoGrid")
     info_items = {(item["label"], item["value"]) for item in info_grid["props"]["items"]}
     assert ("储值总余额", "13245060.0") in info_items
     assert info_grid["props"]["bizFieldKey"] == "summaryCard"
@@ -687,7 +706,7 @@ async def test_rule_query_spec_composite_renders_metrics_and_tables_without_stri
     assert info_grid["props"]["flowNum"] == "trace-query-001"
     assert info_grid["props"]["createdBy"] == "user-001"
 
-    tables = [elements[child_id] for child_id in child_ids if elements[child_id]["type"] == "PlannerTable"]
+    tables = [child for child in children if child["type"] == "PlannerTable"]
     table_titles = [table["props"].get("title") for table in tables]
     assert "交付记录" in table_titles
     assert "调理方案记录" in table_titles
@@ -747,9 +766,9 @@ async def test_rule_query_spec_composite_uses_aggregate_section_title_index_for_
 
     assert spec is not None
     root = _root_element(spec)
-    child_ids = root.get("children", [])
-    elements = spec["elements"]
-    tables = [elements[child_id] for child_id in child_ids if elements[child_id]["type"] == "PlannerTable"]
+    assert root["type"] == "PlannerBlankContainer"
+    card = _root_child_by_type(spec, "PlannerCard")
+    tables = [child for child in _children_of(spec, card) if child["type"] == "PlannerTable"]
     assert {table["props"]["bizFieldKey"] for table in tables} == {
         "healthBasic",
         "healthStatusMedicalHistory",
@@ -784,7 +803,7 @@ async def test_rule_query_spec_detail_uses_schema_description_labels(monkeypatch
     )
 
     assert spec is not None
-    detail_card = _root_child_by_type(spec, "PlannerDetailCard")
+    detail_card = _root_child_by_type(spec, "PlannerInfoGrid")
     assert detail_card["props"]["items"] == [
         {"label": "客户编号", "value": "C001"},
         {"label": "客户等级", "value": "VIP"},
@@ -964,7 +983,7 @@ async def test_rule_query_spec_detail_applies_detail_view_meta_priority_and_grou
     )
 
     assert spec is not None
-    detail_card = _root_child_by_type(spec, "PlannerDetailCard")
+    detail_card = _root_child_by_type(spec, "PlannerInfoGrid")
     items = detail_card["props"]["items"]
     assert [item["label"] for item in items] == ["mainTeacherName", "name", "id"]
     assert [item["value"] for item in items] == ["王雪梅", "刘海坚", "C001"]
@@ -1013,7 +1032,7 @@ async def test_rule_query_spec_detail_stringifies_scalar_array_with_chinese_deli
     )
 
     assert spec is not None
-    detail_card = _root_child_by_type(spec, "PlannerDetailCard")
+    detail_card = _root_child_by_type(spec, "PlannerInfoGrid")
     items = detail_card["props"]["items"]
     assert [item["label"] for item in items] == ["physicalExamPackage", "keyAbnormalIndicators", "doctorAdvice"]
     assert [item["value"] for item in items] == ["个性定制体检套餐", "食物不耐受、甲状腺结节、糖尿病前期", "建议复查"]
@@ -1064,6 +1083,7 @@ async def test_mutation_form_skipped_status_still_renders_planner_form() -> None
     service = DynamicUIService(catalog_service=UICatalogService())
     runtime = ApiQueryUIRuntime(
         components=[
+            "PlannerBlankContainer",
             "PlannerCard",
             "PlannerMetric",
             "PlannerForm",
@@ -1168,6 +1188,5 @@ async def test_mutation_form_skipped_status_still_renders_planner_form() -> None
     assert submit["on"]["press"]["params"]["flowNum"] == ""
     assert submit["on"]["press"]["params"]["createdBy"] == ""
     root = _root_element(result.spec)
-    child_ids = root.get("children", [])
-    assert isinstance(child_ids, list)
-    assert "PlannerNotice" not in [elements[child_id].get("type") for child_id in child_ids if isinstance(child_id, str)]
+    assert root["type"] == "PlannerBlankContainer"
+    assert "PlannerNotice" not in [element.get("type") for element in elements.values() if isinstance(element, dict)]

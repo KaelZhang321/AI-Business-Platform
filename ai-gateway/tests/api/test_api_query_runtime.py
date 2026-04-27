@@ -220,12 +220,11 @@ def _get_root_element(spec: dict[str, object]) -> dict[str, object]:
     return root_element
 
 
-def _get_root_children(spec: dict[str, object]) -> list[dict[str, object]]:
-    """按根节点 children 顺序取回子元素列表。"""
-    root_element = _get_root_element(spec)
+def _children_of(spec: dict[str, object], element: dict[str, object]) -> list[dict[str, object]]:
+    """按元素 children 顺序取回直接子元素。"""
     elements = spec["elements"]
     assert isinstance(elements, dict)
-    child_ids = root_element.get("children", [])
+    child_ids = element.get("children", [])
     assert isinstance(child_ids, list)
     children: list[dict[str, object]] = []
     for child_id in child_ids:
@@ -236,12 +235,31 @@ def _get_root_children(spec: dict[str, object]) -> list[dict[str, object]]:
     return children
 
 
+def _get_root_children(spec: dict[str, object]) -> list[dict[str, object]]:
+    """返回业务卡片内的直接子元素，兼容根空容器结构。"""
+    root_children = _children_of(spec, _get_root_element(spec))
+    if len(root_children) == 1 and root_children[0].get("type") == "PlannerCard":
+        return _children_of(spec, root_children[0])
+    return root_children
+
+
 def _get_child_by_type(spec: dict[str, object], expected_type: str) -> dict[str, object]:
-    """按组件类型查找根卡片下的直接子元素。"""
-    for child in _get_root_children(spec):
-        if child.get("type") == expected_type:
-            return child
+    """按组件类型递归查找元素。"""
+    elements = spec["elements"]
+    assert isinstance(elements, dict)
+    for element in elements.values():
+        assert isinstance(element, dict)
+        if element.get("type") == expected_type:
+            return element
     raise AssertionError(f"missing child type: {expected_type}")
+
+
+def _get_first_card(spec: dict[str, object]) -> dict[str, object]:
+    """读取根空容器下第一张业务卡片。"""
+    for child in _children_of(spec, _get_root_element(spec)):
+        if child.get("type") == "PlannerCard":
+            return child
+    raise AssertionError("missing PlannerCard")
 
 
 def _assert_api_query_response_keys(body: dict[str, object]) -> None:
@@ -513,7 +531,7 @@ def test_api_query_renders_single_object_as_detail_card(monkeypatch) -> None:
     body = response.json()
     _assert_api_query_response_keys(body)
     assert body["execution_plan"]["steps"][0]["step_id"] == "step_customer_list"
-    detail_card = _get_child_by_type(body["ui_spec"], "PlannerDetailCard")
+    detail_card = _get_child_by_type(body["ui_spec"], "PlannerInfoGrid")
     assert detail_card["props"]["title"] == "查询客户列表"
     assert {"label": "客户编号", "value": "C001"} in detail_card["props"]["items"]
     assert {"label": "客户等级", "value": "VIP"} in detail_card["props"]["items"]
@@ -663,7 +681,7 @@ def test_api_query_detail_card_uses_detail_request_schema_keys(monkeypatch) -> N
 
     assert response.status_code == 200
     body = response.json()
-    detail_card = _get_child_by_type(body["ui_spec"], "PlannerDetailCard")
+    detail_card = _get_child_by_type(body["ui_spec"], "PlannerInfoGrid")
     assert detail_card["props"]["queryParams"] == {"customerId": "C001"}
     assert detail_card["props"]["body"] == {}
     assert "legacyId" not in detail_card["props"]["queryParams"]
@@ -901,7 +919,9 @@ def test_api_query_renders_partial_success_with_notice_and_table(monkeypatch) ->
     assert body["execution_plan"]["plan_id"] == "dag_customer_orders_partial"
     assert body["execution_status"] == "PARTIAL_SUCCESS"
     root = _get_root_element(body["ui_spec"])
-    assert "部分步骤执行失败" in root["props"]["subtitle"]
+    assert root["type"] == "PlannerBlankContainer"
+    card = _get_first_card(body["ui_spec"])
+    assert "部分步骤执行失败" in card["props"]["subtitle"]
     table = _get_root_children(body["ui_spec"])[1]
     assert table["props"]["dataSource"][0]["customerId"] == "C001"
 

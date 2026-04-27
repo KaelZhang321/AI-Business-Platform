@@ -113,9 +113,14 @@ async def test_customer_profile_fixed_waits_when_lookup_returns_multiple_custome
     assert response is not None
     assert response.execution_status == ApiQueryExecutionStatus.SKIPPED
     assert [api_id for api_id, _ in executor.calls] == [_CUSTOMER_LOOKUP_API_ID]
-    root = response.ui_spec["elements"]["root"]
+    elements = response.ui_spec["elements"]
+    root = elements["root"]
+    assert root["type"] == "PlannerBlankContainer"
     assert root["children"] == ["child_1"]
-    table = response.ui_spec["elements"]["child_1"]
+    card = elements["child_1"]
+    assert card["type"] == "PlannerCard"
+    assert card["children"] == ["child_2"]
+    table = elements["child_2"]
     assert table["type"] == "PlannerTable"
     assert table["props"]["waitSelect"]["errorCode"] == "WAIT_SELECT_REQUIRED"
     assert table["props"]["dataSource"][0]["bindingMap"]["customerRow"]["id"] == "C001"
@@ -176,17 +181,40 @@ async def test_customer_profile_fixed_resumes_with_selected_customer(monkeypatch
     assert executor.calls[1][1] == {"encryptedIdCard": "ENC002"}
     elements = response.ui_spec["elements"]
     root = elements["root"]
+    assert root["type"] == "PlannerBlankContainer"
     assert root["props"]["renderMode"] == "customer_profile_fixed"
-    assert root["children"] == ["child_1", "child_2", "child_3", "child_4"]
+    assert root["children"] == ["child_1", "child_3", "child_5", "child_7"]
     assert "section_identity_contact" not in elements
-    assert elements["child_1"]["type"] == "PlannerDetailCard"
-    assert elements["child_1"]["props"]["bizFieldKey"] == "identity_contact"
-    assert elements["child_2"]["type"] == "PlannerInfoGrid"
-    assert elements["child_2"]["props"]["bizFieldKey"] == "summaryCard"
-    assert elements["child_3"]["type"] == "PlannerTable"
-    assert elements["child_3"]["props"]["bizFieldKey"] == "deliveryRecords"
-    assert elements["child_4"]["props"]["title"] == "规划方案"
-    assert elements["child_4"]["props"]["bizFieldKey"] == "curePlanRecords"
+    assert "PlannerDetailCard" not in {element["type"] for element in elements.values()}
+
+    identity_card = elements["child_1"]
+    identity_grid = elements[identity_card["children"][0]]
+    assert identity_card["type"] == "PlannerCard"
+    assert identity_card["props"]["bizFieldKey"] == "identity_contact"
+    assert identity_grid["type"] == "PlannerInfoGrid"
+    assert identity_grid["props"]["bizFieldKey"] == "identity_contact"
+    assert identity_grid["props"]["body"] == {"encryptedIdCard": "ENC002"}
+
+    summary_card = elements["child_3"]
+    summary_grid = elements[summary_card["children"][0]]
+    delivery_card = elements["child_5"]
+    delivery_table = elements[delivery_card["children"][0]]
+    cure_card = elements["child_7"]
+    cure_table = elements[cure_card["children"][0]]
+
+    assert [summary_card["props"]["bizFieldKey"], delivery_card["props"]["bizFieldKey"], cure_card["props"]["bizFieldKey"]] == [
+        "summaryCard",
+        "deliveryRecords",
+        "curePlanRecords",
+    ]
+    assert summary_grid["type"] == "PlannerInfoGrid"
+    assert summary_grid["props"]["bizFieldKey"] == "summaryCard"
+    assert summary_grid["props"]["api"] == "/api/v1/ui-builder/runtime/endpoints/asset/invoke"
+    assert delivery_table["type"] == "PlannerTable"
+    assert delivery_table["props"]["bizFieldKey"] == "deliveryRecords"
+    assert cure_table["type"] == "PlannerTable"
+    assert cure_table["props"]["title"] == "规划方案"
+    assert cure_table["props"]["bizFieldKey"] == "curePlanRecords"
 
 
 def build_test_catalog() -> CustomerProfileEndpointCatalog:

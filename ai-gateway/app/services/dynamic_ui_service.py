@@ -156,25 +156,30 @@ class DynamicUIService:
             - Guard 失败时绝不透传半成品 Spec，而是统一冻结为只读提示视图
             - 冻结视图不依赖 LLM，确保在渲染链路失真时依旧可稳定返回
         """
+        blank_container_enabled = intent in {"query", "mutation_form"}
+        render_runtime = self._ensure_blank_container_runtime(runtime) if blank_container_enabled else runtime
         candidate_spec = await self._build_candidate_spec(
             intent,
             data,
             context,
             status=status,
-            runtime=runtime,
+            runtime=render_runtime,
             trace_id=trace_id,
         )
         if candidate_spec is None:
             return UISpecBuildResult()
 
+        if blank_container_enabled:
+            candidate_spec = self._migrate_detail_cards_to_info_grid(candidate_spec)
+            candidate_spec = self._ensure_blank_container_root(candidate_spec)
         candidate_spec = self._sanitize_runtime_request_metadata(
             candidate_spec,
             intent=intent,
             context=context,
-            runtime=runtime,
+            runtime=render_runtime,
         )
 
-        validation = self._get_guard().validate(candidate_spec, intent=intent, runtime=runtime)
+        validation = self._get_guard().validate(candidate_spec, intent=intent, runtime=render_runtime)
         if validation.is_valid:
             return UISpecBuildResult(spec=candidate_spec, validation=validation, frozen=False)
 
@@ -382,7 +387,7 @@ class DynamicUIService:
         if not runtime.detail.enabled or not runtime.detail.api_id:
             return
 
-        # 3. 详情卡入口单独处理：先定位主键值，再按 detail request_schema 回写请求。
+        # 3. 详情信息入口单独处理：先定位主键值，再按 detail request_schema 回写请求。
         detail_identifier_param = runtime.detail.request.identifier_param or runtime.detail.source.identifier_field
         if not isinstance(detail_identifier_param, str) or not detail_identifier_param:
             return
@@ -401,7 +406,7 @@ class DynamicUIService:
             request_schema_fields=runtime.detail.request.request_schema_fields or [detail_identifier_param],
         )
         for element in elements.values():
-            if not isinstance(element, dict) or element.get("type") != "PlannerDetailCard":
+            if not isinstance(element, dict) or element.get("type") not in {"PlannerDetailCard", "PlannerInfoGrid"}:
                 continue
             props = element.get("props")
             if isinstance(props, dict):
@@ -551,7 +556,7 @@ class DynamicUIService:
                 ),
             }
             for element in elements.values():
-                if not isinstance(element, dict) or element.get("type") != "PlannerDetailCard":
+                if not isinstance(element, dict) or element.get("type") not in {"PlannerDetailCard", "PlannerInfoGrid"}:
                     continue
                 props = element.get("props")
                 if not isinstance(props, dict):
@@ -633,6 +638,91 @@ class DynamicUIService:
         if self._guard is None:
             self._guard = UISpecGuard(catalog_service=self._get_catalog_service())
         return self._guard
+
+    @staticmethod
+    def _ensure_blank_container_runtime(runtime: ApiQueryUIRuntime | None) -> ApiQueryUIRuntime | None:
+        """确保显式运行时允许 `PlannerBlankContainer` 根容器。
+
+        功能：
+            新版 flat spec 统一以空白容器承载业务卡片。很多旧调用点会传入显式
+            `runtime.components`，如果不在这里补齐根容器，Guard 会在业务组件都合法时
+            因根节点未启用而冻结页面。
+        """
+        if runtime is None or not runtime.components:
+            return runtime
+        if "PlannerBlankContainer" in runtime.components:
+            return runtime
+        return runtime.model_copy(update={"components": ["PlannerBlankContainer", *runtime.components]})
+
+    @staticmethod
+    def _ensure_blank_container_root(spec: dict[str, Any]) -> dict[str, Any]:
+        """把历史 `PlannerCard` 根节点兜底包装成 `PlannerBlankContainer`。
+
+        功能：
+            规则渲染已优先生成新结构；这层兜底用于 LLM 或旧树形转换路径，避免同一接口
+            在不同渲染来源下出现两套根容器协议。
+        """
+        if not DynamicUIService._is_flat_spec(spec):
+            return spec
+        elements = spec.get("elements")
+        root_id = spec.get("root")
+        if not isinstance(elements, dict) or not isinstance(root_id, str):
+            return spec
+        root_element = elements.get(root_id)
+        if not isinstance(root_element, dict) or root_element.get("type") == "PlannerBlankContainer":
+            return spec
+
+        wrapped = deepcopy(spec)
+        wrapped_elements = wrapped.get("elements")
+        if not isinstance(wrapped_elements, dict):
+            return spec
+        original_root = wrapped_elements.pop(root_id, None)
+        if not isinstance(original_root, dict):
+            return spec
+
+        content_id = DynamicUIService._next_available_child_id(wrapped_elements)
+        wrapped_elements[content_id] = original_root
+        wrapped_elements[root_id] = {
+            "type": "PlannerBlankContainer",
+            "props": {"minHeight": 160},
+            "children": [content_id],
+        }
+        return wrapped
+
+    @staticmethod
+    def _next_available_child_id(elements: dict[str, Any]) -> str:
+        """分配不与现有元素冲突的 `child_*` ID。"""
+        index = 1
+        while f"child_{index}" in elements:
+            index += 1
+        return f"child_{index}"
+
+    @staticmethod
+    def _migrate_detail_cards_to_info_grid(spec: dict[str, Any]) -> dict[str, Any]:
+        """把历史详情卡组件迁移为新版信息网格组件。
+
+        功能：
+            LLM 或旧模板可能仍输出 `PlannerDetailCard`。新版查询 UI 统一使用
+            `PlannerInfoGrid` 承载详情字段，因此在 Guard 校验前做无损迁移，保留
+            items、runtime 请求元数据和业务键。
+        """
+        if not DynamicUIService._is_flat_spec(spec):
+            return spec
+        elements = spec.get("elements")
+        if not isinstance(elements, dict):
+            return spec
+        migrated = deepcopy(spec)
+        migrated_elements = migrated.get("elements")
+        if not isinstance(migrated_elements, dict):
+            return spec
+        for element in migrated_elements.values():
+            if not isinstance(element, dict) or element.get("type") != "PlannerDetailCard":
+                continue
+            element["type"] = "PlannerInfoGrid"
+            props = element.setdefault("props", {})
+            if isinstance(props, dict):
+                props.setdefault("minColumnWidth", 180)
+        return migrated
 
     async def _build_candidate_spec(
         self,
@@ -1073,7 +1163,7 @@ class DynamicUIService:
                 f"{action_catalog}\n\n"
                 "# Rendering Rules\n"
                 "1. 同质数组优先使用 PlannerTable。\n"
-                "2. 单对象详情优先使用 PlannerDetailCard。\n"
+                "2. 单对象详情优先使用 PlannerInfoGrid。\n"
                 "3. 如果存在局部失败或跳过信息，应使用 PlannerNotice 做显式提示。\n"
                 "4. 当前 read_only 链路优先返回 root/state/elements 结构；state 在纯读场景下通常为空对象。\n"
                 "5. 严禁捏造未注册的组件、动作、props 或数据字段。\n\n"
@@ -1534,7 +1624,7 @@ class DynamicUIService:
             收口到稳定的宏观原语：
 
             - 同质列表 → `PlannerTable`
-            - 单对象详情 → `PlannerDetailCard`
+            - 单对象详情 → `PlannerInfoGrid`
             - 局部失败提示 → `PlannerNotice`
 
             这样做的核心收益是：先把网关对外的 UI 语言稳定下来，后续无论是规则渲染
@@ -1598,8 +1688,8 @@ class DynamicUIService:
                 root_props=root_props,
                 children=[
                     {
-                        "type": "PlannerDetailCard",
-                        "props": detail_props,
+                        "type": "PlannerInfoGrid",
+                        "props": {"minColumnWidth": 180, **detail_props},
                     }
                 ],
             )
@@ -1625,9 +1715,10 @@ class DynamicUIService:
                 root_props=root_props,
                 children=[
                     {
-                        "type": "PlannerDetailCard",
+                        "type": "PlannerInfoGrid",
                         "props": {
                             "title": (context or {}).get("detail_title", "详情信息"),
+                            "minColumnWidth": 180,
                             "items": self._build_detail_items(
                                 rows[0] if rows else {},
                                 label_index=label_index,
@@ -1959,16 +2050,16 @@ class DynamicUIService:
         children: list[dict[str, Any]],
         state: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """构造 `PlannerCard` 根节点的 flat spec。
+        """构造 `PlannerBlankContainer -> PlannerCard -> 内容组件` 的 flat spec。
 
         功能：
-            第五阶段后续还会继续引入 `PlannerForm / PlannerSelect / PlannerButton`。
-            先把 flat spec 的根结构抽成一个 helper，后面任务 3、4、5 可以直接复用，
-            避免每次都手搓 `root/elements` 造成协议细节再次分散。
+            `PlannerBlankContainer` 只负责页面级留白和多卡片承载，业务标题、副标题和动作
+            仍收敛在内部 `PlannerCard`。这样单接口、多接口和复合接口都能共享同一套
+            根容器协议，同时不破坏卡片内组件的二跳刷新元数据。
 
         Args:
-            root_props: 根卡片展示属性。
-            children: 已准备好的子元素列表。
+            root_props: 内部业务卡片展示属性。
+            children: 已准备好的卡片内容组件列表。
             state: 当前视图初始状态；读态页面通常为空对象。
 
         Returns:
@@ -1976,19 +2067,47 @@ class DynamicUIService:
 
         Edge Cases:
             - `state=None` 时统一回退空对象，避免前端处理两套状态空值语义
-            - 子元素 ID 按顺序编号，保证快照和测试断言稳定
+            - 所有生成节点都使用稳定 `child_*` ID，业务语义放在 props 中而不是元素 ID 中
         """
+        return self._build_flat_container_spec(
+            children=[{"type": "PlannerCard", "props": root_props, "children": children}],
+            state=state,
+        )
+
+    def _build_flat_container_spec(
+        self,
+        *,
+        children: list[dict[str, Any]],
+        state: dict[str, Any] | None = None,
+        root_props: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """把卡片树递归物化为以 `PlannerBlankContainer` 为根的 flat spec。"""
         elements: dict[str, Any] = {
             "root": {
-                "type": "PlannerCard",
-                "props": root_props,
+                "type": "PlannerBlankContainer",
+                "props": {"minHeight": 160, **(root_props or {})},
                 "children": [],
             }
         }
-        for index, child in enumerate(children, start=1):
-            child_id = f"child_{index}"
-            elements["root"]["children"].append(child_id)
-            elements[child_id] = child
+        next_index = 1
+
+        def materialize(node: dict[str, Any]) -> str:
+            nonlocal next_index
+            element_id = f"child_{next_index}"
+            next_index += 1
+            raw_children = node.get("children")
+            payload = {key: value for key, value in node.items() if key != "children"}
+            child_ids: list[str] = []
+            if isinstance(raw_children, list):
+                for child in raw_children:
+                    if isinstance(child, dict) and "type" in child:
+                        child_ids.append(materialize(child))
+            if child_ids:
+                payload["children"] = child_ids
+            elements[element_id] = payload
+            return element_id
+
+        elements["root"]["children"] = [materialize(child) for child in children if isinstance(child, dict)]
         return {
             "root": "root",
             "state": state or {},
@@ -2158,7 +2277,7 @@ class DynamicUIService:
         field_path_prefix: str = "",
         detail_view_meta: dict[str, Any] | None = None,
     ) -> list[dict[str, str]]:
-        """把对象详情映射成 `PlannerDetailCard.items`。
+        """把对象详情映射成 `PlannerInfoGrid.items`。
 
         功能：
             详情视图的目标是“稳定展示事实”，不是透传原始对象结构。
@@ -2458,13 +2577,14 @@ class DynamicUIService:
                 }
             )
 
-        # 3. 极端兜底：既无指标也无列表时，至少保留详情卡让用户看到事实内容。
+        # 3. 极端兜底：既无指标也无列表时，至少保留信息网格让用户看到事实内容。
         if not children:
             children.append(
                 {
-                    "type": "PlannerDetailCard",
+                    "type": "PlannerInfoGrid",
                     "props": {
                         "title": ctx.get("detail_title", "详情信息"),
+                        "minColumnWidth": 180,
                         "items": self._build_detail_items(row, label_index=resolved_label_index),
                     },
                 }

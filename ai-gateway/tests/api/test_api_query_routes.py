@@ -165,7 +165,7 @@ class StubDynamicUI:
                     "title": context.get("title", "查询结果") if isinstance(context, dict) else "查询结果",
                     "subtitle": "当前展示单条记录详情",
                 },
-                children=[{"type": "PlannerDetailCard", "props": detail_props}],
+                children=[{"type": "PlannerInfoGrid", "props": {"minColumnWidth": 180, **detail_props}}],
             )
 
         table_rows = data if isinstance(data, list) and data else [{"customerId": "C001", "customerName": "张三"}]
@@ -552,16 +552,21 @@ def _build_flat_stub_spec(
     """
     elements: dict[str, object] = {
         "root": {
+            "type": "PlannerBlankContainer",
+            "props": {"minHeight": 160},
+            "children": ["child_1"],
+        },
+        "child_1": {
             "type": "PlannerCard",
             "props": root_props,
             "children": [],
-        }
+        },
     }
-    for index, child in enumerate(children, start=1):
+    for index, child in enumerate(children, start=2):
         child_id = str(child.get("id") or f"child_{index}")
         child_payload = dict(child)
         child_payload.pop("id", None)
-        elements["root"]["children"].append(child_id)
+        elements["child_1"]["children"].append(child_id)
         elements[child_id] = child_payload
     return {
         "root": "root",
@@ -658,8 +663,12 @@ def test_api_query_returns_runtime_contract(monkeypatch) -> None:
     assert body["execution_status"] == "SUCCESS"
     assert body["execution_plan"]["steps"][0]["step_id"] == "step_customer_list"
     assert body["execution_plan"]["steps"][0]["api_id"] == "customer_list"
-    root = body["ui_spec"]["elements"][body["ui_spec"]["root"]]
-    assert root["children"] == ["query-filters", "report-table", "report-pagination"]
+    elements = body["ui_spec"]["elements"]
+    root = elements[body["ui_spec"]["root"]]
+    assert root["type"] == "PlannerBlankContainer"
+    card = elements[root["children"][0]]
+    assert card["type"] == "PlannerCard"
+    assert card["children"] == ["query-filters", "report-table", "report-pagination"]
     filters = body["ui_spec"]["elements"]["query-filters"]
     table = body["ui_spec"]["elements"]["report-table"]
     pagination = body["ui_spec"]["elements"]["report-pagination"]

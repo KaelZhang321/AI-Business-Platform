@@ -14,6 +14,7 @@ from app.utils.json_utils import load_json_object
 logger = logging.getLogger(__name__)
 
 _QUERY_DEFAULT_COMPONENT_CODES = [
+    "PlannerBlankContainer",
     "PlannerCard",
     "PlannerMetric",
     "PlannerInfoGrid",
@@ -358,6 +359,12 @@ def _build_builtin_snapshot() -> UICatalogSnapshot:
         开发环境缺库时，网关仍必须能返回稳定契约。这份快照就是安全气囊。
     """
     components = {
+        "PlannerBlankContainer": UIComponentDefinition(
+            code="PlannerBlankContainer",
+            name="规划空白容器",
+            description="顶级空白容器，props: minHeight，用于承载一个或多个业务卡片",
+            is_container=True,
+        ),
         "PlannerCard": UIComponentDefinition(
             code="PlannerCard",
             name="规划卡片",
