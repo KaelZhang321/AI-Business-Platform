@@ -17,6 +17,7 @@ SELECT
     remark
 FROM {table_name}
 WHERE service_code = %s
+AND enabled = 1 
 LIMIT 1
 """.strip()
 
