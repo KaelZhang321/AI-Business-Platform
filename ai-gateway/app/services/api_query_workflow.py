@@ -302,7 +302,7 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
 
         Edge Cases:
             - 固定分支资源不可用时会回退通用链路，不影响原 `/api-query` 能力
-            - 多客户候选会在这里短路为 wait-select，避免下游 15 个档案接口扩散调用
+            - 多客户候选会在这里短路为 wait-select，避免下游整套档案接口扩散调用
         """
 
         self._log_node_event(state, node="prepare_request", phase="request")
