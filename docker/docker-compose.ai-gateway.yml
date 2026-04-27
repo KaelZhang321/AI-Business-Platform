@@ -22,10 +22,7 @@ services:
       EMBEDDING_MODEL_PATH: ${EMBEDDING_MODEL_PATH:-/app/BAAI/bge-m3}
     volumes:
       - /data/ai_platform_infra/chroma:/opt/model-cache/.cache/chroma
-      # 把仓库内的模型目录直接 bind mount 到容器，确保 /app/BAAI 在重建后依然存在。
-      - ../ai-gateway/BAAI:/app/BAAI:ro
-      # 把应用日志固定映射回仓库目录，便于宿主机直接查看 app/logs/app.log。
-      - ../ai-gateway/app/logs:/app/app/logs
+      - ../ai-gateway:/app:ro
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
       interval: 30s
