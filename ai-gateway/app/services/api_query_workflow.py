@@ -26,6 +26,7 @@ from app.services.api_catalog.schema import (
     ApiCatalogPredecessorSpec,
     ApiCatalogSearchFilters,
 )
+from app.services.customer_profile_fixed_service import CustomerProfileFixedService
 from app.services.api_query_response_builder import ApiQueryResponseBuilder
 from app.services.api_query_state import (
     ApiQueryDegradeContext,
@@ -112,6 +113,7 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
         response_builder_getter: Callable[[], ApiQueryResponseBuilder],
         registry_source_getter: Callable[[], ApiCatalogRegistrySource],
         allowed_business_intent_codes_getter: Callable[[], set[str]],
+        customer_profile_service: CustomerProfileFixedService | None = None,
     ) -> None:
         super().__init__()
         self._services_getter = services_getter
@@ -119,6 +121,7 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
         self._response_builder_getter = response_builder_getter
         self._registry_source_getter = registry_source_getter
         self._allowed_business_intent_codes_getter = allowed_business_intent_codes_getter
+        self._customer_profile_service = customer_profile_service or CustomerProfileFixedService()
         self._runtime_contexts: dict[str, ApiQueryRuntimeContext] = {}
 
     @property
@@ -151,7 +154,14 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
         graph.add_node("build_response", self._build_response)
 
         graph.set_entry_point("prepare_request")
-        graph.add_edge("prepare_request", "route_query")
+        graph.add_conditional_edges(
+            "prepare_request",
+            self._after_prepare_request,
+            {
+                "route_query": "route_query",
+                "build_response": "build_response",
+            },
+        )
         graph.add_conditional_edges(
             "route_query",
             self._after_route_query,
@@ -283,13 +293,57 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
         """工作流入口节点。
 
         功能：
-            第一版外层图只需要显式承认“已完成请求初始化”，不在这里塞额外业务逻辑。
-            这样 `prepare_request` 仍是稳定的图入口，后续补指标、幂等或 tracing hook 时
-            不需要再改图结构。
+            在通用 route/retrieve/plan 之前先处理高确定性的客户档案固定分支。该分支的接口清单、
+            参数绑定和 UI 顺序都来自业务确认的 Excel active endpoint 元数据，不应再交给 LLM
+            自由规划。
+
+        Returns:
+            未命中固定分支时返回空增量；命中时直接写入最终响应，让状态图进入统一响应出口。
+
+        Edge Cases:
+            - 固定分支资源不可用时会回退通用链路，不影响原 `/api-query` 能力
+            - 多客户候选会在这里短路为 wait-select，避免下游 15 个档案接口扩散调用
         """
 
         self._log_node_event(state, node="prepare_request", phase="request")
-        return {}
+        runtime_context = self._get_runtime_context(state)
+        request_body = _require_request_body(runtime_context)
+        _, _, executor, _, _ = self._services_getter()
+
+        # 固定客户档案是确定性业务页，必须先于通用召回处理，避免 LLM 把它规划成单接口问数。
+        response = await self._customer_profile_service.handle(
+            request_body=request_body,
+            executor=executor,
+            user_token=runtime_context.user_token,
+            user_id=_resolve_runtime_user_id(runtime_context.user_context),
+            trace_id=state["trace_id"],
+        )
+        if response is None:
+            return {}
+
+        logger.info(
+            "%s",
+            format_workflow_observability_log(
+                f"{runtime_context.log_prefix} customer profile fixed branch matched",
+                observability_fields=self._build_observability_fields(
+                    trace_id=state["trace_id"],
+                    interaction_id=state.get("interaction_id"),
+                    conversation_id=state.get("conversation_id"),
+                    phase="request",
+                    node="prepare_request",
+                    execution_status=response.execution_status,
+                ),
+                payload={"execution_status": response.execution_status, "has_error": bool(response.error)},
+            ),
+        )
+        return {
+            "response": response,
+            "execution_status": response.execution_status,
+            "ui_spec": response.ui_spec,
+            "plan": response.execution_plan,
+            "query_domains_hint": ["customer_profile"],
+            "business_intent_codes": ["customer_profile_fixed"],
+        }
 
     async def _route_query(self, state: ApiQueryState) -> dict[str, Any]:
         """第二阶段：轻量路由。
@@ -1193,9 +1247,12 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
         self._log_node_event(state, node="build_response", phase="response", execution_status=state.get("execution_status"))
         runtime_context = self._get_runtime_context(state)
         builder = self._response_builder_getter()
+        # 固定分支已经在 prepare_request 构造出完整响应，这里仍走统一出口以保持日志与 state 镜像一致。
+        if state.get("response") is not None:
+            response = state["response"]
         # 响应优先级按“降级 -> 删除预检 -> mutation 表单 -> 正常执行”固定，
         # 这样状态推进再复杂，最终出口也只有一套可预测决策。
-        if runtime_context.degrade_context is not None:
+        elif runtime_context.degrade_context is not None:
             degrade_context = runtime_context.degrade_context
             if degrade_context.stage == "stage2":
                 response = await builder.build_stage2_degrade_response(
@@ -1258,6 +1315,11 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
             "ui_spec": response.ui_spec,
             "plan": response.execution_plan,
         }
+
+    def _after_prepare_request(self, state: ApiQueryState) -> str:
+        """入口准备后的去向。"""
+
+        return "build_response" if state.get("response") is not None else "route_query"
 
     def _after_route_query(self, state: ApiQueryState) -> str:
         """第二阶段路由后的去向。"""

@@ -40,6 +40,15 @@ _DIAGNOSIS_TIME_KEYS = (
     "update_time",
     "updateTime",
 )
+_WEEKDAY_MEAL_FIELD_MAP = {
+    1: "weekday_meal1",
+    2: "weekday_meal2",
+    3: "weekday_meal3",
+    4: "weekday_meal4",
+    5: "weekday_meal5",
+    6: "weekday_meal6",
+    7: "weekday_meal7",
+}
 
 
 @dataclass(slots=True)
@@ -147,6 +156,8 @@ class SmartMealPackageRecommendService:
         self,
         *,
         id_card_no: str,
+        meal_type: list[str],
+        reservation_date: str,
         age: int | None,
         sex: str | None,
         health_tags: list[str],
@@ -163,6 +174,8 @@ class SmartMealPackageRecommendService:
 
         Args:
             id_card_no: 客户身份证号（原值）。
+            meal_type: 餐次列表。
+            reservation_date: 订餐日期，用于定位周菜单配置。
             age: 年龄（可选，当前仅保留请求契约，不参与评分）。
             sex: 性别（可选，当前仅保留请求契约，不参与评分）。
             health_tags: 健康标签列表。
@@ -185,6 +198,12 @@ class SmartMealPackageRecommendService:
         started_at = perf_counter()
         if not id_card_no.strip():
             raise SmartMealPackageRecommendServiceError("bad_request: id_card_no 不能为空")
+        normalized_reservation_date = _parse_date_only(reservation_date)
+        if normalized_reservation_date is None:
+            raise SmartMealPackageRecommendServiceError("bad_request: reservation_date 非法")
+        normalized_meal_types = _normalize_meal_types(meal_type)
+        if not normalized_meal_types:
+            raise SmartMealPackageRecommendServiceError("bad_request: meal_type 不能为空")
 
         # 1. 先拉外部增强信息；诊断/不耐受任一失败都降级，不阻断推荐主链路。
         diagnoses, diagnosis_fetch_status = await self._safe_fetch_diagnoses(id_card_no=id_card_no, trace_id=trace_id)
@@ -194,8 +213,11 @@ class SmartMealPackageRecommendService:
             trace_id=trace_id,
         )
 
-        # 2. 拉取当前可售套餐全集并执行硬过滤。
-        candidates = await self._query_candidates()
+        # 2. 根据订餐日期和餐次，从周菜单配置中定位当天实际可选套餐。
+        candidates = await self._query_candidates(
+            reservation_date=normalized_reservation_date,
+            meal_types=normalized_meal_types,
+        )
         if not candidates:
             logger.info(
                 "smart meal recommend no candidates trace_id=%s id_card_no=%s",
@@ -558,16 +580,24 @@ class SmartMealPackageRecommendService:
                     terms.add(term.strip())
         return terms
 
-    async def _query_candidates(self) -> list[_PackageCandidate]:
-        """查询当前可售套餐全集。
+    async def _query_candidates(self, *, reservation_date: datetime, meal_types: set[str]) -> list[_PackageCandidate]:
+        """查询订餐日期与餐次命中的候选套餐。
 
         功能：
-            裁剪版方案不再区分餐次，直接读取当前可售套餐全集作为排序候选，
-            用更简单的在线链路换取更低的实现复杂度和更稳定的首版行为。
+            新版套餐推荐不再从全量套餐池盲选，而是严格以周菜单配置为准，
+            只对当天、当餐次真实可订的套餐做后续硬过滤与排序。
         """
 
+        menu_entries = await self._query_weekly_menu_entries(reservation_date=reservation_date, meal_types=meal_types)
+        if not menu_entries:
+            return []
+        package_codes = sorted({entry["package_code"] for entry in menu_entries if entry.get("package_code")})
+        if not package_codes:
+            return []
+
         pool = await self._mysql_pools.get_ods_pool()
-        sql = """
+        placeholders = ", ".join(["%s"] * len(package_codes))
+        sql = f"""
             SELECT
                 p.package_code,
                 p.package_name,
@@ -575,21 +605,21 @@ class SmartMealPackageRecommendService:
                 p.applicable_people,
                 p.core_target,
                 p.nutrition_feature,
+                d.dish_code,
                 d.dish_name,
                 d.ingredient_json
             FROM meal_package AS p
-            LEFT JOIN meal_package_dish_binding AS db ON p.id = db.package_id
-            LEFT JOIN meal_dish AS d ON db.dish_id = d.id
+            LEFT JOIN meal_dish AS d ON p.package_code = d.package_code
             WHERE p.status = 1
-              AND (db.status = 1 OR db.status IS NULL)
               AND (d.status = 1 OR d.status IS NULL)
+              AND p.package_code IN ({placeholders})
         """
 
         rows: list[dict[str, Any]] = []
         try:
             async with pool.acquire() as conn:
                 async with conn.cursor(aiomysql.DictCursor) as cursor:
-                    await cursor.execute(sql)
+                    await cursor.execute(sql, package_codes)
                     rows = await cursor.fetchall()
         except Exception as exc:  # noqa: BLE001
             raise SmartMealPackageRecommendServiceError("db_failed: 套餐候选查询失败") from exc
@@ -616,12 +646,72 @@ class SmartMealPackageRecommendService:
                 candidate_map[package_code] = candidate
 
             dish_name = _normalize_text(row.get("dish_name"))
+            row_dish_code = _normalize_text(row.get("dish_code"))
+            allowed_dish_codes = {
+                entry["dish_code"]
+                for entry in menu_entries
+                if entry.get("package_code") == package_code and entry.get("dish_code")
+            }
+            if allowed_dish_codes and row_dish_code and row_dish_code not in allowed_dish_codes:
+                continue
             if dish_name:
                 candidate.dish_names.add(dish_name)
             for ingredient in _extract_ingredient_names(row.get("ingredient_json")):
                 candidate.ingredient_names.add(ingredient)
 
         return list(candidate_map.values())
+
+    async def _query_weekly_menu_entries(
+        self,
+        *,
+        reservation_date: datetime,
+        meal_types: set[str],
+    ) -> list[dict[str, str]]:
+        """按订餐日期与餐次解析周菜单配置。
+
+        功能：
+            周菜单是智能订餐的真实供给源，这里先把目标日期映射到 weekday_mealN，
+            再从配置 JSON 中筛出本次请求对应的套餐/菜品组合。
+        """
+
+        pool = await self._mysql_pools.get_ods_pool()
+        weekday_field = _WEEKDAY_MEAL_FIELD_MAP[reservation_date.isoweekday()]
+        sql = f"""
+            SELECT {weekday_field} AS weekday_meal
+            FROM meal_weekly_menu_config
+            WHERE week_start_date <= %s
+              AND week_end_date >= %s
+            ORDER BY week_start_date DESC
+            LIMIT 1
+        """
+        try:
+            async with pool.acquire() as conn:
+                async with conn.cursor(aiomysql.DictCursor) as cursor:
+                    await cursor.execute(sql, (reservation_date.date(), reservation_date.date()))
+                    row = await cursor.fetchone()
+        except Exception as exc:  # noqa: BLE001
+            raise SmartMealPackageRecommendServiceError("db_failed: 周菜单查询失败") from exc
+
+        if not row:
+            return []
+        entries = _parse_weekday_meal_entries(row.get("weekday_meal"))
+        filtered: list[dict[str, str]] = []
+        for entry in entries:
+            normalized_meal_type = _normalize_single_meal_type(entry.get("meal_type"))
+            if normalized_meal_type not in meal_types:
+                continue
+            package_code = _normalize_text(entry.get("package_code"))
+            dish_code = _normalize_text(entry.get("dish_code"))
+            if not package_code:
+                continue
+            filtered.append(
+                {
+                    "package_code": package_code,
+                    "dish_code": dish_code,
+                    "meal_type": normalized_meal_type,
+                }
+            )
+        return filtered
 
     def _apply_hard_filters(
         self,
@@ -891,6 +981,16 @@ def _parse_datetime(value: Any) -> datetime | None:
         return None
 
 
+def _parse_date_only(value: Any) -> datetime | None:
+    text = _normalize_text(value)
+    if not text:
+        return None
+    try:
+        return datetime.strptime(text, "%Y-%m-%d")
+    except ValueError:
+        return None
+
+
 def _pick_first_text(data: dict[str, Any], keys: tuple[str, ...]) -> str:
     for key in keys:
         value = _normalize_text(data.get(key))
@@ -905,6 +1005,54 @@ def _pick_first_datetime(data: dict[str, Any], keys: tuple[str, ...]) -> datetim
         if parsed is not None:
             return parsed
     return None
+
+
+def _normalize_single_meal_type(value: Any) -> str:
+    text = _normalize_text(value).upper()
+    if text in {"BREAKFAST", "LUNCH", "DINNER"}:
+        return text
+    return ""
+
+
+def _normalize_meal_types(values: list[str]) -> set[str]:
+    normalized: set[str] = set()
+    for value in values:
+        meal_type = _normalize_single_meal_type(value)
+        if meal_type:
+            normalized.add(meal_type)
+    return normalized
+
+
+def _parse_weekday_meal_entries(raw_value: Any) -> list[dict[str, str]]:
+    payload = raw_value
+    if isinstance(payload, (bytes, bytearray)):
+        payload = payload.decode("utf-8", errors="ignore")
+    if isinstance(payload, str):
+        text = payload.strip()
+        if not text:
+            return []
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            return []
+    if not isinstance(payload, list):
+        return []
+
+    entries: list[dict[str, str]] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        entries.append(
+            {
+                "package_code": _pick_first_text(item, ("packageCode", "package_code")),
+                "dish_code": _pick_first_text(item, ("dishCode", "dish_code")),
+                "dish_name": _pick_first_text(item, ("dishName", "dish_name")),
+                "dish_type": _pick_first_text(item, ("dishType", "dish_type")),
+                "meal_type": _pick_first_text(item, ("mealType", "meal_type")),
+            }
+        )
+    return entries
+
 
 def _extract_food_terms(text: str) -> set[str]:
     """从自然语言中抽取食材词。

@@ -13,12 +13,16 @@ class StubSmartMealRiskService:
         id_card_no: str,
         sex: str,
         age: int,
+        meal_type: list[str],
+        reservation_date: str,
         package_code: str,
         trace_id: str | None,
     ) -> list[dict[str, str]]:
         assert id_card_no == "110101199001011234"
         assert sex == "男"
         assert age == 36
+        assert meal_type == ["BREAKFAST", "LUNCH"]
+        assert reservation_date == "2030-01-07"
         assert package_code == "TC202604180001"
         assert trace_id == "trace-001"
         return [
@@ -47,6 +51,8 @@ def test_smart_meal_route_returns_envelope(monkeypatch) -> None:
             "id_card_no": "110101199001011234",
             "sex": "男",
             "age": 36,
+            "meal_type": ["BREAKFAST", "LUNCH"],
+            "reservation_date": "2030-01-07",
             "package_code": "TC202604180001",
         },
     )

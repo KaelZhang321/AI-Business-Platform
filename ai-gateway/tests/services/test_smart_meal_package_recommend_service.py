@@ -66,6 +66,8 @@ async def test_recommend_packages_returns_empty_when_no_candidates(monkeypatch: 
         return set(), "ok"
 
     async def stub_query_candidates(**kwargs):  # noqa: ANN003
+        assert kwargs["reservation_date"].strftime("%Y-%m-%d") == "2030-01-07"
+        assert kwargs["meal_types"] == {"BREAKFAST", "LUNCH"}
         return []
 
     monkeypatch.setattr(service, "_safe_fetch_diagnoses", stub_safe_fetch_diagnoses)
@@ -74,6 +76,8 @@ async def test_recommend_packages_returns_empty_when_no_candidates(monkeypatch: 
 
     result = await service.recommend_packages(
         id_card_no="110101199001011234",
+        meal_type=["BREAKFAST", "LUNCH"],
+        reservation_date="2030-01-07",
         age=52,
         sex="男",
         health_tags=["慢病管理"],
@@ -229,6 +233,8 @@ async def test_recommend_packages_prefers_llm_rank_result(monkeypatch: pytest.Mo
 
     result = await service.recommend_packages(
         id_card_no="110101199001011234",
+        meal_type=["BREAKFAST", "LUNCH"],
+        reservation_date="2030-01-07",
         age=52,
         sex="男",
         health_tags=["慢病管理"],
@@ -284,6 +290,8 @@ async def test_recommend_packages_falls_back_to_rule_rank_when_llm_invalid(monke
 
     result = await service.recommend_packages(
         id_card_no="110101199001011234",
+        meal_type=["BREAKFAST", "LUNCH"],
+        reservation_date="2030-01-07",
         age=52,
         sex="男",
         health_tags=["控糖"],

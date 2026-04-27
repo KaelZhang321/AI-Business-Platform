@@ -7,6 +7,7 @@ import pytest
 from app.models.schemas import (
     ApiQueryExecutionResult,
     ApiQueryExecutionStatus,
+    ApiQueryResponse,
     ApiQueryRoutingResult,
     ApiQueryRequest,
 )
@@ -130,6 +131,22 @@ class StubPlanner:
         if self._validate_error is not None:
             raise self._validate_error
         return dict(self._step_entries)
+
+
+class StubCustomerProfileFixedService:
+    """用于验证固定客户档案分支的 workflow 短路行为。
+
+    功能：真实固定分支会调用首跳客户查询和多个档案接口；workflow 集成测试只关心它是否优先于
+    通用 route/retrieve/plan 链路，因此这里返回预置响应并记录调用次数。
+    """
+
+    def __init__(self, response: ApiQueryResponse | None) -> None:
+        self._response = response
+        self.calls = 0
+
+    async def handle(self, **_: object) -> ApiQueryResponse | None:
+        self.calls += 1
+        return self._response
 
 
 class PassThroughPlanner:
@@ -335,6 +352,7 @@ def _build_workflow(
     registry_source: StubRegistrySource,
     ui_result: UISpecBuildResult,
     dynamic_ui_override=None,
+    customer_profile_service=None,
 ) -> ApiQueryWorkflow:
     dynamic_ui = dynamic_ui_override or FakeDynamicUI(result=ui_result)
     response_builder = ApiQueryResponseBuilder(
@@ -349,7 +367,51 @@ def _build_workflow(
         response_builder_getter=lambda: response_builder,
         registry_source_getter=lambda: registry_source,
         allowed_business_intent_codes_getter=lambda: {"none", "saveToServer", "deleteCustomer"},
+        customer_profile_service=customer_profile_service,
     )
+
+
+@pytest.mark.asyncio
+async def test_workflow_customer_profile_fixed_branch_short_circuits_generic_pipeline() -> None:
+    """命中客户档案固定分支时，应在入口短路，避免再进入通用召回和 LLM 规划。"""
+
+    entry = _build_entry()
+    fixed_response = ApiQueryResponse(
+        trace_id="trace-customer-profile-fixed",
+        execution_status=ApiQueryExecutionStatus.SKIPPED,
+        execution_plan=None,
+        ui_spec={"root": "root", "state": {}, "elements": {"root": {"type": "PlannerCard", "props": {}}}},
+        error="命中多个候选客户，请先选择后继续。",
+    )
+    fixed_service = StubCustomerProfileFixedService(fixed_response)
+    retriever = StubRetriever([entry])
+    extractor = StubExtractor(entry, {"customerId": "C001"})
+    planner = StubPlanner(step_entries={f"step_{entry.id}": entry})
+    workflow = _build_workflow(
+        retriever=retriever,
+        extractor=extractor,
+        executor=StubExecutor(ApiQueryExecutionResult(status=ApiQueryExecutionStatus.SUCCESS, data=[], total=0)),
+        planner=planner,
+        registry_source=StubRegistrySource(entry),
+        ui_result=UISpecBuildResult(spec=_build_flat_spec(), frozen=False),
+        customer_profile_service=fixed_service,
+    )
+
+    response = await workflow.run(
+        ApiQueryRequest.model_validate({"query": "查询客户刘海坚的个人信息"}),
+        trace_id="trace-customer-profile-fixed",
+        interaction_id=None,
+        conversation_id=None,
+        user_context={},
+        user_token=None,
+    )
+
+    assert response is fixed_response
+    assert fixed_service.calls == 1
+    assert extractor.route_calls == 0
+    assert retriever.calls == 0
+    assert planner.build_calls == 0
+    assert planner.validate_calls == 0
 
 
 @pytest.mark.asyncio

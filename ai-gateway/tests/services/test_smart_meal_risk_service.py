@@ -50,6 +50,9 @@ async def test_identify_risks_uses_llm_output_and_dedupes(monkeypatch: pytest.Mo
         return ["西兰花（2级）"]
 
     async def stub_query_package_ingredients(**kwargs):  # noqa: ANN003
+        assert kwargs["reservation_date"].strftime("%Y-%m-%d") == "2030-01-07"
+        assert kwargs["meal_types"] == {"BREAKFAST", "LUNCH"}
+        assert kwargs["package_code"] == "TC202604180001"
         return [
             {"dish_name": "蒜蓉西兰花", "ingredient_name": "西兰花"},
             {"dish_name": "清炒时蔬", "ingredient_name": "西兰花"},
@@ -62,6 +65,8 @@ async def test_identify_risks_uses_llm_output_and_dedupes(monkeypatch: pytest.Mo
         id_card_no="110101199001011234",
         sex="男",
         age=36,
+        meal_type=["BREAKFAST", "LUNCH"],
+        reservation_date="2030-01-07",
         package_code="TC202604180001",
         trace_id="trace-1",
     )
@@ -114,6 +119,9 @@ async def test_identify_risks_fallback_to_rule_match_when_llm_empty(monkeypatch:
         return ["小麦（IgG抗体3级）", "牛奶（1级）"]
 
     async def stub_query_package_ingredients(**kwargs):  # noqa: ANN003
+        assert kwargs["reservation_date"].strftime("%Y-%m-%d") == "2030-01-07"
+        assert kwargs["meal_types"] == {"LUNCH"}
+        assert kwargs["package_code"] == "TC202604180001"
         return [
             {"dish_name": "奶香意面", "ingredient_name": "小麦粉"},
             {"dish_name": "奶香意面", "ingredient_name": "牛奶"},
@@ -127,6 +135,8 @@ async def test_identify_risks_fallback_to_rule_match_when_llm_empty(monkeypatch:
         id_card_no="110101199001011234",
         sex="女",
         age=30,
+        meal_type=["LUNCH"],
+        reservation_date="2030-01-07",
         package_code="TC202604180001",
         trace_id="trace-2",
     )
@@ -142,6 +152,31 @@ async def test_identify_risks_fallback_to_rule_match_when_llm_empty(monkeypatch:
             "source_dish": "奶香意面",
         },
     ]
+
+
+@pytest.mark.asyncio
+async def test_identify_risks_raises_package_not_found_when_menu_miss(monkeypatch: pytest.MonkeyPatch) -> None:
+    service = SmartMealRiskService(llm_service=StubLLM("{}"))
+
+    async def stub_fetch_intolerance_items(**kwargs):  # noqa: ANN003
+        return ["小麦（IgG抗体3级）"]
+
+    async def stub_query_package_ingredients(**kwargs):  # noqa: ANN003
+        return []
+
+    monkeypatch.setattr(service, "_fetch_intolerance_items", stub_fetch_intolerance_items)
+    monkeypatch.setattr(service, "_query_package_ingredients", stub_query_package_ingredients)
+
+    with pytest.raises(RuntimeError, match="package_not_found"):
+        await service.identify_risks(
+            id_card_no="110101199001011234",
+            sex="女",
+            age=30,
+            meal_type=["DINNER"],
+            reservation_date="2030-01-07",
+            package_code="MISSING",
+            trace_id="trace-3",
+        )
 
 
 def test_extract_dish_ingredients_from_ingredient_json() -> None:

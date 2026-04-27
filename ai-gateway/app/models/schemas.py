@@ -170,12 +170,22 @@ class HealthQuadrantConfirmEnvelopeResponse(BaseModel):
     data: HealthQuadrantConfirmResponse = Field(..., description="确认结果")
 
 
+class SmartMealMealType(str, Enum):
+    """智能订餐餐次枚举。"""
+
+    BREAKFAST = "BREAKFAST"
+    LUNCH = "LUNCH"
+    DINNER = "DINNER"
+
+
 class SmartMealRiskIdentifyRequest(BaseModel):
     """智能订餐风险识别请求。"""
 
     id_card_no: str = Field(..., min_length=1, description="客户密文身份证号")
     sex: str = Field(..., min_length=1, description="性别")
     age: int = Field(..., ge=0, le=130, description="年龄")
+    meal_type: list[SmartMealMealType] = Field(..., min_length=1, description="餐次列表")
+    reservation_date: str = Field(..., min_length=1, description="订餐日期，格式 YYYY-MM-DD")
     package_code: str = Field(..., min_length=1, description="套餐编码")
 
 
@@ -195,14 +205,6 @@ class SmartMealRiskIdentifyEnvelopeResponse(BaseModel):
     data: list[SmartMealRiskItem] = Field(default_factory=list, description="冲突食材列表")
 
 
-class SmartMealMealType(str, Enum):
-    """智能订餐餐次枚举。"""
-
-    BREAKFAST = "BREAKFAST"
-    LUNCH = "LUNCH"
-    DINNER = "DINNER"
-
-
 class SmartMealPackageRecommendRequest(BaseModel):
     """智能订餐套餐推荐请求。
 
@@ -212,6 +214,8 @@ class SmartMealPackageRecommendRequest(BaseModel):
 
     Args:
         id_card_no: 客户身份证号（密文），用于外部接口与行为数据关联。
+        meal_type: 餐次列表，限定为 BREAKFAST/LUNCH/DINNER。
+        reservation_date: 订餐日期，决定命中的周菜单与星期菜单配置。
         age: 年龄，可选。
         sex: 性别，可选。
         health_tags: 健康标签，可选。
@@ -227,6 +231,8 @@ class SmartMealPackageRecommendRequest(BaseModel):
     """
 
     id_card_no: str = Field(..., min_length=1, description="客户密文身份证号")
+    meal_type: list[SmartMealMealType] = Field(..., min_length=1, description="餐次列表")
+    reservation_date: str = Field(..., min_length=1, description="订餐日期，格式 YYYY-MM-DD")
     age: int | None = Field(None, ge=0, le=130, description="年龄")
     sex: str | None = Field(None, description="性别")
     health_tags: list[str] = Field(default_factory=list, description="健康标签")

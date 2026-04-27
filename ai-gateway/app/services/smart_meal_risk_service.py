@@ -6,6 +6,7 @@ import json
 import logging
 import re
 from collections import defaultdict
+from datetime import datetime
 from typing import Any
 
 import aiomysql
@@ -13,6 +14,12 @@ import httpx
 
 from app.core.config import settings
 from app.services.health_quadrant_mysql_pools import HealthQuadrantMySQLPools
+from app.services.smart_meal_package_recommend_service import (
+    _normalize_meal_types,
+    _normalize_single_meal_type,
+    _parse_date_only,
+    _parse_weekday_meal_entries,
+)
 from app.services.smart_meal_llm_service import SmartMealLLMService
 from app.utils.json_utils import parse_dirty_json_object
 
@@ -46,6 +53,15 @@ _INTOLERANCE_LEVEL_KEYS = (
 _RISK_INGREDIENT_KEYS = ("ingredient", "ingredient_name", "ingredientName", "name")
 _RISK_LEVEL_KEYS = ("intolerance_level", "intoleranceLevel", "level")
 _RISK_SOURCE_DISH_KEYS = ("source_dish", "sourceDish", "dish_name", "dishName")
+_WEEKDAY_MEAL_FIELD_MAP = {
+    1: "weekday_meal1",
+    2: "weekday_meal2",
+    3: "weekday_meal3",
+    4: "weekday_meal4",
+    5: "weekday_meal5",
+    6: "weekday_meal6",
+    7: "weekday_meal7",
+}
 
 
 class SmartMealRiskServiceError(RuntimeError):
@@ -89,10 +105,19 @@ class SmartMealRiskService:
         id_card_no: str,
         sex: str,
         age: int,
+        meal_type: list[str],
+        reservation_date: str,
         package_code: str,
         trace_id: str | None = None,
     ) -> list[dict[str, str]]:
         """执行智能订餐风险识别。"""
+
+        normalized_reservation_date = _parse_date_only(reservation_date)
+        if normalized_reservation_date is None:
+            raise SmartMealRiskServiceError("bad_request: reservation_date 非法")
+        normalized_meal_types = _normalize_meal_types(meal_type)
+        if not normalized_meal_types:
+            raise SmartMealRiskServiceError("bad_request: meal_type 不能为空")
 
         intolerance_items = await self._fetch_intolerance_items(
             id_card_no=id_card_no,
@@ -100,7 +125,11 @@ class SmartMealRiskService:
             age=age,
             trace_id=trace_id,
         )
-        package_ingredients = await self._query_package_ingredients(package_code=package_code)
+        package_ingredients = await self._query_package_ingredients(
+            reservation_date=normalized_reservation_date,
+            meal_types=normalized_meal_types,
+            package_code=package_code,
+        )
         if not package_ingredients:
             raise SmartMealRiskServiceError(f"package_not_found: 套餐不存在或无有效食材 package_code={package_code}")
         if not intolerance_items:
@@ -145,20 +174,33 @@ class SmartMealRiskService:
         except Exception as exc:
             raise SmartMealRiskServiceError("external_failed: 食物不耐受接口调用失败") from exc
 
-    async def _query_package_ingredients(self, *, package_code: str) -> list[dict[str, str]]:
+    async def _query_package_ingredients(
+        self,
+        *,
+        reservation_date: datetime,
+        meal_types: set[str],
+        package_code: str,
+    ) -> list[dict[str, str]]:
+        menu_entries = await self._query_weekly_menu_entries(
+            reservation_date=reservation_date,
+            meal_types=meal_types,
+            package_code=package_code,
+        )
+        if not menu_entries:
+            return []
+
         sql = """
             SELECT
                 p.package_name AS package_name,
                 p.package_type AS package_type,
+                d.dish_code AS dish_code,
                 d.dish_name AS dish_name,
                 d.dish_type AS dish_type,
                 d.ingredient_json AS ingredient_json
             FROM meal_package AS p
-            JOIN meal_package_dish_binding AS db ON p.id = db.package_id
-            JOIN meal_dish AS d ON db.dish_id = d.id
+            JOIN meal_dish AS d ON p.package_code = d.package_code
             WHERE p.package_code = %s
               AND p.status = 1
-              AND db.status = 1
               AND d.status = 1
         """
         pool = await self._mysql_pools.get_ods_pool()
@@ -170,13 +212,62 @@ class SmartMealRiskService:
         except Exception as exc:
             raise SmartMealRiskServiceError("db_failed: 套餐食材查询失败") from exc
 
+        allowed_dish_codes = {entry["dish_code"] for entry in menu_entries if entry.get("dish_code")}
         normalized_rows: list[dict[str, str]] = []
         for row in rows:
+            row_dish_code = _normalize_text(row.get("dish_code"))
+            if allowed_dish_codes and row_dish_code and row_dish_code not in allowed_dish_codes:
+                continue
             dish_name = _normalize_text(row.get("dish_name"))
             if not dish_name:
                 continue
             normalized_rows.extend(_extract_dish_ingredients(dish_name=dish_name, ingredient_json=row.get("ingredient_json")))
         return normalized_rows
+
+    async def _query_weekly_menu_entries(
+        self,
+        *,
+        reservation_date: datetime,
+        meal_types: set[str],
+        package_code: str,
+    ) -> list[dict[str, str]]:
+        pool = await self._mysql_pools.get_ods_pool()
+        weekday_field = _WEEKDAY_MEAL_FIELD_MAP[reservation_date.isoweekday()]
+        sql = f"""
+            SELECT {weekday_field} AS weekday_meal
+            FROM meal_weekly_menu_config
+            WHERE week_start_date <= %s
+              AND week_end_date >= %s
+            ORDER BY week_start_date DESC
+            LIMIT 1
+        """
+        try:
+            async with pool.acquire() as conn:
+                async with conn.cursor(aiomysql.DictCursor) as cursor:
+                    await cursor.execute(sql, (reservation_date.date(), reservation_date.date()))
+                    row = await cursor.fetchone()
+        except Exception as exc:
+            raise SmartMealRiskServiceError("db_failed: 周菜单查询失败") from exc
+
+        if not row:
+            return []
+
+        filtered: list[dict[str, str]] = []
+        for entry in _parse_weekday_meal_entries(row.get("weekday_meal")):
+            normalized_meal_type = _normalize_single_meal_type(entry.get("meal_type"))
+            if normalized_meal_type not in meal_types:
+                continue
+            normalized_package_code = _normalize_text(entry.get("package_code"))
+            if normalized_package_code != package_code:
+                continue
+            filtered.append(
+                {
+                    "package_code": normalized_package_code,
+                    "dish_code": _normalize_text(entry.get("dish_code")),
+                    "meal_type": normalized_meal_type,
+                }
+            )
+        return filtered
 
     async def _identify_risk_items_with_llm(
         self,
