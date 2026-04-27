@@ -103,6 +103,7 @@ class SmartMealRiskService:
         self,
         *,
         id_card_no: str,
+        campus_id: str,
         sex: str,
         age: int,
         meal_type: list[str],
@@ -112,6 +113,8 @@ class SmartMealRiskService:
     ) -> list[dict[str, str]]:
         """执行智能订餐风险识别。"""
 
+        if not campus_id.strip():
+            raise SmartMealRiskServiceError("bad_request: campus_id 不能为空")
         normalized_reservation_date = _parse_date_only(reservation_date)
         if normalized_reservation_date is None:
             raise SmartMealRiskServiceError("bad_request: reservation_date 非法")
@@ -126,6 +129,7 @@ class SmartMealRiskService:
             trace_id=trace_id,
         )
         package_ingredients = await self._query_package_ingredients(
+            campus_id=campus_id,
             reservation_date=normalized_reservation_date,
             meal_types=normalized_meal_types,
             package_code=package_code,
@@ -177,11 +181,13 @@ class SmartMealRiskService:
     async def _query_package_ingredients(
         self,
         *,
+        campus_id: str,
         reservation_date: datetime,
         meal_types: set[str],
         package_code: str,
     ) -> list[dict[str, str]]:
         menu_entries = await self._query_weekly_menu_entries(
+            campus_id=campus_id,
             reservation_date=reservation_date,
             meal_types=meal_types,
             package_code=package_code,
@@ -227,6 +233,7 @@ class SmartMealRiskService:
     async def _query_weekly_menu_entries(
         self,
         *,
+        campus_id: str,
         reservation_date: datetime,
         meal_types: set[str],
         package_code: str,
@@ -238,13 +245,14 @@ class SmartMealRiskService:
             FROM meal_weekly_menu_config
             WHERE week_start_date <= %s
               AND week_end_date >= %s
+              AND campus_id = %s
             ORDER BY week_start_date DESC
             LIMIT 1
         """
         try:
             async with pool.acquire() as conn:
                 async with conn.cursor(aiomysql.DictCursor) as cursor:
-                    await cursor.execute(sql, (reservation_date.date(), reservation_date.date()))
+                    await cursor.execute(sql, (reservation_date.date(), reservation_date.date(), campus_id))
                     row = await cursor.fetchone()
         except Exception as exc:
             raise SmartMealRiskServiceError("db_failed: 周菜单查询失败") from exc

@@ -50,6 +50,7 @@ async def test_identify_risks_uses_llm_output_and_dedupes(monkeypatch: pytest.Mo
         return ["西兰花（2级）"]
 
     async def stub_query_package_ingredients(**kwargs):  # noqa: ANN003
+        assert kwargs["campus_id"] == "TJ-001"
         assert kwargs["reservation_date"].strftime("%Y-%m-%d") == "2030-01-07"
         assert kwargs["meal_types"] == {"BREAKFAST", "LUNCH"}
         assert kwargs["package_code"] == "TC202604180001"
@@ -63,6 +64,7 @@ async def test_identify_risks_uses_llm_output_and_dedupes(monkeypatch: pytest.Mo
 
     result = await service.identify_risks(
         id_card_no="110101199001011234",
+        campus_id="TJ-001",
         sex="男",
         age=36,
         meal_type=["BREAKFAST", "LUNCH"],
@@ -119,6 +121,7 @@ async def test_identify_risks_fallback_to_rule_match_when_llm_empty(monkeypatch:
         return ["小麦（IgG抗体3级）", "牛奶（1级）"]
 
     async def stub_query_package_ingredients(**kwargs):  # noqa: ANN003
+        assert kwargs["campus_id"] == "TJ-001"
         assert kwargs["reservation_date"].strftime("%Y-%m-%d") == "2030-01-07"
         assert kwargs["meal_types"] == {"LUNCH"}
         assert kwargs["package_code"] == "TC202604180001"
@@ -133,6 +136,7 @@ async def test_identify_risks_fallback_to_rule_match_when_llm_empty(monkeypatch:
 
     result = await service.identify_risks(
         id_card_no="110101199001011234",
+        campus_id="TJ-001",
         sex="女",
         age=30,
         meal_type=["LUNCH"],
@@ -170,6 +174,7 @@ async def test_identify_risks_raises_package_not_found_when_menu_miss(monkeypatc
     with pytest.raises(RuntimeError, match="package_not_found"):
         await service.identify_risks(
             id_card_no="110101199001011234",
+            campus_id="TJ-001",
             sex="女",
             age=30,
             meal_type=["DINNER"],

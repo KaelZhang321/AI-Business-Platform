@@ -11,6 +11,7 @@ class StubSmartMealRiskService:
         self,
         *,
         id_card_no: str,
+        campus_id: str,
         sex: str,
         age: int,
         meal_type: list[str],
@@ -19,6 +20,7 @@ class StubSmartMealRiskService:
         trace_id: str | None,
     ) -> list[dict[str, str]]:
         assert id_card_no == "110101199001011234"
+        assert campus_id == "TJ-001"
         assert sex == "男"
         assert age == 36
         assert meal_type == ["BREAKFAST", "LUNCH"]
@@ -49,6 +51,7 @@ def test_smart_meal_route_returns_envelope(monkeypatch) -> None:
         headers={"X-Trace-Id": "trace-001"},
         json={
             "id_card_no": "110101199001011234",
+            "campus_id": "TJ-001",
             "sex": "男",
             "age": 36,
             "meal_type": ["BREAKFAST", "LUNCH"],

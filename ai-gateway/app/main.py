@@ -19,6 +19,10 @@ from app.api.routes.smart_meal import (
     get_smart_meal_risk_service,
     router as smart_meal_router,
 )
+from app.api.routes.transcript_extract import (
+    get_transcript_extract_service,
+    router as transcript_extract_router,
+)
 from app.core.config import settings
 from app.core.error_codes import BusinessError, ErrorCode
 from app.models.schemas import HealthResponse
@@ -310,6 +314,13 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.warning("关闭 SmartMealPackageRecommendService 失败: %s", exc)
 
+    # Transcript 抽取服务资源
+    try:
+        await get_transcript_extract_service().close()
+        logger.info("TranscriptExtractService 已关闭")
+    except Exception as exc:
+        logger.warning("关闭 TranscriptExtractService 失败: %s", exc)
+
     # Runtime 模型配置服务（MySQL 连接池）
     try:
         await close_model_runtime_config_service()
@@ -443,6 +454,7 @@ app.include_router(api_query_router, prefix="/api/v1")
 app.include_router(catalog_governance_router, prefix="/api/v1")
 app.include_router(health_quadrant_router, prefix="/api/v1")
 app.include_router(smart_meal_router, prefix="/api/v1")
+app.include_router(transcript_extract_router, prefix="/api/v1")
 
 # MCP Server 路由
 from app.mcp_server.server import mcp_server  # noqa: E402

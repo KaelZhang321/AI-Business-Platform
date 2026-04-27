@@ -17,6 +17,7 @@ class StubSmartMealPackageRecommendService:
         self,
         *,
         id_card_no: str,
+        campus_id: str,
         meal_type: list[str],
         reservation_date: str,
         age: int | None,
@@ -28,6 +29,7 @@ class StubSmartMealPackageRecommendService:
         trace_id: str | None,
     ) -> list[dict[str, str | float]]:
         assert id_card_no == "110101199001011234"
+        assert campus_id == "TJ-001"
         assert meal_type == ["BREAKFAST", "LUNCH"]
         assert reservation_date == "2030-01-07"
         assert age == 52
@@ -77,6 +79,7 @@ def test_smart_meal_package_recommend_route_returns_envelope(monkeypatch) -> Non
         headers={"X-Trace-Id": "trace-002"},
         json={
             "id_card_no": "110101199001011234",
+            "campus_id": "TJ-001",
             "meal_type": ["BREAKFAST", "LUNCH"],
             "reservation_date": "2030-01-07",
             "age": 52,
@@ -120,6 +123,7 @@ def test_smart_meal_package_recommend_route_returns_empty_contract(monkeypatch) 
         "/api/v1/smart-meal/package-recommend",
         json={
             "id_card_no": "110101199001011234",
+            "campus_id": "TJ-001",
             "meal_type": ["LUNCH"],
             "reservation_date": "2030-01-07",
         },

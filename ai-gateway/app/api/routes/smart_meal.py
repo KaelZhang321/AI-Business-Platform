@@ -87,6 +87,7 @@ async def identify_smart_meal_risk(
     try:
         risk_items = await _service.identify_risks(
             id_card_no=request_body.id_card_no,
+            campus_id=request_body.campus_id,
             sex=request_body.sex,
             age=request_body.age,
             meal_type=[item.value for item in request_body.meal_type],
@@ -123,6 +124,7 @@ async def recommend_smart_meal_package(
     try:
         recommendations = await _package_recommend_service.recommend_packages(
             id_card_no=request_body.id_card_no,
+            campus_id=request_body.campus_id,
             meal_type=[item.value for item in request_body.meal_type],
             reservation_date=request_body.reservation_date,
             age=request_body.age,

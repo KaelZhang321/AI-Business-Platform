@@ -156,6 +156,7 @@ class SmartMealPackageRecommendService:
         self,
         *,
         id_card_no: str,
+        campus_id: str,
         meal_type: list[str],
         reservation_date: str,
         age: int | None,
@@ -174,6 +175,7 @@ class SmartMealPackageRecommendService:
 
         Args:
             id_card_no: 客户身份证号（原值）。
+            campus_id: 预约院区ID，仅在该院区菜单中筛选候选套餐。
             meal_type: 餐次列表。
             reservation_date: 订餐日期，用于定位周菜单配置。
             age: 年龄（可选，当前仅保留请求契约，不参与评分）。
@@ -198,6 +200,8 @@ class SmartMealPackageRecommendService:
         started_at = perf_counter()
         if not id_card_no.strip():
             raise SmartMealPackageRecommendServiceError("bad_request: id_card_no 不能为空")
+        if not campus_id.strip():
+            raise SmartMealPackageRecommendServiceError("bad_request: campus_id 不能为空")
         normalized_reservation_date = _parse_date_only(reservation_date)
         if normalized_reservation_date is None:
             raise SmartMealPackageRecommendServiceError("bad_request: reservation_date 非法")
@@ -215,6 +219,7 @@ class SmartMealPackageRecommendService:
 
         # 2. 根据订餐日期和餐次，从周菜单配置中定位当天实际可选套餐。
         candidates = await self._query_candidates(
+            campus_id=campus_id,
             reservation_date=normalized_reservation_date,
             meal_types=normalized_meal_types,
         )
@@ -580,7 +585,13 @@ class SmartMealPackageRecommendService:
                     terms.add(term.strip())
         return terms
 
-    async def _query_candidates(self, *, reservation_date: datetime, meal_types: set[str]) -> list[_PackageCandidate]:
+    async def _query_candidates(
+        self,
+        *,
+        campus_id: str,
+        reservation_date: datetime,
+        meal_types: set[str],
+    ) -> list[_PackageCandidate]:
         """查询订餐日期与餐次命中的候选套餐。
 
         功能：
@@ -588,7 +599,11 @@ class SmartMealPackageRecommendService:
             只对当天、当餐次真实可订的套餐做后续硬过滤与排序。
         """
 
-        menu_entries = await self._query_weekly_menu_entries(reservation_date=reservation_date, meal_types=meal_types)
+        menu_entries = await self._query_weekly_menu_entries(
+            campus_id=campus_id,
+            reservation_date=reservation_date,
+            meal_types=meal_types,
+        )
         if not menu_entries:
             return []
         package_codes = sorted({entry["package_code"] for entry in menu_entries if entry.get("package_code")})
@@ -664,6 +679,7 @@ class SmartMealPackageRecommendService:
     async def _query_weekly_menu_entries(
         self,
         *,
+        campus_id: str,
         reservation_date: datetime,
         meal_types: set[str],
     ) -> list[dict[str, str]]:
@@ -681,13 +697,14 @@ class SmartMealPackageRecommendService:
             FROM meal_weekly_menu_config
             WHERE week_start_date <= %s
               AND week_end_date >= %s
+              AND campus_id = %s
             ORDER BY week_start_date DESC
             LIMIT 1
         """
         try:
             async with pool.acquire() as conn:
                 async with conn.cursor(aiomysql.DictCursor) as cursor:
-                    await cursor.execute(sql, (reservation_date.date(), reservation_date.date()))
+                    await cursor.execute(sql, (reservation_date.date(), reservation_date.date(), campus_id))
                     row = await cursor.fetchone()
         except Exception as exc:  # noqa: BLE001
             raise SmartMealPackageRecommendServiceError("db_failed: 周菜单查询失败") from exc
