@@ -280,7 +280,7 @@ class ReportIntentService:
         """匹配 metric-focus 规则。"""
 
         for rule in rules:
-            if rule.keyword and rule.keyword in normalized_query:
+            if rule.keyword and (rule.keyword in normalized_query or normalized_query in rule.keyword):
                 return rule
         return None
 
@@ -299,7 +299,7 @@ class ReportIntentService:
                 if normalized_query == rule.keyword:
                     candidates.add(rule.intent_code)
                 continue
-            if rule.keyword in normalized_query:
+            if (rule.keyword in normalized_query or normalized_query in rule.keyword):
                 candidates.add(rule.intent_code)
         return candidates
 
