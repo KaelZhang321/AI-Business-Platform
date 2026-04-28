@@ -20,6 +20,7 @@ import aiomysql
 import httpx
 
 from app.core.config import settings
+from app.utils.text_utils import normalize_text_or_none as _normalize_text
 from app.services.health_quadrant_llm_service import HealthQuadrantLLMService
 from app.services.health_quadrant_mysql_pools import HealthQuadrantMySQLPools
 from app.services.health_quadrant_repository import HealthQuadrantRepository
@@ -1462,13 +1463,6 @@ def _normalize_single_exam_items(items: list[dict[str, Any]]) -> list[dict[str, 
         )
     normalized.sort(key=lambda x: (x["itemId"], x["itemText"], x["abnormalIndicator"]))
     return normalized
-
-
-def _normalize_text(value: Any) -> str | None:
-    if value is None:
-        return None
-    text = str(value).strip()
-    return text or None
 
 
 def _safe_int(value: Any, *, default: int) -> int:

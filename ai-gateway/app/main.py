@@ -21,7 +21,7 @@ from app.api.routes.smart_meal import (
     router as smart_meal_router,
 )
 from app.api.routes.transcript_extract import router as transcript_extract_router
-from app.core.config import settings
+from app.core.config import reveal_secret, settings
 from app.core.resources import AppResources
 from app.core.error_codes import BusinessError, ErrorCode
 from app.models.schemas import HealthResponse
@@ -153,9 +153,10 @@ async def lifespan(app: FastAPI):
     logger.info("AI网关日志双写已启用, file=%s", log_file_path)
 
     # ── 启动时：LangSmith 初始化 ─────────────────────────
-    if settings.langsmith_tracing and settings.langsmith_api_key:
+    langsmith_api_key = reveal_secret(settings.langsmith_api_key)
+    if settings.langsmith_tracing and langsmith_api_key:
         os.environ["LANGCHAIN_TRACING_V2"] = "true"
-        os.environ["LANGCHAIN_API_KEY"] = settings.langsmith_api_key
+        os.environ["LANGCHAIN_API_KEY"] = langsmith_api_key
         os.environ["LANGCHAIN_PROJECT"] = settings.langsmith_project
         logger.info("LangSmith tracing 已启用, project=%s", settings.langsmith_project)
 
@@ -181,7 +182,7 @@ async def lifespan(app: FastAPI):
 
         es_client = AsyncElasticsearch(
             settings.elasticsearch_url,
-            basic_auth=(settings.elasticsearch_username, settings.elasticsearch_password),
+            basic_auth=(settings.elasticsearch_username, reveal_secret(settings.elasticsearch_password)),
         )
         exists = await es_client.indices.exists(index=settings.elasticsearch_index)
         _service_status["elasticsearch"] = "ok" if exists else "index_missing"
@@ -213,7 +214,10 @@ async def lifespan(app: FastAPI):
     await get_business_intent_catalog_service().warmup()
     # 健康四象限依赖三套数据库。启动期预热连接池可降低首个请求的冷启动时延。
     try:
-        await app.state.resources.health_quadrant_service.warmup()
+        health_quadrant_service = app.state.resources.health_quadrant_service
+        if health_quadrant_service is None:
+            raise RuntimeError("HealthQuadrantService 尚未初始化")
+        await health_quadrant_service.warmup()
         logger.info("HealthQuadrantService 连接池预热完成")
     except Exception as exc:
         logger.warning("HealthQuadrantService 连接池预热失败: %s", exc)
@@ -343,7 +347,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.cors_allow_origins,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -463,7 +467,8 @@ async def prometheus_middleware(request, call_next):
     response = await call_next(request)
     elapsed = time.perf_counter() - start
 
-    endpoint = request.url.path
+    route = request.scope.get("route")
+    endpoint = route.path if route and hasattr(route, "path") else request.url.path
     REQUEST_COUNT.labels(method=request.method, endpoint=endpoint, status=response.status_code).inc()
     REQUEST_LATENCY.labels(endpoint=endpoint).observe(elapsed)
     return response

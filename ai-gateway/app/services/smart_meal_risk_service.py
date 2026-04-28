@@ -13,6 +13,7 @@ import aiomysql
 import httpx
 
 from app.core.config import settings
+from app.utils.text_utils import normalize_scalar_text as _normalize_text
 from app.services.health_quadrant_mysql_pools import HealthQuadrantMySQLPools
 from app.services.smart_meal_package_recommend_service import (
     _normalize_meal_types,
@@ -496,16 +497,6 @@ class SmartMealRiskService:
         if self._http_client is None:
             self._http_client = httpx.AsyncClient(timeout=15.0)
         return self._http_client
-
-def _normalize_text(value: Any) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, (int, float)):
-        return str(value).strip()
-    if isinstance(value, str):
-        return value.strip()
-    return ""
-
 
 def _pick_first_text(data: dict[str, Any], keys: tuple[str, ...]) -> str:
     for key in keys:

@@ -20,6 +20,7 @@ import aiomysql
 import httpx
 
 from app.core.config import settings
+from app.utils.text_utils import normalize_scalar_text as _normalize_text
 from app.services.health_quadrant_mysql_pools import HealthQuadrantMySQLPools
 from app.services.smart_meal_llm_service import SmartMealLLMService
 from app.utils.json_utils import parse_dirty_json_object, summarize_log_text
@@ -965,16 +966,6 @@ def _parse_score(value: Any) -> float | None:
         return float(text)
     except ValueError:
         return None
-
-
-def _normalize_text(value: Any) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, str):
-        return value.strip()
-    if isinstance(value, (int, float)):
-        return str(value).strip()
-    return ""
 
 
 def _parse_datetime(value: Any) -> datetime | None:

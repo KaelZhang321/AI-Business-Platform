@@ -23,6 +23,7 @@ from app.services.llm_service import LLMService
 from app.services.rag_service import RAGService
 from app.services.semantic_cache import SemanticCacheService
 from app.services.text2sql_service import Text2SQLService
+from app.utils.timing import StageTimer
 
 logger = logging.getLogger(__name__)
 
@@ -104,17 +105,34 @@ class ChatWorkflow:
         return self._to_response(request, state)
 
     async def stream(self, request: ChatRequest):
-        """执行流式聊天工作流，并把状态节点事件转换为 SSE 片段。"""
-        initial_state = self._initial_state(request)
-        async for event in self._graph.astream_events(initial_state, version="v1"):
-            yield self._convert_event(request, event)
+        """执行流式聊天工作流，并把状态节点事件转换为 SSE 片段。
 
-    def _convert_event(self, request: ChatRequest, event: dict[str, Any]):
-        """把 LangGraph 内部事件折叠为统一 SSE 信封。"""
+        修复记录（P0 SSE 正确性）：
+        - _convert_event 从 generator 改为返回 list，避免嵌套 generator
+        - trace_id 在请求入口生成一次，全流内保持稳定
+        - 异常时发出 STREAM_ERROR 而非静默失败
+        """
+        initial_state = self._initial_state(request)
+        # P0 fix: 请求级稳定 traceId，不依赖可能为空的 conversation_id
+        trace_id = request.conversation_id or str(uuid4())
+        try:
+            async for event in self._graph.astream_events(initial_state, version="v1"):
+                # P0 fix: _convert_event 返回 list 而非 generator，逐条 yield 扁平字符串
+                for sse_chunk in self._convert_event(request, event, trace_id):
+                    yield sse_chunk
+        except Exception as exc:
+            logger.exception("Stream error: %s", exc)
+            yield self._sse("STREAM_ERROR", {"error": str(exc)}, trace_id)
+
+    def _convert_event(self, request: ChatRequest, event: dict[str, Any], trace_id: str) -> list[str]:
+        """把 LangGraph 内部事件折叠为统一 SSE 信封。
+
+        返回 SSE 字符串列表（而非 generator），由 stream() 逐条 yield。
+        """
         event_type: str | None = event.get("event")
         name: str | None = event.get("name")
         state = event.get("data", {}).get("state", {})
-        trace_id = request.conversation_id or ""
+        results: list[str] = []
 
         if event_type == "on_node_end" and name == "classify":
             intent = state.get("intent", IntentType.CHAT)
@@ -123,19 +141,21 @@ class ChatWorkflow:
                 "intent": intent.value if isinstance(intent, IntentType) else intent,
                 "sub_intent": sub_intent.value if isinstance(sub_intent, SubIntentType) else sub_intent,
             }
-            yield self._sse("STREAM_START", payload, trace_id)
+            results.append(self._sse("STREAM_START", payload, trace_id))
         elif event_type == "on_node_end" and name in {"knowledge", "query", "task", "chat"}:
             text = state.get("response_text", "")
             if text:
-                yield self._sse("STREAM_CHUNK", {"node": name, "text": text}, trace_id)
+                results.append(self._sse("STREAM_CHUNK", {"node": name, "text": text}, trace_id))
             if state.get("ui_spec"):
-                yield self._sse("STREAM_CHUNK", {"ui_spec": state["ui_spec"]}, trace_id)
+                results.append(self._sse("STREAM_CHUNK", {"ui_spec": state["ui_spec"]}, trace_id))
             if sources := state.get("sources"):
-                yield self._sse("STREAM_CHUNK", {"sources": sources}, trace_id)
+                results.append(self._sse("STREAM_CHUNK", {"sources": sources}, trace_id))
         elif event_type == "on_graph_end":
             final_state = state if state else {}
             response = self._to_response(request, final_state)
-            yield self._sse("STREAM_END", response.model_dump(), trace_id)
+            results.append(self._sse("STREAM_END", response.model_dump(), trace_id))
+
+        return results
 
     def _initial_state(self, request: ChatRequest) -> ChatState:
         """初始化图执行状态。"""
@@ -151,7 +171,10 @@ class ChatWorkflow:
     async def _classify_intent(self, state: ChatState) -> dict[str, Any]:
         """工作流入口节点：识别一级/二级意图。"""
         req = ChatRequest(**state["request"])
-        result: IntentResult = await self._intent_classifier.classify(req.message, req.context)
+        timer = StageTimer()
+        with timer.stage("intent_classify"):
+            result: IntentResult = await self._intent_classifier.classify(req.message, req.context)
+        timer.log_summary("classify_intent")
         return {"intent": result.intent, "sub_intent": result.sub_intent}
 
     async def _handle_knowledge(self, state: ChatState) -> dict[str, Any]:
@@ -161,35 +184,42 @@ class ChatWorkflow:
             优先命中语义缓存，其次检索知识库，并在成功时写回缓存，兼顾稳定性与成本。
         """
         req = ChatRequest(**state["request"])
+        timer = StageTimer()
 
         # S5-11: 语义缓存 — 命中则直接返回
-        cache_hit = await self._semantic_cache.lookup(req.message)
+        with timer.stage("semantic_cache_lookup"):
+            cache_hit = await self._semantic_cache.lookup(req.message)
         if cache_hit:
             logger.info("语义缓存命中 (similarity=%.4f)", cache_hit.similarity)
+            timer.log_summary("handle_knowledge")
             return {
                 "response_text": cache_hit.answer,
                 "ui_spec": cache_hit.ui_spec,
                 "sources": cache_hit.sources,
             }
 
-        results = await self._rag_service.search(req.message)
+        with timer.stage("rag_search"):
+            results = await self._rag_service.search(req.message)
         if results:
             summary_lines = [f"- {item.title}: {item.content[:150]}" for item in results[:3]]
             response_text = "\n".join(summary_lines)
-            ui_spec = await self._dynamic_ui.generate_ui_spec("knowledge", results)
+            with timer.stage("ui_spec_build"):
+                ui_spec = await self._dynamic_ui.generate_ui_spec("knowledge", results)
             sources = [item.model_dump() for item in results]
 
             # S5-11: 写入语义缓存
-            await self._semantic_cache.store(
-                question=req.message,
-                answer=response_text,
-                sources=sources,
-                ui_spec=ui_spec,
-            )
+            with timer.stage("semantic_cache_store"):
+                await self._semantic_cache.store(
+                    question=req.message,
+                    answer=response_text,
+                    sources=sources,
+                    ui_spec=ui_spec,
+                )
         else:
             response_text = "未从知识库中检索到相关内容。"
             ui_spec = None
             sources = []
+        timer.log_summary("handle_knowledge")
         return {"response_text": response_text, "ui_spec": ui_spec, "sources": sources}
 
     async def _handle_query(self, state: ChatState) -> dict[str, Any]:

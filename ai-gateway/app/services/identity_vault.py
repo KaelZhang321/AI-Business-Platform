@@ -11,7 +11,7 @@ from typing import Any
 
 from fastapi import Request
 
-from app.core.config import settings
+from app.core.config import reveal_secret, settings
 
 logger = logging.getLogger(__name__)
 _TRUSTED_USER_ID_HEADER = "X-User-Id"
@@ -76,7 +76,7 @@ class IdentityVault:
     """
 
     def __init__(self, *, jwt_secret: str | None = None) -> None:
-        self._jwt_secret = jwt_secret if jwt_secret is not None else settings.gateway_jwt_secret
+        self._jwt_secret = jwt_secret if jwt_secret is not None else reveal_secret(settings.gateway_jwt_secret)
 
     def extract_from_request(self, request: Request) -> IdentityContext | None:
         """基于请求头组装当前请求的最终身份上下文。
