@@ -113,11 +113,11 @@ export function AssistantMessageContent({ content }: AssistantMessageContentProp
   return (
     <>
       {/* 文本区域：按换行符拆分，每行渲染为独立的 <p> 标签 */}
-      {text.split('\n').map((line, index) => (
+      {/* {text.split('\n').map((line, index) => (
         <p key={`assistant-line-${index}`} className={index > 0 ? 'mt-2' : ''}>
           {line}
         </p>
-      ))}
+      ))} */}
 
       {/**
        * 卡片区域：Standalone Mode 下直接使用 <AssistantRenderer>，

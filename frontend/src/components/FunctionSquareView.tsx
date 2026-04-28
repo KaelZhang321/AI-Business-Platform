@@ -1,7 +1,8 @@
 // 功能广场视图：展示推荐模块、全部功能以及导航跳转入口。
 import React from 'react';
 import { motion } from 'motion/react';
-import { Search, ChevronRight, Star } from 'lucide-react';
+import { message } from 'antd';
+import { Search, ChevronRight } from 'lucide-react';
 import { FUNCTION_MODULES } from '../data/mockData';
 import type { AppPage } from '../navigation';
 
@@ -15,9 +16,7 @@ interface FunctionSquareViewProps {
 export function FunctionSquareView({ setCurrentPage }: FunctionSquareViewProps) {
   /** 功能名称 → 页面标识的映射表（用于点击跳转） */
   const FEATURE_PAGE_MAP: Record<string, AppPage> = {
-    'AI辅助诊断': 'ai-diagnosis',
     'AI报告对比': 'ai-report-comparison',
-    'AI报告解读': 'ai-report-comparison',
     'AI四象限健康评估': 'ai-four-quadrant',
   };
 
@@ -26,7 +25,10 @@ export function FunctionSquareView({ setCurrentPage }: FunctionSquareViewProps) 
     const targetPage = FEATURE_PAGE_MAP[title];
     if (targetPage) {
       setCurrentPage(targetPage);
+      return;
     }
+
+    message.info('功能暂未上线，敬请期待！');
   };
 
   return (

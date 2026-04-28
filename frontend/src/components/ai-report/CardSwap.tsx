@@ -70,8 +70,8 @@ const placeNow = (el: HTMLElement | null, slot: Slot, skew: number) => {
 };
 
 export interface CardSwapRef {
-  swap: () => void;
-  swapBack: () => void;
+  swap: () => number | null;
+  swapBack: () => number | null;
   getCurrentIndex: () => number;
 }
 
@@ -114,15 +114,15 @@ const CardSwap = forwardRef<CardSwapRef, CardSwapProps>(({
   const tlRef = useRef<gsap.core.Timeline | null>(null);
   const intervalRef = useRef<number>(0);
   const container = useRef<HTMLDivElement>(null);
-  const swapRef = useRef<() => void>();
-  const swapBackRef = useRef<() => void>();
+  const swapRef = useRef<() => number | null>();
+  const swapBackRef = useRef<() => number | null>();
 
   useImperativeHandle(ref, () => ({
     swap: () => {
-      swapRef.current?.();
+      return swapRef.current?.() ?? null;
     },
     swapBack: () => {
-      swapBackRef.current?.();
+      return swapBackRef.current?.() ?? null;
     },
     getCurrentIndex: () => order.current[0] ?? 0,
   }));
@@ -134,12 +134,13 @@ const CardSwap = forwardRef<CardSwapRef, CardSwapProps>(({
 
     const swap = () => {
       const validOrder = order.current.filter((idx) => Boolean(refs[idx]?.current));
-      if (validOrder.length < 2) return;
-      if (tlRef.current && tlRef.current.isActive()) return; // Prevent multiple swaps at once
+      if (validOrder.length < 2) return null;
+      if (tlRef.current && tlRef.current.isActive()) return null; // Prevent multiple swaps at once
 
       const [front, ...rest] = validOrder;
       const elFront = refs[front]?.current;
-      if (!elFront) return;
+      if (!elFront) return null;
+      const nextFront = rest[0] ?? front;
 
       const tl = gsap.timeline();
       tlRef.current = tl;
@@ -194,19 +195,22 @@ const CardSwap = forwardRef<CardSwapRef, CardSwapProps>(({
       tl.call(() => {
         order.current = [...rest, front];
       });
+
+      return nextFront;
     };
 
     swapRef.current = swap;
 
     const swapBack = () => {
       const validOrder = order.current.filter((idx) => Boolean(refs[idx]?.current));
-      if (validOrder.length < 2) return;
-      if (tlRef.current && tlRef.current.isActive()) return;
+      if (validOrder.length < 2) return null;
+      if (tlRef.current && tlRef.current.isActive()) return null;
 
       const back = validOrder[validOrder.length - 1];
       const rest = validOrder.slice(0, -1);
       const elBack = refs[back]?.current;
-      if (!elBack) return;
+      if (!elBack) return null;
+      const nextFront = back;
 
       const tl = gsap.timeline();
       tlRef.current = tl;
@@ -252,6 +256,8 @@ const CardSwap = forwardRef<CardSwapRef, CardSwapProps>(({
       tl.call(() => {
         order.current = [back, ...rest];
       });
+
+      return nextFront;
     };
 
     swapBackRef.current = swapBack;

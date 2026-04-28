@@ -57,6 +57,7 @@ function ConclusionCard({ item, index }: { key?: React.Key; item: ConclusionItem
 export function ReportOverview({ data }: ReportOverviewProps) {
   const criticalCount = data.conclusions.filter(c => c.severity === 'critical').length;
   const warningCount = data.conclusions.filter(c => c.severity === 'warning').length;
+  const abnormalSummaryText = (data.abnormalSummary || '').trim();
 
   return (
     <div className="space-y-5">
@@ -92,11 +93,17 @@ export function ReportOverview({ data }: ReportOverviewProps) {
           体检结论
           <span className="text-xs font-normal text-slate-400 dark:text-slate-500">共 {data.conclusions.length} 项</span>
         </h3>
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-2.5">
-          {data.conclusions.map((item, i) => (
-            <ConclusionCard key={item.index} item={item} index={i} />
-          ))}
-        </div>
+        {data.conclusions.length > 0 ? (
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-2.5">
+            {data.conclusions.map((item, i) => (
+              <ConclusionCard key={item.index} item={item} index={i} />
+            ))}
+          </div>
+        ) : (
+          <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50/60 px-4 py-5 text-sm text-slate-500 dark:border-slate-700 dark:bg-slate-800/40 dark:text-slate-400">
+            暂无体检结论数据
+          </div>
+        )}
       </div>
 
       {/* Abnormal Summary */}
@@ -106,7 +113,7 @@ export function ReportOverview({ data }: ReportOverviewProps) {
           各科室异常摘要
         </h3>
         <div className="text-sm text-slate-600 dark:text-slate-300 leading-relaxed whitespace-pre-line max-h-96 overflow-y-auto custom-scrollbar">
-          {data.abnormalSummary.replace(/\r\n/g, '\n')}
+          {abnormalSummaryText ? abnormalSummaryText.replace(/\r\n/g, '\n') : '暂无各科室异常摘要'}
         </div>
       </div>
     </div>

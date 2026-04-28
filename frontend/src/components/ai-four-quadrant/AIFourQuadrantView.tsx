@@ -1,7 +1,9 @@
+import { useMemo } from 'react'
 import TargetCursor from './TargetCursor'
 import { FourQuadrantHeader, QuadrantWorkspace, ResultSidebar, SelectionPanel, StatusBanner } from './components'
 import { useFourQuadrantState } from './useFourQuadrantState'
 import type { AIFourQuadrantViewProps } from './types'
+import { useLocation } from 'react-router-dom'
 
 export const AIFourQuadrantView = ({
   setCurrentPage,
@@ -10,11 +12,25 @@ export const AIFourQuadrantView = ({
   hideHeader = false,
   navigationParams,
 }: AIFourQuadrantViewProps) => {
+  const location = useLocation()
+  const urlParams = new URLSearchParams(location.search)
+  const customerNameFromUrl = urlParams.get('customerName')?.trim() || ''
+
+  const mergedNavigationParams = useMemo(
+    () => ({
+      ...navigationParams,
+      ...(customerNameFromUrl ? { customerName: customerNameFromUrl } : {}),
+    }),
+    [navigationParams, customerNameFromUrl],
+  )
+
   const {
     selectedClientId,
     setSelectedClientId,
     selectedReportId,
     setSelectedReportId,
+    quadrantType,
+    setQuadrantType,
     notes,
     setNotes,
     customerKeyword,
@@ -46,7 +62,7 @@ export const AIFourQuadrantView = ({
     handleStartAnalysis,
     handleSendMessage,
     handleConfirmQuadrants,
-  } = useFourQuadrantState(navigationParams)
+  } = useFourQuadrantState(mergedNavigationParams)
 
   return (
     <div className="space-y-6 pb-12 h-full flex flex-col relative">
@@ -70,6 +86,7 @@ export const AIFourQuadrantView = ({
                 selectedReport={selectedReport}
                 selectedReportId={selectedReportId}
                 availableReports={availableReports}
+                quadrantType={quadrantType}
                 notes={notes}
                 isClientDropdownOpen={isClientDropdownOpen}
                 isReportDropdownOpen={isReportDropdownOpen}
@@ -94,6 +111,7 @@ export const AIFourQuadrantView = ({
                   setSelectedReportId(id)
                   setIsReportDropdownOpen(false)
                 }}
+                onQuadrantTypeChange={setQuadrantType}
                 onSetNotes={setNotes}
                 onStartAnalysis={handleStartAnalysis}
               />
@@ -144,6 +162,9 @@ export const AIFourQuadrantView = ({
             analysisStep={analysisStep}
             analysisProgress={analysisProgress}
             onQuadrantAddItem={({ nextData }) => {
+              void handleConfirmQuadrants(nextData)
+            }}
+            onQuadrantDragEnd={(nextData) => {
               void handleConfirmQuadrants(nextData)
             }}
           />

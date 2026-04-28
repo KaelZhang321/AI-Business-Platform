@@ -16,8 +16,8 @@ export function ReportDataTable({ items, displayMode, searchQuery, title }: Repo
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
       return item.itemName.toLowerCase().includes(q) ||
-             item.itemNameEn.toLowerCase().includes(q) ||
-             item.itemCode.includes(q);
+        item.itemNameEn.toLowerCase().includes(q) ||
+        item.itemCode.includes(q);
     }
     return true;
   });
@@ -95,13 +95,12 @@ export function ReportDataTable({ items, displayMode, searchQuery, title }: Repo
                   </td>
                   {/* Result + Unit merged */}
                   <td className="px-4 py-3 text-right">
-                    <span className={`text-sm font-mono tabular-nums ${
-                      isAbnormal
+                    <span className={`text-sm font-mono tabular-nums ${isAbnormal
                         ? isHighType
                           ? 'text-red-600 dark:text-red-400 font-bold'
                           : 'text-blue-600 dark:text-blue-400 font-bold'
                         : 'text-slate-800 dark:text-slate-200'
-                    }`}>
+                      }`}>
                       {item.displayValue}
                     </span>
                     {item.unit && (
