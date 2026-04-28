@@ -274,6 +274,9 @@ public class PatientExamApplicationService {
         if (!StringUtils.hasText(abnormalDirection)) {
             abnormalDirection = inferAbnormalDirection(row.getResultValue(), referenceRange);
         }
+        if(row.getResultValue() != null&&row.getResultValue().contains("阴性")){
+        	abnormalDirection = null;
+        }
 
         PatientExamCleanedIndicatorResponse indicator = new PatientExamCleanedIndicatorResponse();
         indicator.setStandardCode(StringUtils.hasText(cleanResult.getStandardCode())
