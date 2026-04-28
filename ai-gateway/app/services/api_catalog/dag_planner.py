@@ -23,7 +23,12 @@ from pydantic import ValidationError
 
 from app.core.config import settings
 from app.models.schemas import ApiQueryExecutionPlan, ApiQueryPlanStep, ApiQueryRoutingResult
-from app.services.api_catalog.dag_bindings import DagBindingSyntaxError, collect_binding_step_ids, is_dag_binding
+from app.services.api_catalog.dag_bindings import (
+    DagBindingSyntaxError,
+    collect_binding_step_ids,
+    is_dag_binding,
+    parse_binding_expression,
+)
 from app.services.api_catalog.graph_models import ApiCatalogSubgraphResult
 from app.services.api_catalog.graph_plan_validator import GraphPlanValidationError, GraphPlanValidator
 from app.services.api_catalog.schema import (
@@ -35,6 +40,12 @@ from app.utils.json_utils import parse_dirty_json_object, summarize_log_text
 
 logger = logging.getLogger(__name__)
 _QUERY_SAFE_METHODS = {"GET", "POST"}
+_PREDECESSOR_SELECT_MODE_TO_BINDING_TEMPLATE = {
+    "single": "$[{step_id}.data].{source_path}",
+    "first": "$[{step_id}.data].{source_path}",
+    "all": "$[{step_id}.data][*].{source_path}",
+    "user_select": "$[{step_id}.data][*].{source_path}",
+}
 
 
 class DagPlanValidationError(ValueError):
@@ -174,7 +185,6 @@ class ApiDagPlanner:
         if len(plan_steps_by_id) != len(plan.steps):
             raise DagPlanValidationError("planner_duplicate_step_id", "Planner 生成了重复的 step_id。")
 
-        dependency_graph: dict[str, set[str]] = {}
         for step in plan.steps:
             entry = _resolve_allowed_entry(step, allowed_entries_by_id, allowed_entries_by_path)
             if entry is None:
@@ -208,13 +218,37 @@ class ApiDagPlanner:
                     f"步骤 {step.step_id} 依赖了不存在的前置步骤: {missing_dependencies}",
                 )
 
+            step_entries[step.step_id] = entry
+
+        rewritten_binding_count, appended_dependency_count = _enforce_required_predecessor_bindings(
+            plan,
+            step_entries=step_entries,
+            predecessor_hints=predecessor_hints or {},
+        )
+        if rewritten_binding_count > 0 or appended_dependency_count > 0:
+            logger.info(
+                (
+                    "stage3 planner predecessor contract enforced trace_id=%s "
+                    "rewritten_bindings=%s appended_dependencies=%s"
+                ),
+                trace_id or "-",
+                rewritten_binding_count,
+                appended_dependency_count,
+            )
+
+        for step in plan.steps:
             normalized_binding_count = _normalize_zero_index_bindings_in_step_params(step)
-            if normalized_binding_count > 0:
+            semantic_fix_count = _normalize_redundant_data_prefix_bindings_in_step_params(step)
+            if normalized_binding_count > 0 or semantic_fix_count > 0:
                 logger.info(
-                    "stage3 planner binding normalized trace_id=%s step_id=%s normalized_count=%s",
+                    (
+                        "stage3 planner binding normalized trace_id=%s step_id=%s "
+                        "normalized_count=%s semantic_fix_count=%s"
+                    ),
                     trace_id or "-",
                     step.step_id,
                     normalized_binding_count,
+                    semantic_fix_count,
                 )
 
             try:
@@ -232,14 +266,13 @@ class ApiDagPlanner:
                     f"步骤 {step.step_id} 引用了未在 depends_on 中声明的上游步骤: {undeclared_dependencies}",
                 )
 
-            step_entries[step.step_id] = entry
-            dependency_graph[step.step_id] = set(step.depends_on)
+        _validate_required_predecessors(
+            plan,
+            step_entries=step_entries,
+            predecessor_hints=predecessor_hints or {},
+        )
 
-        # _validate_required_predecessors(
-        #     plan,
-        #     step_entries=step_entries,
-        #     predecessor_hints=predecessor_hints or {},
-        # )
+        dependency_graph = {step.step_id: set(step.depends_on) for step in plan.steps}
 
         try:
             tuple(TopologicalSorter(dependency_graph).static_order())
@@ -353,6 +386,9 @@ def _build_allowed_entries_by_id(candidates: list[ApiCatalogSearchResult]) -> di
     for candidate in candidates:
         if candidate.entry.id not in allowed_entries:
             allowed_entries[candidate.entry.id] = candidate.entry
+        for predecessor in candidate.entry.predecessors:
+            if isinstance(predecessor, ApiCatalogEntry) and predecessor.id not in allowed_entries:
+                allowed_entries[predecessor.id] = predecessor
     return allowed_entries
 
 
@@ -579,6 +615,161 @@ def _normalize_zero_index_bindings(payload: Any) -> tuple[Any, int]:
     return payload, 0
 
 
+def _normalize_redundant_data_prefix_bindings_in_step_params(step: ApiQueryPlanStep) -> int:
+    """移除绑定表达式在 `step.data` 之后的冗余 `.data` 前缀。"""
+    normalized_params, normalized_count = _normalize_redundant_data_prefix_bindings(step.params)
+    if normalized_count > 0:
+        step.params = normalized_params
+    return normalized_count
+
+
+def _normalize_redundant_data_prefix_bindings(payload: Any) -> tuple[Any, int]:
+    """递归归一化参数载荷中的冗余 `.data` 绑定语义。"""
+    if isinstance(payload, dict):
+        normalized_payload: dict[str, Any] = {}
+        total = 0
+        for key, value in payload.items():
+            normalized_value, count = _normalize_redundant_data_prefix_bindings(value)
+            normalized_payload[key] = normalized_value
+            total += count
+        return normalized_payload, total
+
+    if isinstance(payload, list):
+        normalized_items: list[Any] = []
+        total = 0
+        for item in payload:
+            normalized_item, count = _normalize_redundant_data_prefix_bindings(item)
+            normalized_items.append(normalized_item)
+            total += count
+        return normalized_items, total
+
+    if isinstance(payload, str) and is_dag_binding(payload):
+        try:
+            parsed = parse_binding_expression(payload)
+        except DagBindingSyntaxError:
+            return payload, 0
+        tokens = list(parsed.tokens)
+        if not tokens or tokens[0] != ".data":
+            return payload, 0
+        while tokens and tokens[0] == ".data":
+            tokens.pop(0)
+        normalized = f"$[{parsed.step_id}.data]{''.join(tokens)}"
+        return normalized, 1
+
+    return payload, 0
+
+
+def _normalize_predecessor_source_path(source_path: str, *, response_data_path: str) -> str:
+    """把 predecessor source_path 转换为绑定表达式可消费格式。"""
+    raw = str(source_path or "").strip()
+    if not raw:
+        return ""
+    raw = raw.removeprefix("$").lstrip(".").replace("[]", "[*]")
+    normalized_response_data_path = (
+        str(response_data_path or "").strip().removeprefix("$").lstrip(".").replace("[]", "[*]")
+    )
+
+    for prefix in (normalized_response_data_path, "data"):
+        stripped = _strip_predecessor_source_prefix(raw, prefix)
+        if stripped is not None:
+            raw = stripped
+            break
+
+    raw = raw.lstrip(".")
+    if raw.startswith("[*]."):
+        raw = raw[len("[*].") :]
+    elif raw == "[*]":
+        return ""
+    return raw
+
+
+def _strip_predecessor_source_prefix(path: str, prefix: str) -> str | None:
+    """剥离 source_path 中的上游响应根前缀。"""
+    normalized_prefix = str(prefix or "").strip().removeprefix("$").lstrip(".").replace("[]", "[*]")
+    if not normalized_prefix:
+        return None
+
+    if path == normalized_prefix or path == f"{normalized_prefix}[*]":
+        return ""
+
+    dotted_prefix = f"{normalized_prefix}."
+    if path.startswith(dotted_prefix):
+        return path[len(dotted_prefix) :]
+
+    wildcard_prefix = f"{normalized_prefix}[*]."
+    if path.startswith(wildcard_prefix):
+        return path[len(wildcard_prefix) :]
+
+    return None
+
+
+def _build_predecessor_binding_expression(*, step_id: str, source_path: str, select_mode: str) -> str:
+    """构造受限 DAG 绑定表达式。"""
+    normalized_mode = select_mode if select_mode in _PREDECESSOR_SELECT_MODE_TO_BINDING_TEMPLATE else "single"
+    template = _PREDECESSOR_SELECT_MODE_TO_BINDING_TEMPLATE[normalized_mode]
+    return template.format(step_id=step_id, source_path=source_path)
+
+
+def _enforce_required_predecessor_bindings(
+    plan: ApiQueryExecutionPlan,
+    *,
+    step_entries: dict[str, ApiCatalogEntry],
+    predecessor_hints: dict[str, list[ApiCatalogPredecessorSpec]],
+) -> tuple[int, int]:
+    """根据 required predecessor 合同覆盖绑定并补齐依赖。"""
+    if not predecessor_hints:
+        return 0, 0
+
+    step_id_by_api_id: dict[str, str] = {}
+    for step in plan.steps:
+        entry = step_entries.get(step.step_id)
+        if entry is None:
+            continue
+        step_id_by_api_id.setdefault(entry.id, step.step_id)
+
+    rewritten_binding_count = 0
+    appended_dependency_count = 0
+    for step in plan.steps:
+        entry = step_entries.get(step.step_id)
+        if entry is None:
+            continue
+        required_specs = [spec for spec in predecessor_hints.get(entry.id, []) if spec.required]
+        if not required_specs:
+            continue
+
+        params = dict(step.params)
+        depends_on = list(step.depends_on)
+        for required_spec in required_specs:
+            predecessor_step_id = step_id_by_api_id.get(required_spec.predecessor_api_id)
+            if predecessor_step_id is None:
+                continue
+            if predecessor_step_id not in depends_on:
+                depends_on.append(predecessor_step_id)
+                appended_dependency_count += 1
+            predecessor_entry = step_entries.get(predecessor_step_id)
+            response_data_path = predecessor_entry.response_data_path if predecessor_entry is not None else "data"
+            for binding in required_spec.param_bindings:
+                source_path = _normalize_predecessor_source_path(
+                    binding.source_path,
+                    response_data_path=response_data_path,
+                )
+                if not source_path:
+                    continue
+                expected_expression = _build_predecessor_binding_expression(
+                    step_id=predecessor_step_id,
+                    source_path=source_path,
+                    select_mode=binding.select_mode,
+                )
+                if params.get(binding.target_param) != expected_expression:
+                    params[binding.target_param] = expected_expression
+                    rewritten_binding_count += 1
+
+        step.params = params
+        step.depends_on = depends_on
+
+    return rewritten_binding_count, appended_dependency_count
+
+
 def _validate_required_predecessors(
     plan: ApiQueryExecutionPlan,
     *,
@@ -604,7 +795,6 @@ def _validate_required_predecessors(
         if not required_specs:
             continue
 
-        binding_dependencies = collect_binding_step_ids(step.params)
         for required_spec in required_specs:
             predecessor_step_id = step_id_by_api_id.get(required_spec.predecessor_api_id)
             if predecessor_step_id is None:
@@ -628,14 +818,50 @@ def _validate_required_predecessors(
                         "required_predecessor_step_id": predecessor_step_id,
                     },
                 )
-            if predecessor_step_id not in binding_dependencies:
-                raise DagPlanValidationError(
-                    "planner_missing_required_predecessor",
-                    f"步骤 {step.step_id} 缺少来自 required predecessor 的参数绑定: {required_spec.predecessor_api_id}",
-                    metadata={
-                        "target_api_id": entry.id,
-                        "target_step_id": step.step_id,
-                        "required_predecessor_api_id": required_spec.predecessor_api_id,
-                        "required_predecessor_step_id": predecessor_step_id,
-                    },
+            predecessor_entry = step_entries.get(predecessor_step_id)
+            response_data_path = predecessor_entry.response_data_path if predecessor_entry is not None else "data"
+            for binding in required_spec.param_bindings:
+                value = step.params.get(binding.target_param)
+                if not isinstance(value, str) or not is_dag_binding(value):
+                    raise DagPlanValidationError(
+                        "planner_binding_semantic_invalid",
+                        (
+                            f"步骤 {step.step_id} 的 required predecessor 绑定缺失或非绑定表达式: "
+                            f"{binding.target_param}"
+                        ),
+                        metadata={
+                            "target_api_id": entry.id,
+                            "target_step_id": step.step_id,
+                            "required_predecessor_api_id": required_spec.predecessor_api_id,
+                            "required_predecessor_step_id": predecessor_step_id,
+                            "target_param": binding.target_param,
+                        },
+                    )
+                source_path = _normalize_predecessor_source_path(
+                    binding.source_path,
+                    response_data_path=response_data_path,
                 )
+                if not source_path:
+                    continue
+                expected_expression = _build_predecessor_binding_expression(
+                    step_id=predecessor_step_id,
+                    source_path=source_path,
+                    select_mode=binding.select_mode,
+                )
+                if value != expected_expression:
+                    raise DagPlanValidationError(
+                        "planner_binding_semantic_invalid",
+                        (
+                            f"步骤 {step.step_id} 的 required predecessor 绑定不匹配: "
+                            f"{binding.target_param}={value}"
+                        ),
+                        metadata={
+                            "target_api_id": entry.id,
+                            "target_step_id": step.step_id,
+                            "required_predecessor_api_id": required_spec.predecessor_api_id,
+                            "required_predecessor_step_id": predecessor_step_id,
+                            "target_param": binding.target_param,
+                            "expected_expression": expected_expression,
+                            "actual_expression": value,
+                        },
+                    )

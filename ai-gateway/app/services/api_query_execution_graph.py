@@ -417,6 +417,15 @@ class ApiQueryExecutionGraph:
             }
             entry = runtime.step_entries[step.step_id]
             resolved_params, empty_bindings = _resolve_step_params(step.params, step_data_by_id)
+            resolved_params = _coerce_single_item_array_params(
+                params=resolved_params,
+                entry=entry,
+            )
+            required_empty_bindings = _collect_required_empty_bindings(
+                step=step,
+                entry=entry,
+                empty_bindings=empty_bindings,
+            )
             logger.info(
                 "%s",
                 format_workflow_observability_log(
@@ -437,6 +446,40 @@ class ApiQueryExecutionGraph:
             )
 
             # 1. 先做空上游短路，避免把无意义参数继续打到业务系统。
+            if required_empty_bindings:
+                logger.info(
+                    "%s",
+                    format_workflow_observability_log(
+                        "api_query execution step failed",
+                        observability_fields=_build_execution_observability_fields(
+                            runtime,
+                            phase="stage4",
+                            node=step.step_id,
+                            execution_status=ApiQueryExecutionStatus.ERROR.value,
+                        ),
+                        payload={
+                            "reason": "required_binding_empty_upstream",
+                            "depends_on": list(step.depends_on),
+                            "required_empty_bindings": required_empty_bindings,
+                        },
+                    ),
+                )
+                execution_result = _build_required_empty_upstream_error_result(
+                    trace_id=runtime.trace_id,
+                    step=step,
+                    required_empty_bindings=required_empty_bindings,
+                )
+                return {
+                    "records_by_step_id": {
+                        step.step_id: DagStepExecutionRecord(
+                            step=step,
+                            entry=entry,
+                            resolved_params=resolved_params,
+                            execution_result=execution_result,
+                        )
+                    }
+                }
+
             if empty_bindings:
                 logger.info(
                     "%s",
@@ -858,6 +901,7 @@ def _build_synthetic_entry(step: ApiQueryPlanStep) -> ApiCatalogEntry:
 
     return ApiCatalogEntry(
         id=step.api_id or step.step_id,
+        name="synthetic_failure",
         description="执行图 synthetic failure",
         domain="generic",
         operation_safety="query",
@@ -955,6 +999,41 @@ def _find_missing_required_params(entry: ApiCatalogEntry, params: dict[str, Any]
     return missing_fields
 
 
+def _coerce_single_item_array_params(
+    *,
+    params: dict[str, Any],
+    entry: ApiCatalogEntry,
+) -> dict[str, Any]:
+    """将单元素数组参数按 schema 降级为标量。
+
+    功能：
+        predecessor 绑定在 `select_mode=all/user_select` 下会产出数组；
+        当目标字段 schema 明确声明为标量类型时，执行层做一次最小兼容：
+        `[value] -> value`。这样不改 planner 语义，也能兼容下游 string 入参接口。
+
+    约束：
+        - 仅在数组长度为 1 且目标字段非 array/object 时降级
+        - 字段 schema 不存在或本身为 array/object 时保持原样
+    """
+
+    properties = entry.param_schema.properties
+    if not isinstance(properties, dict) or not properties:
+        return params
+
+    normalized: dict[str, Any] = dict(params)
+    for field_name, value in params.items():
+        if not isinstance(value, list) or len(value) != 1:
+            continue
+        schema = properties.get(field_name)
+        if not isinstance(schema, dict):
+            continue
+        field_type = str(schema.get("type") or "").strip().lower()
+        if field_type in {"array", "object"}:
+            continue
+        normalized[field_name] = value[0]
+    return normalized
+
+
 def _build_empty_upstream_skip_result(
     *,
     trace_id: str,
@@ -975,6 +1054,29 @@ def _build_empty_upstream_skip_result(
             "planner_step_id": step.step_id,
             "depends_on": list(step.depends_on),
             "empty_bindings": empty_bindings,
+        },
+    )
+
+
+def _build_required_empty_upstream_error_result(
+    *,
+    trace_id: str,
+    step: ApiQueryPlanStep,
+    required_empty_bindings: list[str],
+) -> ApiQueryExecutionResult:
+    """为“必填参数绑定为空”场景构造错误结果。"""
+
+    return ApiQueryExecutionResult(
+        status=ApiQueryExecutionStatus.ERROR,
+        data=[],
+        total=0,
+        error="上游步骤未返回必填参数所需数据，当前步骤执行失败。",
+        error_code="EMPTY_UPSTREAM_BINDING_REQUIRED",
+        trace_id=trace_id,
+        meta={
+            "planner_step_id": step.step_id,
+            "depends_on": list(step.depends_on),
+            "required_empty_bindings": required_empty_bindings,
         },
     )
 
@@ -1013,6 +1115,7 @@ def _build_wait_select_required_result(
     from app.services.api_catalog.dag_bindings import parse_binding_expression
 
     options_by_binding: dict[str, list[Any]] = {}
+    option_rows_by_binding: dict[str, list[dict[str, Any]]] = {}
     for param_name, raw_value in step.params.items():
         if not is_dag_binding(raw_value):
             continue
@@ -1036,6 +1139,16 @@ def _build_wait_select_required_result(
         binding_key = f"{upstream_record.entry.id}:{param_name}:{source_path}"
         options_by_binding[binding_key] = normalized_options
 
+        upstream_data = upstream_record.execution_result.data
+        if isinstance(upstream_data, list):
+            upstream_rows = [row for row in upstream_data if isinstance(row, dict)]
+        elif isinstance(upstream_data, dict):
+            upstream_rows = [upstream_data]
+        else:
+            upstream_rows = []
+        if upstream_rows:
+            option_rows_by_binding[binding_key] = [dict(row) for row in upstream_rows]
+
     if not options_by_binding:
         return None
 
@@ -1053,6 +1166,7 @@ def _build_wait_select_required_result(
             "pause_type": "WAIT_SELECT",
             "selection_mode": "single",
             "options_by_binding": options_by_binding,
+            "option_rows_by_binding": option_rows_by_binding,
         },
     )
 
@@ -1066,6 +1180,28 @@ def _extract_binding_source_path(expression: str) -> str:
     source = source.replace("[*]", "")
     source = source.lstrip(".")
     return source
+
+
+def _collect_required_empty_bindings(
+    *,
+    step: ApiQueryPlanStep,
+    entry: ApiCatalogEntry,
+    empty_bindings: list[str],
+) -> list[str]:
+    """筛选落在接口必填参数上的空绑定。"""
+    if not empty_bindings:
+        return []
+    required_params = set(entry.param_schema.required or [])
+    if not required_params:
+        return []
+    required_binding_values = {
+        str(value)
+        for param_name, value in step.params.items()
+        if param_name in required_params and is_dag_binding(value)
+    }
+    if not required_binding_values:
+        return []
+    return [expression for expression in empty_bindings if expression in required_binding_values]
 
 
 def _is_empty_binding_value(value: Any) -> bool:

@@ -14,7 +14,6 @@ from typing import Any, TypeVar
 import aiomysql
 
 from app.core.config import settings
-from app.core.mysql import build_business_mysql_conn_params
 from app.models.schemas import (
     ApiCatalogGovernanceRunResponse,
     SemanticCurationMode,
@@ -60,10 +59,13 @@ class SemanticCurationRunRepository:
 
     Args:
         clock: 可注入时钟，方便测试稳定断言时间字段。
+
+    Edge Cases:
+        业务库连接池必须由上层注入，避免控制面仓储在运行期隐式创建第二套连接生命周期。
     """
 
-    def __init__(self, *, clock: callable | None = None) -> None:
-        self._pool: aiomysql.Pool | None = None
+    def __init__(self, *, clock: callable | None = None, pool: aiomysql.Pool | None = None) -> None:
+        self._pool = pool
         self._columns_cache: set[str] | None = None
         self._clock = clock or (lambda: datetime.now(UTC))
 
@@ -251,20 +253,13 @@ class SemanticCurationRunRepository:
         return _row_to_run_snapshot(dict(row))
 
     async def close(self) -> None:
-        """释放连接池。"""
-
-        if self._pool is not None:
-            self._pool.close()
-            await self._pool.wait_closed()
-            self._pool = None
+        """仓储不持有连接池所有权，因此 close 为 no-op。"""
 
     async def _get_pool(self) -> aiomysql.Pool:
+        """读取应用级注入的治理 run 连接池。"""
+
         if self._pool is None:
-            self._pool = await aiomysql.create_pool(
-                minsize=1,
-                maxsize=3,
-                **build_business_mysql_conn_params(),
-            )
+            raise SemanticCurationRunRepositoryError("业务库连接池未注入，请通过 AppResources 或测试桩显式提供。")
         return self._pool
 
     async def _get_columns(self) -> set[str]:

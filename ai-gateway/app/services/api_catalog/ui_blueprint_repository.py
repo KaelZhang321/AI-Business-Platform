@@ -13,7 +13,6 @@ from typing import Any
 import aiomysql
 
 from app.core.config import settings
-from app.core.mysql import build_business_mysql_conn_params
 from app.services.api_catalog.semantic_governance_proposal_models import (
     UiBlueprintSectionRule,
     UiBlueprintSnapshot,
@@ -32,10 +31,13 @@ class UiBlueprintRepository:
     功能：
         以“列能力探测 + 运行时映射”的方式兼容不同阶段 DDL，避免因为字段命名差异导致治理任务
         直接失败。
+
+    Edge Cases:
+        业务库连接池必须由上层注入，分区字典仓储不再运行期自建连接池。
     """
 
-    def __init__(self) -> None:
-        self._pool: aiomysql.Pool | None = None
+    def __init__(self, *, pool: aiomysql.Pool | None = None) -> None:
+        self._pool = pool
         self._columns_cache: set[str] | None = None
         self._table_exists_cache: bool | None = None
 
@@ -75,12 +77,7 @@ class UiBlueprintRepository:
         return UiBlueprintSnapshot(rules=rules)
 
     async def close(self) -> None:
-        """关闭连接池。"""
-
-        if self._pool is not None:
-            self._pool.close()
-            await self._pool.wait_closed()
-            self._pool = None
+        """仓储不持有连接池所有权，因此 close 为 no-op。"""
 
     async def _table_exists(self) -> bool:
         if self._table_exists_cache is not None:
@@ -125,12 +122,10 @@ WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s
         return self._columns_cache
 
     async def _get_pool(self) -> aiomysql.Pool:
+        """读取应用级注入的 UI 分区字典连接池。"""
+
         if self._pool is None:
-            self._pool = await aiomysql.create_pool(
-                minsize=1,
-                maxsize=2,
-                **build_business_mysql_conn_params(),
-            )
+            raise UiBlueprintRepositoryError("业务库连接池未注入，请通过 AppResources 或测试桩显式提供。")
         return self._pool
 
 
@@ -246,4 +241,3 @@ def _to_int(value: Any) -> int | None:
         return int(value)
     except Exception:
         return None
-

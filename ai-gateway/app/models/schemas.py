@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Any, List, Literal
+from typing import Any, Dict, List, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -168,6 +168,203 @@ class HealthQuadrantConfirmEnvelopeResponse(BaseModel):
     code: int = Field(0, description="业务状态码，0 表示成功")
     message: str = Field("ok", description="响应消息")
     data: HealthQuadrantConfirmResponse = Field(..., description="确认结果")
+
+
+class SmartMealMealType(str, Enum):
+    """智能订餐餐次枚举。"""
+
+    BREAKFAST = "BREAKFAST"
+    LUNCH = "LUNCH"
+    DINNER = "DINNER"
+
+
+class SmartMealRiskIdentifyRequest(BaseModel):
+    """智能订餐风险识别请求。"""
+
+    id_card_no: str = Field(..., min_length=1, description="客户密文身份证号")
+    campus_id: str = Field(..., min_length=1, description="预约院区ID")
+    sex: str = Field(..., min_length=1, description="性别")
+    age: int = Field(..., ge=0, le=130, description="年龄")
+    meal_type: list[SmartMealMealType] = Field(..., min_length=1, description="餐次列表")
+    reservation_date: str = Field(..., min_length=1, description="订餐日期，格式 YYYY-MM-DD")
+    package_code: str = Field(..., min_length=1, description="套餐编码")
+
+
+class SmartMealRiskItem(BaseModel):
+    """智能订餐风险明细。"""
+
+    ingredient: str = Field(..., description="食材名称")
+    intolerance_level: str = Field(..., description="不耐受级别")
+    source_dish: str = Field(..., description="来源菜品")
+
+
+class SmartMealRiskIdentifyEnvelopeResponse(BaseModel):
+    """智能订餐风险识别响应壳。"""
+
+    code: int = Field(0, description="业务状态码，0 表示成功")
+    message: str = Field("ok", description="响应消息")
+    data: list[SmartMealRiskItem] = Field(default_factory=list, description="冲突食材列表")
+
+
+class SmartMealPackageRecommendRequest(BaseModel):
+    """智能订餐套餐推荐请求。
+
+    功能：
+        定义套餐推荐入口契约。只强制身份证号与餐次必填，其余画像特征按“缺失即缺失”
+        的业务约定传递，不在网关层做兜底补齐，避免把用户显式输入覆盖为历史脏画像。
+
+    Args:
+        id_card_no: 客户身份证号（密文），用于外部接口与行为数据关联。
+        campus_id: 预约院区 ID，仅允许在该院区菜单范围内推荐套餐。
+        meal_type: 餐次列表，限定为 BREAKFAST/LUNCH/DINNER。
+        reservation_date: 订餐日期，决定命中的周菜单与星期菜单配置。
+        age: 年龄，可选。
+        sex: 性别，可选。
+        health_tags: 健康标签，可选。
+        diet_preferences: 用餐偏好，可选。
+        dietary_restrictions: 忌口自然语言列表，可选。
+        abnormal_indicators: 异常指标字典，可选。键为异常类别，值为该类别下的异常描述列表。
+            示例：
+            {
+              "血糖异常": ["糖化HbA1c升高", "空腹血糖8.3"],
+              "体重": ["超重"],
+              "血脂异常": ["甘油三酯升高", "HDL-C升高"]
+            }
+    """
+
+    id_card_no: str = Field(..., min_length=1, description="客户密文身份证号")
+    campus_id: str = Field(..., min_length=1, description="预约院区ID")
+    meal_type: list[SmartMealMealType] = Field(..., min_length=1, description="餐次列表")
+    reservation_date: str = Field(..., min_length=1, description="订餐日期，格式 YYYY-MM-DD")
+    age: int | None = Field(None, ge=0, le=130, description="年龄")
+    sex: str | None = Field(None, description="性别")
+    health_tags: list[str] = Field(default_factory=list, description="健康标签")
+    diet_preferences: list[str] = Field(default_factory=list, description="用餐偏好")
+    dietary_restrictions: list[str] = Field(default_factory=list, description="忌口自然语言")
+    abnormal_indicators: Dict[str, List[str]] = Field(default_factory=dict, description="异常指标字典")
+
+
+class SmartMealPackageRecommendItem(BaseModel):
+    """智能订餐套餐推荐项。"""
+
+    package_code: str = Field(..., description="套餐编码")
+    package_name: str = Field(..., description="套餐名称")
+    match_score: float = Field(..., description="匹配度绝对评分，保留两位小数")
+    reason: str = Field(..., description="推荐理由")
+
+
+class SmartMealPackageRecommendEnvelopeResponse(BaseModel):
+    """智能订餐套餐推荐响应壳。"""
+
+    code: int = Field(0, description="业务状态码，0 表示成功")
+    message: str = Field("ok", description="响应消息")
+    data: list[SmartMealPackageRecommendItem] = Field(default_factory=list, description="推荐结果")
+
+
+class ReportIntentDialogRequest(BaseModel):
+    """报告意图识别请求。
+
+    功能：
+        为 AI 咨询跳转提供最小输入契约。该接口只关注“用户当前查询词”，不承载
+        会话历史或用户画像，确保判定逻辑可回放且易于测试。
+
+    Args:
+        query: 用户自然语言查询词。
+
+    Returns:
+        无直接返回；由路由层包装成标准响应壳。
+
+    Edge Cases:
+        仅做基础非空约束。复杂语义歧义由词典优先级仲裁，不在请求模型层处理。
+    """
+
+    query: str = Field(..., min_length=1, max_length=500, description="用户查询词")
+
+
+class ReportIntentDialogData(BaseModel):
+    """报告意图识别数据载荷。
+
+    功能：
+        统一前端跳转所需的核心字段，避免前端再解析后端内部步骤信息。
+
+    Returns:
+        - `targetId`：单一主意图
+        - `focusedMetric`：仅当 `targetId=metric-focus` 时返回标准指标名
+        - `targetYear`：本期固定 `null`，预留未来按年弹窗扩展
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    target_id: str = Field(..., alias="targetId", description="主命中意图标识")
+    focused_metric: str | None = Field(None, alias="focusedMetric", description="命中的标准单项指标名称")
+    target_year: int | None = Field(None, alias="targetYear", description="目标年份，当前固定为空")
+
+
+class ReportIntentDialogEnvelopeResponse(BaseModel):
+    """报告意图识别统一响应壳。"""
+
+    code: int = Field(0, description="业务状态码，0 表示成功")
+    message: str = Field("ok", description="响应消息")
+    data: ReportIntentDialogData = Field(..., description="意图识别结果")
+
+
+class TranscriptExtractRequest(BaseModel):
+    """Transcript 信息提取请求模型。
+
+    功能：
+        对外暴露统一的 transcript 抽取入口，只允许调用方提供任务编码与原始转写文本，
+        避免前端感知 prompt、模型后端等实现细节。
+
+    入参业务含义：
+        - `task_code`：前端选择的业务任务编码，服务层会再映射为内部 `service_code`
+        - `transcript`：待分析的原始语音转写文本
+
+    返回值约束：
+        Pydantic 接收 snake_case，同时对外文档和序列化口径统一使用 camelCase。
+
+    Edge Cases：
+        - 兼容历史 snake_case 入参，减少联调期字段改名带来的阻塞
+        - 文本只做最小非空校验，具体裁剪和清洗交由服务层处理
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    task_code: str = Field(..., alias="taskCode", min_length=1, description="抽取任务编码")
+    transcript: str = Field(..., min_length=1, description="原始语音转写文本")
+
+
+class TranscriptExtractData(BaseModel):
+    """Transcript 信息提取结果。
+
+    功能：
+        统一承载当前请求命中的任务编码、运行时服务编码以及模型返回的结构化结果，
+        让前端只消费稳定外壳，不需要感知内部路由细节。
+
+    入参业务含义：
+        - `task_code`：前端提交的任务编码
+        - `service_code`：服务层最终命中的运行时服务编码
+        - `result`：模型输出并经 JSON 解析后的结果对象
+
+    返回值约束：
+        `result` 必须是 JSON object；数组或纯文本会在服务层被拦截并报错。
+
+    Edge Cases：
+        三个任务可以共享同一外层 schema，同时保留各自 `result` 字段的演进空间。
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    task_code: str = Field(..., alias="taskCode", description="抽取任务编码")
+    service_code: str = Field(..., alias="serviceCode", description="运行时服务编码")
+    result: dict[str, Any] = Field(default_factory=dict, description="结构化提取结果")
+
+
+class TranscriptExtractEnvelopeResponse(BaseModel):
+    """Transcript 信息提取统一响应壳。"""
+
+    code: int = Field(0, description="业务状态码，0 表示成功")
+    message: str = Field("ok", description="响应消息")
+    data: TranscriptExtractData = Field(..., description="Transcript 提取结果")
 
 
 class ApiQueryRequest(BaseModel):
@@ -405,6 +602,13 @@ class ApiQueryDetailRuntime(BaseModel):
         default_factory=ApiQueryDetailSourceRuntime,
         description="详情主键取值约束",
     )
+    render_mode: str = Field("dynamic_ui", description="详情渲染策略，template_first 表示模板优先")
+    template_code: str | None = Field(None, description="详情模板编码")
+    fallback_mode: str = Field("dynamic_ui", description="模板未命中时的兜底模式")
+    detail_view_meta: dict[str, Any] = Field(
+        default_factory=dict,
+        description="详情字段元数据（display/required/exclude/groups）",
+    )
 
 
 class ApiQueryListPaginationRuntime(BaseModel):
@@ -425,7 +629,26 @@ class ApiQueryListFilterFieldRuntime(BaseModel):
     name: str = Field(..., description="筛选字段名")
     label: str = Field(..., description="筛选字段展示名")
     value_type: str = Field(..., description="筛选字段值类型")
+    component: Literal["input", "number", "select"] = Field(
+        "input",
+        description="筛选组件类型，仅暴露当前渲染层已支持的组件集合。",
+    )
     required: bool = Field(False, description="当前筛选字段是否必填")
+
+
+class ApiQueryListTableFieldRuntime(BaseModel):
+    """列表表格列定义。
+
+    功能：
+        该结构用于把“首屏列表列白名单”提升为显式 runtime 契约，避免渲染层从首行数据猜列导致
+        首屏字段失控。组合列通过 `source_fields` 显式表达来源字段，由渲染层生成派生列。
+    """
+
+    name: str = Field(..., description="列表字段名或组合列派生字段名")
+    title: str | None = Field(None, description="列表列标题")
+    source_fields: list[str] = Field(default_factory=list, description="组合列来源字段；为空表示普通单字段列")
+    separator: str = Field("", description="组合列字段之间的连接符")
+    empty_value: str = Field("-", description="组合列所有字段为空时的展示值")
 
 
 class ApiQueryListFiltersRuntime(BaseModel):
@@ -471,6 +694,10 @@ class ApiQueryListRuntime(BaseModel):
     filters: ApiQueryListFiltersRuntime = Field(
         default_factory=ApiQueryListFiltersRuntime,
         description="列表筛选运行时契约",
+    )
+    table_fields: list[ApiQueryListTableFieldRuntime] = Field(
+        default_factory=list,
+        description="列表列白名单；为空时按历史规则自动推断",
     )
     query_context: ApiQueryListQueryContextRuntime = Field(
         default_factory=ApiQueryListQueryContextRuntime,

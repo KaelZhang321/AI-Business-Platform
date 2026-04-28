@@ -165,7 +165,7 @@ class StubDynamicUI:
                     "title": context.get("title", "查询结果") if isinstance(context, dict) else "查询结果",
                     "subtitle": "当前展示单条记录详情",
                 },
-                children=[{"type": "PlannerDetailCard", "props": detail_props}],
+                children=[{"type": "PlannerInfoGrid", "props": {"minColumnWidth": 180, **detail_props}}],
             )
 
         table_rows = data if isinstance(data, list) and data else [{"customerId": "C001", "customerName": "张三"}]
@@ -181,12 +181,19 @@ class StubDynamicUI:
         )
         row_actions = []
         if runtime and runtime.detail.enabled:
+            detail_strategy_params: dict[str, object] = {
+                "renderMode": runtime.detail.render_mode,
+                "fallbackMode": runtime.detail.fallback_mode,
+            }
+            if runtime.detail.template_code:
+                detail_strategy_params["templateCode"] = runtime.detail.template_code
             row_actions.append(
                 {
                     "action": "remoteQuery",
                     "label": "查看详情",
                     "params": {
                         "api_id": runtime.detail.api_id,
+                        **detail_strategy_params,
                         **runtime_metadata(
                             runtime.detail.api_id,
                             param_source=runtime.detail.request.param_source,
@@ -545,16 +552,21 @@ def _build_flat_stub_spec(
     """
     elements: dict[str, object] = {
         "root": {
+            "type": "PlannerBlankContainer",
+            "props": {"minHeight": 160},
+            "children": ["child_1"],
+        },
+        "child_1": {
             "type": "PlannerCard",
             "props": root_props,
             "children": [],
-        }
+        },
     }
-    for index, child in enumerate(children, start=1):
+    for index, child in enumerate(children, start=2):
         child_id = str(child.get("id") or f"child_{index}")
         child_payload = dict(child)
         child_payload.pop("id", None)
-        elements["root"]["children"].append(child_id)
+        elements["child_1"]["children"].append(child_id)
         elements[child_id] = child_payload
     return {
         "root": "root",
@@ -619,6 +631,7 @@ def _make_entry(**overrides) -> ApiCatalogEntry:
 
 
 def test_api_query_returns_runtime_contract(monkeypatch) -> None:
+    monkeypatch.setattr(api_query_routes.settings, "api_query_template_first_enabled", True)
     entry = _make_entry()
     stub_retriever = StubRetriever(entry)
     stub_services = (
@@ -650,8 +663,12 @@ def test_api_query_returns_runtime_contract(monkeypatch) -> None:
     assert body["execution_status"] == "SUCCESS"
     assert body["execution_plan"]["steps"][0]["step_id"] == "step_customer_list"
     assert body["execution_plan"]["steps"][0]["api_id"] == "customer_list"
-    root = body["ui_spec"]["elements"][body["ui_spec"]["root"]]
-    assert root["children"] == ["query-filters", "report-table", "report-pagination"]
+    elements = body["ui_spec"]["elements"]
+    root = elements[body["ui_spec"]["root"]]
+    assert root["type"] == "PlannerBlankContainer"
+    card = elements[root["children"][0]]
+    assert card["type"] == "PlannerCard"
+    assert card["children"] == ["query-filters", "report-table", "report-pagination"]
     filters = body["ui_spec"]["elements"]["query-filters"]
     table = body["ui_spec"]["elements"]["report-table"]
     pagination = body["ui_spec"]["elements"]["report-pagination"]
@@ -662,6 +679,9 @@ def test_api_query_returns_runtime_contract(monkeypatch) -> None:
     assert table["props"]["rowActions"][0]["action"] == "remoteQuery"
     assert "type" not in table["props"]["rowActions"][0]
     assert table["props"]["rowActions"][0]["params"]["api_id"] == "customer_detail"
+    assert table["props"]["rowActions"][0]["params"]["renderMode"] == "template_first"
+    assert table["props"]["rowActions"][0]["params"]["templateCode"] == "customer_detail_template"
+    assert table["props"]["rowActions"][0]["params"]["fallbackMode"] == "dynamic_ui"
     _assert_runtime_metadata(
         table["props"]["rowActions"][0]["params"],
         trace_id="trace-query-001",
@@ -673,6 +693,39 @@ def test_api_query_returns_runtime_contract(monkeypatch) -> None:
         "statuses": ["active"],
         "tag_names": [],
     }
+
+
+def test_api_query_global_template_first_switch_off_forces_dynamic_fallback(monkeypatch) -> None:
+    monkeypatch.setattr(api_query_routes.settings, "api_query_template_first_enabled", False)
+    entry = _make_entry()
+    stub_services = (
+        StubRetriever(entry),
+        StubExtractor(entry, {"pageNum": 1, "pageSize": 1}),
+        StubExecutor(
+            ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.SUCCESS,
+                data=[{"customerId": "C001", "customerName": "张三"}],
+                total=8,
+            )
+        ),
+        StubDynamicUI(),
+        StubSnapshotService(),
+    )
+    monkeypatch.setattr(api_query_routes, "_get_services", lambda: stub_services)
+
+    client = TestClient(create_test_app())
+    response = client.post(
+        "/api/v1/api-query",
+        json={"query": "查询张三客户"},
+        headers={"X-Trace-Id": "trace-query-002", "X-Interaction-Id": "ia-query-002"},
+    )
+
+    assert response.status_code == 200
+    table = response.json()["ui_spec"]["elements"]["report-table"]
+    row_action_params = table["props"]["rowActions"][0]["params"]
+    assert row_action_params["renderMode"] == "dynamic_ui"
+    assert row_action_params["fallbackMode"] == "dynamic_ui"
+    assert "templateCode" not in row_action_params
 
 
 def test_api_query_passes_env_and_tag_filters_to_retriever(monkeypatch) -> None:

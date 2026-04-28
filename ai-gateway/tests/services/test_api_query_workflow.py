@@ -7,6 +7,7 @@ import pytest
 from app.models.schemas import (
     ApiQueryExecutionResult,
     ApiQueryExecutionStatus,
+    ApiQueryResponse,
     ApiQueryRoutingResult,
     ApiQueryRequest,
 )
@@ -130,6 +131,22 @@ class StubPlanner:
         if self._validate_error is not None:
             raise self._validate_error
         return dict(self._step_entries)
+
+
+class StubCustomerProfileFixedService:
+    """用于验证固定客户档案分支的 workflow 短路行为。
+
+    功能：真实固定分支会调用首跳客户查询和多个档案接口；workflow 集成测试只关心它是否优先于
+    通用 route/retrieve/plan 链路，因此这里返回预置响应并记录调用次数。
+    """
+
+    def __init__(self, response: ApiQueryResponse | None) -> None:
+        self._response = response
+        self.calls = 0
+
+    async def handle(self, **_: object) -> ApiQueryResponse | None:
+        self.calls += 1
+        return self._response
 
 
 class PassThroughPlanner:
@@ -335,6 +352,7 @@ def _build_workflow(
     registry_source: StubRegistrySource,
     ui_result: UISpecBuildResult,
     dynamic_ui_override=None,
+    customer_profile_service=None,
 ) -> ApiQueryWorkflow:
     dynamic_ui = dynamic_ui_override or FakeDynamicUI(result=ui_result)
     response_builder = ApiQueryResponseBuilder(
@@ -349,7 +367,51 @@ def _build_workflow(
         response_builder_getter=lambda: response_builder,
         registry_source_getter=lambda: registry_source,
         allowed_business_intent_codes_getter=lambda: {"none", "saveToServer", "deleteCustomer"},
+        customer_profile_service=customer_profile_service,
     )
+
+
+@pytest.mark.asyncio
+async def test_workflow_customer_profile_fixed_branch_short_circuits_generic_pipeline() -> None:
+    """命中客户档案固定分支时，应在入口短路，避免再进入通用召回和 LLM 规划。"""
+
+    entry = _build_entry()
+    fixed_response = ApiQueryResponse(
+        trace_id="trace-customer-profile-fixed",
+        execution_status=ApiQueryExecutionStatus.SKIPPED,
+        execution_plan=None,
+        ui_spec={"root": "root", "state": {}, "elements": {"root": {"type": "PlannerCard", "props": {}}}},
+        error="命中多个候选客户，请先选择后继续。",
+    )
+    fixed_service = StubCustomerProfileFixedService(fixed_response)
+    retriever = StubRetriever([entry])
+    extractor = StubExtractor(entry, {"customerId": "C001"})
+    planner = StubPlanner(step_entries={f"step_{entry.id}": entry})
+    workflow = _build_workflow(
+        retriever=retriever,
+        extractor=extractor,
+        executor=StubExecutor(ApiQueryExecutionResult(status=ApiQueryExecutionStatus.SUCCESS, data=[], total=0)),
+        planner=planner,
+        registry_source=StubRegistrySource(entry),
+        ui_result=UISpecBuildResult(spec=_build_flat_spec(), frozen=False),
+        customer_profile_service=fixed_service,
+    )
+
+    response = await workflow.run(
+        ApiQueryRequest.model_validate({"query": "查询客户刘海坚的个人信息"}),
+        trace_id="trace-customer-profile-fixed",
+        interaction_id=None,
+        conversation_id=None,
+        user_context={},
+        user_token=None,
+    )
+
+    assert response is fixed_response
+    assert fixed_service.calls == 1
+    assert extractor.route_calls == 0
+    assert retriever.calls == 0
+    assert planner.build_calls == 0
+    assert planner.validate_calls == 0
 
 
 @pytest.mark.asyncio
@@ -1542,6 +1604,122 @@ async def test_workflow_predecessor_source_path_relative_or_legacy_root_both_sup
     assert response.execution_status == ApiQueryExecutionStatus.SUCCESS
     assert [item[0] for item in executor.calls] == ["customer_info_v1", "stored_plan_v1"]
     assert executor.calls[-1][1]["encryptedIdCard"] == ["2512160009"]
+
+
+@pytest.mark.asyncio
+async def test_workflow_multi_candidate_repairs_required_predecessor_binding_semantic_error() -> None:
+    predecessor_entry = ApiCatalogEntry(
+        id="customer_info_v1",
+        description="客户信息查询",
+        domain="oms",
+        method="GET",
+        path="/leczcore-crm/customerInquiry/getCustomerInfo",
+        status="active",
+        operation_safety="query",
+        response_data_path="result.records",
+    )
+    target_entry = _build_predecessor_target_entry_with_source_path("$.idCard")
+    another_entry = ApiCatalogEntry(
+        id="customer_profile_v1",
+        description="客户概览",
+        domain="oms",
+        method="GET",
+        path="/leczcore-crm/customer/profile",
+        status="active",
+        operation_safety="query",
+    )
+
+    class MultiCandidateBadBindingPlanner:
+        def __init__(self) -> None:
+            self.build_calls = 0
+            self.validate_calls = 0
+
+        async def build_plan(self, query, candidates, user_context, route_hint, predecessor_hints=None, *, trace_id=None):
+            self.build_calls += 1
+            from app.models.schemas import ApiQueryExecutionPlan, ApiQueryPlanStep
+
+            return ApiQueryExecutionPlan(
+                plan_id="dag_query_liuhaijian_prepaid_plan",
+                steps=[
+                    ApiQueryPlanStep(
+                        step_id="step_customer_info_v1",
+                        api_id="customer_info_v1",
+                        api_path="/leczcore-crm/customerInquiry/getCustomerInfo",
+                        params={"customerInfo": "刘海坚"},
+                        depends_on=[],
+                    ),
+                    ApiQueryPlanStep(
+                        step_id="step_stored_plan_v1",
+                        api_id="stored_plan_v1",
+                        api_path="/leczcore-data-manage/dwCustomerArchive/planAssetOverview",
+                        params={"encryptedIdCard": "$[step_customer_info_v1.data].data.idCard"},
+                        depends_on=["step_customer_info_v1"],
+                    ),
+                ],
+            )
+
+        def validate_plan(self, plan, candidates, predecessor_hints=None, *, subgraph_result=None, trace_id=None):
+            self.validate_calls += 1
+            from app.services.api_catalog.dag_planner import ApiDagPlanner
+
+            return ApiDagPlanner().validate_plan(
+                plan,
+                candidates,
+                predecessor_hints=predecessor_hints,
+                subgraph_result=subgraph_result,
+                trace_id=trace_id,
+            )
+
+    class OmsExecutor:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict[str, object]]] = []
+
+        async def call(self, entry, params, user_token=None, trace_id=None, user_id=None):
+            self.calls.append((entry.id, dict(params)))
+            if entry.id == "customer_info_v1":
+                return ApiQueryExecutionResult(
+                    status=ApiQueryExecutionStatus.SUCCESS,
+                    data=[{"idCard": "2512160009"}],
+                    total=1,
+                    trace_id=trace_id,
+                )
+            return ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.SUCCESS,
+                data=[{"encryptedIdCard": params.get("encryptedIdCard")}],
+                total=1,
+                trace_id=trace_id,
+            )
+
+    retriever = StubRetriever([target_entry, another_entry])
+    extractor = StubExtractor(target_entry, {}, business_intents=["none"])
+    executor = OmsExecutor()
+    planner = MultiCandidateBadBindingPlanner()
+    workflow = _build_workflow(
+        retriever=retriever,
+        extractor=extractor,
+        executor=executor,  # type: ignore[arg-type]
+        planner=planner,  # type: ignore[arg-type]
+        registry_source=StubRegistrySource([target_entry, predecessor_entry, another_entry]),
+        ui_result=UISpecBuildResult(spec=_build_flat_spec(), frozen=False),
+    )
+
+    response = await workflow.run(
+        ApiQueryRequest.model_validate({"query": "查询刘海坚的储值方案"}),
+        trace_id="trace-multi-candidate-bad-binding",
+        interaction_id=None,
+        conversation_id=None,
+        user_context={},
+        user_token=None,
+    )
+
+    assert response.execution_status == ApiQueryExecutionStatus.SUCCESS
+    assert planner.build_calls == 1
+    assert planner.validate_calls == 1
+    assert [item[0] for item in executor.calls] == ["customer_info_v1", "stored_plan_v1"]
+    assert executor.calls[-1][1]["encryptedIdCard"] == ["2512160009"]
+    assert response.error is None
+    assert response.execution_plan is not None
+    assert response.execution_plan.steps[1].params["encryptedIdCard"] == "$[step_customer_info_v1.data][*].idCard"
 
 
 @pytest.mark.asyncio

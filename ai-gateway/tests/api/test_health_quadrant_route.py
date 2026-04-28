@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from app.api.dependencies import get_health_quadrant_service
 from app.api.routes import health_quadrant as health_quadrant_route
 
 
@@ -87,9 +88,10 @@ def create_test_app() -> FastAPI:
     return app
 
 
-def test_health_quadrant_query_route_returns_unified_quadrants(monkeypatch) -> None:
-    monkeypatch.setattr(health_quadrant_route, "health_quadrant_service", StubHealthQuadrantService())
-    client = TestClient(create_test_app())
+def test_health_quadrant_query_route_returns_unified_quadrants() -> None:
+    app = create_test_app()
+    app.dependency_overrides[get_health_quadrant_service] = lambda: StubHealthQuadrantService()
+    client = TestClient(app)
 
     response = client.post(
         "/api/v1/health-quadrant",
@@ -115,11 +117,13 @@ def test_health_quadrant_query_route_returns_unified_quadrants(monkeypatch) -> N
     assert len(payload["data"]["quadrants"]) == 4
     assert payload["data"]["quadrants"][0]["abnormal_indicators"] == ["血脂异常"]
     assert payload["data"]["quadrants"][0]["recommendation_plans"] == ["基础异常复查包"]
+    app.dependency_overrides.clear()
 
 
-def test_health_quadrant_confirm_route_persists_payload(monkeypatch) -> None:
-    monkeypatch.setattr(health_quadrant_route, "health_quadrant_service", StubHealthQuadrantService())
-    client = TestClient(create_test_app())
+def test_health_quadrant_confirm_route_persists_payload() -> None:
+    app = create_test_app()
+    app.dependency_overrides[get_health_quadrant_service] = lambda: StubHealthQuadrantService()
+    client = TestClient(app)
 
     response = client.post(
         "/api/v1/health-quadrant/confirm",
@@ -164,12 +168,14 @@ def test_health_quadrant_confirm_route_persists_payload(monkeypatch) -> None:
 
     assert response.status_code == 200
     assert response.json() == {"code": 0, "message": "ok", "data": {"success": True}}
+    app.dependency_overrides.clear()
 
 
-def test_health_quadrant_confirm_route_accepts_snake_case_quadrants(monkeypatch) -> None:
+def test_health_quadrant_confirm_route_accepts_snake_case_quadrants() -> None:
     service = StubHealthQuadrantService()
-    monkeypatch.setattr(health_quadrant_route, "health_quadrant_service", service)
-    client = TestClient(create_test_app())
+    app = create_test_app()
+    app.dependency_overrides[get_health_quadrant_service] = lambda: service
+    client = TestClient(app)
 
     response = client.post(
         "/api/v1/health-quadrant/confirm",
@@ -216,3 +222,4 @@ def test_health_quadrant_confirm_route_accepts_snake_case_quadrants(monkeypatch)
     assert service.last_confirm_quadrants[0]["abnormal_indicators"] == ["血脂异常"]
     assert service.last_confirm_quadrants[0]["recommendation_plans"] == ["基础异常复查包"]
     assert service.last_confirm_quadrants[3]["abnormal_indicators"] == ["PET-MR 评估建议"]
+    app.dependency_overrides.clear()

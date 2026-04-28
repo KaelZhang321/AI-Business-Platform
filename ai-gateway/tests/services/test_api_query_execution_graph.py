@@ -184,12 +184,76 @@ async def test_execution_graph_skips_downstream_when_upstream_binding_is_empty()
         trace_id="trace-execution-graph-empty",
     )
 
+    assert result.aggregate_status == ApiQueryExecutionStatus.ERROR
+    assert stub_executor.calls == ["customers"]
+    downstream_result = result.report.records_by_step_id["step_orders"].execution_result
+    assert downstream_result.status == ApiQueryExecutionStatus.ERROR
+    assert downstream_result.error_code == "EMPTY_UPSTREAM_BINDING_REQUIRED"
+    assert downstream_result.meta["required_empty_bindings"] == ["$[step_customers.data][*].customerId"]
+
+
+@pytest.mark.asyncio
+async def test_execution_graph_keeps_optional_empty_binding_as_skipped() -> None:
+    customers_entry = _make_entry(entry_id="customers", path="/api/crm/customers")
+    orders_entry = _make_entry(
+        entry_id="orders_summary",
+        path="/api/crm/orders/summary",
+        required=["owner_id"],
+    )
+    plan = ApiQueryExecutionPlan(
+        plan_id="dag_empty_upstream_optional_binding",
+        steps=[
+            ApiQueryPlanStep(
+                step_id="step_customers",
+                api_id="customers",
+                api_path=customers_entry.path,
+                params={"owner_id": "E8899"},
+                depends_on=[],
+            ),
+            ApiQueryPlanStep(
+                step_id="step_orders",
+                api_id="orders_summary",
+                api_path=orders_entry.path,
+                params={
+                    "owner_id": "E8899",
+                    "customer_ids": "$[step_customers.data][*].customerId",
+                },
+                depends_on=["step_customers"],
+            ),
+        ],
+    )
+
+    class StubExecutor:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        async def call(self, entry, params, user_token=None, trace_id=None, user_id=None):
+            self.calls.append(entry.id)
+            return ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.EMPTY,
+                data=[],
+                total=0,
+                trace_id=trace_id,
+            )
+
+    stub_executor = StubExecutor()
+    graph = ApiQueryExecutionGraph(stub_executor)
+    result = await graph.run(
+        plan,
+        {
+            "step_customers": customers_entry,
+            "step_orders": orders_entry,
+        },
+        user_token=None,
+        trace_id="trace-execution-graph-empty-optional",
+    )
+
     assert result.aggregate_status == ApiQueryExecutionStatus.EMPTY
     assert stub_executor.calls == ["customers"]
     downstream_result = result.report.records_by_step_id["step_orders"].execution_result
     assert downstream_result.status == ApiQueryExecutionStatus.SKIPPED
+    assert downstream_result.error_code == "EMPTY_UPSTREAM_BINDING"
     assert downstream_result.skipped_reason == "skipped_due_to_empty_upstream"
-    assert downstream_result.meta["empty_bindings"] == ["$[step_customers.data][*].customerId"]
 
 
 @pytest.mark.asyncio
@@ -403,3 +467,155 @@ async def test_execution_graph_wait_select_required_skips_downstream() -> None:
     assert downstream_result.meta["pause_type"] == "WAIT_SELECT"
     options = downstream_result.meta["options_by_binding"]
     assert options["roles:role_id:id"] == ["S1001", "S1002"]
+    option_rows = downstream_result.meta["option_rows_by_binding"]
+    assert option_rows["roles:role_id:id"] == [{"id": "S1001"}, {"id": "S1002"}]
+
+
+@pytest.mark.asyncio
+async def test_execution_graph_coerces_single_item_array_binding_for_scalar_param() -> None:
+    customer_entry = _make_entry(entry_id="customer_info", path="/api/crm/customer")
+    plan_entry = ApiCatalogEntry(
+        id="stored_plan",
+        description="查询储值方案",
+        domain="oms",
+        operation_safety="query",
+        method="POST",
+        path="/api/oms/plan/detail",
+        param_schema={
+            "type": "object",
+            "properties": {
+                "encryptedIdCard": {"type": "string"},
+            },
+            "required": ["encryptedIdCard"],
+        },
+    )
+    plan = ApiQueryExecutionPlan(
+        plan_id="dag_scalar_coerce",
+        steps=[
+            ApiQueryPlanStep(
+                step_id="step_customer",
+                api_id="customer_info",
+                api_path=customer_entry.path,
+                params={"keyword": "刘海坚"},
+                depends_on=[],
+            ),
+            ApiQueryPlanStep(
+                step_id="step_plan",
+                api_id="stored_plan",
+                api_path=plan_entry.path,
+                params={"encryptedIdCard": "$[step_customer.data][*].idCard"},
+                depends_on=["step_customer"],
+            ),
+        ],
+    )
+
+    class StubExecutor:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict[str, object]]] = []
+
+        async def call(self, entry, params, user_token=None, trace_id=None, user_id=None):
+            self.calls.append((entry.id, dict(params)))
+            if entry.id == "customer_info":
+                return ApiQueryExecutionResult(
+                    status=ApiQueryExecutionStatus.SUCCESS,
+                    data=[{"idCard": "kdxU1k6..."}],
+                    total=1,
+                    trace_id=trace_id,
+                )
+            return ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.SUCCESS,
+                data=[{"ok": True}],
+                total=1,
+                trace_id=trace_id,
+            )
+
+    executor = StubExecutor()
+    graph = ApiQueryExecutionGraph(executor)
+    result = await graph.run(
+        plan,
+        {
+            "step_customer": customer_entry,
+            "step_plan": plan_entry,
+        },
+        user_token=None,
+        trace_id="trace-coerce-single-array",
+    )
+
+    assert result.aggregate_status == ApiQueryExecutionStatus.SUCCESS
+    assert executor.calls[-1][0] == "stored_plan"
+    assert executor.calls[-1][1]["encryptedIdCard"] == "kdxU1k6..."
+
+
+@pytest.mark.asyncio
+async def test_execution_graph_keeps_single_item_array_when_param_schema_is_array() -> None:
+    customer_entry = _make_entry(entry_id="customer_info", path="/api/crm/customer")
+    plan_entry = ApiCatalogEntry(
+        id="stored_plan",
+        description="查询储值方案",
+        domain="oms",
+        operation_safety="query",
+        method="POST",
+        path="/api/oms/plan/detail",
+        param_schema={
+            "type": "object",
+            "properties": {
+                "encryptedIdCard": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["encryptedIdCard"],
+        },
+    )
+    plan = ApiQueryExecutionPlan(
+        plan_id="dag_array_keep",
+        steps=[
+            ApiQueryPlanStep(
+                step_id="step_customer",
+                api_id="customer_info",
+                api_path=customer_entry.path,
+                params={"keyword": "刘海坚"},
+                depends_on=[],
+            ),
+            ApiQueryPlanStep(
+                step_id="step_plan",
+                api_id="stored_plan",
+                api_path=plan_entry.path,
+                params={"encryptedIdCard": "$[step_customer.data][*].idCard"},
+                depends_on=["step_customer"],
+            ),
+        ],
+    )
+
+    class StubExecutor:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict[str, object]]] = []
+
+        async def call(self, entry, params, user_token=None, trace_id=None, user_id=None):
+            self.calls.append((entry.id, dict(params)))
+            if entry.id == "customer_info":
+                return ApiQueryExecutionResult(
+                    status=ApiQueryExecutionStatus.SUCCESS,
+                    data=[{"idCard": "kdxU1k6..."}],
+                    total=1,
+                    trace_id=trace_id,
+                )
+            return ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.SUCCESS,
+                data=[{"ok": True}],
+                total=1,
+                trace_id=trace_id,
+            )
+
+    executor = StubExecutor()
+    graph = ApiQueryExecutionGraph(executor)
+    result = await graph.run(
+        plan,
+        {
+            "step_customer": customer_entry,
+            "step_plan": plan_entry,
+        },
+        user_token=None,
+        trace_id="trace-keep-array",
+    )
+
+    assert result.aggregate_status == ApiQueryExecutionStatus.SUCCESS
+    assert executor.calls[-1][0] == "stored_plan"
+    assert executor.calls[-1][1]["encryptedIdCard"] == ["kdxU1k6..."]

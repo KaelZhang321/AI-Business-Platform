@@ -7,15 +7,16 @@ from typing import Any, Sequence
 
 import aiomysql
 
-from app.core.mysql import build_business_mysql_conn_params
 from app.models.schemas import ApiQueryUIAction
 from app.utils.json_utils import load_json_object
 
 logger = logging.getLogger(__name__)
 
 _QUERY_DEFAULT_COMPONENT_CODES = [
+    "PlannerBlankContainer",
     "PlannerCard",
     "PlannerMetric",
+    "PlannerInfoGrid",
     "PlannerTable",
     "PlannerDetailCard",
     "PlannerPagination",
@@ -84,11 +85,12 @@ class UICatalogService:
         - MySQL 不可达、表未创建或字段为脏 JSON 时，自动回退到内置目录
         - 只读取一次失败结果，避免每个请求都重复击穿数据库并刷日志
         - 目录中不存在的运行时引用仍会返回占位说明，防止 Prompt 侧静默丢失约束
+        - 业务库连接池必须由上层注入，目录服务本身不再自建连接池
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, pool: aiomysql.Pool | None = None) -> None:
         self._snapshot = _build_builtin_snapshot()
-        self._pool: aiomysql.Pool | None = None
+        self._pool = pool
         self._load_attempted = False
         self._load_lock = asyncio.Lock()
 
@@ -247,16 +249,7 @@ class UICatalogService:
         return [dict(item) for item in self._snapshot.template_scenarios]
 
     async def close(self) -> None:
-        """释放内部连接池。
-
-        功能：
-            当前服务通常以进程级单例形式存在。预留 `close` 是为了后续接入应用关闭钩子时，
-            避免热重载或测试进程留下悬挂的 MySQL 连接。
-        """
-        if self._pool is not None:
-            self._pool.close()
-            await self._pool.wait_closed()
-            self._pool = None
+        """目录服务不持有连接池所有权，因此 close 为 no-op。"""
 
     async def _load_component_definitions(self) -> dict[str, UIComponentDefinition]:
         """从 `ui_components` 读取活跃组件定义。"""
@@ -339,13 +332,9 @@ class UICatalogService:
                 return [dict(row) for row in rows]
 
     async def _get_pool(self) -> aiomysql.Pool:
-        """懒加载内部 MySQL 连接池。"""
+        """读取应用级注入的 UI 目录连接池。"""
         if self._pool is None:
-            self._pool = await aiomysql.create_pool(
-                minsize=1,
-                maxsize=3,
-                **build_business_mysql_conn_params(include_connect_timeout=False),
-            )
+            raise RuntimeError("业务库连接池未注入，请通过 AppResources 或测试桩显式提供。")
         return self._pool
 
 
@@ -357,6 +346,12 @@ def _build_builtin_snapshot() -> UICatalogSnapshot:
         开发环境缺库时，网关仍必须能返回稳定契约。这份快照就是安全气囊。
     """
     components = {
+        "PlannerBlankContainer": UIComponentDefinition(
+            code="PlannerBlankContainer",
+            name="规划空白容器",
+            description="顶级空白容器，props: minHeight，用于承载一个或多个业务卡片",
+            is_container=True,
+        ),
         "PlannerCard": UIComponentDefinition(
             code="PlannerCard",
             name="规划卡片",
@@ -377,6 +372,11 @@ def _build_builtin_snapshot() -> UICatalogSnapshot:
             code="PlannerMetric",
             name="规划指标",
             description="只读指标展示，props: label, value",
+        ),
+        "PlannerInfoGrid": UIComponentDefinition(
+            code="PlannerInfoGrid",
+            name="规划信息网格",
+            description="信息网格展示，props: items[{label,value}], minColumnWidth",
         ),
         "PlannerDetailCard": UIComponentDefinition(
             code="PlannerDetailCard",

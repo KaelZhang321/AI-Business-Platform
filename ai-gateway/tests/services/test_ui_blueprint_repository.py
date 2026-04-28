@@ -3,8 +3,7 @@ from __future__ import annotations
 import pytest
 
 import app.services.api_catalog.ui_blueprint_repository as repository_module
-from app.core.config import settings
-from app.services.api_catalog.ui_blueprint_repository import UiBlueprintRepository
+from app.services.api_catalog.ui_blueprint_repository import UiBlueprintRepository, UiBlueprintRepositoryError
 
 
 class FakeCursor:
@@ -83,7 +82,7 @@ class FakePool:
 
 
 @pytest.mark.asyncio
-async def test_ui_blueprint_repository_loads_partition_rules(monkeypatch) -> None:
+async def test_ui_blueprint_repository_loads_partition_rules() -> None:
     """应把 ui_blueprint_dict 规则转换成分区快照。"""
 
     capture: dict[str, object] = {}
@@ -116,14 +115,7 @@ async def test_ui_blueprint_repository_loads_partition_rules(monkeypatch) -> Non
         capture,
     )
 
-    async def fake_create_pool(**kwargs):
-        capture["conn_kwargs"] = kwargs
-        return fake_pool
-
-    monkeypatch.setattr(settings, "business_mysql_database", "ai_platform_business")
-    monkeypatch.setattr(repository_module.aiomysql, "create_pool", fake_create_pool)
-
-    repository = UiBlueprintRepository()
+    repository = UiBlueprintRepository(pool=fake_pool)  # type: ignore[arg-type]
     snapshot = await repository.load_snapshot()
     await repository.close()
 
@@ -133,25 +125,28 @@ async def test_ui_blueprint_repository_loads_partition_rules(monkeypatch) -> Non
     assert rule.display_section_code == "basic_info"
     assert rule.typical_fields == ["customer_id", "name"]
     assert capture["cursor_cls"] is repository_module.aiomysql.DictCursor
-    assert fake_pool.closed is True
-    assert fake_pool.wait_closed_called is True
+    assert fake_pool.closed is False
+    assert fake_pool.wait_closed_called is False
 
 
 @pytest.mark.asyncio
-async def test_ui_blueprint_repository_returns_empty_when_table_missing(monkeypatch) -> None:
+async def test_ui_blueprint_repository_returns_empty_when_table_missing() -> None:
     """当 ui_blueprint_dict 未部署时应降级为空快照，不阻断治理任务。"""
 
     capture: dict[str, object] = {}
     fake_pool = FakePool([[]], capture)
-
-    async def fake_create_pool(**kwargs):
-        return fake_pool
-
-    monkeypatch.setattr(repository_module.aiomysql, "create_pool", fake_create_pool)
-
-    repository = UiBlueprintRepository()
+    repository = UiBlueprintRepository(pool=fake_pool)  # type: ignore[arg-type]
     snapshot = await repository.load_snapshot()
     await repository.close()
 
     assert snapshot.rules == []
 
+
+@pytest.mark.asyncio
+async def test_ui_blueprint_repository_requires_injected_pool() -> None:
+    """未注入业务库连接池时应立即报错，避免运行期偷偷建池。"""
+
+    repository = UiBlueprintRepository()
+
+    with pytest.raises(UiBlueprintRepositoryError, match="业务库连接池未注入"):
+        await repository.load_snapshot()

@@ -14,7 +14,6 @@ from pathlib import Path
 import aiomysql
 
 from app.core.config import settings
-from app.core.mysql import build_business_mysql_conn_params
 from app.models.schemas import QueryDomain, Text2SQLResponse
 from app.services.dynamic_ui_service import DynamicUIService
 
@@ -35,12 +34,13 @@ class GenericQueryExecutor:
     Edge Cases:
         - SQL 只允许 `SELECT/CTE`
         - 自动补 `LIMIT`，防止大结果集直接拖垮链路
+        - 通用问数执行器必须消费上层注入的业务库 pool，避免在 HTTP 请求期间偷偷建池
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, pool: aiomysql.Pool | None = None) -> None:
         self._vn = None
         self._dynamic_ui = DynamicUIService()
-        self._pool: aiomysql.Pool | None = None
+        self._pool = pool
 
     def _get_vanna(self):
         """懒加载通用 Vanna 客户端。"""
@@ -140,17 +140,12 @@ class GenericQueryExecutor:
         return {"status": "ok", "count": trained, "total": len(ddl_statements)}
 
     async def close(self) -> None:
-        """关闭 aiomysql 连接池。"""
-        if self._pool is not None:
-            self._pool.close()
-            await self._pool.wait_closed()
-            self._pool = None
+        """执行器不持有连接池所有权，因此 close 为 no-op。"""
 
     async def _get_pool(self) -> aiomysql.Pool:
-        """懒加载通用问数连接池。"""
+        """读取应用级注入的通用问数连接池。"""
         if self._pool is None:
-            conn_params = build_business_mysql_conn_params(include_connect_timeout=False)
-            self._pool = await aiomysql.create_pool(minsize=1, maxsize=5, **conn_params)
+            raise RuntimeError("业务库连接池未注入，请通过 AppResources 或测试桩显式提供。")
         return self._pool
 
     async def _execute_sql(self, sql: str, database: str) -> list[dict]:

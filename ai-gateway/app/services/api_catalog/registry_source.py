@@ -6,8 +6,6 @@ import logging
 import re
 from typing import Any
 
-from app.core.config import settings
-from app.core.mysql import build_business_mysql_conn_params
 from app.services.api_catalog.schema_utils import (
     describe_schema_type,
     extract_schema_description,
@@ -15,9 +13,11 @@ from app.services.api_catalog.schema_utils import (
     schema_is_array,
 )
 from app.services.api_catalog.schema import (
+    ApiCatalogDetailViewMeta,
     ApiCatalogDetailHint,
     ApiCatalogEntry,
     ApiCatalogFieldProfile,
+    ApiCatalogListViewMeta,
     ApiCatalogPaginationHint,
     ApiCatalogPredecessorParamBinding,
     ApiCatalogPredecessorSpec,
@@ -33,7 +33,7 @@ SELECT
     e.id AS endpointId,
     e.tag_id AS tagId,
     t.name AS tagName,
-    e.name AS endpointName,
+    e.name AS name,
     e.path AS path,
     e.method AS method,
     e.summary AS summary,
@@ -42,6 +42,8 @@ SELECT
     CAST(e.sample_request AS CHAR) AS sampleRequest,
     CAST(e.sample_response AS CHAR) AS sampleResponse,
     CAST(e.predecessor_specs AS CHAR) AS predecessorSpecs,
+    CAST(e.list_view_meta AS CHAR) AS listViewMeta,
+    CAST(e.detail_view_meta AS CHAR) AS detailViewMeta,
     e.operation_safety AS operationSafety,
     e.status AS endpointStatus,
     s.id AS sourceId,
@@ -84,10 +86,11 @@ class ApiCatalogRegistrySource:
 
     Edge Cases:
         - SQL 里显式 `CAST(JSON AS CHAR)`，是为了消除不同 MySQL 驱动对 JSON 返回类型的差异
+        - 业务库连接池必须由上层注入，注册表读取不再自行建池
     """
 
-    def __init__(self) -> None:
-        self._pool: aiomysql.Pool | None = None
+    def __init__(self, *, pool: aiomysql.Pool | None = None) -> None:
+        self._pool = pool
 
     async def load_entries(self) -> list[ApiCatalogEntry]:
         """仅从业务 MySQL 加载接口目录记录。
@@ -213,24 +216,13 @@ class ApiCatalogRegistrySource:
             return rows
 
     async def _get_pool(self) -> aiomysql.Pool:
-        """懒加载 API Catalog MySQL 连接池。"""
+        """读取应用级注入的 API Catalog 连接池。"""
         if self._pool is None:
-            logger.info(
-                "Connecting to business MySQL host=%s port=%s db=%s timeout=%ss",
-                settings.business_mysql_host,
-                settings.business_mysql_port,
-                settings.business_mysql_database,
-                settings.api_catalog_mysql_connect_timeout_seconds,
-            )
-            self._pool = await aiomysql.create_pool(minsize=1, maxsize=5, **build_business_mysql_conn_params())
+            raise ApiCatalogSourceError("业务库连接池未注入，请通过 AppResources 或测试桩显式提供。")
         return self._pool
 
     async def close(self) -> None:
-        """释放内部连接池。"""
-        if self._pool is not None:
-            self._pool.close()
-            await self._pool.wait_closed()
-            self._pool = None
+        """注册表访问器不持有连接池所有权，因此 close 为 no-op。"""
 
 
 def _build_entry_from_mysql_row(row: dict[str, Any]) -> ApiCatalogEntry:
@@ -257,7 +249,7 @@ def _build_entry_from_mysql_row(row: dict[str, Any]) -> ApiCatalogEntry:
         "id": row.get("endpointId"),
         "tagId": row.get("tagId"),
         "tagName": row.get("tagName"),
-        "name": row.get("endpointName"),
+        "name": row.get("name"),
         "path": row.get("path"),
         "method": row.get("method"),
         "summary": row.get("summary"),
@@ -266,6 +258,8 @@ def _build_entry_from_mysql_row(row: dict[str, Any]) -> ApiCatalogEntry:
         "sampleRequest": row.get("sampleRequest"),
         "sampleResponse": row.get("sampleResponse"),
         "predecessorSpecs": row.get("predecessorSpecs"),
+        "listViewMeta": row.get("listViewMeta"),
+        "detailViewMeta": row.get("detailViewMeta"),
         "operationSafety": row.get("operationSafety"),
         "status": row.get("endpointStatus"),
     }
@@ -297,6 +291,8 @@ def _build_entry(
     sample_request = load_json_object(endpoint.get("sampleRequest"))
     sample_response = load_json_object(endpoint.get("sampleResponse"))
     predecessors = _parse_predecessor_specs(endpoint.get("predecessorSpecs"))
+    list_view_meta = _parse_list_view_meta(endpoint.get("listViewMeta"))
+    detail_view_meta = _parse_detail_view_meta(endpoint.get("detailViewMeta"))
     operation_safety = _normalize_operation_safety(endpoint.get("operationSafety"))
 
     auth_type = str(source.get("authType") or "").strip()
@@ -309,6 +305,7 @@ def _build_entry(
 
     return ApiCatalogEntry(
         id=str(endpoint.get("id") or f"{method}:{path}"),
+        name=name,
         description=summary or name or f"{method} {path}",
         example_queries=_build_example_queries(name, summary),
         tags=_compact_list([tag_name, source_name, source_code, method]),
@@ -353,6 +350,8 @@ def _build_entry(
         detail_hint=ApiCatalogDetailHint(),
         pagination_hint=ApiCatalogPaginationHint(),
         template_hint=ApiCatalogTemplateHint(),
+        list_view_meta=list_view_meta,
+        detail_view_meta=detail_view_meta,
         request_field_profiles=_extract_request_field_profiles(method, _to_param_schema(request_schema)),
         response_field_profiles=_extract_response_field_profiles(response_schema, response_data_path, field_labels),
         predecessors=predecessors,
@@ -467,6 +466,7 @@ def _build_system_dict_entry() -> ApiCatalogEntry:
     field_labels = {"label": "标签", "value": "值"}
     return ApiCatalogEntry(
         id="system_dicts_v1",
+        name="系统字典",
         description="批量获取系统级字典项。用于生成表单下拉选项和枚举值映射。",
         example_queries=["获取客户等级字典", "查询客户区域下拉选项", "获取合同类型字典"],
         tags=["system", "dictionary", "options"],
@@ -503,6 +503,8 @@ def _build_system_dict_entry() -> ApiCatalogEntry:
         detail_hint=ApiCatalogDetailHint(),
         pagination_hint=ApiCatalogPaginationHint(),
         template_hint=ApiCatalogTemplateHint(),
+        list_view_meta=ApiCatalogListViewMeta(),
+        detail_view_meta=ApiCatalogDetailViewMeta(),
         request_field_profiles=_extract_request_field_profiles("GET", param_schema),
         response_field_profiles=_extract_response_field_profiles(response_schema, "data", field_labels),
     )
@@ -763,14 +765,60 @@ def _strip_predecessor_specs_projection(sql: str) -> str:
         line
         for line in lines
         if "predecessor_specs" not in line.lower() and "predecessorspecs" not in line.lower()
+        and "list_view_meta" not in line.lower()
+        and "detail_view_meta" not in line.lower()
+        and "listviewmeta" not in line.lower()
+        and "detailviewmeta" not in line.lower()
     ]
     return "\n".join(filtered)
 
 
 def _is_mysql_unknown_predecessor_column_error(exc: Exception) -> bool:
-    """判断是否为 predecessor 字段不存在导致的 Unknown column。"""
+    """判断是否为 `predecessor_specs/list_view_meta/detail_view_meta` 字段缺失导致的 Unknown column。
+
+    功能：
+        目录元数据是滚动发布，部分环境可能先升级网关代码、后升级数据表字段。
+        这里统一把“元数据增强字段缺失”归并为同类兼容错误，触发回退 SQL，保证老环境可读。
+    """
     message = str(exc).lower()
-    return "unknown column" in message and "predecessor" in message
+    if "unknown column" not in message:
+        return False
+    return any(
+        keyword in message
+        for keyword in ("predecessor", "list_view_meta", "detail_view_meta", "listviewmeta", "detailviewmeta")
+    )
+
+
+def _parse_list_view_meta(raw_value: Any) -> ApiCatalogListViewMeta:
+    """解析列表元数据。
+
+    功能：
+        该解析器必须容忍脏配置和历史空值。元数据错误不能阻断主查询链路，应回退为空配置，
+        让渲染层继续沿用旧逻辑兜底。
+    """
+    payload = load_json_value(raw_value, {})
+    if not isinstance(payload, dict):
+        return ApiCatalogListViewMeta()
+    try:
+        return ApiCatalogListViewMeta.model_validate(payload)
+    except Exception:
+        return ApiCatalogListViewMeta()
+
+
+def _parse_detail_view_meta(raw_value: Any) -> ApiCatalogDetailViewMeta:
+    """解析详情元数据。
+
+    功能：
+        详情字段白名单直接影响最终展示字段集合；当配置不合法时，必须显式回退默认空配置，
+        避免抛异常导致整条目录加载失败。
+    """
+    payload = load_json_value(raw_value, {})
+    if not isinstance(payload, dict):
+        return ApiCatalogDetailViewMeta()
+    try:
+        return ApiCatalogDetailViewMeta.model_validate(payload)
+    except Exception:
+        return ApiCatalogDetailViewMeta()
 
 
 def _compact_list(values: list[Any]) -> list[str]:

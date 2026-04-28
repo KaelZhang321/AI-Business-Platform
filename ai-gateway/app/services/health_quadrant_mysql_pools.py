@@ -30,17 +30,27 @@ class HealthQuadrantMySQLPools:
     Args:
         minsize: 连接池最小连接数。
         maxsize: 连接池最大连接数。
+        business_pool: 可选的应用级业务库共享连接池；传入后本管理器只借用，不负责关闭。
 
     Edge Cases:
         1. 并发首次请求同时触发建池时，通过异步锁确保只建一次。
         2. 某个数据源建池失败不会污染其它数据源连接状态。
+        3. 业务库 pool 由 AppResources 注入时，close() 只释放 ODS 自有池，避免双重关闭。
     """
 
-    def __init__(self, *, minsize: int = 1, maxsize: int = 3) -> None:
+    def __init__(
+        self,
+        *,
+        minsize: int = 1,
+        maxsize: int = 3,
+        business_pool: aiomysql.Pool | None = None,
+    ) -> None:
         self._minsize = minsize
         self._maxsize = maxsize
         self._ods_pool: aiomysql.Pool | None = None
-        self._business_pool: aiomysql.Pool | None = None
+        self._business_pool: aiomysql.Pool | None = business_pool
+        self._owns_ods_pool = True
+        self._owns_business_pool = business_pool is None
         self._lock = asyncio.Lock()
 
     async def warmup(self) -> None:
@@ -123,14 +133,16 @@ class HealthQuadrantMySQLPools:
 
         async with self._lock:
             pools = {
-                "ods": self._ods_pool,
-                "business": self._business_pool,
+                "ods": (self._ods_pool, self._owns_ods_pool),
+                "business": (self._business_pool, self._owns_business_pool),
             }
             self._ods_pool = None
             self._business_pool = None
+            self._owns_ods_pool = True
+            self._owns_business_pool = True
 
-        for pool_name, pool in pools.items():
-            if pool is None:
+        for pool_name, (pool, owns_pool) in pools.items():
+            if pool is None or not owns_pool:
                 continue
             pool.close()
             await pool.wait_closed()
@@ -150,8 +162,10 @@ class HealthQuadrantMySQLPools:
 
         if pool_name == "ods":
             self._ods_pool = pool
+            self._owns_ods_pool = True
             return
         if pool_name == "business":
             self._business_pool = pool
+            self._owns_business_pool = True
             return
         raise ValueError(f"unsupported pool_name: {pool_name}")
