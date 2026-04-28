@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from app.api import dependencies as api_dependencies
 from app.api.routes import smart_meal as smart_meal_route
 
 
@@ -71,8 +72,11 @@ def create_test_app() -> FastAPI:
 
 
 def test_smart_meal_package_recommend_route_returns_envelope(monkeypatch) -> None:
-    monkeypatch.setattr(smart_meal_route, "_package_recommend_service", StubSmartMealPackageRecommendService())
-    client = TestClient(create_test_app())
+    app = create_test_app()
+    app.dependency_overrides[api_dependencies.get_smart_meal_package_recommend_service] = (
+        lambda: StubSmartMealPackageRecommendService()
+    )
+    client = TestClient(app)
 
     response = client.post(
         "/api/v1/smart-meal/package-recommend",
@@ -113,11 +117,15 @@ def test_smart_meal_package_recommend_route_returns_envelope(monkeypatch) -> Non
             "reason": "更贴近控糖与高蛋白方向。",
         },
     ]
+    app.dependency_overrides.pop(api_dependencies.get_smart_meal_package_recommend_service, None)
 
 
 def test_smart_meal_package_recommend_route_returns_empty_contract(monkeypatch) -> None:
-    monkeypatch.setattr(smart_meal_route, "_package_recommend_service", StubSmartMealPackageRecommendEmptyService())
-    client = TestClient(create_test_app())
+    app = create_test_app()
+    app.dependency_overrides[api_dependencies.get_smart_meal_package_recommend_service] = (
+        lambda: StubSmartMealPackageRecommendEmptyService()
+    )
+    client = TestClient(app)
 
     response = client.post(
         "/api/v1/smart-meal/package-recommend",
@@ -135,3 +143,4 @@ def test_smart_meal_package_recommend_route_returns_empty_contract(monkeypatch) 
         "message": "当前条件下暂无可推荐套餐",
         "data": [],
     }
+    app.dependency_overrides.pop(api_dependencies.get_smart_meal_package_recommend_service, None)

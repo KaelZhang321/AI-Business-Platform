@@ -11,20 +11,22 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+from app.api import dependencies as api_dependencies
 from app.models.schemas import ChatRequest, ChatResponse, IntentType
 
 
 @pytest.fixture()
 def mock_workflow():
     """Mock ChatWorkflow 避免触发真实 LLM/RAG 调用。"""
-    with patch("app.api.routes.chat.workflow") as mock_wf:
-        yield mock_wf
+    yield AsyncMock()
 
 
 @pytest.fixture()
 def client(mock_workflow):
     from app.main import app
-    return TestClient(app)
+    app.dependency_overrides[api_dependencies.get_chat_workflow] = lambda: mock_workflow
+    yield TestClient(app)
+    app.dependency_overrides.pop(api_dependencies.get_chat_workflow, None)
 
 
 class TestNonStreamChat:
