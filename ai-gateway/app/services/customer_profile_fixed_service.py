@@ -39,6 +39,16 @@ _RESOURCE_PATH = Path(__file__).resolve().parents[2] / "resources" / "ui_api_end
 
 _PROFILE_KEYWORDS = (
     "客户信息",
+    "信息",
+    "档案",
+    "资料",
+    "详情",
+    "画像",
+    "概览",
+    "总貌",
+    "概括",
+    "总览",
+    "全貌",
     "客户资料",
     "客户档案",
     "个人信息",
@@ -58,6 +68,7 @@ _PROFILE_KEYWORDS = (
     "客户概况",
     "客户总览",
     "客户全貌",
+
 )
 
 _EXCLUDED_SINGLE_TOPIC_KEYWORDS = (
