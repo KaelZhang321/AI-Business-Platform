@@ -220,6 +220,10 @@ public class PatientExamApplicationService {
                 continue;
             }
             PatientExamCleanedIndicatorResponse indicator = toCleanedIndicator(row);
+            if (isHiddenHealthQuestionnaireIndicator(indicator)) {
+                continue;
+            }
+            normalizeHealthQuestionnaireValue(indicator);
             if (StringUtils.hasText(indicator.getCategory())) {
                 categories.add(indicator.getCategory());
             }
@@ -242,6 +246,22 @@ public class PatientExamApplicationService {
         response.setSummary(summary);
         response.setIndicators(indicators);
         return response;
+    }
+
+    private boolean isHiddenHealthQuestionnaireIndicator(PatientExamCleanedIndicatorResponse indicator) {
+        return isHealthQuestionnaireIndicator(indicator) && "0".equals(indicator.getValue().trim());
+    }
+
+    private void normalizeHealthQuestionnaireValue(PatientExamCleanedIndicatorResponse indicator) {
+        if (isHealthQuestionnaireIndicator(indicator) && "1".equals(indicator.getValue().trim())) {
+            indicator.setValue("是");
+        }
+    }
+
+    private boolean isHealthQuestionnaireIndicator(PatientExamCleanedIndicatorResponse indicator) {
+        return indicator != null
+                && "健康问诊".equals(indicator.getCategory())
+                && StringUtils.hasText(indicator.getValue());
     }
 
     private PatientExamCleanedIndicatorResponse toCleanedIndicator(PatientExamResultItemResponse row) {
