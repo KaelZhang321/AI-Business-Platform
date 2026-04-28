@@ -141,6 +141,60 @@ async def test_query_quadrants_returns_cached_when_hit(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_query_quadrants_treats_empty_quadrant_cache_as_miss(monkeypatch) -> None:
+    repo = StubRepository(
+        cached={
+            "quadrants": [
+                {"q_code": "q1", "q_name": "一", "abnormal_indicators": [], "recommendation_plans": []},
+                {"q_code": "q2", "q_name": "二", "abnormal_indicators": [], "recommendation_plans": []},
+                {"q_code": "q3", "q_name": "三", "abnormal_indicators": [], "recommendation_plans": []},
+                {"q_code": "q4", "q_name": "四", "abnormal_indicators": [], "recommendation_plans": []},
+            ]
+        }
+    )
+    service = HealthQuadrantService(repository=repo, llm_service=StubLLM())
+    rebuilt_quadrants = [
+        {"q_code": "q1", "q_name": "一", "abnormal_indicators": ["血脂偏高"], "recommendation_plans": ["血脂复查"]},
+        {"q_code": "q2", "q_name": "二", "abnormal_indicators": [], "recommendation_plans": []},
+        {"q_code": "q3", "q_name": "三", "abnormal_indicators": [], "recommendation_plans": []},
+        {"q_code": "q4", "q_name": "四", "abnormal_indicators": [], "recommendation_plans": []},
+    ]
+
+    async def stub_load_source_data(*, study_id: str, trace_id: str | None = None):
+        assert study_id == "2512160009"
+        return {
+            "packageName": "套餐A",
+            "finalConclusion": "建议进一步复查甲状腺超声",
+            "sourceJlrq": "2026-04-15 10:00:00",
+            "sourceZjrq": "2026-04-15 11:00:00",
+            "splitRows": [],
+        }
+
+    async def stub_build_exam_quadrants(**kwargs):
+        assert kwargs["study_id"] == "2512160009"
+        return rebuilt_quadrants
+
+    monkeypatch.setattr(service, "_load_source_data", stub_load_source_data)
+    monkeypatch.setattr(service, "_build_exam_quadrants", stub_build_exam_quadrants)
+    result = await service.query_quadrants(
+        sex="男",
+        age=None,
+        study_id="2512160009",
+        quadrant_type="exam",
+        single_exam_items=[
+            {"itemId": "A1", "itemText": "血脂", "abnormalIndicator": "血脂偏高"},
+        ],
+        chief_complaint_text="睡眠障碍，夜间易醒",
+        trace_id="trace-001",
+    )
+
+    assert result["fromCache"] is False
+    assert result["quadrants"] == rebuilt_quadrants
+    assert repo.draft_payload is not None
+    assert repo.draft_payload["payload"] == {"quadrants": rebuilt_quadrants}
+
+
+@pytest.mark.asyncio
 async def test_query_quadrants_exam_uses_one_two_item_split(monkeypatch) -> None:
     repo = StubRepository(cached=None)
     treatment_repo = StubTreatmentRepository()

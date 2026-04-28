@@ -258,14 +258,23 @@ class HealthQuadrantService:
                 cached_status,
             )
             if cached:
+                cached_quadrants = _normalize_quadrants_payload(cached)
+                if _has_quadrant_cache_content(cached_quadrants):
+                    logger.info(
+                        "health quadrant query cache hit trace_id=%s study_id=%s quadrant_type=%s status=%s",
+                        normalized_trace_id,
+                        study_id,
+                        quadrant_type,
+                        cached_status,
+                    )
+                    return {"quadrants": cached_quadrants, "fromCache": True}
                 logger.info(
-                    "health quadrant query cache hit trace_id=%s study_id=%s quadrant_type=%s status=%s",
+                    "health quadrant query cache ignored trace_id=%s study_id=%s quadrant_type=%s status=%s reason=empty_quadrant_content",
                     normalized_trace_id,
                     study_id,
                     quadrant_type,
                     cached_status,
                 )
-                return {"quadrants": _normalize_quadrants_payload(cached), "fromCache": True}
 
             # 4) 缓存未命中时才进入实时计算分支，降低高并发下的跨库与 LLM 成本。
             compute_started_at = time.perf_counter()
@@ -1866,6 +1875,15 @@ def _normalize_quadrants_payload(payload: dict[str, Any]) -> list[dict[str, Any]
             }
         )
     return normalized
+
+
+def _has_quadrant_cache_content(quadrants: list[dict[str, Any]]) -> bool:
+    """缓存四象限至少包含一条异常指标或推荐方案时才算业务命中。"""
+
+    return any(
+        bool(quadrant.get("abnormal_indicators")) or bool(quadrant.get("recommendation_plans"))
+        for quadrant in quadrants
+    )
 
 
 def json_loads_safe(raw: str) -> dict[str, Any] | list[Any] | None:
