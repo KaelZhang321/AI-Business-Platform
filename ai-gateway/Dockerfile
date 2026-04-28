@@ -3,12 +3,17 @@ ARG BASE_IMAGE=alibaba-cloud-linux-3-registry.cn-hangzhou.cr.aliyuncs.com/alinux
 FROM ${BASE_IMAGE} AS builder
 
 ARG PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
+ARG TORCH_VERSION=2.4.1+cpu
+ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     TZ=Asia/Shanghai \
     PIP_INDEX_URL=${PIP_INDEX_URL} \
     PIP_TRUSTED_HOST=mirrors.aliyun.com \
+    PIP_DEFAULT_TIMEOUT=120 \
+    PIP_RETRIES=10 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
     VIRTUAL_ENV=/opt/venv \
     PATH="/opt/venv/bin:${PATH}" \
     HOME=/opt/model-cache \
@@ -22,9 +27,26 @@ RUN python -m venv "${VIRTUAL_ENV}" && \
     pip install --upgrade pip setuptools wheel
 
 COPY pyproject.toml ./
-COPY app ./app
 
-RUN pip install --no-cache-dir .
+# 固定 CPU-only torch，避免 FlagEmbedding/peft 依赖解析时拉取数百 MB 的 nvidia_* CUDA 轮子。
+RUN pip install --no-cache-dir --progress-bar off \
+    "torch==${TORCH_VERSION}" \
+    --index-url "${TORCH_INDEX_URL}" \
+    --extra-index-url "${PIP_INDEX_URL}"
+
+# 将第三方依赖与业务代码安装拆层，业务代码变更时可复用大依赖缓存。
+RUN printf 'torch==%s\n' "${TORCH_VERSION}" > /tmp/constraints.txt && \
+    python -c "import tomllib; cfg = tomllib.load(open('pyproject.toml', 'rb')); print('\\n'.join(cfg.get('project', {}).get('dependencies', [])))" > /tmp/requirements.txt && \
+    pip install --no-cache-dir --progress-bar off \
+      -c /tmp/constraints.txt \
+      -r /tmp/requirements.txt \
+      --extra-index-url "${TORCH_INDEX_URL}"
+
+COPY app ./app
+COPY resources ./resources
+
+# 依赖已在上一层安装完成，这里只注册当前项目包，避免重复触发依赖解析。
+RUN pip install --no-cache-dir --no-deps .
 
 # 预下载 BGE Embedding + Reranker 模型到缓存目录
 #RUN python -c "\
@@ -61,6 +83,7 @@ RUN if command -v dnf >/dev/null 2>&1; then \
 COPY --from=builder /opt/venv /opt/venv
 COPY pyproject.toml ./
 COPY app ./app
+COPY resources ./resources
 
 EXPOSE 8000
 
