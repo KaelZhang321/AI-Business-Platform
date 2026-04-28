@@ -188,6 +188,7 @@ export const useFourQuadrantState = (navigationParams: AIFourQuadrantViewProps['
     : ''
   const [selectedClientId, setSelectedClientId] = useState<string | null>(null)
   const [selectedReportId, setSelectedReportId] = useState<string | null>(null)
+  const [quadrantType, setQuadrantType] = useState<'exam' | 'treatment'>('exam')
   const [notes, setNotes] = useState('')
   const [customerKeyword, setCustomerKeyword] = useState(navCustomerName || DEFAULT_CUSTOMER_KEYWORD)
 
@@ -444,10 +445,10 @@ export const useFourQuadrantState = (navigationParams: AIFourQuadrantViewProps['
       const payload = {
         sex,
         age: Number.isFinite(age) ? age : 0,
-        study_id: '2604150032' || studyId,
+        study_id: studyId,
         single_exam_items: [],
         chief_complaint_text: notes.trim(),
-        quadrant_type: 'exam',
+        quadrant_type: quadrantType,
       }
 
       const response = await aIFourQuadrantViewApi.getHealthQuadrantAnalysisApi(payload)
@@ -504,10 +505,10 @@ export const useFourQuadrantState = (navigationParams: AIFourQuadrantViewProps['
       const payload = {
         sex,
         age: Number.isFinite(age) ? age : 0,
-        study_id: '2604150032' || studyId,
+        study_id: studyId,
         single_exam_items: [],
         chief_complaint_text: currentInput,
-        quadrant_type: 'exam',
+        quadrant_type: quadrantType,
       }
 
       const response = await aIFourQuadrantViewApi.getHealthQuadrantAnalysisApi(payload)
@@ -550,10 +551,10 @@ export const useFourQuadrantState = (navigationParams: AIFourQuadrantViewProps['
       return {
         q_code: qCode,
         q_name: QUADRANT_NAME_BY_CODE[qCode] ?? '',
-        abnormalIndicators: items
+        abnormal_indicators: items
           .filter((item) => item.category === 'abnormal' || !item.category)
           .map((item) => item.content),
-        recommendationPlans: items
+        recommendation_plans: items
           .filter((item) => item.category === 'recommendation')
           .map((item) => item.content),
       }
@@ -578,6 +579,8 @@ export const useFourQuadrantState = (navigationParams: AIFourQuadrantViewProps['
     setSelectedClientId,
     selectedReportId,
     setSelectedReportId,
+    quadrantType,
+    setQuadrantType,
     notes,
     setNotes,
     customerKeyword,

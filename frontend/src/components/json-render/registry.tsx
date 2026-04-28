@@ -503,6 +503,7 @@ export const AssistantRenderer = createRenderer(assistantCatalog, {
 
     const [data, setData] = useState<any[]>(normalizedRows);
     const [total, setTotal] = useState(typeof staticTotal === 'number' ? staticTotal : normalizedRows.length);
+    const [hasPaginationMeta, setHasPaginationMeta] = useState(typeof staticTotal === 'number');
     const [loading, setLoading] = useState(false);
     const pageSize = Number(pageSizeProp) > 0 ? Number(pageSizeProp) : 10;
 
@@ -521,6 +522,7 @@ export const AssistantRenderer = createRenderer(assistantCatalog, {
 
       setData(normalizedRows);
       setTotal(typeof staticTotal === 'number' ? staticTotal : normalizedRows.length);
+      setHasPaginationMeta(typeof staticTotal === 'number');
     }, [api, normalizedRows, staticTotal]);
 
     useEffect(() => {
@@ -559,12 +561,19 @@ export const AssistantRenderer = createRenderer(assistantCatalog, {
               ? ((records as Record<string, unknown>)[bizFieldKey] as any[])
               : EMPTY_ROWS;
 
-          const totalCount =
-            res.data?.data?.total ??
-            res.data?.total ??
-            nextRows.length;
+          const rawTotalCount = res.data?.data?.total ?? res.data?.total;
+          const hasServerPagination =
+            rawTotalCount !== undefined ||
+            res.data?.data?.pageNo !== undefined ||
+            res.data?.data?.pageNum !== undefined ||
+            res.data?.pageNo !== undefined ||
+            res.data?.pageNum !== undefined ||
+            res.data?.data?.pages !== undefined ||
+            res.data?.pages !== undefined;
+          const totalCount = rawTotalCount ?? nextRows.length;
 
           setData(nextRows);
+          setHasPaginationMeta(hasServerPagination || typeof staticTotal === 'number');
           setTotal(typeof totalCount === 'number' ? totalCount : Number(totalCount) || 0);
           setLoading(false);
         })
@@ -597,7 +606,17 @@ export const AssistantRenderer = createRenderer(assistantCatalog, {
           resData?.data?.total ??
           resData?.total ??
           (Array.isArray(records) ? records.length : 0);
+        const hasServerPagination =
+          resData?.data?.total !== undefined ||
+          resData?.total !== undefined ||
+          resData?.data?.pageNo !== undefined ||
+          resData?.data?.pageNum !== undefined ||
+          resData?.pageNo !== undefined ||
+          resData?.pageNum !== undefined ||
+          resData?.data?.pages !== undefined ||
+          resData?.pages !== undefined;
         setData(Array.isArray(records) ? records : []);
+        setHasPaginationMeta(hasServerPagination || typeof staticTotal === 'number');
         setTotal(typeof totalCount === 'number' ? totalCount : 0);
       };
 
@@ -630,6 +649,16 @@ export const AssistantRenderer = createRenderer(assistantCatalog, {
       return cols;
     }, [columns, rowActions, emit]);
 
+    const tablePagination = hasPaginationMeta
+      ? {
+        current: page,
+        pageSize,
+        total,
+        onChange: (newPage: number) => setBoundPage(newPage),
+        showSizeChanger: false,
+      }
+      : false;
+
     return (
       <div className={uiTokens.tableShell}>
         {title ? <h5 className={uiTokens.tableTitle}>{title}</h5> : null}
@@ -639,14 +668,8 @@ export const AssistantRenderer = createRenderer(assistantCatalog, {
           columns={tableColumns}
           loading={loading}
           rowKey={(record: any) => record.id || record.uid || JSON.stringify(record)}
-          pagination={{
-            current: page,
-            pageSize,
-            total,
-            onChange: (newPage) => setBoundPage(newPage),
-            showSizeChanger: false,
-          }}
-          scroll={{ x: 'max-content' }}
+          pagination={tablePagination}
+          scroll={hasPaginationMeta ? { x: 'max-content' } : { x: 'max-content', y: 420 }}
           className={uiTokens.tableClassName}
         />
       </div>

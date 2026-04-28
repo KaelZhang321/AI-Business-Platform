@@ -21,7 +21,6 @@ import {
   ClipboardList,
   X,
 } from 'lucide-react';
-import { GoogleGenAI, Type } from '@google/genai';
 import { aiReportApi } from '../../services/api/aiReportApi';
 import CardSwap, { Card, type CardSwapRef } from './CardSwap';
 import type { CustomerRecord } from './detailView/types';
@@ -96,12 +95,21 @@ type PatientExamSessionSummary = {
   abnormalCount?: number | null;
 };
 
+type GroupRouteTargetId = 'overview' | 'vitals' | 'lab' | 'imaging' | 'specialty' | 'health' | 'trend-compare';
+type AiRouteTargetId = GroupRouteTargetId | 'metric-focus' | 'year-compare-modal';
+
 type CardConfig = {
-  id: string;
+  id: GroupRouteTargetId;
   name: string;
   icon: React.ElementType;
   iconBg: string;
   accent: string;
+};
+
+type AiRoutePayload = {
+  targetId: string | null;
+  focusedMetric: string | null;
+  targetYear: string | null;
 };
 
 const DEFAULT_MESSAGES: ChatMessage[] = [
@@ -110,13 +118,6 @@ const DEFAULT_MESSAGES: ChatMessage[] = [
     content: '您好！我是您的 AI 健康助手。您可以询问我关于体检报告中的具体指标，我会结合已加载的多次体检结果给出趋势解读。',
   },
 ];
-
-let ai: GoogleGenAI | null = null;
-try {
-  ai = new GoogleGenAI({ apiKey: import.meta.env.VITE_GEMINI_API_KEY ?? '' });
-} catch {
-  ai = null;
-}
 
 const CARD_CONFIGS: CardConfig[] = [
   { id: 'overview', name: '综合概况', icon: ClipboardList, iconBg: 'bg-brand/10 text-brand', accent: 'border-t-brand' },
@@ -127,6 +128,23 @@ const CARD_CONFIGS: CardConfig[] = [
   { id: 'health', name: '健康评估', icon: HeartPulse, iconBg: 'bg-cyan-100 text-cyan-600 dark:bg-cyan-950/40 dark:text-cyan-300', accent: 'border-t-cyan-500' },
   { id: 'trend-compare', name: '历年数据对比', icon: BarChart3, iconBg: 'bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-300', accent: 'border-t-slate-500' },
 ];
+
+const GROUP_ROUTE_TARGET_IDS = CARD_CONFIGS.map((config) => config.id);
+const AI_ROUTE_TARGET_IDS: AiRouteTargetId[] = [...GROUP_ROUTE_TARGET_IDS, 'metric-focus', 'year-compare-modal'];
+
+function isGroupRouteTargetId(value: string | null): value is GroupRouteTargetId {
+  return Boolean(value && GROUP_ROUTE_TARGET_IDS.includes(value as GroupRouteTargetId));
+}
+
+function isAiRouteTargetId(value: string | null): value is AiRouteTargetId {
+  return Boolean(value && AI_ROUTE_TARGET_IDS.includes(value as AiRouteTargetId));
+}
+
+function normalizeToNullableString(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : null;
+}
 
 const CARD_TO_GROUP_NAMES: Record<string, string[]> = {
   vitals: ['一般检查', '人体成分'],
@@ -164,11 +182,11 @@ const CARD_TO_GROUP_NAMES: Record<string, string[]> = {
 };
 
 const CARD_TO_GROUP_KEYWORDS: Record<string, string[]> = {
-  vitals: ['一般检查', '人体成分', '体征', '血压', '体重', 'bmi'],
-  lab: ['检验', '化验', '血', '尿', '肝', '肾', '糖', '脂', '甲状腺', '激素', '肿瘤', '感染', '免疫', '凝血', 'hpv'],
+  vitals: ['一般检查', '人体成分', '体格', '体征', '身高', '体重', '血压', '心率', '脉搏', '腰围', '臀围', 'bmi', 'vitals'],
+  lab: ['检验', '化验', '检测', '血', '尿', '肝', '肾', '糖', '脂', '甲状腺', '激素', '肿瘤', '感染', '免疫', '凝血', 'hpv'],
   imaging: ['影像', '彩超', '超声', 'ct', 'mri', 'x线', '放射', '筛查'],
   specialty: ['妇科', '内科', '外科', '耳鼻喉', '眼科', '口腔', '专科'],
-  health: ['健康问诊', '问诊', '病史', '生活方式'],
+  health: ['健康问诊', '健康评估', '健康管理', '问诊', '病史', '生活方式'],
 };
 
 interface AIReportComparisonReportViewProps {
@@ -184,11 +202,11 @@ function buildAiContext(examRecords: ExamRecord[]) {
   return {
     patient: latest
       ? {
-          examDate: latest.examDate,
-          packageName: latest.packageName,
-          totalAbnormal: latest.reportData?.totalAbnormal ?? 0,
-          conclusions: latest.reportData?.conclusions.map((item) => item.text).slice(0, 10) ?? [],
-        }
+        examDate: latest.examDate,
+        packageName: latest.packageName,
+        totalAbnormal: latest.reportData?.totalAbnormal ?? 0,
+        conclusions: latest.reportData?.conclusions.map((item) => item.text).slice(0, 10) ?? [],
+      }
       : null,
     metrics: metrics.map((metric) => ({
       name: metric.name,
@@ -270,6 +288,10 @@ function getJudgmentClass(judgment: 'high' | 'low' | 'normal') {
   return 'bg-emerald-50 text-emerald-600 dark:bg-emerald-950/40 dark:text-emerald-300';
 }
 
+function getMetricUniqueKey(metric: MetricData, index: number) {
+  return `${metric.name}|${metric.unit}|${metric.refRange}|${index}`;
+}
+
 function mergeClinicalGroups(cardId: string, groups: ClinicalGroup[]): ClinicalGroup | null {
   const names = CARD_TO_GROUP_NAMES[cardId] ?? [];
   const keywords = CARD_TO_GROUP_KEYWORDS[cardId] ?? [];
@@ -281,8 +303,14 @@ function mergeClinicalGroups(cardId: string, groups: ClinicalGroup[]): ClinicalG
     const keywordMatched = keywords.some((keyword) => normalizedName.includes(keyword.toLowerCase()) || normalizedId.includes(keyword.toLowerCase()));
     if (keywordMatched) return true;
 
+    if (cardId === 'vitals') {
+      return (
+        group.type === 'table' &&
+        /一般检查|人体成分|体格|体征|身高|体重|bmi|血压|心率|脉搏|腰围|臀围|vitals/.test(`${group.name} ${group.id}`)
+      );
+    }
     if (cardId === 'imaging') return group.type === 'imaging';
-    if (cardId === 'health') return group.type === 'text' && /问诊|病史|生活方式/.test(group.name);
+    if (cardId === 'health') return group.type === 'text' && /健康问诊|健康评估|健康管理|问诊|病史|生活方式/.test(group.name);
     if (cardId === 'specialty') return group.type === 'text' && !/问诊|病史|生活方式/.test(group.name);
     if (cardId === 'lab') return group.type === 'table' && !/一般检查|人体成分/.test(group.name);
     return false;
@@ -321,6 +349,44 @@ function getGroupForExam(exam: ExamRecord, groupId: string) {
   return mergeClinicalGroups(groupId, exam.reportData.clinicalGroups) ?? exam.reportData.clinicalGroups.find((group) => group.id === groupId) ?? null;
 }
 
+function resolveActiveContentFromRecords(
+  records: ExamRecord[],
+  groupId: string,
+  selectedSubGroupId: string | null,
+) {
+  let fallbackGroup: ClinicalGroup | null = null;
+
+  for (const exam of records) {
+    const group = getGroupForExam(exam, groupId);
+    if (!group) {
+      continue;
+    }
+
+    if (!fallbackGroup) {
+      fallbackGroup = group;
+    }
+
+    if (!selectedSubGroupId) {
+      return { group, subGroup: null, items: group.subGroups.flatMap((item) => item.items) };
+    }
+
+    const subGroup = group.subGroups.find((item) => item.id === selectedSubGroupId) ?? null;
+    if (subGroup) {
+      return { group, subGroup, items: subGroup.items };
+    }
+  }
+
+  if (!fallbackGroup) {
+    return null;
+  }
+
+  return {
+    group: fallbackGroup,
+    subGroup: null,
+    items: fallbackGroup.subGroups.flatMap((item) => item.items),
+  };
+}
+
 function buildGroupPreviewLines(exam: ExamRecord, groupId: string, metrics: MetricData[]) {
   if (!exam.reportData) return [] as string[];
 
@@ -351,6 +417,30 @@ function buildFallbackReply(metricName: string | null) {
     return '已结合当前体检记录完成初步分析。您也可以直接询问某个具体指标，例如空腹血糖、尿酸、ALT。';
   }
   return `已切换到 ${metricName} 的历年趋势视图，您可以继续追问该指标的风险、变化原因或复查建议。`;
+}
+
+function needsOverviewFallback(record: ExamRecord) {
+  const hasConclusions = Array.isArray(record.reportData.conclusions) && record.reportData.conclusions.length > 0;
+  const hasAbnormalSummary = typeof record.reportData.abnormalSummary === 'string' && record.reportData.abnormalSummary.trim().length > 0;
+  return !hasConclusions || !hasAbnormalSummary;
+}
+
+function mergeOverviewFields(primary: ExamRecord, fallback: ExamRecord): ExamRecord {
+  const shouldFillConclusions = !primary.reportData.conclusions.length && fallback.reportData.conclusions.length > 0;
+  const shouldFillAbnormalSummary = !primary.reportData.abnormalSummary.trim() && Boolean(fallback.reportData.abnormalSummary.trim());
+
+  if (!shouldFillConclusions && !shouldFillAbnormalSummary) {
+    return primary;
+  }
+
+  return {
+    ...primary,
+    reportData: {
+      ...primary.reportData,
+      conclusions: shouldFillConclusions ? fallback.reportData.conclusions : primary.reportData.conclusions,
+      abnormalSummary: shouldFillAbnormalSummary ? fallback.reportData.abnormalSummary : primary.reportData.abnormalSummary,
+    },
+  };
 }
 
 export const AIReportComparisonReportView: React.FC<AIReportComparisonReportViewProps> = ({
@@ -436,6 +526,29 @@ export const AIReportComparisonReportView: React.FC<AIReportComparisonReportView
           );
 
           mappedRecords = cleanedResponses.sort((a, b) => new Date(b.examTime).getTime() - new Date(a.examTime).getTime());
+
+          const shouldPatchOverview = mappedRecords.some(needsOverviewFallback);
+          if (shouldPatchOverview) {
+            try {
+              const rawResults = await aiReportApi.getPatientExamListApi({
+                idCard: encryptedIdCard,
+                studyIds,
+              });
+              const sessionsWithResults = (Array.isArray(rawResults) ? rawResults : []) as BatchSessionResponse[];
+              const batchMappedRecords = mapReportSessionsToExamRecords(sessionsWithResults);
+              const fallbackMap = new Map(batchMappedRecords.map((record) => [record.id, record]));
+
+              mappedRecords = mappedRecords.map((record) => {
+                const fallbackRecord = fallbackMap.get(record.id);
+                if (!fallbackRecord) {
+                  return record;
+                }
+                return mergeOverviewFields(record, fallbackRecord);
+              });
+            } catch (batchOverviewError) {
+              console.warn('load batch-query for overview fallback failed:', batchOverviewError);
+            }
+          }
         } catch (cleanedError) {
           console.warn('load cleaned-result failed, fallback to batch-query:', cleanedError);
           const rawResults = await aiReportApi.getPatientExamListApi({
@@ -502,14 +615,23 @@ export const AIReportComparisonReportView: React.FC<AIReportComparisonReportView
     if (!latestReport || !selectedGroupId || selectedGroupId === 'overview' || selectedGroupId === 'trend-compare') {
       return null;
     }
-    const group = getGroupForExam(examRecords[0], selectedGroupId);
-    if (!group) return null;
-    if (selectedSubGroupId) {
-      const subGroup = group.subGroups.find((item) => item.id === selectedSubGroupId) ?? null;
-      return { group, subGroup, items: subGroup?.items ?? [] };
-    }
-    return { group, subGroup: null, items: group.subGroups.flatMap((item) => item.items) };
+    return resolveActiveContentFromRecords(examRecords, selectedGroupId, selectedSubGroupId);
   }, [examRecords, latestReport, selectedGroupId, selectedSubGroupId]);
+  const detailPanelTitle = useMemo(() => {
+    if (selectedGroupId === 'overview') {
+      return '综合概况';
+    }
+    if (selectedGroupId === 'trend-compare') {
+      return '历年数据对比';
+    }
+    if (selectedGroupId === 'lab') {
+      return '实验室检验';
+    }
+    if (activeContent?.subGroup) {
+      return `${activeContent.group.name} - ${activeContent.subGroup.name}`;
+    }
+    return activeContent?.group.name || '';
+  }, [selectedGroupId, activeContent]);
 
   const focusedMetric = useMemo(
     () => metrics.find((metric) => metric.name === focusedMetricName) ?? null,
@@ -565,6 +687,86 @@ export const AIReportComparisonReportView: React.FC<AIReportComparisonReportView
     return set.has(examId);
   };
 
+  const applyChatRouteHit = (payload: AiRoutePayload) => {
+    const jumpToOverview = () => {
+      setSelectedGroupId('overview');
+      setSelectedYearForModal(null);
+      const overviewIndex = CARD_CONFIGS.findIndex((config) => config.id === 'overview');
+      if (overviewIndex >= 0) {
+        setCurrentCardIdx(overviewIndex);
+      }
+    };
+
+    const rawTargetId = normalizeToNullableString(payload.targetId);
+    const routeTargetId = isAiRouteTargetId(rawTargetId) ? rawTargetId : null;
+    const rawFocusedMetric = normalizeToNullableString(payload.focusedMetric);
+    const rawTargetYear = normalizeToNullableString(payload.targetYear);
+
+    const validFocusedMetric = rawFocusedMetric && metrics.some((metric) => metric.name === rawFocusedMetric) ? rawFocusedMetric : null;
+    const validTargetYear = rawTargetYear && availableYearsDesc.includes(rawTargetYear) ? rawTargetYear : null;
+    const hasInvalidTargetId = rawTargetId !== null && !routeTargetId;
+    const hasInvalidFocusedMetric = rawFocusedMetric !== null && !validFocusedMetric;
+    const hasInvalidTargetYear = rawTargetYear !== null && !validTargetYear;
+
+    setReportSearchQuery('');
+    setClinicalDisplayMode('all');
+    setSelectedSubGroupId(null);
+    setShowImagingCompare(false);
+
+    // 任一字段非法都视为未命中，回退到综合概况。
+    if (hasInvalidTargetId || hasInvalidFocusedMetric || hasInvalidTargetYear) {
+      setFocusedMetricName(null);
+      jumpToOverview();
+      return;
+    }
+
+    // 指标优先：只要命中有效指标，就优先打开指标大图视图。
+    if (validFocusedMetric) {
+      setFocusedMetricName(validFocusedMetric);
+      setSelectedGroupId('');
+      if (validTargetYear) {
+        setSelectedYearForModal(validTargetYear);
+      } else {
+        setSelectedYearForModal(null);
+      }
+      return;
+    }
+
+    setFocusedMetricName(null);
+
+    if (routeTargetId === 'metric-focus') {
+      jumpToOverview();
+      return;
+    }
+
+    if (routeTargetId === 'year-compare-modal') {
+      if (!validTargetYear) {
+        jumpToOverview();
+        return;
+      }
+      setSelectedYearForModal(validTargetYear);
+      setSelectedGroupId('trend-compare');
+      const trendIndex = CARD_CONFIGS.findIndex((config) => config.id === 'trend-compare');
+      if (trendIndex >= 0) {
+        setCurrentCardIdx(trendIndex);
+      }
+      return;
+    }
+
+    if (isGroupRouteTargetId(routeTargetId)) {
+      setSelectedGroupId(routeTargetId);
+      setSelectedYearForModal(null);
+      const nextIndex = CARD_CONFIGS.findIndex((config) => config.id === routeTargetId);
+      if (nextIndex >= 0) {
+        setCurrentCardIdx(nextIndex);
+      }
+      return;
+    }
+
+    // 未命中：回到综合概况。
+    jumpToOverview();
+  };
+
   const handleSendMessage = async (event?: React.FormEvent) => {
     event?.preventDefault();
     if (!inputValue.trim() || isTyping) {
@@ -578,44 +780,57 @@ export const AIReportComparisonReportView: React.FC<AIReportComparisonReportView
 
     try {
       let reply = '';
-      let focusedMetricFromAi: string | null = null;
+      let routePayload: AiRoutePayload = {
+        targetId: null,
+        focusedMetric: null,
+        targetYear: null,
+      };
+      const response = await aiReportApi.getComparisonChatRouteApi({
+        query: userMessage,
+        context: {
+          reportContext: buildAiContext(examRecords),
+          availableMetrics: metrics.map((metric) => metric.name),
+          availableYears: availableYearsDesc,
+          targetIds: AI_ROUTE_TARGET_IDS,
+        },
+      });
 
-      if (ai) {
-        const response = await ai.models.generateContent({
-          model: 'gemini-2.5-flash',
-          contents: userMessage,
-          config: {
-            systemInstruction: `你是专业体检报告分析助手。请严格基于提供的体检报告摘要回答，不要编造不存在的指标或年份。\n可识别的重点指标包括：${metrics.map((metric) => metric.name).join('、')}。\n${JSON.stringify(buildAiContext(examRecords))}`,
-            responseMimeType: 'application/json',
-            responseSchema: {
-              type: Type.OBJECT,
-              properties: {
-                reply: { type: Type.STRING },
-                focusedMetric: { type: Type.STRING, nullable: true },
-              },
-              required: ['reply', 'focusedMetric'],
-            },
-          },
-        });
-        const result = JSON.parse(response.text || '{}') as { reply?: string; focusedMetric?: string | null };
-        reply = result.reply || '';
-        focusedMetricFromAi = result.focusedMetric ?? null;
-      }
+      const result =
+        typeof response === 'string'
+          ? (JSON.parse(response) as {
+            reply?: unknown;
+            targetId?: unknown;
+            focusedMetric?: unknown;
+            targetYear?: unknown;
+          })
+          : (response as {
+            reply?: unknown;
+            targetId?: unknown;
+            focusedMetric?: unknown;
+            targetYear?: unknown;
+          });
 
-      if (!focusedMetricFromAi) {
-        focusedMetricFromAi = metrics.find((metric) => userMessage.includes(metric.name))?.name ?? null;
-      }
+      reply = typeof result.reply === 'string' ? result.reply : '';
+      routePayload = {
+        targetId: normalizeToNullableString(result.targetId),
+        focusedMetric: normalizeToNullableString(result.focusedMetric),
+        targetYear: normalizeToNullableString(result.targetYear),
+      };
+
       if (!reply) {
-        reply = buildFallbackReply(focusedMetricFromAi);
+        reply = buildFallbackReply(routePayload.focusedMetric);
       }
 
       setMessages((prev) => [...prev, { role: 'ai', content: reply }]);
-      if (focusedMetricFromAi) {
-        setFocusedMetricName(focusedMetricFromAi);
-      }
+      applyChatRouteHit(routePayload);
     } catch (error) {
       console.error('AI Chat Error:', error);
       setMessages((prev) => [...prev, { role: 'ai', content: '抱歉，当前无法完成智能分析，请稍后重试。' }]);
+      applyChatRouteHit({
+        targetId: null,
+        focusedMetric: null,
+        targetYear: null,
+      });
     } finally {
       setIsTyping(false);
     }
@@ -669,11 +884,12 @@ export const AIReportComparisonReportView: React.FC<AIReportComparisonReportView
     if (selectedGroupId === 'trend-compare') {
       return (
         <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-          {metrics.map((metric) => {
+          {metrics.map((metric, metricIndex) => {
             const judgment = judgeMetric(metric, latestYear);
+            const metricKey = getMetricUniqueKey(metric, metricIndex);
             return (
               <button
-                key={metric.name}
+                key={metricKey}
                 type="button"
                 onClick={() => setFocusedMetricName(metric.name)}
                 className="rounded-2xl border border-slate-200 bg-white p-4 text-left shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md dark:border-slate-700 dark:bg-slate-800/60"
@@ -699,7 +915,15 @@ export const AIReportComparisonReportView: React.FC<AIReportComparisonReportView
     }
 
     if (!activeContent) {
-      return null;
+      const selectedCardName = CARD_CONFIGS.find((config) => config.id === selectedGroupId)?.name ?? '当前分组';
+      return (
+        <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/60 p-8 text-center dark:border-slate-700 dark:bg-slate-800/40">
+          <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">暂无 {selectedCardName} 数据</p>
+          <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+            当前已加载的报告未匹配到该分组，请切换其它导航查看。
+          </p>
+        </div>
+      );
     }
 
     if (activeContent.group.type === 'imaging') {
@@ -739,7 +963,7 @@ export const AIReportComparisonReportView: React.FC<AIReportComparisonReportView
           items={activeContent.items}
           displayMode={clinicalDisplayMode}
           searchQuery={reportSearchQuery}
-          title={activeContent.subGroup ? `${activeContent.group.name} - ${activeContent.subGroup.name}` : activeContent.group.name}
+          title={detailPanelTitle}
         />
       );
     }
@@ -749,7 +973,7 @@ export const AIReportComparisonReportView: React.FC<AIReportComparisonReportView
         items={activeContent.items}
         displayMode={clinicalDisplayMode}
         searchQuery={reportSearchQuery}
-        title={activeContent.subGroup ? `${activeContent.group.name} - ${activeContent.subGroup.name}` : activeContent.group.name}
+        title={detailPanelTitle}
       />
     );
   };
@@ -890,33 +1114,47 @@ export const AIReportComparisonReportView: React.FC<AIReportComparisonReportView
               <table className="min-w-full border-separate border-spacing-0 overflow-hidden rounded-2xl border border-slate-200 dark:border-slate-700">
                 <thead className="sticky top-0 z-10 bg-slate-50 dark:bg-slate-900">
                   <tr>
-                    <th className="border-b border-slate-200 px-4 py-3 text-left text-xs font-bold uppercase tracking-wider text-slate-500 dark:border-slate-700">指标项</th>
-                    <th className="border-b border-slate-200 px-4 py-3 text-left text-xs font-bold uppercase tracking-wider text-slate-500 dark:border-slate-700">参考范围</th>
-                    {availableYearsAsc.map((year) => (
-                      <th key={year} className="border-b border-slate-200 px-4 py-3 text-center text-xs font-bold uppercase tracking-wider text-slate-500 dark:border-slate-700">
+                    <th className="w-[170px] border-b border-slate-200 px-3 py-3 text-left text-xs font-bold uppercase tracking-wider text-slate-500 dark:border-slate-700">指标项</th>
+                    {availableYearsDesc.map((year) => (
+                      <th
+                        key={year}
+                        className="w-[17%] border-b border-slate-200 px-3 py-3 text-center text-xs font-bold uppercase tracking-wider text-slate-500 dark:border-slate-700"
+                      >
                         {year}
                       </th>
                     ))}
+                    <th className="w-[210px] border-b border-slate-200 px-3 py-3 text-left text-xs font-bold uppercase tracking-wider text-slate-500 dark:border-slate-700">参考范围</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {currentModalMetrics.map((metric) => (
-                    <tr key={metric.name} className="bg-white transition-colors hover:bg-slate-50 dark:bg-slate-900 dark:hover:bg-slate-800/50">
-                      <td className="border-b border-slate-100 px-4 py-3 text-sm font-bold text-slate-900 dark:border-slate-800 dark:text-white">{metric.name}</td>
-                      <td className="border-b border-slate-100 px-4 py-3 text-sm text-slate-500 dark:border-slate-800 dark:text-slate-400">{metric.refRange}</td>
-                      {availableYearsAsc.map((year) => {
-                        const judgment = judgeMetric(metric, year);
-                        return (
-                          <td key={`${metric.name}-${year}`} className="border-b border-slate-100 px-4 py-3 text-center text-sm dark:border-slate-800">
-                            <div className="font-bold text-slate-900 dark:text-white">{getMetricValue(metric, year) ?? '-'}</div>
-                            <div className={`mt-1 inline-flex rounded-md px-2 py-0.5 text-[10px] font-bold ${getJudgmentClass(judgment)}`}>
-                              {getJudgmentLabel(judgment)}
-                            </div>
-                          </td>
-                        );
-                      })}
-                    </tr>
-                  ))}
+                  {currentModalMetrics.map((metric, metricIndex) => {
+                    const metricKey = getMetricUniqueKey(metric, metricIndex);
+                    return (
+                      <tr key={metricKey} className="bg-white transition-colors hover:bg-slate-50 dark:bg-slate-900 dark:hover:bg-slate-800/50">
+                        <td className="w-[170px] border-b border-slate-100 px-3 py-3 text-sm font-bold text-slate-900 dark:border-slate-800 dark:text-white">
+                          <div className="max-w-[170px] truncate" title={metric.name}>
+                            {metric.name}
+                          </div>
+                        </td>
+                        {availableYearsDesc.map((year) => {
+                          const judgment = judgeMetric(metric, year);
+                          return (
+                            <td key={`${metricKey}-${year}`} className="border-b border-slate-100 px-3 py-3 text-center text-sm dark:border-slate-800">
+                              <div className="font-bold text-slate-900 dark:text-white">{getMetricValue(metric, year) ?? '-'}</div>
+                              <div className={`mt-1 inline-flex rounded-md px-2 py-0.5 text-[10px] font-bold ${getJudgmentClass(judgment)}`}>
+                                {getJudgmentLabel(judgment)}
+                              </div>
+                            </td>
+                          );
+                        })}
+                        <td className="border-b border-slate-100 px-3 py-3 text-xs text-slate-500 dark:border-slate-800 dark:text-slate-400">
+                          <div className="max-w-[210px] truncate" title={metric.refRange}>
+                            {metric.refRange || '-'}
+                          </div>
+                        </td>
+                      </tr>
+                    )
+                  })}
                 </tbody>
               </table>
             </div>
@@ -953,15 +1191,7 @@ export const AIReportComparisonReportView: React.FC<AIReportComparisonReportView
                     <ArrowLeft className="h-4 w-4" />
                   </button>
                   <div>
-                    <div className="text-lg font-black text-slate-900 dark:text-white">
-                      {selectedGroupId === 'overview'
-                        ? '综合概况'
-                        : selectedGroupId === 'trend-compare'
-                          ? '历年数据对比'
-                          : activeContent?.subGroup
-                            ? `${activeContent.group.name} - ${activeContent.subGroup.name}`
-                            : activeContent?.group.name || ''}
-                    </div>
+                    <div className="text-lg font-black text-slate-900 dark:text-white">{detailPanelTitle}</div>
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
@@ -1096,13 +1326,12 @@ export const AIReportComparisonReportView: React.FC<AIReportComparisonReportView
                             type="button"
                             onClick={() => toggleExamSelection(exam.id)}
                             disabled={!hasData}
-                            className={`shrink-0 rounded-md px-2 py-1 text-xs font-semibold whitespace-nowrap transition-all duration-150 ${
-                              isSelected
-                                ? 'bg-brand text-white shadow-sm'
-                                : hasData
-                                  ? 'text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800'
-                                  : 'cursor-not-allowed text-slate-300 dark:text-slate-600'
-                            }`}
+                            className={`shrink-0 rounded-md px-2 py-1 text-xs font-semibold whitespace-nowrap transition-all duration-150 ${isSelected
+                              ? 'bg-brand text-white shadow-sm'
+                              : hasData
+                                ? 'text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800'
+                                : 'cursor-not-allowed text-slate-300 dark:text-slate-600'
+                              }`}
                             title={exam.packageName}
                           >
                             {exam.examDate}
@@ -1177,8 +1406,10 @@ export const AIReportComparisonReportView: React.FC<AIReportComparisonReportView
                   <button
                     type="button"
                     onClick={() => {
-                      cardSwapRef.current?.swapBack();
-                      setCurrentCardIdx((prev) => (prev <= 0 ? CARD_CONFIGS.length - 1 : prev - 1));
+                      const nextIndex = cardSwapRef.current?.swapBack();
+                      if (typeof nextIndex === 'number' && CARD_CONFIGS[nextIndex]) {
+                        setCurrentCardIdx(nextIndex);
+                      }
                     }}
                     className="shrink-0 rounded-lg p-1.5 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-slate-800 dark:hover:text-slate-300"
                     title="上一张"
@@ -1218,8 +1449,10 @@ export const AIReportComparisonReportView: React.FC<AIReportComparisonReportView
                   <button
                     type="button"
                     onClick={() => {
-                      cardSwapRef.current?.swap();
-                      setCurrentCardIdx((prev) => (prev >= CARD_CONFIGS.length - 1 ? 0 : prev + 1));
+                      const nextIndex = cardSwapRef.current?.swap();
+                      if (typeof nextIndex === 'number' && CARD_CONFIGS[nextIndex]) {
+                        setCurrentCardIdx(nextIndex);
+                      }
                     }}
                     className="shrink-0 rounded-lg p-1.5 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-slate-800 dark:hover:text-slate-300"
                     title="下一张"
@@ -1269,198 +1502,194 @@ export const AIReportComparisonReportView: React.FC<AIReportComparisonReportView
               <div className="relative flex-1 overflow-hidden px-4 pb-4 pt-3">
                 <div className="absolute inset-x-4 bottom-4 top-10 overflow-hidden rounded-[28px]">
                   <div className="h-full w-full origin-top scale-[0.9] pt-[4.5rem] perspective-1000">
-                <CardSwap
-                  ref={cardSwapRef}
-                  width="100%"
-                  height="100%"
-                  pauseOnHover={false}
-                  cardDistance={80}
-                  verticalDistance={60}
-                  delay={0}
-                  skewAmount={4}
-                  easing="linear"
-                >
-                  {CARD_CONFIGS.map((config) => {
-                    const group = getGroupForExam(examRecords[0], config.id);
-                    const abnormalCount = config.id === 'overview'
-                      ? latestReport.totalAbnormal
-                      : config.id === 'trend-compare'
-                        ? metrics.filter((metric) => metric.judgment !== 'normal').length
-                        : group?.abnormalCount ?? 0;
-                    const totalCount = config.id === 'overview'
-                      ? latestReport.totalItems
-                      : config.id === 'trend-compare'
-                        ? metrics.length
-                        : group?.totalCount ?? 0;
-                    const Icon = config.icon;
+                    <CardSwap
+                      ref={cardSwapRef}
+                      width="100%"
+                      height="100%"
+                      pauseOnHover={false}
+                      cardDistance={80}
+                      verticalDistance={60}
+                      delay={0}
+                      skewAmount={4}
+                      easing="linear"
+                    >
+                      {CARD_CONFIGS.map((config) => {
+                        const group = getGroupForExam(examRecords[0], config.id);
+                        const abnormalCount = config.id === 'overview'
+                          ? latestReport.totalAbnormal
+                          : config.id === 'trend-compare'
+                            ? metrics.filter((metric) => metric.judgment !== 'normal').length
+                            : group?.abnormalCount ?? 0;
+                        const totalCount = config.id === 'overview'
+                          ? latestReport.totalItems
+                          : config.id === 'trend-compare'
+                            ? metrics.length
+                            : group?.totalCount ?? 0;
+                        const Icon = config.icon;
 
-                    return (
-                      <Card
-                        key={config.id}
-                        className={`pointer-events-auto flex h-full w-full cursor-pointer flex-col rounded-2xl border border-slate-200 bg-white/95 p-5 shadow-[0_8px_30px_rgb(0,0,0,0.08)] backdrop-blur-xl transition-shadow duration-200 hover:shadow-[0_12px_40px_rgb(0,0,0,0.12)] dark:border-slate-700 dark:bg-slate-900/95 dark:shadow-[0_8px_30px_rgb(0,0,0,0.3)] ${config.accent} border-t-[3px]`}
-                        onClick={(event: React.MouseEvent) => {
-                          event.stopPropagation();
-                          setSelectedGroupId(config.id);
-                          setSelectedSubGroupId(null);
-                          setReportSearchQuery('');
-                          setClinicalDisplayMode('all');
-                          setShowImagingCompare(false);
-                        }}
-                      >
-                        <div className="mb-4 flex items-start justify-between gap-3">
-                          <div className="flex items-center gap-3">
-                            <div className={`flex h-10 w-10 items-center justify-center rounded-xl ${config.iconBg}`}>
-                              <Icon className="h-5 w-5" />
-                            </div>
-                            <div>
-                              <div className="text-base font-bold text-slate-900 dark:text-white">{config.name}</div>
-                              <div className="mt-1 flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400">
-                                <span>{yearRangeLabel}</span>
-                                <span>·</span>
-                                <span>{totalCount} 项</span>
-                              </div>
-                            </div>
-                          </div>
-                          {abnormalCount > 0 ? (
-                            <span className="rounded-lg bg-rose-50 px-2.5 py-1 text-xs font-bold text-rose-600 dark:bg-rose-950/40 dark:text-rose-300">
-                              {abnormalCount}
-                            </span>
-                          ) : null}
-                        </div>
-
-                        <div className="custom-scrollbar flex-1 overflow-y-auto pr-1 space-y-1.5">
-                          {(() => {
-                            let lastYear = '';
-                            return examRecords.map((exam, index) => {
-                              const isExpanded = isExpandedExam(config.id, exam.id);
-                              const hasData = !!exam.reportData;
-                              const examGroup = config.id === 'overview' ? null : hasData ? getGroupForExam(exam, config.id) : null;
-                              const examAbnormalCount = config.id === 'overview'
-                                ? exam.reportData?.totalAbnormal ?? 0
-                                : config.id === 'trend-compare'
-                                  ? metrics.filter((metric) => judgeMetric(metric, exam.year) !== 'normal').length
-                                  : examGroup?.abnormalCount ?? 0;
-                              const showYearDivider = exam.year !== lastYear;
-                              lastYear = exam.year;
-
-                              const previewLines = !hasData
-                                ? []
-                                : config.id === 'overview'
-                                  ? exam.reportData.conclusions.slice(0, 6).map((item) => item.text)
-                                  : config.id === 'trend-compare'
-                                    ? metrics.slice(0, 8).map((metric) => `${metric.name}: ${getMetricValue(metric, exam.year) ?? '-'} ${metric.unit}`.trim())
-                                    : buildGroupPreviewLines(exam, config.id, metrics);
-
-                              return (
-                                <div key={exam.id}>
-                                  {showYearDivider ? (
-                                    <div className="flex items-center gap-2 px-1 pt-2 pb-1">
-                                      <span className="text-xs font-bold tabular-nums text-slate-300 dark:text-slate-600">{exam.year}</span>
-                                      <div className="h-px flex-1 bg-slate-100 dark:bg-slate-800" />
-                                    </div>
-                                  ) : null}
-                                  <div
-                                    className={`overflow-hidden rounded-lg transition-all duration-150 ${
-                                      isExpanded && hasData
-                                        ? 'bg-slate-50 ring-1 ring-slate-200 dark:bg-slate-800/60 dark:ring-slate-700'
-                                        : 'hover:bg-slate-50/50 dark:hover:bg-slate-800/30'
-                                    }`}
-                                  >
-                                    <div className="flex items-center justify-between px-3 py-2">
-                                      <button
-                                        type="button"
-                                        onClick={(event) => {
-                                          event.stopPropagation();
-                                          toggleExpandedExam(config.id, exam.id);
-                                        }}
-                                        className="flex min-w-0 flex-1 items-center gap-2"
-                                      >
-                                        <div className={`h-4 w-1 shrink-0 rounded-full ${hasData ? (isExpanded ? 'bg-brand' : 'bg-slate-300 dark:bg-slate-600') : 'bg-slate-200 dark:bg-slate-700'}`} />
-                                        <span className={`text-sm font-semibold tabular-nums ${hasData ? (isExpanded ? 'text-slate-900 dark:text-white' : 'text-slate-700 dark:text-slate-300') : 'text-slate-400 dark:text-slate-600'}`}>
-                                          {exam.examDate}
-                                        </span>
-                                        {hasData && examAbnormalCount > 0 ? (
-                                          <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-rose-100 text-[10px] font-bold tabular-nums text-rose-600 dark:bg-rose-950/50 dark:text-rose-300">
-                                            {examAbnormalCount}
-                                          </span>
-                                        ) : null}
-                                        {hasData && index === 0 ? <span className="text-[10px] font-semibold text-brand">最新</span> : null}
-                                        {!hasData ? <span className="text-xs text-slate-400 dark:text-slate-600">—</span> : null}
-                                        <ChevronDown className={`ml-auto h-3.5 w-3.5 shrink-0 transition-transform duration-200 ${isExpanded ? 'rotate-180 text-slate-600 dark:text-slate-300' : 'text-slate-300 dark:text-slate-600'}`} />
-                                      </button>
-                                      {isExpanded && hasData ? (
-                                        <button
-                                          type="button"
-                                          onClick={(event) => {
-                                            event.stopPropagation();
-                                            setSelectedYearForModal(exam.year);
-                                          }}
-                                          className="ml-1 inline-flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-xs font-semibold text-brand transition-colors duration-150 hover:bg-brand/10"
-                                          title={`${exam.examDate} 历年对比`}
-                                        >
-                                          <BarChart3 className="h-3 w-3" />
-                                          对比
-                                        </button>
-                                      ) : null}
-                                    </div>
-                                    {isExpanded ? (
-                                      <div className="space-y-1 px-3 pb-2.5">
-                                        {hasData ? (
-                                          previewLines.map((line, lineIndex) => {
-                                            const matchedMetric = metrics.find((metric) => line.includes(metric.name));
-                                            const isHighItem = line.includes('异常') || line.includes('偏高') || line.includes('↑');
-                                            const isLowItem = line.includes('偏低') || line.includes('↓');
-
-                                            return (
-                                              <div
-                                                key={`${exam.id}-${lineIndex}`}
-                                                onClick={(event) => {
-                                                  if (matchedMetric) {
-                                                    event.stopPropagation();
-                                                    setFocusedMetricName(matchedMetric.name);
-                                                  }
-                                                }}
-                                                className={`flex items-center gap-2.5 rounded-md px-2.5 py-2 transition-all duration-150 ${
-                                                  matchedMetric ? 'group cursor-pointer hover:bg-white hover:shadow-sm dark:hover:bg-slate-700' : ''
-                                                } ${
-                                                  isHighItem
-                                                    ? 'bg-rose-50/60 dark:bg-rose-950/20'
-                                                    : isLowItem
-                                                      ? 'bg-blue-50/60 dark:bg-blue-950/20'
-                                                      : 'bg-white/60 dark:bg-slate-800/30'
-                                                }`}
-                                              >
-                                                <div className={`h-3.5 w-0.5 shrink-0 rounded-full ${isHighItem ? 'bg-rose-400' : isLowItem ? 'bg-blue-400' : 'bg-emerald-400'}`} />
-                                                <span
-                                                  className={`flex-1 truncate text-xs ${
-                                                    isHighItem
-                                                      ? 'font-medium text-rose-700 dark:text-rose-300'
-                                                      : isLowItem
-                                                        ? 'font-medium text-blue-700 dark:text-blue-300'
-                                                        : 'text-slate-600 dark:text-slate-400'
-                                                  }`}
-                                                >
-                                                  {line}
-                                                </span>
-                                                {matchedMetric ? <Sparkles className="h-3 w-3 shrink-0 text-slate-300 transition-colors group-hover:text-brand" /> : null}
-                                              </div>
-                                            );
-                                          })
-                                        ) : (
-                                          <div className="py-3 text-center text-xs text-slate-400 dark:text-slate-600">暂未录入数据</div>
-                                        )}
-                                      </div>
-                                    ) : null}
+                        return (
+                          <Card
+                            key={config.id}
+                            className={`pointer-events-auto flex h-full w-full cursor-pointer flex-col rounded-2xl border border-slate-200 bg-white/95 p-5 shadow-[0_8px_30px_rgb(0,0,0,0.08)] backdrop-blur-xl transition-shadow duration-200 hover:shadow-[0_12px_40px_rgb(0,0,0,0.12)] dark:border-slate-700 dark:bg-slate-900/95 dark:shadow-[0_8px_30px_rgb(0,0,0,0.3)] ${config.accent} border-t-[3px]`}
+                            onClick={(event: React.MouseEvent) => {
+                              event.stopPropagation();
+                              setSelectedGroupId(config.id);
+                              setSelectedSubGroupId(null);
+                              setReportSearchQuery('');
+                              setClinicalDisplayMode('all');
+                              setShowImagingCompare(false);
+                            }}
+                          >
+                            <div className="mb-4 flex items-start justify-between gap-3">
+                              <div className="flex items-center gap-3">
+                                <div className={`flex h-10 w-10 items-center justify-center rounded-xl ${config.iconBg}`}>
+                                  <Icon className="h-5 w-5" />
+                                </div>
+                                <div>
+                                  <div className="text-base font-bold text-slate-900 dark:text-white">{config.name}</div>
+                                  <div className="mt-1 flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400">
+                                    <span>{yearRangeLabel}</span>
+                                    <span>·</span>
+                                    <span>{totalCount} 项</span>
                                   </div>
                                 </div>
-                              );
-                            });
-                          })()}
-                        </div>
-                      </Card>
-                    );
-                  })}
-                </CardSwap>
+                              </div>
+                              {abnormalCount > 0 ? (
+                                <span className="rounded-lg bg-rose-50 px-2.5 py-1 text-xs font-bold text-rose-600 dark:bg-rose-950/40 dark:text-rose-300">
+                                  {abnormalCount}
+                                </span>
+                              ) : null}
+                            </div>
+
+                            <div className="custom-scrollbar flex-1 overflow-y-auto pr-1 space-y-1.5">
+                              {(() => {
+                                let lastYear = '';
+                                return examRecords.map((exam, index) => {
+                                  const isExpanded = isExpandedExam(config.id, exam.id);
+                                  const hasData = !!exam.reportData;
+                                  const examGroup = config.id === 'overview' ? null : hasData ? getGroupForExam(exam, config.id) : null;
+                                  const examAbnormalCount = config.id === 'overview'
+                                    ? exam.reportData?.totalAbnormal ?? 0
+                                    : config.id === 'trend-compare'
+                                      ? metrics.filter((metric) => judgeMetric(metric, exam.year) !== 'normal').length
+                                      : examGroup?.abnormalCount ?? 0;
+                                  const showYearDivider = exam.year !== lastYear;
+                                  lastYear = exam.year;
+
+                                  const previewLines = !hasData
+                                    ? []
+                                    : config.id === 'overview'
+                                      ? exam.reportData.conclusions.slice(0, 6).map((item) => item.text)
+                                      : config.id === 'trend-compare'
+                                        ? metrics.slice(0, 8).map((metric) => `${metric.name}: ${getMetricValue(metric, exam.year) ?? '-'} ${metric.unit}`.trim())
+                                        : buildGroupPreviewLines(exam, config.id, metrics);
+
+                                  return (
+                                    <div key={exam.id}>
+                                      {showYearDivider ? (
+                                        <div className="flex items-center gap-2 px-1 pt-2 pb-1">
+                                          <span className="text-xs font-bold tabular-nums text-slate-300 dark:text-slate-600">{exam.year}</span>
+                                          <div className="h-px flex-1 bg-slate-100 dark:bg-slate-800" />
+                                        </div>
+                                      ) : null}
+                                      <div
+                                        className={`overflow-hidden rounded-lg transition-all duration-150 ${isExpanded && hasData
+                                          ? 'bg-slate-50 ring-1 ring-slate-200 dark:bg-slate-800/60 dark:ring-slate-700'
+                                          : 'hover:bg-slate-50/50 dark:hover:bg-slate-800/30'
+                                          }`}
+                                      >
+                                        <div className="flex items-center justify-between px-3 py-2">
+                                          <button
+                                            type="button"
+                                            onClick={(event) => {
+                                              event.stopPropagation();
+                                              toggleExpandedExam(config.id, exam.id);
+                                            }}
+                                            className="flex min-w-0 flex-1 items-center gap-2"
+                                          >
+                                            <div className={`h-4 w-1 shrink-0 rounded-full ${hasData ? (isExpanded ? 'bg-brand' : 'bg-slate-300 dark:bg-slate-600') : 'bg-slate-200 dark:bg-slate-700'}`} />
+                                            <span className={`text-sm font-semibold tabular-nums ${hasData ? (isExpanded ? 'text-slate-900 dark:text-white' : 'text-slate-700 dark:text-slate-300') : 'text-slate-400 dark:text-slate-600'}`}>
+                                              {exam.examDate}
+                                            </span>
+                                            {hasData && examAbnormalCount > 0 ? (
+                                              <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-rose-100 text-[10px] font-bold tabular-nums text-rose-600 dark:bg-rose-950/50 dark:text-rose-300">
+                                                {examAbnormalCount}
+                                              </span>
+                                            ) : null}
+                                            {hasData && index === 0 ? <span className="text-[10px] font-semibold text-brand">最新</span> : null}
+                                            {!hasData ? <span className="text-xs text-slate-400 dark:text-slate-600">—</span> : null}
+                                            <ChevronDown className={`ml-auto h-3.5 w-3.5 shrink-0 transition-transform duration-200 ${isExpanded ? 'rotate-180 text-slate-600 dark:text-slate-300' : 'text-slate-300 dark:text-slate-600'}`} />
+                                          </button>
+                                          {isExpanded && hasData ? (
+                                            <button
+                                              type="button"
+                                              onClick={(event) => {
+                                                event.stopPropagation();
+                                                setSelectedYearForModal(exam.year);
+                                              }}
+                                              className="ml-1 inline-flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-xs font-semibold text-brand transition-colors duration-150 hover:bg-brand/10"
+                                              title={`${exam.examDate} 历年对比`}
+                                            >
+                                              <BarChart3 className="h-3 w-3" />
+                                              对比
+                                            </button>
+                                          ) : null}
+                                        </div>
+                                        {isExpanded ? (
+                                          <div className="space-y-1 px-3 pb-2.5">
+                                            {hasData ? (
+                                              previewLines.map((line, lineIndex) => {
+                                                const matchedMetric = metrics.find((metric) => line.includes(metric.name));
+                                                const isHighItem = line.includes('异常') || line.includes('偏高') || line.includes('↑');
+                                                const isLowItem = line.includes('偏低') || line.includes('↓');
+
+                                                return (
+                                                  <div
+                                                    key={`${exam.id}-${lineIndex}`}
+                                                    onClick={(event) => {
+                                                      if (matchedMetric) {
+                                                        event.stopPropagation();
+                                                        setFocusedMetricName(matchedMetric.name);
+                                                      }
+                                                    }}
+                                                    className={`flex items-center gap-2.5 rounded-md px-2.5 py-2 transition-all duration-150 ${matchedMetric ? 'group cursor-pointer hover:bg-white hover:shadow-sm dark:hover:bg-slate-700' : ''
+                                                      } ${isHighItem
+                                                        ? 'bg-rose-50/60 dark:bg-rose-950/20'
+                                                        : isLowItem
+                                                          ? 'bg-blue-50/60 dark:bg-blue-950/20'
+                                                          : 'bg-white/60 dark:bg-slate-800/30'
+                                                      }`}
+                                                  >
+                                                    <div className={`h-3.5 w-0.5 shrink-0 rounded-full ${isHighItem ? 'bg-rose-400' : isLowItem ? 'bg-blue-400' : 'bg-emerald-400'}`} />
+                                                    <span
+                                                      className={`flex-1 truncate text-xs ${isHighItem
+                                                        ? 'font-medium text-rose-700 dark:text-rose-300'
+                                                        : isLowItem
+                                                          ? 'font-medium text-blue-700 dark:text-blue-300'
+                                                          : 'text-slate-600 dark:text-slate-400'
+                                                        }`}
+                                                    >
+                                                      {line}
+                                                    </span>
+                                                    {matchedMetric ? <Sparkles className="h-3 w-3 shrink-0 text-slate-300 transition-colors group-hover:text-brand" /> : null}
+                                                  </div>
+                                                );
+                                              })
+                                            ) : (
+                                              <div className="py-3 text-center text-xs text-slate-400 dark:text-slate-600">暂未录入数据</div>
+                                            )}
+                                          </div>
+                                        ) : null}
+                                      </div>
+                                    </div>
+                                  );
+                                });
+                              })()}
+                            </div>
+                          </Card>
+                        );
+                      })}
+                    </CardSwap>
                   </div>
                 </div>
               </div>
@@ -1538,7 +1767,7 @@ export const AIReportComparisonReportView: React.FC<AIReportComparisonReportView
                   <div className="flex h-6 w-6 items-center justify-center rounded-lg bg-brand text-white">
                     <Bot className="h-4 w-4" />
                   </div>
-                  <div className="text-xs font-bold text-slate-700 dark:text-slate-200">AI 实时咨询</div>
+                  <div className="text-xs font-bold text-slate-700 dark:text-slate-200">AI 实时咨询1</div>
                 </div>
                 {focusedMetricName ? (
                   <button type="button" onClick={() => setFocusedMetricName(null)} className="text-[10px] font-bold text-brand hover:underline">

@@ -65,7 +65,7 @@ export interface NavigationItemDefinition {
 /** 全量页面定义映射：页面标识 → 元信息配置 */
 export const PAGE_DEFINITIONS: Record<AppPage, PageDefinition> = {
   login: { path: '/login', title: '登录', implemented: false },
-  dashboard: { path: '/', title: 'AI业务工作台', implemented: true },
+  dashboard: { path: '/dashboard', title: 'AI业务工作台', implemented: true },
   'function-square': { path: '/function-square', title: '功能广场', implemented: true },
   'ai-report-comparison': {
     path: '/ai-report-comparison',

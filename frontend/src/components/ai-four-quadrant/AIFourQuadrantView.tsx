@@ -29,6 +29,8 @@ export const AIFourQuadrantView = ({
     setSelectedClientId,
     selectedReportId,
     setSelectedReportId,
+    quadrantType,
+    setQuadrantType,
     notes,
     setNotes,
     customerKeyword,
@@ -84,6 +86,7 @@ export const AIFourQuadrantView = ({
                 selectedReport={selectedReport}
                 selectedReportId={selectedReportId}
                 availableReports={availableReports}
+                quadrantType={quadrantType}
                 notes={notes}
                 isClientDropdownOpen={isClientDropdownOpen}
                 isReportDropdownOpen={isReportDropdownOpen}
@@ -108,6 +111,7 @@ export const AIFourQuadrantView = ({
                   setSelectedReportId(id)
                   setIsReportDropdownOpen(false)
                 }}
+                onQuadrantTypeChange={setQuadrantType}
                 onSetNotes={setNotes}
                 onStartAnalysis={handleStartAnalysis}
               />
@@ -158,6 +162,9 @@ export const AIFourQuadrantView = ({
             analysisStep={analysisStep}
             analysisProgress={analysisProgress}
             onQuadrantAddItem={({ nextData }) => {
+              void handleConfirmQuadrants(nextData)
+            }}
+            onQuadrantDragEnd={(nextData) => {
               void handleConfirmQuadrants(nextData)
             }}
           />

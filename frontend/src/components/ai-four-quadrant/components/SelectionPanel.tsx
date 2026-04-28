@@ -4,6 +4,7 @@ import { Check, ChevronDown, Loader2, Search } from 'lucide-react'
 import type { ClientOption, ReportOption } from '../types'
 
 interface SelectionPanelProps {
+  quadrantType: 'exam' | 'treatment'
   selectedClient?: ClientOption
   selectedClientId: string | null
   selectedReport?: ReportOption
@@ -25,11 +26,13 @@ interface SelectionPanelProps {
   onLoadMoreClients?: () => void
   onCustomerKeywordChange?: (value: string) => void
   onSelectReport: (id: string) => void
+  onQuadrantTypeChange: (value: 'exam' | 'treatment') => void
   onSetNotes: (value: string) => void
   onStartAnalysis: () => void
 }
 
 export const SelectionPanel = ({
+  quadrantType,
   selectedClient,
   selectedClientId,
   selectedReport,
@@ -51,6 +54,7 @@ export const SelectionPanel = ({
   onLoadMoreClients,
   onCustomerKeywordChange,
   onSelectReport,
+  onQuadrantTypeChange,
   onSetNotes,
   onStartAnalysis,
 }: SelectionPanelProps) => {
@@ -201,6 +205,21 @@ export const SelectionPanel = ({
               </motion.div>
             )}
           </AnimatePresence>
+        </div>
+
+        <div className="space-y-2">
+          <label className="text-sm font-bold text-brand dark:text-brand-400">象限类型</label>
+          <div className="relative">
+            <select
+              value={quadrantType}
+              onChange={(event) => onQuadrantTypeChange(event.target.value as 'exam' | 'treatment')}
+              className="w-full appearance-none px-4 py-3 pr-10 bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-700 rounded-xl text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-brand/50 transition-all"
+            >
+              <option value="exam">体检象限</option>
+              <option value="treatment">治疗象限</option>
+            </select>
+            <ChevronDown className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+          </div>
         </div>
 
         <div className="space-y-2">

@@ -96,13 +96,14 @@ export function App() {
     ),
   ]);
 
-  /** 根据当前 URL 解析出页面标识，默认为 dashboard */
-  const currentPage = getPageByPath(location.pathname) ?? 'dashboard';
+  /** 根据当前 URL 解析出页面标识，默认为 function-square */
+  const currentPage = getPageByPath(location.pathname) ?? 'function-square';
   /** 当前 URL 是否为已注册路径 */
   const isKnownRoute = isKnownPath(location.pathname);
   /** 是否处于会议 BI 页面（会议 BI 采用独立全屏布局） */
   const isMeetingBiPage = currentPage === 'meeting-bi';
   const antdAlgorithm = isDarkMode ? antdTheme.darkAlgorithm : antdTheme.defaultAlgorithm;
+  const defaultAuthenticatedPath = PAGE_PATHS['function-square'];
 
   /* ---------- 副作用：滚动公告自动切换（每 4 秒轮播下一条） ---------- */
   useEffect(() => {
@@ -157,16 +158,16 @@ export function App() {
       return;
     }
 
-    // 未登录时统一落到登录页；已登录访问登录页或未知路径时回到首页。
+    // 未登录时统一落到登录页；已登录访问登录页或未知路径时回到默认首页。
     if (!isAuthenticated && location.pathname !== PAGE_PATHS.login) {
       navigate(PAGE_PATHS.login, { replace: true });
       return;
     }
 
     if (isAuthenticated && (location.pathname === PAGE_PATHS.login || !isKnownRoute)) {
-      navigate(PAGE_PATHS.dashboard, { replace: true });
+      navigate(defaultAuthenticatedPath, { replace: true });
     }
-  }, [isAuthBootstrapping, isAuthenticated, isKnownRoute, location.pathname, navigate]);
+  }, [defaultAuthenticatedPath, isAuthBootstrapping, isAuthenticated, isKnownRoute, location.pathname, navigate]);
 
   /**
    * 发送聊天消息：将用户输入加入对话流，并模拟 AI 回复。
@@ -210,12 +211,12 @@ export function App() {
     return (
       // onLogin={async ({ username, password }) => {
       //   await login(username, password);
-      //   navigate(PAGE_PATHS.dashboard, { replace: true });
+      //   navigate(defaultAuthenticatedPath, { replace: true });
       // }}
       <LoginPage
         onIamLogin={async (code) => {
           await iamLogin(code);
-          navigate(PAGE_PATHS.dashboard, { replace: true });
+          navigate(defaultAuthenticatedPath, { replace: true });
         }}
       />
     );
@@ -267,7 +268,7 @@ export function App() {
           onLogout={() => {
             logout();
             localStorage.removeItem('rememberedEmail');
-            navigate(PAGE_PATHS.dashboard, { replace: true });
+            navigate(defaultAuthenticatedPath, { replace: true });
           }}
         />
 

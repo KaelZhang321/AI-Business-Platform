@@ -7,8 +7,8 @@ import { DETAIL_STATS } from './detailView/data';
 import { DetailHeader } from './detailView/DetailHeader';
 import { FilterToolbar } from './detailView/FilterToolbar';
 import { StatsGrid } from './detailView/StatsGrid';
-import type { CustomerRecord, DetailViewMode } from './detailView/types';
-import { aiReportApi } from '../../services/api/aiReportApi';
+import type { CustomerRecord, DetailViewMode, StatCard } from './detailView/types';
+import { aiReportApi, type PatientExamStats } from '../../services/api/aiReportApi';
 
 export { AnimatedList, AnimatedListItem } from './detailView/AnimatedList';
 
@@ -29,6 +29,7 @@ export const AIReportComparisonDetailView: React.FC<AIReportComparisonDetailView
   const [activeStat, setActiveStat] = useState(0);
   const [selectedCustomer, setSelectedCustomer] = useState<CustomerRecord | null>(null);
   const [viewMode, setViewMode] = useState<DetailViewMode>('card');
+  const [stats, setStats] = useState<StatCard[]>(DETAIL_STATS);
   const [customers, setCustomers] = useState<CustomerRecord[]>([]);
   const [isLoadingCustomers, setIsLoadingCustomers] = useState(false);
   const [isLoadingMoreCustomers, setIsLoadingMoreCustomers] = useState(false);
@@ -88,6 +89,38 @@ export const AIReportComparisonDetailView: React.FC<AIReportComparisonDetailView
       return Number.isFinite(parsed) ? parsed : undefined;
     }
     return undefined;
+  };
+
+  const formatStatValue = (value: unknown) => {
+    const num = toSafeNumber(value);
+    return typeof num === 'number' ? num.toLocaleString('zh-CN') : '-';
+  };
+
+  const buildStatsFromApi = (payload?: PatientExamStats): StatCard[] => {
+    if (!payload) {
+      return DETAIL_STATS.map((stat) => ({ ...stat, value: '-' }));
+    }
+
+    return [
+      {
+        ...DETAIL_STATS[0],
+        value: formatStatValue(payload.recentThreeYearsPatientCount),
+      },
+      {
+        ...DETAIL_STATS[1],
+        value: formatStatValue(payload.thisWeekPatientCount),
+      },
+      {
+        ...DETAIL_STATS[2],
+        label: '上周新增',
+        desc: '上周新增客户数',
+        value: formatStatValue(payload.lastWeekPatientCount),
+      },
+      {
+        ...DETAIL_STATS[3],
+        value: '-',
+      },
+    ];
   };
 
   const mapCustomer = (item: RawCustomerItem): CustomerRecord => {
@@ -182,6 +215,21 @@ export const AIReportComparisonDetailView: React.FC<AIReportComparisonDetailView
     }
   };
 
+  const fetchStats = async () => {
+    try {
+      const res = await aiReportApi.getPatientExamStatsApi();
+      const payload = res as PatientExamStats | undefined;
+      setStats(buildStatsFromApi(payload));
+    } catch (error) {
+      console.error('getPatientExamStatsApi error:', error);
+      setStats(buildStatsFromApi(undefined));
+    }
+  };
+
+  useEffect(() => {
+    fetchStats();
+  }, []);
+
   // 搜索词变化时请求客户列表
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -232,7 +280,7 @@ export const AIReportComparisonDetailView: React.FC<AIReportComparisonDetailView
               onToggleDarkMode={() => setIsDarkMode(!isDarkMode)}
             />
 
-            <StatsGrid stats={DETAIL_STATS} activeStat={activeStat} onSelectStat={setActiveStat} />
+            <StatsGrid stats={stats} activeStat={activeStat} onSelectStat={setActiveStat} />
 
             <motion.div
               initial={{ opacity: 0, y: -20 }}

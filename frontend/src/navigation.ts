@@ -18,12 +18,12 @@ export {
   PAGE_DEFINITIONS,
 } from './data/navigationData';
 
-/** 页面路径映射：页面标识 → URL 路径（如 'dashboard' → '/'） */
+/** 页面路径映射：页面标识 → URL 路径（如 'dashboard' → '/dashboard'） */
 export const PAGE_PATHS = Object.fromEntries(
   Object.entries(PAGE_DEFINITIONS).map(([page, definition]) => [page, definition.path]),
 ) as Record<keyof typeof PAGE_DEFINITIONS, string>;
 
-/** 页面标题映射：页面标识 → 中文名称（如 'dashboard' → 'AI业务工作台'） */
+/** 页面标题映射：页面标识 → 中文名称（如 'function-square' → '功能广场'） */
 export const PAGE_TITLES = Object.fromEntries(
   Object.entries(PAGE_DEFINITIONS).map(([page, definition]) => [page, definition.title]),
 ) as Record<keyof typeof PAGE_DEFINITIONS, string>;

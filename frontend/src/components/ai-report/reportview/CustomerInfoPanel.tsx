@@ -109,11 +109,10 @@ export const CustomerInfoPanel: React.FC<CustomerInfoPanelProps> = ({
               {messages.map((msg, i) => (
                 <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                   <div
-                    className={`max-w-[85%] p-3 rounded-2xl text-xs leading-relaxed ${
-                      msg.role === 'user'
+                    className={`max-w-[85%] p-3 rounded-2xl text-xs leading-relaxed ${msg.role === 'user'
                         ? 'bg-gradient-to-br from-brand to-brand-600 text-white rounded-tr-none shadow-[0_4px_15px_rgba(var(--brand-rgb),0.2)]'
                         : 'bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-100 dark:border-slate-700 rounded-tl-none shadow-[0_2px_10px_rgb(0,0,0,0.03)]'
-                    }`}
+                      }`}
                   >
                     {msg.content}
                   </div>
