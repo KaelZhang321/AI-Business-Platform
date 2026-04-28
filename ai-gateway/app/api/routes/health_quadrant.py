@@ -6,8 +6,9 @@ import logging
 import time
 from uuid import uuid4
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 
+from app.api.dependencies import get_health_quadrant_service
 from app.core.error_codes import BusinessError, ErrorCode
 from app.models.schemas import (
     HealthQuadrantConfirmRequest,
@@ -21,7 +22,6 @@ from app.models.schemas import (
 from app.services.health_quadrant_service import HealthQuadrantService, HealthQuadrantServiceError
 
 router = APIRouter(prefix="/health-quadrant", tags=["健康四象限"])
-health_quadrant_service = HealthQuadrantService()
 logger = logging.getLogger(__name__)
 
 
@@ -43,20 +43,12 @@ def _raise_route_business_error(exc: HealthQuadrantServiceError) -> None:
         raise BusinessError(ErrorCode.EXTERNAL_SERVICE_ERROR, message) from exc
     raise BusinessError(ErrorCode.INTERNAL_ERROR, message) from exc
 
-
-def get_health_quadrant_service() -> HealthQuadrantService:
-    """获取健康四象限服务实例。
-
-    功能：
-        对外暴露统一访问入口，方便应用生命周期在 `main.py` 中执行资源预热与关闭，
-        避免业务路由与资源管理耦合。
-    """
-
-    return health_quadrant_service
-
-
 @router.post("", response_model=HealthQuadrantQueryEnvelopeResponse, summary="查询健康四象限（已确认优先）")
-async def build_health_quadrant(request: HealthQuadrantRequest, raw_request: Request) -> HealthQuadrantQueryEnvelopeResponse:
+async def build_health_quadrant(
+    request: HealthQuadrantRequest,
+    raw_request: Request,
+    service: HealthQuadrantService = Depends(get_health_quadrant_service),
+) -> HealthQuadrantQueryEnvelopeResponse:
     """按 StudyID 和象限类型查询四象限。"""
     trace_id = (raw_request.headers.get("X-Trace-Id") or raw_request.headers.get("X-Request-Id") or "").strip() or uuid4().hex
     route_started_at = time.perf_counter()
@@ -70,7 +62,7 @@ async def build_health_quadrant(request: HealthQuadrantRequest, raw_request: Req
         len(request.chief_complaint_text or ""),
     )
     try:
-        result = await health_quadrant_service.query_quadrants(
+        result = await service.query_quadrants(
             sex=request.sex,
             age=request.age,
             study_id=request.study_id,
@@ -134,6 +126,7 @@ async def build_health_quadrant(request: HealthQuadrantRequest, raw_request: Req
 async def confirm_health_quadrant(
     request: HealthQuadrantConfirmRequest,
     raw_request: Request,
+    service: HealthQuadrantService = Depends(get_health_quadrant_service),
 ) -> HealthQuadrantConfirmEnvelopeResponse:
     """保存前端确认后的四象限结果。"""
 
@@ -152,7 +145,7 @@ async def confirm_health_quadrant(
         confirmed_by,
     )
     try:
-        await health_quadrant_service.confirm_quadrants(
+        await service.confirm_quadrants(
             study_id=request.study_id,
             quadrant_type=request.quadrant_type,
             single_exam_items=[item.model_dump(by_alias=True) for item in request.single_exam_items],

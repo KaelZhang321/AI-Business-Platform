@@ -13,7 +13,6 @@ from typing import Any
 import aiomysql
 
 from app.core.config import settings
-from app.core.mysql import build_business_mysql_conn_params
 from app.services.api_catalog.graph_models import (
     SemanticFieldAliasRecord,
     SemanticFieldDictRecord,
@@ -90,10 +89,11 @@ class SemanticFieldRepository:
 
     Edge Cases:
         - JSON 字段统一 `CAST(... AS CHAR)` 后再解析，避免不同驱动返回 `bytes/dict/str` 混杂
+        - 业务库连接池必须由上层注入，治理快照仓储不再运行期自建连接池
     """
 
-    def __init__(self) -> None:
-        self._pool: aiomysql.Pool | None = None
+    def __init__(self, *, pool: aiomysql.Pool | None = None) -> None:
+        self._pool = pool
         self._columns_cache: dict[str, set[str]] = {}
 
     async def load_active_rules(self) -> SemanticGovernanceSnapshot:
@@ -180,24 +180,13 @@ WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s
         return columns
 
     async def _get_pool(self) -> aiomysql.Pool:
-        """懒加载业务 MySQL 连接池。"""
+        """读取应用级注入的字段治理业务库连接池。"""
         if self._pool is None:
-            logger.info(
-                "Connecting semantic field repository host=%s port=%s db=%s timeout=%ss",
-                settings.business_mysql_host,
-                settings.business_mysql_port,
-                settings.business_mysql_database,
-                settings.api_catalog_mysql_connect_timeout_seconds,
-            )
-            self._pool = await aiomysql.create_pool(minsize=1, maxsize=3, **build_business_mysql_conn_params())
+            raise SemanticFieldRepositoryError("业务库连接池未注入，请通过 AppResources 或测试桩显式提供。")
         return self._pool
 
     async def close(self) -> None:
-        """释放连接池。"""
-        if self._pool is not None:
-            self._pool.close()
-            await self._pool.wait_closed()
-            self._pool = None
+        """仓储不持有连接池所有权，因此 close 为 no-op。"""
 
 
 def _build_field_dict_record(row: dict[str, Any]) -> SemanticFieldDictRecord:

@@ -3,7 +3,6 @@ from __future__ import annotations
 import pytest
 
 import app.services.api_catalog.semantic_field_repository as repository_module
-from app.core.config import settings
 from app.services.api_catalog.semantic_field_repository import SemanticFieldRepository, SemanticFieldRepositoryError
 
 
@@ -163,7 +162,7 @@ def _column_rows(*column_names: str) -> list[dict[str, object]]:
 
 
 @pytest.mark.asyncio
-async def test_semantic_field_repository_loads_rules_from_mysql(monkeypatch) -> None:
+async def test_semantic_field_repository_loads_rules_from_mysql() -> None:
     """验证三张治理表会被依次读取，并转换成类型化快照。"""
 
     capture: dict[str, object] = {}
@@ -239,33 +238,10 @@ async def test_semantic_field_repository_loads_rules_from_mysql(monkeypatch) -> 
         capture,
     )
 
-    async def fake_create_pool(**kwargs):
-        capture["conn_kwargs"] = kwargs
-        return fake_pool
-
-    monkeypatch.setattr(settings, "business_mysql_host", "ai-platform-mysql")
-    monkeypatch.setattr(settings, "business_mysql_port", 3306)
-    monkeypatch.setattr(settings, "business_mysql_user", "ai_platform")
-    monkeypatch.setattr(settings, "business_mysql_password", "ai_platform_dev")
-    monkeypatch.setattr(settings, "business_mysql_database", "ai_platform_business")
-    monkeypatch.setattr(settings, "api_catalog_mysql_connect_timeout_seconds", 7.5)
-    monkeypatch.setattr(repository_module.aiomysql, "create_pool", fake_create_pool)
-
-    repository = SemanticFieldRepository()
+    repository = SemanticFieldRepository(pool=fake_pool)  # type: ignore[arg-type]
     snapshot = await repository.load_active_rules()
     await repository.close()
 
-    assert capture["conn_kwargs"] == {
-        "host": "ai-platform-mysql",
-        "port": 3306,
-        "user": "ai_platform",
-        "password": "ai_platform_dev",
-        "db": "ai_platform_business",
-        "charset": "utf8mb4",
-        "connect_timeout": 7.5,
-        "minsize": 1,
-        "maxsize": 3,
-    }
     assert capture["cursor_cls"] is repository_module.aiomysql.DictCursor
     assert len(capture["sqls"]) == 6
     assert "INFORMATION_SCHEMA.COLUMNS" in str(capture["sqls"][0])
@@ -276,8 +252,8 @@ async def test_semantic_field_repository_loads_rules_from_mysql(monkeypatch) -> 
     assert "FROM semantic_field_value_map" in str(capture["sqls"][5])
     assert "current_flag = 1" in str(capture["sqls"][3])
     assert "review_status = 'approved'" in str(capture["sqls"][3])
-    assert fake_pool.closed is True
-    assert fake_pool.wait_closed_called is True
+    assert fake_pool.closed is False
+    assert fake_pool.wait_closed_called is False
 
     field_dict = snapshot.field_dicts[0]
     assert field_dict.semantic_key == "Customer.id"
@@ -300,8 +276,8 @@ async def test_semantic_field_repository_loads_rules_from_mysql(monkeypatch) -> 
 
 
 @pytest.mark.asyncio
-async def test_semantic_field_repository_reuses_connection_pool_between_loads(monkeypatch) -> None:
-    """同一个仓储实例重复读取时，不应反复新建连接池。"""
+async def test_semantic_field_repository_reuses_injected_pool_between_loads() -> None:
+    """同一个仓储实例重复读取时，应复用同一个注入 pool。"""
 
     capture: dict[str, object] = {"create_pool_calls": 0}
     fake_pool = FakePool(
@@ -319,33 +295,22 @@ async def test_semantic_field_repository_reuses_connection_pool_between_loads(mo
         capture,
     )
 
-    async def fake_create_pool(**kwargs):
-        capture["create_pool_calls"] = int(capture["create_pool_calls"]) + 1
-        return fake_pool
-
-    monkeypatch.setattr(repository_module.aiomysql, "create_pool", fake_create_pool)
-
-    repository = SemanticFieldRepository()
+    repository = SemanticFieldRepository(pool=fake_pool)  # type: ignore[arg-type]
     first_snapshot = await repository.load_active_rules()
     second_snapshot = await repository.load_active_rules()
     await repository.close()
 
     assert first_snapshot.field_dicts[0].semantic_key == "Customer.id"
     assert second_snapshot.aliases[0].semantic_key == "Customer.id"
-    assert capture["create_pool_calls"] == 1
+    assert capture["create_pool_calls"] == 0
 
 
 @pytest.mark.asyncio
-async def test_semantic_field_repository_wraps_mysql_failures(monkeypatch) -> None:
-    """MySQL 是治理规则唯一来源，建连失败时必须抛出语义化仓储异常。"""
-
-    async def failing_create_pool(**kwargs):  # pragma: no cover - 由仓储调用
-        raise RuntimeError("boom")
-
-    monkeypatch.setattr(repository_module.aiomysql, "create_pool", failing_create_pool)
+async def test_semantic_field_repository_requires_injected_pool() -> None:
+    """未注入业务库连接池时必须抛出语义化仓储异常。"""
 
     repository = SemanticFieldRepository()
-    with pytest.raises(SemanticFieldRepositoryError, match="无法加载字段治理规则: boom"):
+    with pytest.raises(SemanticFieldRepositoryError, match="业务库连接池未注入"):
         await repository.load_active_rules()
     await repository.close()
 

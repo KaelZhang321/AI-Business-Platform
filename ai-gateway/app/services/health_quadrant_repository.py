@@ -15,8 +15,6 @@ from typing import Any
 
 import aiomysql
 
-from app.core.mysql import build_business_mysql_conn_params
-
 _TABLE_NAME = "health_quadrant_result"
 logger = logging.getLogger(__name__)
 
@@ -31,10 +29,13 @@ class HealthQuadrantRepository:
     功能：
         提供“读取已确认结果 + 写入确认结果”两项能力。命中维度遵循业务约束：
         `study_id + 单项列表 + 主诉文本 + quadrant_type`。
+
+    Edge Cases:
+        业务库连接池必须由上层注入，仓储不再在运行期自行创建业务库 pool。
     """
 
-    def __init__(self) -> None:
-        self._pool: aiomysql.Pool | None = None
+    def __init__(self, *, pool: aiomysql.Pool | None = None) -> None:
+        self._pool = pool
         self._table_ready = False
 
     async def get_preferred_payload(
@@ -355,13 +356,8 @@ updated_at = IF(status='CONFIRMED', updated_at, CURRENT_TIMESTAMP)
             raise HealthQuadrantRepositoryError(f"写入四象限草稿失败: {exc}") from exc
 
     async def close(self) -> None:
-        """关闭连接池。"""
-
-        if self._pool is not None:
-            self._pool.close()
-            await self._pool.wait_closed()
-            self._pool = None
-            self._table_ready = False
+        """仓储不持有连接池所有权，因此 close 为 no-op。"""
+        self._table_ready = False
 
     async def _ensure_table(self) -> None:
         """确保持久化表存在。
@@ -409,12 +405,10 @@ updated_at = IF(status='CONFIRMED', updated_at, CURRENT_TIMESTAMP)
         self._table_ready = True
 
     async def _get_pool(self) -> aiomysql.Pool:
+        """读取应用级注入的健康四象限业务库连接池。"""
+
         if self._pool is None:
-            self._pool = await aiomysql.create_pool(
-                minsize=1,
-                maxsize=3,
-                **build_business_mysql_conn_params(),
-            )
+            raise HealthQuadrantRepositoryError("业务库连接池未注入，请通过 AppResources 或测试桩显式提供。")
         return self._pool
 
 

@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass
 
 import aiomysql
 
 from app.core.config import settings
-from app.core.mysql import build_business_mysql_conn_params
 
 _SELECT_TEMPLATE_SQL = """
 SELECT
@@ -52,13 +50,12 @@ class PromptTemplateRepository:
 
     Edge Cases:
         - 当表不存在或 SQL 执行失败时，统一抛出仓储异常，方便上层转成业务错误
-        - 同一进程内连接池惰性创建，降低未命中新接口时的额外资源消耗
+        - 连接池必须由应用级组合根或测试桩注入，避免仓储层自己决定资源所有权
     """
 
-    def __init__(self, *, table_name: str | None = None) -> None:
+    def __init__(self, *, table_name: str | None = None, pool: aiomysql.Pool | None = None) -> None:
         self._table_name = table_name or settings.llm_prompt_template_table
-        self._pool: aiomysql.Pool | None = None
-        self._pool_lock = asyncio.Lock()
+        self._pool = pool
 
     async def get_by_service_code(self, service_code: str) -> PromptTemplateRecord | None:
         """按服务编码加载单条 Prompt 模板。
@@ -99,30 +96,15 @@ class PromptTemplateRepository:
         )
 
     async def close(self) -> None:
-        """关闭内部连接池。
-
-        功能：
-            与项目中其他 MySQL 仓储保持一致，允许应用关闭钩子和测试用例显式释放资源，
-            避免热重载后留下悬挂连接。
-        """
-
-        if self._pool is not None:
-            self._pool.close()
-            await self._pool.wait_closed()
-            self._pool = None
+        """仓储不持有连接池所有权，因此 close 为 no-op。"""
 
     async def _get_pool(self) -> aiomysql.Pool:
-        """惰性创建 Prompt 模板连接池。"""
+        """读取应用级注入的 Prompt 模板连接池。
 
-        if self._pool is not None:
-            return self._pool
+        功能：
+            Prompt 模板仓储是典型读仓储，不应在运行期临时自建业务库连接池。
+        """
 
-        async with self._pool_lock:
-            if self._pool is not None:
-                return self._pool
-            self._pool = await aiomysql.create_pool(
-                minsize=1,
-                maxsize=3,
-                **build_business_mysql_conn_params(),
-            )
+        if self._pool is None:
+            raise PromptTemplateRepositoryError("业务库连接池未注入，请通过 AppResources 或测试桩显式提供。")
         return self._pool

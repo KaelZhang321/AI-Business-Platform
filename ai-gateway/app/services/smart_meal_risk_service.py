@@ -204,9 +204,11 @@ class SmartMealRiskService:
                 d.dish_type AS dish_type,
                 d.ingredient_json AS ingredient_json
             FROM meal_package AS p
-            JOIN meal_dish AS d ON p.package_code = d.package_code
+            JOIN meal_package_dish_binding AS b ON p.id = b.package_id
+            JOIN meal_dish AS d ON d.id = b.dish_id
             WHERE p.package_code = %s
               AND p.status = 1
+              AND b.status = 1
               AND d.status = 1
         """
         pool = await self._mysql_pools.get_ods_pool()

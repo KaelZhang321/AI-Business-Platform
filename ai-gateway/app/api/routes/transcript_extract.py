@@ -5,8 +5,9 @@ from __future__ import annotations
 import logging
 import time
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
+from app.api.dependencies import get_transcript_extract_service
 from app.core.error_codes import BusinessError, ErrorCode
 from app.models.schemas import (
     TranscriptExtractEnvelopeResponse,
@@ -15,19 +16,7 @@ from app.models.schemas import (
 from app.services.transcript_extract_service import TranscriptExtractService
 
 router = APIRouter(prefix="/transcriptExtract", tags=["Transcript Extract"])
-transcript_extract_service = TranscriptExtractService()
 logger = logging.getLogger(__name__)
-
-
-def get_transcript_extract_service() -> TranscriptExtractService:
-    """获取 transcript 抽取服务实例。
-
-    功能：
-        与项目中其他路由保持一致，显式暴露单例获取入口，便于应用生命周期统一关闭资源，
-        也方便测试通过 monkeypatch 替换底层服务。
-    """
-
-    return transcript_extract_service
 
 
 @router.post(
@@ -36,7 +25,10 @@ def get_transcript_extract_service() -> TranscriptExtractService:
     response_model_by_alias=True,
     summary="Transcript 信息提取",
 )
-async def transcript_extract(request: TranscriptExtractRequest) -> TranscriptExtractEnvelopeResponse:
+async def transcript_extract(
+    request: TranscriptExtractRequest,
+    service: TranscriptExtractService = Depends(get_transcript_extract_service),
+) -> TranscriptExtractEnvelopeResponse:
     """执行 transcript 信息提取。
 
     功能：
@@ -51,7 +43,7 @@ async def transcript_extract(request: TranscriptExtractRequest) -> TranscriptExt
         len(request.transcript),
     )
     try:
-        result = await transcript_extract_service.extract(
+        result = await service.extract(
             task_code=request.task_code,
             transcript=request.transcript,
         )

@@ -20,8 +20,6 @@ from dataclasses import dataclass, field
 
 import aiomysql
 
-from app.core.mysql import build_business_mysql_conn_params
-
 logger = logging.getLogger(__name__)
 
 NOOP_BUSINESS_INTENT = "none"
@@ -74,11 +72,12 @@ class BusinessIntentCatalogService:
     Edge Cases:
         - MySQL 不可用、表未建齐或字段不完整时，会保留内置快照兜底
         - 首次加载失败后不再重复击穿数据库，避免每个请求都放大治理库故障
+        - 业务库连接池必须由应用级组合根或测试桩注入，目录服务本身不再自建连接
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, pool: aiomysql.Pool | None = None) -> None:
         self._snapshot = _build_builtin_snapshot()
-        self._pool: aiomysql.Pool | None = None
+        self._pool = pool
         self._load_attempted = False
         self._load_lock = asyncio.Lock()
 
@@ -158,11 +157,7 @@ class BusinessIntentCatalogService:
         return risk_level or None
 
     async def close(self) -> None:
-        """释放内部连接池。"""
-        if self._pool is not None:
-            self._pool.close()
-            await self._pool.wait_closed()
-            self._pool = None
+        """目录服务不持有连接池所有权，因此 close 为 no-op。"""
 
     async def _load_intent_definitions(self) -> dict[str, BusinessIntentDefinition]:
         """从 `ui_business_intents` 读取激活态业务意图。"""
@@ -249,24 +244,31 @@ class BusinessIntentCatalogService:
                 return [dict(row) for row in rows]
 
     async def _get_pool(self) -> aiomysql.Pool:
-        """懒加载业务 MySQL 连接池。"""
+        """读取应用级注入的业务库连接池。"""
         if self._pool is None:
-            self._pool = await aiomysql.create_pool(
-                minsize=1,
-                maxsize=2,
-                **build_business_mysql_conn_params(include_connect_timeout=False),
-            )
+            raise RuntimeError("业务库连接池未注入，请通过 AppResources 或测试桩显式提供。")
         return self._pool
 
 
 _catalog_service: BusinessIntentCatalogService | None = None
 
 
+def set_business_intent_catalog_service(service: BusinessIntentCatalogService | None) -> None:
+    """替换进程级业务意图目录实例。
+
+    功能：
+        应用资源容器通过该入口注入共享业务库连接池，历史调用方继续使用 getter。
+    """
+
+    global _catalog_service
+    _catalog_service = service
+
+
 def get_business_intent_catalog_service() -> BusinessIntentCatalogService:
     """获取进程级业务意图目录单例。"""
     global _catalog_service
     if _catalog_service is None:
-        _catalog_service = BusinessIntentCatalogService()
+        raise RuntimeError("BusinessIntentCatalogService 尚未初始化，请先完成 AppResources.start()")
     return _catalog_service
 
 

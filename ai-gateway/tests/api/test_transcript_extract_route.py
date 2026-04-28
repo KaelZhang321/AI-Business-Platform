@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
+from app.api.dependencies import get_transcript_extract_service
 from app.api.routes import transcript_extract as transcript_extract_route
 from app.core.error_codes import BusinessError, ErrorCode
 from app.models.schemas import TranscriptExtractData
@@ -46,9 +47,10 @@ def create_test_app() -> FastAPI:
     return app
 
 
-def test_transcript_extract_route_returns_camel_case_response(monkeypatch) -> None:
-    monkeypatch.setattr(transcript_extract_route, "transcript_extract_service", StubTranscriptExtractService())
-    client = TestClient(create_test_app())
+def test_transcript_extract_route_returns_camel_case_response() -> None:
+    app = create_test_app()
+    app.dependency_overrides[get_transcript_extract_service] = lambda: StubTranscriptExtractService()
+    client = TestClient(app)
 
     response = client.post(
         "/api/v1/transcriptExtract",
@@ -67,11 +69,13 @@ def test_transcript_extract_route_returns_camel_case_response(monkeypatch) -> No
         "serviceCode": "transcript.extract.task1",
         "result": {"summary": "ok", "nextAction": "follow-up"},
     }
+    app.dependency_overrides.clear()
 
 
-def test_transcript_extract_route_accepts_snake_case_request(monkeypatch) -> None:
-    monkeypatch.setattr(transcript_extract_route, "transcript_extract_service", StubTranscriptExtractService())
-    client = TestClient(create_test_app())
+def test_transcript_extract_route_accepts_snake_case_request() -> None:
+    app = create_test_app()
+    app.dependency_overrides[get_transcript_extract_service] = lambda: StubTranscriptExtractService()
+    client = TestClient(app)
 
     response = client.post(
         "/api/v1/transcriptExtract",
@@ -83,15 +87,13 @@ def test_transcript_extract_route_accepts_snake_case_request(monkeypatch) -> Non
 
     assert response.status_code == 200
     assert response.json()["data"]["taskCode"] == "task1"
+    app.dependency_overrides.clear()
 
 
-def test_transcript_extract_route_returns_error_envelope(monkeypatch) -> None:
-    monkeypatch.setattr(
-        transcript_extract_route,
-        "transcript_extract_service",
-        StubFailingTranscriptExtractService(),
-    )
-    client = TestClient(create_test_app())
+def test_transcript_extract_route_returns_error_envelope() -> None:
+    app = create_test_app()
+    app.dependency_overrides[get_transcript_extract_service] = lambda: StubFailingTranscriptExtractService()
+    client = TestClient(app)
 
     response = client.post(
         "/api/v1/transcriptExtract",
@@ -107,3 +109,4 @@ def test_transcript_extract_route_returns_error_envelope(monkeypatch) -> None:
         "message": "unsupported taskCode: unknown",
         "data": None,
     }
+    app.dependency_overrides.clear()

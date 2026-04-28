@@ -15,7 +15,6 @@ from typing import Any
 import aiomysql
 
 from app.core.config import settings
-from app.core.mysql import build_business_mysql_conn_params
 from app.services.model_router import ModelBackend
 
 _DEFAULT_CHAT_PATH = "v1/chat/completions"
@@ -42,16 +41,21 @@ class ModelRuntimeConfigService:
     Edge Cases:
         - 未配置任何启用后端时会抛异常，阻止服务静默落回旧逻辑。
         - `chat_path` 若被错误写成绝对路径（`/v1/...`），会自动规范为相对路径。
+        - 业务库连接池必须由应用级组合根注入，避免 leaf service 自己决定资源所有权。
     """
 
-    def __init__(self, *, cache_ttl_seconds: int | None = None, table_name: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        cache_ttl_seconds: int | None = None,
+        table_name: str | None = None,
+        pool: aiomysql.Pool | None = None,
+    ) -> None:
         self._cache_ttl_seconds = cache_ttl_seconds or settings.llm_runtime_config_cache_ttl_seconds
         self._table_name = table_name or settings.llm_runtime_config_table
-        self._pool: aiomysql.Pool | None = None
-        self._pool_lock = asyncio.Lock()
+        self._pool = pool
         self._cache_lock = asyncio.Lock()
         self._cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
-        self._table_ready = False
 
     async def get_backends(self, service_code: str) -> list[ModelBackend]:
         """获取某条业务链路的后端列表。
@@ -118,16 +122,10 @@ class ModelRuntimeConfigService:
         """关闭连接池并清理缓存。"""
 
         self._cache.clear()
-        self._table_ready = False
-        if self._pool is not None:
-            self._pool.close()
-            await self._pool.wait_closed()
-            self._pool = None
 
     async def _load_rows_from_db(self, service_code: str) -> list[dict[str, Any]]:
         """从数据库读取模型后端配置。"""
 
-        await self._ensure_table()
         sql = f"""
 SELECT
     backend_name,
@@ -208,58 +206,17 @@ ORDER BY priority ASC, id ASC
         # 双重排序兜底：即使底层 SQL 被替换或驱动返回顺序异常，也保证路由优先级稳定。
         return sorted(backends, key=lambda backend: backend.priority)
 
-    async def _ensure_table(self) -> None:
-        """确保模型配置表存在。
+    async def _get_pool(self) -> aiomysql.Pool:
+        """读取应用级注入的业务库连接池。
 
         功能：
-            当前项目仍在快速迭代，先由服务端兜底建表可减少“环境初始化遗漏 DDL”导致的
-            联调阻塞。生产环境建议后续迁移到正式 migration 流程统一管理。
+            运行时模型配置属于典型的 DB-backed 读服务，资源归属只允许在应用启动期决定。
+            这里显式拒绝运行期自建 pool，避免测试和生产路径再次分叉。
         """
 
-        if self._table_ready:
-            return
-        ddl = f"""
-CREATE TABLE IF NOT EXISTS {self._table_name} (
-    id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
-    service_code VARCHAR(128) NOT NULL COMMENT '业务服务编码，如 api.query',
-    backend_name VARCHAR(128) NOT NULL COMMENT '后端配置名称',
-    backend_type VARCHAR(32) NOT NULL COMMENT '后端类型：ollama/openai/vllm',
-    base_url VARCHAR(255) NOT NULL COMMENT '后端基础地址',
-    model_name VARCHAR(128) NOT NULL COMMENT '模型名称',
-    api_key VARCHAR(1024) NULL COMMENT '后端密钥（可空）',
-    chat_path VARCHAR(128) NOT NULL DEFAULT 'v1/chat/completions' COMMENT '聊天接口相对路径',
-    priority INT NOT NULL DEFAULT 100 COMMENT '优先级，越小越优先',
-    enabled TINYINT(1) NOT NULL DEFAULT 1 COMMENT '是否启用',
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
-    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
-    UNIQUE KEY uk_service_backend_name (service_code, backend_name),
-    KEY idx_service_enabled_priority (service_code, enabled, priority)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='LLM运行时服务模型配置表';
-""".strip()
-        try:
-            pool = await self._get_pool()
-            async with pool.acquire() as conn:
-                async with conn.cursor() as cursor:
-                    await cursor.execute(ddl)
-                await conn.commit()
-            self._table_ready = True
-        except Exception as exc:  # noqa: BLE001
-            raise ModelRuntimeConfigServiceError(f"初始化模型配置表失败: {exc}") from exc
-
-    async def _get_pool(self) -> aiomysql.Pool:
-        """获取或创建连接池。"""
-
-        if self._pool is not None:
-            return self._pool
-        async with self._pool_lock:
-            if self._pool is not None:
-                return self._pool
-            self._pool = await aiomysql.create_pool(
-                minsize=1,
-                maxsize=3,
-                **build_business_mysql_conn_params(),
-            )
-            return self._pool
+        if self._pool is None:
+            raise ModelRuntimeConfigServiceError("业务库连接池未注入，请通过 AppResources 或测试依赖显式提供。")
+        return self._pool
 
     @staticmethod
     def _normalize_chat_path(raw_path: Any) -> str:
@@ -285,8 +242,20 @@ def get_model_runtime_config_service() -> ModelRuntimeConfigService:
 
     global _model_runtime_config_service
     if _model_runtime_config_service is None:
-        _model_runtime_config_service = ModelRuntimeConfigService()
+        raise RuntimeError("ModelRuntimeConfigService 尚未初始化，请先完成 AppResources.start()")
     return _model_runtime_config_service
+
+
+def set_model_runtime_config_service(service: ModelRuntimeConfigService | None) -> None:
+    """替换进程级模型配置服务实例。
+
+    功能：
+        应用级资源容器会注入共享业务库连接池，历史调用方仍通过全局 getter 获取服务。
+        这里提供显式替换入口，避免每条 LLM 链路继续自行创建连接池。
+    """
+
+    global _model_runtime_config_service
+    _model_runtime_config_service = service
 
 
 async def close_model_runtime_config_service() -> None:

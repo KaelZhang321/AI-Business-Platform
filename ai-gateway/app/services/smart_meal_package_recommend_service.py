@@ -624,8 +624,10 @@ class SmartMealPackageRecommendService:
                 d.dish_name,
                 d.ingredient_json
             FROM meal_package AS p
-            LEFT JOIN meal_dish AS d ON p.package_code = d.package_code
+            LEFT JOIN meal_package_dish_binding AS b ON p.id = b.package_id
+            LEFT JOIN meal_dish AS d ON d.id = b.dish_id
             WHERE p.status = 1
+              AND b.status = 1
               AND (d.status = 1 OR d.status IS NULL)
               AND p.package_code IN ({placeholders})
         """

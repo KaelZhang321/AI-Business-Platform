@@ -6,8 +6,6 @@ import logging
 import re
 from typing import Any
 
-from app.core.config import settings
-from app.core.mysql import build_business_mysql_conn_params
 from app.services.api_catalog.schema_utils import (
     describe_schema_type,
     extract_schema_description,
@@ -88,10 +86,11 @@ class ApiCatalogRegistrySource:
 
     Edge Cases:
         - SQL 里显式 `CAST(JSON AS CHAR)`，是为了消除不同 MySQL 驱动对 JSON 返回类型的差异
+        - 业务库连接池必须由上层注入，注册表读取不再自行建池
     """
 
-    def __init__(self) -> None:
-        self._pool: aiomysql.Pool | None = None
+    def __init__(self, *, pool: aiomysql.Pool | None = None) -> None:
+        self._pool = pool
 
     async def load_entries(self) -> list[ApiCatalogEntry]:
         """仅从业务 MySQL 加载接口目录记录。
@@ -217,24 +216,13 @@ class ApiCatalogRegistrySource:
             return rows
 
     async def _get_pool(self) -> aiomysql.Pool:
-        """懒加载 API Catalog MySQL 连接池。"""
+        """读取应用级注入的 API Catalog 连接池。"""
         if self._pool is None:
-            logger.info(
-                "Connecting to business MySQL host=%s port=%s db=%s timeout=%ss",
-                settings.business_mysql_host,
-                settings.business_mysql_port,
-                settings.business_mysql_database,
-                settings.api_catalog_mysql_connect_timeout_seconds,
-            )
-            self._pool = await aiomysql.create_pool(minsize=1, maxsize=5, **build_business_mysql_conn_params())
+            raise ApiCatalogSourceError("业务库连接池未注入，请通过 AppResources 或测试桩显式提供。")
         return self._pool
 
     async def close(self) -> None:
-        """释放内部连接池。"""
-        if self._pool is not None:
-            self._pool.close()
-            await self._pool.wait_closed()
-            self._pool = None
+        """注册表访问器不持有连接池所有权，因此 close 为 no-op。"""
 
 
 def _build_entry_from_mysql_row(row: dict[str, Any]) -> ApiCatalogEntry:

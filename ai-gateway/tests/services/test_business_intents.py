@@ -3,7 +3,6 @@ from __future__ import annotations
 import pytest
 
 import app.services.api_catalog.business_intents as business_intents_module
-from app.core.config import settings
 from app.services.api_catalog.business_intents import (
     BusinessIntentCatalogService,
     NOOP_BUSINESS_INTENT,
@@ -155,33 +154,11 @@ async def test_business_intent_catalog_loads_mysql_snapshot_and_normalizes_alias
     """验证业务意图目录可从 MySQL 预热，并驱动白名单、别名和风险等级判断。"""
     capture: dict[str, object] = {}
     fake_pool = FakePool({"intents": _intent_rows(), "aliases": _alias_rows()}, capture)
-
-    async def fake_create_pool(**kwargs):
-        capture["conn_kwargs"] = kwargs
-        return fake_pool
-
-    monkeypatch.setattr(settings, "business_mysql_host", "ai-platform-mysql")
-    monkeypatch.setattr(settings, "business_mysql_port", 3306)
-    monkeypatch.setattr(settings, "business_mysql_user", "ai_platform")
-    monkeypatch.setattr(settings, "business_mysql_password", "ai_platform_dev")
-    monkeypatch.setattr(settings, "business_mysql_database", "ai_platform_business")
-    monkeypatch.setattr(business_intents_module.aiomysql, "create_pool", fake_create_pool)
-
-    service = BusinessIntentCatalogService()
+    service = BusinessIntentCatalogService(pool=fake_pool)  # type: ignore[arg-type]
     monkeypatch.setattr(business_intents_module, "_catalog_service", service)
 
     await service.warmup()
 
-    assert capture["conn_kwargs"] == {
-        "minsize": 1,
-        "maxsize": 2,
-        "host": "ai-platform-mysql",
-        "port": 3306,
-        "user": "ai_platform",
-        "password": "ai_platform_dev",
-        "db": "ai_platform_business",
-        "charset": "utf8mb4",
-    }
     assert any("FROM ui_business_intents" in sql for sql in capture["sqls"])
     assert any("FROM ui_business_intent_aliases" in sql for sql in capture["sqls"])
 
@@ -194,18 +171,13 @@ async def test_business_intent_catalog_loads_mysql_snapshot_and_normalizes_alias
     assert resolve_business_intent_risk_level("saveToServer", ["prepare_high_risk_change"]) == "high"
 
     await service.close()
-    assert fake_pool.closed is True
-    assert fake_pool.wait_closed_called is True
+    assert fake_pool.closed is False
+    assert fake_pool.wait_closed_called is False
 
 
 @pytest.mark.asyncio
 async def test_business_intent_catalog_keeps_builtin_snapshot_when_mysql_unavailable(monkeypatch) -> None:
     """MySQL 不可用时必须保留内置语义，避免第二阶段把全部写意图误降级成 none。"""
-
-    async def failing_create_pool(**kwargs):  # pragma: no cover - invoked via service warmup
-        raise RuntimeError("boom")
-
-    monkeypatch.setattr(business_intents_module.aiomysql, "create_pool", failing_create_pool)
 
     service = BusinessIntentCatalogService()
     monkeypatch.setattr(business_intents_module, "_catalog_service", service)
@@ -217,3 +189,15 @@ async def test_business_intent_catalog_keeps_builtin_snapshot_when_mysql_unavail
     assert resolve_business_intent_risk_level("saveToServer", ["prepare_high_risk_change"]) == "high"
 
     await service.close()
+
+
+@pytest.mark.asyncio
+async def test_business_intent_catalog_requires_injected_pool_for_warmup(monkeypatch) -> None:
+    """未注入业务库连接池时，warmup 应走内置降级而不是偷偷建池。"""
+
+    service = BusinessIntentCatalogService()
+    monkeypatch.setattr(business_intents_module, "_catalog_service", service)
+
+    await service.warmup()
+
+    assert service.get_allowed_codes() == {"none", "saveToServer", "deleteCustomer"}

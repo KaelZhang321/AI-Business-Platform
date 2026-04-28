@@ -11,7 +11,6 @@ from datetime import UTC, datetime
 import aiomysql
 
 from app.core.config import settings
-from app.core.mysql import build_business_mysql_conn_params
 from app.models.schemas import ApiCatalogGovernanceRunResponse, SemanticCurationRunStatus
 from app.services.api_catalog.semantic_curation_run_repository import (
     SemanticCurationRunRepository,
@@ -37,6 +36,9 @@ class SemanticGovernancePublicationService:
     Args:
         run_repository: run 控制面仓储，用于补充发布状态回写。
         clock: 可注入时钟，便于测试稳定断言。
+
+    Edge Cases:
+        发布控制服务和 run 仓储共用同一业务库连接池，资源归属必须由组合根统一决定。
     """
 
     def __init__(
@@ -44,9 +46,10 @@ class SemanticGovernancePublicationService:
         *,
         run_repository: SemanticCurationRunRepository | None = None,
         clock: callable | None = None,
+        pool: aiomysql.Pool | None = None,
     ) -> None:
-        self._run_repository = run_repository or SemanticCurationRunRepository()
-        self._pool: aiomysql.Pool | None = None
+        self._run_repository = run_repository or SemanticCurationRunRepository(pool=pool)
+        self._pool = pool
         self._columns_cache: dict[str, set[str]] = {}
         self._clock = clock or (lambda: datetime.now(UTC))
 
@@ -103,10 +106,6 @@ class SemanticGovernancePublicationService:
     async def close(self) -> None:
         """释放服务连接。"""
 
-        if self._pool is not None:
-            self._pool.close()
-            await self._pool.wait_closed()
-            self._pool = None
         await self._run_repository.close()
 
     async def _promote_three_tables(self, run_id: str) -> None:
@@ -239,12 +238,10 @@ WHERE run_id = %s
                 )
 
     async def _get_pool(self) -> aiomysql.Pool:
+        """读取应用级注入的字段治理发布连接池。"""
+
         if self._pool is None:
-            self._pool = await aiomysql.create_pool(
-                minsize=1,
-                maxsize=3,
-                **build_business_mysql_conn_params(),
-            )
+            raise SemanticGovernancePublicationError("业务库连接池未注入，请通过 AppResources 或测试桩显式提供。")
         return self._pool
 
     async def _get_table_columns(self, table_name: str) -> set[str]:

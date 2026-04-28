@@ -12,7 +12,6 @@ from typing import Any
 import aiomysql
 
 from app.core.config import settings
-from app.core.mysql import build_business_mysql_conn_params
 from app.services.api_catalog.semantic_governance_proposal_models import (
     SemanticAliasProposal,
     SemanticDictProposal,
@@ -38,10 +37,13 @@ class SemanticGovernanceProposalRepository:
 
     Args:
         conflict_fuse_threshold: 连续冲突达到该阈值后，把线上规则标记为 `conflict_review`。
+
+    Edge Cases:
+        业务库连接池必须由上层注入，提案写库仓储不再运行期自建连接池。
     """
 
-    def __init__(self, *, conflict_fuse_threshold: int = 3) -> None:
-        self._pool: aiomysql.Pool | None = None
+    def __init__(self, *, conflict_fuse_threshold: int = 3, pool: aiomysql.Pool | None = None) -> None:
+        self._pool = pool
         self._columns_cache: dict[str, set[str]] = {}
         self._conflict_fuse_threshold = conflict_fuse_threshold
 
@@ -94,12 +96,7 @@ class SemanticGovernanceProposalRepository:
         return summary
 
     async def close(self) -> None:
-        """释放连接池。"""
-
-        if self._pool is not None:
-            self._pool.close()
-            await self._pool.wait_closed()
-            self._pool = None
+        """仓储不持有连接池所有权，因此 close 为 no-op。"""
 
     async def _upsert_dict_proposal(
         self,
@@ -329,12 +326,10 @@ class SemanticGovernanceProposalRepository:
         return conflict_review_marked
 
     async def _get_pool(self) -> aiomysql.Pool:
+        """读取应用级注入的字段治理提案写库连接池。"""
+
         if self._pool is None:
-            self._pool = await aiomysql.create_pool(
-                minsize=1,
-                maxsize=3,
-                **build_business_mysql_conn_params(),
-            )
+            raise SemanticGovernanceProposalRepositoryError("业务库连接池未注入，请通过 AppResources 或测试桩显式提供。")
         return self._pool
 
     async def _get_table_columns(self, table_name: str, *, cursor: aiomysql.DictCursor) -> set[str]:
