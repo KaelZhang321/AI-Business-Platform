@@ -14,6 +14,10 @@ import DataTable from '../components/common/DataTable'
 import LoadingSkeleton from '../components/common/LoadingSkeleton'
 import AiChatPanel from '../components/sections/AiChatPanel'
 import type { MatrixRow } from '../api/registration'
+import { Home } from 'lucide-react'
+import { PAGE_PATHS } from '../../navigation'
+import { useNavigate } from 'react-router-dom'
+
 import {
   useCustomerProfile,
   useKpiOverview,
@@ -229,6 +233,7 @@ const renderLabelWithInfo = (label: string, iconAria?: string) => {
 }
 
 const Dashboard: React.FC = () => {
+  const navigate = useNavigate()
   const [aiOpen, setAiOpen] = useState(false)
   const [entryTab, setEntryTab] = useState<EntryTab>('customer')
   const [selectedScene, setSelectedScene] = useState<string>('all')
@@ -399,7 +404,9 @@ const Dashboard: React.FC = () => {
         <div className="bigscreen-brand">
           <div className="bigscreen-brand-dot" />
           <div>
-            <div className="bigscreen-brand-title">会议数据分析驾驶舱</div>
+            <div className="bigscreen-brand-title" style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>会议数据分析驾驶舱
+              <DynamicHomeButton onClick={() => navigate(PAGE_PATHS['function-square'])} />
+            </div>
             <div className="bigscreen-brand-sub">数据更新时间 {updateTime}</div>
           </div>
         </div>
@@ -435,216 +442,216 @@ const Dashboard: React.FC = () => {
         </div>
       ) : (
         <div className="bigscreen-grid">
-        <motion.aside
-          className="panel-shell"
-          initial={{ opacity: 0, x: -20 }}
-          animate={{ opacity: 1, x: 0 }}
-          transition={{ duration: 0.35, ease: [0.16, 1, 0.3, 1] }}
-        >
-          <div className="panel-header">
-            <div className="panel-title-row">
-              <div className="panel-title">客户画像分析</div>
-              <Popover
-                content={customerProfileMetricPopover}
-                trigger="click"
-                placement="bottomLeft"
-                overlayClassName="metric-info-overlay"
-              >
-                <button className="panel-info-btn" type="button" aria-label="查看指标定义">
-                  <InfoCircleOutlined />
-                </button>
-              </Popover>
+          <motion.aside
+            className="panel-shell"
+            initial={{ opacity: 0, x: -20 }}
+            animate={{ opacity: 1, x: 0 }}
+            transition={{ duration: 0.35, ease: [0.16, 1, 0.3, 1] }}
+          >
+            <div className="panel-header">
+              <div className="panel-title-row">
+                <div className="panel-title">客户画像分析</div>
+                <Popover
+                  content={customerProfileMetricPopover}
+                  trigger="click"
+                  placement="bottomLeft"
+                  overlayClassName="metric-info-overlay"
+                >
+                  <button className="panel-info-btn" type="button" aria-label="查看指标定义">
+                    <InfoCircleOutlined />
+                  </button>
+                </Popover>
+              </div>
+              <div className="panel-subtitle">客户来源 / 身份类型 / 新老客户</div>
             </div>
-            <div className="panel-subtitle">客户来源 / 身份类型 / 新老客户</div>
-          </div>
 
-          <div className="side-panel-body">
-            {profileLoading || !customerProfile ? (
+            <div className="side-panel-body">
+              {profileLoading || !customerProfile ? (
+                <LoadingSkeleton />
+              ) : (
+                <div className="chart-stack chart-stack--left">
+                  <div className="mini-chart-card">
+                    <div className="mini-chart-title">{renderLabelWithInfo('身份类型分布')}</div>
+                    <div className="mini-chart-content">
+                      <PieChart data={customerProfile.role_distribution} height="100%" legendAlign="center" labelMode="value" />
+                    </div>
+                  </div>
+                  <div className="mini-chart-card">
+                    <div className="mini-chart-title">{renderLabelWithInfo('新老客户对比')}</div>
+                    <div className="mini-chart-content">
+                      <PieChart data={customerProfile.new_old_distribution} height="100%" legendAlign="center" labelMode="value" />
+                    </div>
+                  </div>
+                  <div className="mini-chart-card">
+                    <div className="mini-chart-title">{renderLabelWithInfo('客户来源分布')}</div>
+                    {sourceLoading ? (
+                      <LoadingSkeleton />
+                    ) : (
+                      <div className="mini-chart-content">
+                        <DistributionBarChart data={sourceDistribution} height="100%" seriesName="客户数" />
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          </motion.aside>
+
+          <main className="stage-main">
+            <motion.section
+              className="hero-card"
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
+            >
+              <div className="hero-headline">
+                <div className="hero-caption">{renderLabelWithInfo(dealAmountLabel)}</div>
+                <div className="hero-amount">
+                  {kpiLoading ? '--' : centerAmount}
+                  <span className="hero-unit">{centerUnit}</span>
+                </div>
+              </div>
+              <div className="hero-divider" />
+              <div className="hero-channels">
+                {sceneCards.map((item) => (
+                  <div className="hero-channel" key={item.label}>
+                    <div className="hero-channel-label">{renderLabelWithInfo(item.label)}</div>
+                    <div className="hero-channel-value">{item.value}</div>
+                  </div>
+                ))}
+              </div>
+            </motion.section>
+
+            {entryTab === 'ops' && (
+              <div className="stat-toolbar">
+                <div className="trend-subtitle">按日期查询运营指标</div>
+                <DatePicker
+                  value={dayjs(selectedDate)}
+                  onChange={handleDateChange}
+                  allowClear={false}
+                  size="small"
+                  style={{ width: 146 }}
+                />
+              </div>
+            )}
+            {(entryTab === 'ops' ? operationsLoading : kpiLoading) ? (
               <LoadingSkeleton />
             ) : (
-              <div className="chart-stack chart-stack--left">
-                <div className="mini-chart-card">
-                  <div className="mini-chart-title">{renderLabelWithInfo('身份类型分布')}</div>
-                  <div className="mini-chart-content">
-                    <PieChart data={customerProfile.role_distribution} height="100%" legendAlign="center" labelMode="value" />
+              <section className={`stat-row ${entryTab === 'ops' ? 'stat-row--four' : 'stat-row--three'}`}>
+                {(entryTab === 'ops' ? operationStats : customerStats).map((stat) => (
+                  <article className="stat-card" key={stat.label}>
+                    <div className="stat-label">{renderLabelWithInfo(stat.label)}</div>
+                    <div className="stat-value">{stat.value}</div>
+                  </article>
+                ))}
+              </section>
+            )}
+
+            <section className="trend-card">
+              {entryTab === 'customer' && (
+                <>
+                  <div className="trend-title">报名/抵达统计</div>
+                  <div className="trend-subtitle">按区域查看报名与抵达人数对比</div>
+                  {registrationLoading ? (
+                    <LoadingSkeleton />
+                  ) : (
+                    <>
+                      <GroupedBarChart categories={registrationChart.categories} series={registrationChart.series} height={330} />
+                      <div style={{ marginTop: 20 }}>
+                        <div className="trend-subtitle" style={{ marginBottom: 8 }}>{renderLabelWithInfo('金额等级矩阵')}</div>
+                        <DataTable<MatrixRow>
+                          columns={matrixColumns}
+                          dataSource={registrationData || []}
+                          rowKey="region"
+                          pagination={{ pageSize: 8, showSizeChanger: false }}
+                        />
+                      </div>
+                    </>
+                  )}
+                </>
+              )}
+              {entryTab === 'ops' && (
+                <>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 6 }}>
+                    <div>
+                      <div className="trend-title">时间维度数据分析</div>
+                      <div className="trend-subtitle">人流热力图 · 会期时间段（上午/下午/晚上）× 关键场景</div>
+                    </div>
+                    <Select
+                      value={selectedScene}
+                      onChange={setSelectedScene}
+                      options={sceneOptions}
+                      size="small"
+                      style={{ width: 138, flexShrink: 0 }}
+                    />
                   </div>
-                </div>
+                  {trendLoading ? (
+                    <LoadingSkeleton />
+                  ) : (
+                    <MultiLineChart categories={trendChart.categories} series={trendChart.series} height={420} />
+                  )}
+                </>
+              )}
+            </section>
+          </main>
+
+          <motion.aside
+            className="panel-shell"
+            initial={{ opacity: 0, x: 20 }}
+            animate={{ opacity: 1, x: 0 }}
+            transition={{ duration: 0.35, ease: [0.16, 1, 0.3, 1] }}
+          >
+            <div className="panel-header">
+              <div className="panel-title-row">
+                <div className="panel-title">金额等级 + 任务进展</div>
+                <Popover
+                  content={rightPanelMetricPopover}
+                  trigger="click"
+                  placement="bottomLeft"
+                  overlayClassName="metric-info-overlay"
+                >
+                  <button className="panel-info-btn" type="button" aria-label="查看金额等级与任务进展指标定义">
+                    <InfoCircleOutlined />
+                  </button>
+                </Popover>
+              </div>
+              <div className="panel-subtitle">金额等级结构与区域完成度</div>
+            </div>
+
+            <div className="side-panel-body">
+              <div className="chart-stack chart-stack--right">
                 <div className="mini-chart-card">
-                  <div className="mini-chart-title">{renderLabelWithInfo('新老客户对比')}</div>
-                  <div className="mini-chart-content">
-                    <PieChart data={customerProfile.new_old_distribution} height="100%" legendAlign="center" labelMode="value" />
-                  </div>
-                </div>
-                <div className="mini-chart-card">
-                  <div className="mini-chart-title">{renderLabelWithInfo('客户来源分布')}</div>
-                  {sourceLoading ? (
+                  <div className="mini-chart-title">{renderLabelWithInfo('金额等级分布')}</div>
+                  {profileLoading || !customerProfile ? (
                     <LoadingSkeleton />
                   ) : (
                     <div className="mini-chart-content">
-                      <DistributionBarChart data={sourceDistribution} height="100%" seriesName="客户数" />
+                      <DistributionBarChart data={customerProfile.level_distribution} height="100%" />
+                    </div>
+                  )}
+                </div>
+                <div className="mini-chart-card">
+                  <div className="mini-chart-title">
+                    {renderLabelWithInfo('任务进展')}
+                    {progressData?.avg_completion_rate != null ? ` · 平均完成率 ${progressData.avg_completion_rate.toFixed(2)}%` : ''}
+                  </div>
+                  {progressLoading ? (
+                    <LoadingSkeleton />
+                  ) : (
+                    <div className="mini-chart-content">
+                      <HorizontalBarChart
+                        categories={progressChart.categories}
+                        series={progressChart.series}
+                        completionRates={progressChart.completionRates}
+                        height="100%"
+                      />
                     </div>
                   )}
                 </div>
               </div>
-            )}
-          </div>
-        </motion.aside>
-
-        <main className="stage-main">
-          <motion.section
-            className="hero-card"
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
-          >
-            <div className="hero-headline">
-              <div className="hero-caption">{renderLabelWithInfo(dealAmountLabel)}</div>
-              <div className="hero-amount">
-                {kpiLoading ? '--' : centerAmount}
-                <span className="hero-unit">{centerUnit}</span>
-              </div>
             </div>
-            <div className="hero-divider" />
-            <div className="hero-channels">
-              {sceneCards.map((item) => (
-                <div className="hero-channel" key={item.label}>
-                  <div className="hero-channel-label">{renderLabelWithInfo(item.label)}</div>
-                  <div className="hero-channel-value">{item.value}</div>
-                </div>
-              ))}
-            </div>
-          </motion.section>
-
-          {entryTab === 'ops' && (
-            <div className="stat-toolbar">
-              <div className="trend-subtitle">按日期查询运营指标</div>
-              <DatePicker
-                value={dayjs(selectedDate)}
-                onChange={handleDateChange}
-                allowClear={false}
-                size="small"
-                style={{ width: 146 }}
-              />
-            </div>
-          )}
-          {(entryTab === 'ops' ? operationsLoading : kpiLoading) ? (
-            <LoadingSkeleton />
-          ) : (
-            <section className={`stat-row ${entryTab === 'ops' ? 'stat-row--four' : 'stat-row--three'}`}>
-              {(entryTab === 'ops' ? operationStats : customerStats).map((stat) => (
-                <article className="stat-card" key={stat.label}>
-                  <div className="stat-label">{renderLabelWithInfo(stat.label)}</div>
-                  <div className="stat-value">{stat.value}</div>
-                </article>
-              ))}
-            </section>
-          )}
-
-          <section className="trend-card">
-            {entryTab === 'customer' && (
-              <>
-                <div className="trend-title">报名/抵达统计</div>
-                <div className="trend-subtitle">按区域查看报名与抵达人数对比</div>
-                {registrationLoading ? (
-                  <LoadingSkeleton />
-                ) : (
-                  <>
-                    <GroupedBarChart categories={registrationChart.categories} series={registrationChart.series} height={330} />
-                    <div style={{ marginTop: 20 }}>
-                      <div className="trend-subtitle" style={{ marginBottom: 8 }}>{renderLabelWithInfo('金额等级矩阵')}</div>
-                      <DataTable<MatrixRow>
-                        columns={matrixColumns}
-                        dataSource={registrationData || []}
-                        rowKey="region"
-                        pagination={{ pageSize: 8, showSizeChanger: false }}
-                      />
-                    </div>
-                  </>
-                )}
-              </>
-            )}
-            {entryTab === 'ops' && (
-              <>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 6 }}>
-                  <div>
-                    <div className="trend-title">时间维度数据分析</div>
-                    <div className="trend-subtitle">人流热力图 · 会期时间段（上午/下午/晚上）× 关键场景</div>
-                  </div>
-                  <Select
-                    value={selectedScene}
-                    onChange={setSelectedScene}
-                    options={sceneOptions}
-                    size="small"
-                    style={{ width: 138, flexShrink: 0 }}
-                  />
-                </div>
-                {trendLoading ? (
-                  <LoadingSkeleton />
-                ) : (
-                  <MultiLineChart categories={trendChart.categories} series={trendChart.series} height={420} />
-                )}
-              </>
-            )}
-          </section>
-        </main>
-
-        <motion.aside
-          className="panel-shell"
-          initial={{ opacity: 0, x: 20 }}
-          animate={{ opacity: 1, x: 0 }}
-          transition={{ duration: 0.35, ease: [0.16, 1, 0.3, 1] }}
-        >
-          <div className="panel-header">
-            <div className="panel-title-row">
-              <div className="panel-title">金额等级 + 任务进展</div>
-              <Popover
-                content={rightPanelMetricPopover}
-                trigger="click"
-                placement="bottomLeft"
-                overlayClassName="metric-info-overlay"
-              >
-                <button className="panel-info-btn" type="button" aria-label="查看金额等级与任务进展指标定义">
-                  <InfoCircleOutlined />
-                </button>
-              </Popover>
-            </div>
-            <div className="panel-subtitle">金额等级结构与区域完成度</div>
-          </div>
-
-          <div className="side-panel-body">
-            <div className="chart-stack chart-stack--right">
-              <div className="mini-chart-card">
-                <div className="mini-chart-title">{renderLabelWithInfo('金额等级分布')}</div>
-                {profileLoading || !customerProfile ? (
-                  <LoadingSkeleton />
-                ) : (
-                  <div className="mini-chart-content">
-                    <DistributionBarChart data={customerProfile.level_distribution} height="100%" />
-                  </div>
-                )}
-              </div>
-              <div className="mini-chart-card">
-                <div className="mini-chart-title">
-                  {renderLabelWithInfo('任务进展')}
-                  {progressData?.avg_completion_rate != null ? ` · 平均完成率 ${progressData.avg_completion_rate.toFixed(2)}%` : ''}
-                </div>
-                {progressLoading ? (
-                  <LoadingSkeleton />
-                ) : (
-                  <div className="mini-chart-content">
-                    <HorizontalBarChart
-                      categories={progressChart.categories}
-                      series={progressChart.series}
-                      completionRates={progressChart.completionRates}
-                      height="100%"
-                    />
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        </motion.aside>
-      </div>
+          </motion.aside>
+        </div>
       )}
 
       <motion.button
@@ -661,6 +668,86 @@ const Dashboard: React.FC = () => {
       </AnimatePresence>
     </div>
   )
+}
+
+function DynamicHomeButton({ onClick }: { onClick: () => void }) {
+  const [isHovered, setIsHovered] = useState(false);
+
+  return (
+    <motion.button
+      layout
+      onClick={onClick}
+      onHoverStart={() => setIsHovered(true)}
+      onHoverEnd={() => setIsHovered(false)}
+      onFocus={() => setIsHovered(true)}
+      onBlur={() => setIsHovered(false)}
+      whileHover={{ scale: 1.05 }}
+      whileTap={{ scale: 0.95 }}
+      style={{
+        height: 36,
+        position: 'relative',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        borderRadius: '9999px',
+        background: 'linear-gradient(to right, #4B78EB, #2644A6)',
+        color: 'white',
+        boxShadow: '0 10px 15px -3px rgba(59, 130, 246, 0.25)',
+        overflow: 'hidden',
+        border: 'none',
+        outline: 'none',
+        cursor: 'pointer',
+      }}
+      initial="idle"
+      animate={isHovered ? 'hover' : 'idle'}
+      variants={{
+        idle: { width: 36, padding: '0 8px' },
+        hover: { width: 116, padding: '0 16px', borderRadius: '4px' }
+      }}
+    >
+      {/* Background Shine Effect on Hover */}
+      <motion.div
+        style={{
+          position: 'absolute',
+          inset: 0,
+          background: 'rgba(255, 255, 255, 0.2)',
+          pointerEvents: 'none',
+        }}
+        variants={{
+          idle: { opacity: 0 },
+          hover: { opacity: 1 },
+        }}
+      />
+
+      <motion.div layout style={{ display: 'flex', alignItems: 'center', gap: '8px', zIndex: 10, padding: '0 4px' }}>
+        <motion.div
+          variants={{
+            idle: { rotate: 0 },
+            hover: { rotate: [0, -15, 15, -10, 10, 0] },
+          }}
+          transition={{ duration: 0.4 }}
+        >
+          <Home size={20} style={{ minWidth: 20 }} />
+        </motion.div>
+
+        <AnimatePresence>
+          {isHovered && (
+            <motion.div
+              initial={{ opacity: 0, width: 0, filter: 'blur(4px)' }}
+              animate={{ opacity: 1, width: 'auto', filter: 'blur(0px)' }}
+              exit={{ opacity: 0, width: 0, filter: 'blur(4px)' }}
+              transition={{ ease: "easeOut", duration: 0.25 }}
+              style={{ overflow: 'hidden', whiteSpace: 'nowrap' }}
+            >
+              <span style={{ fontWeight: 600, letterSpacing: '0.025em', paddingRight: '4px', fontSize: '14px', lineHeight: 1 }}>
+                返回首页
+              </span>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </motion.div>
+    </motion.button>
+  );
 }
 
 export default Dashboard

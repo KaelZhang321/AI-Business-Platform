@@ -20,6 +20,7 @@ export interface AIFourQuadrantViewProps {
   /** 从其他页面传入的导航参数 */
   navigationParams?: {
     customerId?: string | number
+    customerName?: string
     [key: string]: unknown
   }
 }
@@ -101,4 +102,3 @@ export interface ChatMessage {
   /** 消息文本 */
   text: string
 }
-

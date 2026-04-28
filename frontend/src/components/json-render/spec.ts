@@ -475,14 +475,45 @@ export function buildStructuredSpec(message: string): Spec {
 export function buildJsonRenderParts(message: string): DataPart[] {
   let specObj = null;
   let textContent = message;
+  let shouldUseLocalSpecFallback = true;
 
   // 1. 尝试将收到的内容当作大模型返回的真实 JSON 解析
   try {
     // 真实业务中，一旦接口能直接把 JSON 字符串下发，这里就能拦截并在内存恢复成对象
     const parsed = JSON.parse(message);
-    if (parsed && typeof parsed === 'object' && parsed.spec) {
-      specObj = parsed.spec;
-      textContent = parsed.text || "已根据指令生成结构化卡片方案，请在旁侧查阅。";
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      const parsedObject = parsed as Record<string, unknown>;
+      const hasSpecField = Object.prototype.hasOwnProperty.call(parsedObject, 'spec');
+      const hasUiSpecField = Object.prototype.hasOwnProperty.call(parsedObject, 'ui_spec');
+      const specCandidate = parsedObject.spec;
+      const uiSpecCandidate = parsedObject.ui_spec;
+
+      const parsedTextCandidates = [
+        parsedObject.text,
+        parsedObject.message,
+        parsedObject.summary,
+        parsedObject.reply,
+        parsedObject.result,
+      ];
+      const parsedText = parsedTextCandidates.find((item) => typeof item === 'string' && item.trim());
+
+      if (typeof parsedText === 'string') {
+        textContent = parsedText;
+      }
+
+      if (specCandidate && typeof specCandidate === 'object' && !Array.isArray(specCandidate)) {
+        specObj = specCandidate;
+        shouldUseLocalSpecFallback = false;
+      } else if (uiSpecCandidate && typeof uiSpecCandidate === 'object' && !Array.isArray(uiSpecCandidate)) {
+        specObj = uiSpecCandidate;
+        shouldUseLocalSpecFallback = false;
+      } else if (hasSpecField || hasUiSpecField) {
+        // 接口显式返回了 spec/ui_spec，但值为空时不再回退本地结构化示例
+        shouldUseLocalSpecFallback = false;
+        if (!parsedText) {
+          textContent = '';
+        }
+      }
     }
   } catch (e) {
     // 解析失败没关系，说明这是一条普通的纯文本回复（或者是还没接入 JSON 的兜底逻辑）
@@ -499,7 +530,7 @@ export function buildJsonRenderParts(message: string): DataPart[] {
       type: SPEC_DATA_PART_TYPE,
       data: {
         type: 'flat', // flat 表示所有 elements 平铺在同一层
-        spec: specObj || buildStructuredSpec(message), // 优先使用接口直出的 Spec JSON，如果没有，再回退到本地的关键词模糊匹配生成
+        spec: specObj || (shouldUseLocalSpecFallback ? buildStructuredSpec(message) : null), // 接口显式返回空 spec/ui_spec 时不回退本地结构
       },
     },
   ];

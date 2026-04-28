@@ -1,6 +1,6 @@
 import React from 'react';
 import { AnimatePresence, motion } from 'motion/react';
-import agentGif from '../../../pages/agent.gif';
+import agentGif from '../../../pages/agent.png';
 
 /** 悬浮 AI 助手气泡组件属性 */
 interface FloatingAssistantBubbleProps {
@@ -31,15 +31,11 @@ export const FloatingAssistantBubble: React.FC<FloatingAssistantBubbleProps> = (
             <motion.div
               animate={{
                 y: [0, -10, 0],
-                boxShadow: [
-                  '0px 10px 20px -5px rgba(59, 130, 246, 0.4)',
-                  '0px 25px 35px -5px rgba(168, 85, 247, 0.6)',
-                  '0px 10px 20px -5px rgba(59, 130, 246, 0.4)',
-                ],
+
               }}
               transition={{ repeat: Infinity, duration: 3, ease: 'easeInOut' }}
               whileHover={{ scale: 1.1, transition: { duration: 0.2 } }}
-              className="relative z-10 flex h-16 w-16 cursor-pointer items-center justify-center overflow-hidden rounded-full border-4 border-white bg-gradient-to-tr from-blue-500 to-purple-500 dark:border-slate-800"
+              className="relative z-10 flex h-20 w-20 cursor-pointer items-center justify-center overflow-hidden rounded-full bg-gradient-to-tr from-white-500 to-white-500 dark:border-slate-800"
               onClick={onExpand}
               title="点击展开工作台"
             >
@@ -48,7 +44,7 @@ export const FloatingAssistantBubble: React.FC<FloatingAssistantBubbleProps> = (
             <motion.div
               animate={{ scale: [1, 1.4, 1], opacity: [0.5, 0, 0.5] }}
               transition={{ repeat: Infinity, duration: 3, ease: 'easeInOut' }}
-              className="pointer-events-none absolute inset-0 z-0 rounded-full bg-gradient-to-tr from-blue-400 to-purple-400"
+              className="pointer-events-none absolute inset-0 z-0 rounded-full from-blue-400 to-purple-400"
             />
 
             <AnimatePresence>

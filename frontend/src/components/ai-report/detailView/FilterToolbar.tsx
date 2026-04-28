@@ -16,7 +16,7 @@ export const FilterToolbar: React.FC<FilterToolbarProps> = ({
   onViewModeChange,
 }) => {
   return (
-    <div className="mb-6">
+    <div className="mb-6 mt-1">
       <div className="flex items-center justify-between">
         <h3 className="text-lg font-bold text-slate-900 dark:text-white">客户检索与筛选</h3>
         <div className="flex items-center space-x-4">
@@ -51,7 +51,7 @@ export const FilterToolbar: React.FC<FilterToolbarProps> = ({
           {/* <button className="px-4 py-2 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-sm text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors">
             高级筛选
           </button> */}
-          <button className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700 transition-colors">导出名单</button>
+          {/* <button className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700 transition-colors">导出名单</button> */}
         </div>
       </div>
     </div>

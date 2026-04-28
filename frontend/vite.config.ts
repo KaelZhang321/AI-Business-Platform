@@ -25,7 +25,7 @@ export default defineConfig(({ mode }) => {
       proxy: {
         // AI网关其余接口 (chat, health, bi...)
         '/api/v1/api-query': {
-          target: 'http://192.168.18.97:8000',
+          target: apiUrl,
           changeOrigin: true,
         },
         // 业务编排层接口 (auth, tasks, knowledge, audit...)

@@ -1,4 +1,4 @@
-import { useState, type Dispatch, type SetStateAction } from 'react'
+import { useRef, useState, type Dispatch, type SetStateAction } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import { GripVertical, Loader2, Maximize2, X } from 'lucide-react'
 import type { DragEndEvent, DragOverEvent, DragStartEvent } from '@dnd-kit/core'
@@ -30,6 +30,7 @@ interface QuadrantWorkspaceProps {
     category?: string
     nextData: QuadrantData
   }) => void
+  onQuadrantDragEnd?: (nextData: QuadrantData) => void
 }
 
 export const QuadrantWorkspace = ({
@@ -42,8 +43,45 @@ export const QuadrantWorkspace = ({
   analysisStep,
   analysisProgress,
   onQuadrantAddItem,
+  onQuadrantDragEnd,
 }: QuadrantWorkspaceProps) => {
   const [activeId, setActiveId] = useState<string | null>(null)
+  const lastOverItemIdRef = useRef<string | null>(null)
+
+  const inferGroupByIndex = (items: Array<{ category?: string }>, index: number): 'abnormal' | 'recommendation' => {
+    const current = items[index]
+    if (!current) {
+      return 'abnormal'
+    }
+
+    if (current.category === 'recommendation') {
+      return 'recommendation'
+    }
+    if (current.category === 'abnormal') {
+      return 'abnormal'
+    }
+
+    const firstRecommendationIndex = items.findIndex((item) => item.category === 'recommendation')
+    if (firstRecommendationIndex >= 0 && index >= firstRecommendationIndex) {
+      return 'recommendation'
+    }
+
+    return 'abnormal'
+  }
+
+  const getGroupedInsertIndex = (items: Array<{ category?: string }>, group: 'abnormal' | 'recommendation') => {
+    if (group === 'abnormal') {
+      const firstRecommendationIndex = items.findIndex((_, index) => inferGroupByIndex(items, index) === 'recommendation')
+      return firstRecommendationIndex >= 0 ? firstRecommendationIndex : items.length
+    }
+
+    const lastRecommendationIndex = [...items]
+      .map((item, index) => ({ item, index }))
+      .reverse()
+      .find(({ index }) => inferGroupByIndex(items, index) === 'recommendation')?.index
+
+    return typeof lastRecommendationIndex === 'number' ? lastRecommendationIndex + 1 : items.length
+  }
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -106,14 +144,20 @@ export const QuadrantWorkspace = ({
 
   const handleDragStart = (event: DragStartEvent) => {
     setActiveId(String(event.active.id))
+    lastOverItemIdRef.current = null
   }
 
   const handleDragOver = (event: DragOverEvent) => {
     const { active, over } = event
     if (!over) return
 
+    const overId = String(over.id)
+    if (!(overId in quadrantData)) {
+      lastOverItemIdRef.current = overId
+    }
+
     const activeContainer = findContainer(String(active.id))
-    const overContainer = findContainer(String(over.id)) || (String(over.id) as QuadrantKey)
+    const overContainer = findContainer(overId) || (overId as QuadrantKey)
 
     if (!activeContainer || !overContainer || activeContainer === overContainer) {
       return
@@ -124,7 +168,33 @@ export const QuadrantWorkspace = ({
       const overItems = prev[overContainer]
 
       const activeIndex = activeItems.findIndex((item) => item.id === String(active.id))
-      const overIndex = over.id in prev ? overItems.length : overItems.findIndex((item) => item.id === String(over.id))
+      if (activeIndex < 0) {
+        return prev
+      }
+
+      const movingGroup = inferGroupByIndex(activeItems, activeIndex)
+
+      let overIndex = overItems.length
+
+      if (over.id in prev) {
+        const hasSameGroupInTarget = overItems.some((item, index) => inferGroupByIndex(overItems, index) === movingGroup)
+        if (overItems.length > 0 && !hasSameGroupInTarget) {
+          return prev
+        }
+        overIndex = getGroupedInsertIndex(overItems, movingGroup)
+      } else {
+        const overTargetIndex = overItems.findIndex((item) => item.id === String(over.id))
+        if (overTargetIndex < 0) {
+          return prev
+        }
+
+        const overTargetGroup = inferGroupByIndex(overItems, overTargetIndex)
+        if (overTargetGroup !== movingGroup) {
+          return prev
+        }
+
+        overIndex = overTargetIndex
+      }
 
       const newActiveItems = [...activeItems]
       const [itemToMove] = newActiveItems.splice(activeIndex, 1)
@@ -147,40 +217,78 @@ export const QuadrantWorkspace = ({
     if (!over) return
 
     const activeContainer = findContainer(String(active.id))
-    const overContainer = findContainer(String(over.id)) || (String(over.id) as QuadrantKey)
+    const overId = String(over.id)
+    const overContainer = findContainer(overId) || (overId as QuadrantKey)
 
-    if (!activeContainer || !overContainer || activeContainer !== overContainer) {
+    if (!activeContainer || !overContainer) {
+      return
+    }
+
+    if (activeContainer !== overContainer) {
+      const activeItems = quadrantData[activeContainer]
+      const overItems = quadrantData[overContainer]
+      const activeIndex = activeItems.findIndex((item) => item.id === String(active.id))
+      const overIndex = overItems.findIndex((item) => item.id === overId)
+      const movingItem = activeIndex >= 0 ? activeItems[activeIndex] : null
+      const overItem = overIndex >= 0 ? overItems[overIndex] : null
+      const movingGroup = movingItem ? inferGroupByIndex(activeItems, activeIndex) : null
+      const overGroup = overItem ? inferGroupByIndex(overItems, overIndex) : null
+
+      if (movingGroup && overGroup && movingGroup !== overGroup) {
+        return
+      }
+
+      // 跨象限移动在 onDragOver 已写入状态，这里只负责落点后统一触发保存
+      onQuadrantDragEnd?.(quadrantData)
       return
     }
 
     const items = quadrantData[activeContainer]
     const oldIndex = items.findIndex((item) => item.id === String(active.id))
-    const newIndex = items.findIndex((item) => item.id === String(over.id))
+    let targetOverId = overId
+    if (targetOverId in quadrantData && lastOverItemIdRef.current) {
+      const lastOverContainer = findContainer(lastOverItemIdRef.current)
+      if (lastOverContainer === overContainer) {
+        targetOverId = lastOverItemIdRef.current
+      }
+    }
+
+    const newIndex = targetOverId in quadrantData ? oldIndex : items.findIndex((item) => item.id === targetOverId)
+    if (oldIndex < 0 || newIndex < 0) {
+      return
+    }
+
+    const newItems = oldIndex !== newIndex ? arrayMove(items, oldIndex, newIndex) : [...items]
+    const movedItem = { ...newItems[newIndex] }
+    const itemAbove = newIndex > 0 ? newItems[newIndex - 1] : null
+
+    let categoryChanged = false
+    if (itemAbove && itemAbove.category && movedItem.category !== itemAbove.category) {
+      movedItem.category = itemAbove.category
+      categoryChanged = true
+    }
+
+    if (oldIndex !== newIndex || categoryChanged) {
+      newItems[newIndex] = movedItem
+    }
+
+    const nextData: QuadrantData = {
+      ...quadrantData,
+      [activeContainer]: newItems,
+    }
 
     setQuadrantData((prev) => {
-      const newItems = oldIndex !== newIndex ? arrayMove(items, oldIndex, newIndex) : [...items]
-      const movedItem = { ...newItems[newIndex] }
-      const itemAbove = newIndex > 0 ? newItems[newIndex - 1] : null
-
-      let categoryChanged = false
-      if (itemAbove && itemAbove.category && movedItem.category !== itemAbove.category) {
-        movedItem.category = itemAbove.category
-        categoryChanged = true
-      } else if (newIndex === 0 && movedItem.category !== undefined) {
-        movedItem.category = undefined
-        categoryChanged = true
-      }
-
       if (oldIndex !== newIndex || categoryChanged) {
-        newItems[newIndex] = movedItem
         return {
           ...prev,
           [activeContainer]: newItems,
         }
       }
-
       return prev
     })
+
+    onQuadrantDragEnd?.(nextData)
+    lastOverItemIdRef.current = null
   }
 
   const getActiveItemContent = () => {

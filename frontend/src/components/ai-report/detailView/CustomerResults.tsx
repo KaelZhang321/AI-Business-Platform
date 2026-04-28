@@ -10,6 +10,7 @@ interface CustomerResultsProps {
   onViewDetails: (customer: CustomerRecord) => void;
   onLoadMore?: () => void;
   hasMore?: boolean;
+  isLoading?: boolean;
   isLoadingMore?: boolean;
 }
 
@@ -19,6 +20,7 @@ export const CustomerResults: React.FC<CustomerResultsProps> = ({
   onViewDetails,
   onLoadMore,
   hasMore = false,
+  isLoading = false,
   isLoadingMore = false,
 }) => {
   const handleCardScroll = (event: React.UIEvent<HTMLDivElement>) => {
@@ -65,6 +67,11 @@ export const CustomerResults: React.FC<CustomerResultsProps> = ({
                 <AnimatedRow key={customer.id} customer={customer} onViewDetails={onViewDetails} />
               ))}
             </AnimatedList>
+            {isLoading ? (
+              <div className="py-16 text-center text-slate-500 dark:text-slate-400">客户列表加载中...</div>
+            ) : customers.length === 0 ? (
+              <div className="py-16 text-center text-slate-500 dark:text-slate-400">暂无匹配客户</div>
+            ) : null}
             {isLoadingMore ? <div className="py-4 text-center text-xs text-slate-500 dark:text-slate-400">正在加载更多客户...</div> : null}
             {!hasMore && customers.length > 0 ? (
               <div className="py-4 text-center text-xs text-slate-400 dark:text-slate-500">已加载全部客户</div>

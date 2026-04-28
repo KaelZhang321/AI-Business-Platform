@@ -1,4 +1,4 @@
-import client, { type ApiResponse } from './client'
+import { apiClient as client, unwrapApiResponse, type ApiResponse } from './client';
 
 export interface OperationsKpi {
   checkin_count: number
@@ -15,9 +15,14 @@ export interface TrendPoint {
 }
 
 export const fetchOperationsKpi = (dateFrom?: string, dateTo?: string) =>
-  client.get<ApiResponse<OperationsKpi>>('/v1/operations/kpi', {
+  client.get<ApiResponse<OperationsKpi>>('/api/v1/bi/operations/kpi', {
     params: { date_from: dateFrom, date_to: dateTo },
-  }).then(r => r.data.data)
+  }).then(r => unwrapApiResponse<OperationsKpi>(r.data, {
+    checkin_count: 0,
+    pickup_count: 0,
+    leave_count: 0,
+    hospital_count: 0,
+  }))
 
 export const fetchTrendData = () =>
-  client.get<ApiResponse<TrendPoint[]>>('/v1/operations/trend').then(r => r.data.data)
+  client.get<ApiResponse<TrendPoint[]>>('/api/v1/bi/operations/trend').then(r => unwrapApiResponse<TrendPoint[]>(r.data, []))

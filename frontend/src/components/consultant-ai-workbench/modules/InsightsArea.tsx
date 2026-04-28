@@ -88,7 +88,7 @@ export const InsightsArea: React.FC<InsightsAreaProps> = ({
               className="rounded-lg p-1.5 text-slate-400 transition-colors hover:bg-slate-200 hover:text-slate-600 dark:hover:bg-slate-700 dark:hover:text-slate-300"
               title="收起洞察面板"
             >
-              <ChevronRight className="h-4 w-4" />
+              <ChevronLeft className="h-4 w-4" />
             </button>
           </div>
 

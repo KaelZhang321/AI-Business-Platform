@@ -70,7 +70,9 @@ const placeNow = (el: HTMLElement | null, slot: Slot, skew: number) => {
 };
 
 export interface CardSwapRef {
-  swap: () => void;
+  swap: () => number | null;
+  swapBack: () => number | null;
+  getCurrentIndex: () => number;
 }
 
 const CardSwap = forwardRef<CardSwapRef, CardSwapProps>(({
@@ -112,12 +114,17 @@ const CardSwap = forwardRef<CardSwapRef, CardSwapProps>(({
   const tlRef = useRef<gsap.core.Timeline | null>(null);
   const intervalRef = useRef<number>(0);
   const container = useRef<HTMLDivElement>(null);
-  const swapRef = useRef<() => void>();
+  const swapRef = useRef<() => number | null>();
+  const swapBackRef = useRef<() => number | null>();
 
   useImperativeHandle(ref, () => ({
     swap: () => {
-      swapRef.current?.();
-    }
+      return swapRef.current?.() ?? null;
+    },
+    swapBack: () => {
+      return swapBackRef.current?.() ?? null;
+    },
+    getCurrentIndex: () => order.current[0] ?? 0,
   }));
 
   useEffect(() => {
@@ -127,12 +134,13 @@ const CardSwap = forwardRef<CardSwapRef, CardSwapProps>(({
 
     const swap = () => {
       const validOrder = order.current.filter((idx) => Boolean(refs[idx]?.current));
-      if (validOrder.length < 2) return;
-      if (tlRef.current && tlRef.current.isActive()) return; // Prevent multiple swaps at once
+      if (validOrder.length < 2) return null;
+      if (tlRef.current && tlRef.current.isActive()) return null; // Prevent multiple swaps at once
 
       const [front, ...rest] = validOrder;
       const elFront = refs[front]?.current;
-      if (!elFront) return;
+      if (!elFront) return null;
+      const nextFront = rest[0] ?? front;
 
       const tl = gsap.timeline();
       tlRef.current = tl;
@@ -187,9 +195,72 @@ const CardSwap = forwardRef<CardSwapRef, CardSwapProps>(({
       tl.call(() => {
         order.current = [...rest, front];
       });
+
+      return nextFront;
     };
 
     swapRef.current = swap;
+
+    const swapBack = () => {
+      const validOrder = order.current.filter((idx) => Boolean(refs[idx]?.current));
+      if (validOrder.length < 2) return null;
+      if (tlRef.current && tlRef.current.isActive()) return null;
+
+      const back = validOrder[validOrder.length - 1];
+      const rest = validOrder.slice(0, -1);
+      const elBack = refs[back]?.current;
+      if (!elBack) return null;
+      const nextFront = back;
+
+      const tl = gsap.timeline();
+      tlRef.current = tl;
+
+      tl.set(elBack, { y: '+=500', zIndex: refs.length + 1 });
+
+      tl.addLabel('demote', 0);
+      rest.forEach((idx, i) => {
+        const el = refs[idx]?.current;
+        if (!el) return;
+        const slot = makeSlot(i + 1, cardDistance, verticalDistance, refs.length);
+        tl.set(el, { zIndex: slot.zIndex }, 'demote');
+        tl.to(
+          el,
+          {
+            x: slot.x,
+            y: slot.y,
+            z: slot.z,
+            duration: config.durMove,
+            ease: config.ease,
+          },
+          `demote+=${i * 0.15}`
+        );
+      });
+
+      const frontSlot = makeSlot(0, cardDistance, verticalDistance, refs.length);
+      tl.addLabel('bringFront', `demote+=${config.durMove * config.returnDelay}`);
+      tl.call(() => {
+        gsap.set(elBack, { zIndex: frontSlot.zIndex });
+      }, undefined, 'bringFront');
+      tl.to(
+        elBack,
+        {
+          x: frontSlot.x,
+          y: frontSlot.y,
+          z: frontSlot.z,
+          duration: config.durReturn,
+          ease: config.ease,
+        },
+        'bringFront'
+      );
+
+      tl.call(() => {
+        order.current = [back, ...rest];
+      });
+
+      return nextFront;
+    };
+
+    swapBackRef.current = swapBack;
 
     if (delay > 0) {
       swap();

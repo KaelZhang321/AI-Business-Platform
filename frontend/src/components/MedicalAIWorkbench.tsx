@@ -30,12 +30,12 @@ const PATIENTS = [
  */
 export function MedicalAIWorkbench() {
   return (
-    <div className="h-full flex flex-col space-y-6">
+    <div className="h-full flex flex-col space-y-6 text-slate-900 dark:text-slate-100">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-2xl font-bold text-slate-900">医疗AI工作台</h2>
-          <p className="text-sm text-slate-500">智能辅助诊疗，提升临床决策效率</p>
+          <h2 className="text-2xl font-bold text-slate-900 dark:text-slate-100">医疗AI工作台</h2>
+          <p className="text-sm text-slate-500 dark:text-slate-400">智能辅助诊疗，提升临床决策效率</p>
         </div>
         <div className="flex items-center space-x-3">
           <div className="relative">
@@ -43,20 +43,20 @@ export function MedicalAIWorkbench() {
             <input 
               type="text" 
               placeholder="搜索患者姓名/ID..." 
-              className="pl-9 pr-4 py-2 bg-white border border-slate-200 rounded-3xl text-sm focus:ring-2 focus:ring-brand outline-none w-64"
+              className="pl-9 pr-4 py-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-3xl text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:ring-2 focus:ring-brand outline-none w-64"
             />
           </div>
-          <button className="p-2 bg-white border border-slate-200 rounded-3xl hover:bg-slate-50">
-            <Filter className="w-4 h-4 text-slate-600" />
+          <button className="p-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-3xl hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors">
+            <Filter className="w-4 h-4 text-slate-600 dark:text-slate-300" />
           </button>
         </div>
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 flex-1">
         {/* Left Column: Patient List */}
-        <div className="xl:col-span-1 bg-white/60 backdrop-blur-xl rounded-3xl border border-white/80 p-6 flex flex-col space-y-4 shadow-sm">
+        <div className="xl:col-span-1 bg-white/60 dark:bg-slate-900/70 backdrop-blur-xl rounded-3xl border border-white/80 dark:border-slate-700 p-6 flex flex-col space-y-4 shadow-sm dark:shadow-none">
           <div className="flex items-center justify-between">
-            <h3 className="font-bold text-slate-900 flex items-center">
+            <h3 className="font-bold text-slate-900 dark:text-slate-100 flex items-center">
               <Users className="w-5 h-5 mr-2 text-brand" />
               待诊患者
             </h3>
@@ -68,12 +68,12 @@ export function MedicalAIWorkbench() {
               <motion.div 
                 key={patient.id}
                 whileHover={{ scale: 1.02 }}
-                className="p-4 rounded-2xl border border-slate-100 hover:border-brand/30 hover:bg-brand/5 transition-all cursor-pointer group"
+                className="p-4 rounded-2xl border border-slate-100 dark:border-slate-700 hover:border-brand/30 hover:bg-brand/5 dark:hover:bg-brand/10 transition-all cursor-pointer group"
               >
                 <div className="flex items-center justify-between mb-2">
                   <div className="flex items-center space-x-2">
-                    <span className="font-bold text-slate-900">{patient.name}</span>
-                    <span className="text-xs text-slate-500">{patient.gender} · {patient.age}岁</span>
+                    <span className="font-bold text-slate-900 dark:text-slate-100">{patient.name}</span>
+                    <span className="text-xs text-slate-500 dark:text-slate-400">{patient.gender} · {patient.age}岁</span>
                   </div>
                   <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
                     patient.risk === '高' ? 'bg-red-100 text-red-600' : 
@@ -83,8 +83,8 @@ export function MedicalAIWorkbench() {
                     {patient.risk}风险
                   </span>
                 </div>
-                <div className="text-xs text-slate-600 mb-2 line-clamp-1">诊断：{patient.condition}</div>
-                <div className="flex items-center justify-between text-[10px] text-slate-400">
+                <div className="text-xs text-slate-600 dark:text-slate-300 mb-2 line-clamp-1">诊断：{patient.condition}</div>
+                <div className="flex items-center justify-between text-[10px] text-slate-400 dark:text-slate-500">
                   <span className="flex items-center">
                     <Clock className="w-3 h-3 mr-1" />
                     上次就诊: {patient.lastVisit}
@@ -140,8 +140,8 @@ export function MedicalAIWorkbench() {
           {/* Detailed Workbench Content */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             {/* Treatment Plan */}
-            <div className="bg-white/60 backdrop-blur-xl rounded-3xl border border-white/80 p-6 space-y-4 shadow-sm">
-              <h3 className="font-bold text-slate-900 flex items-center">
+            <div className="bg-white/60 dark:bg-slate-900/70 backdrop-blur-xl rounded-3xl border border-white/80 dark:border-slate-700 p-6 space-y-4 shadow-sm dark:shadow-none">
+              <h3 className="font-bold text-slate-900 dark:text-slate-100 flex items-center">
                 <ClipboardList className="w-5 h-5 mr-2 text-brand" />
                 方案规划
               </h3>
@@ -151,10 +151,10 @@ export function MedicalAIWorkbench() {
                   { title: '糖尿病饮食干预计划', status: '已下达', date: '昨日 16:45' },
                   { title: '术后康复评估路径', status: '草稿', date: '2024-03-22' },
                 ].map((plan, i) => (
-                  <div key={i} className="flex items-center justify-between p-3 rounded-3xl bg-slate-50 border border-slate-100">
+                  <div key={i} className="flex items-center justify-between p-3 rounded-3xl bg-slate-50 dark:bg-slate-800 border border-slate-100 dark:border-slate-700">
                     <div>
-                      <div className="text-sm font-bold text-slate-800">{plan.title}</div>
-                      <div className="text-[10px] text-slate-400">{plan.date}</div>
+                      <div className="text-sm font-bold text-slate-800 dark:text-slate-100">{plan.title}</div>
+                      <div className="text-[10px] text-slate-400 dark:text-slate-500">{plan.date}</div>
                     </div>
                     <span className={`text-[10px] font-bold ${
                       plan.status === '待审核' ? 'text-orange-500' : 
@@ -166,8 +166,8 @@ export function MedicalAIWorkbench() {
             </div>
 
             {/* Recent Activity */}
-            <div className="bg-white/60 backdrop-blur-xl rounded-3xl border border-white/80 p-6 space-y-4 shadow-sm">
-              <h3 className="font-bold text-slate-900 flex items-center">
+            <div className="bg-white/60 dark:bg-slate-900/70 backdrop-blur-xl rounded-3xl border border-white/80 dark:border-slate-700 p-6 space-y-4 shadow-sm dark:shadow-none">
+              <h3 className="font-bold text-slate-900 dark:text-slate-100 flex items-center">
                 <Activity className="w-5 h-5 mr-2 text-brand" />
                 动态监测
               </h3>
@@ -175,22 +175,22 @@ export function MedicalAIWorkbench() {
                 <div className="flex items-start space-x-3">
                   <div className="w-2 h-2 rounded-full bg-red-500 mt-1.5 ring-4 ring-red-100"></div>
                   <div>
-                    <div className="text-xs font-bold text-slate-800">心率异常提醒</div>
-                    <p className="text-[10px] text-slate-500">患者 王芳 静态心率超过 110bpm</p>
+                    <div className="text-xs font-bold text-slate-800 dark:text-slate-100">心率异常提醒</div>
+                    <p className="text-[10px] text-slate-500 dark:text-slate-400">患者 王芳 静态心率超过 110bpm</p>
                   </div>
                 </div>
                 <div className="flex items-start space-x-3">
                   <div className="w-2 h-2 rounded-full bg-brand mt-1.5 ring-4 ring-brand/10"></div>
                   <div>
-                    <div className="text-xs font-bold text-slate-800">检查报告已出</div>
-                    <p className="text-[10px] text-slate-500">患者 赵强 的血常规报告已同步</p>
+                    <div className="text-xs font-bold text-slate-800 dark:text-slate-100">检查报告已出</div>
+                    <p className="text-[10px] text-slate-500 dark:text-slate-400">患者 赵强 的血常规报告已同步</p>
                   </div>
                 </div>
                 <div className="flex items-start space-x-3">
-                  <div className="w-2 h-2 rounded-full bg-slate-300 mt-1.5 ring-4 ring-slate-100"></div>
+                  <div className="w-2 h-2 rounded-full bg-slate-300 dark:bg-slate-600 mt-1.5 ring-4 ring-slate-100 dark:ring-slate-800"></div>
                   <div>
-                    <div className="text-xs font-bold text-slate-800">随访提醒</div>
-                    <p className="text-[10px] text-slate-500">明日共有 5 位患者需要进行电话随访</p>
+                    <div className="text-xs font-bold text-slate-800 dark:text-slate-100">随访提醒</div>
+                    <p className="text-[10px] text-slate-500 dark:text-slate-400">明日共有 5 位患者需要进行电话随访</p>
                   </div>
                 </div>
               </div>

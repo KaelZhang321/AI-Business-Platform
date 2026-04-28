@@ -311,10 +311,26 @@ body::after {
 }
 
 .ant-table-tbody>tr:nth-child(even)>td {
-  background: rgba(121, 231, 255, 0.02) !important;
+  background: rgba(121, 231, 255, 0.09) !important;
 }
 
 .ant-table-tbody>tr:nth-child(even):hover>td {
+  background: rgba(121, 231, 255, 0.09) !important;
+}
+
+.registration-matrix-table .ant-table-tbody>tr>td.ant-table-cell-fix-left,
+.registration-matrix-table .ant-table-tbody>tr>td.ant-table-cell-fix-left-last {
+  background: transparent !important;
+}
+
+:where(.css-dev-only-do-not-override-1t2537o).ant-table-wrapper .ant-table-cell-fix {
+  background: transparent !important;
+}
+
+.registration-matrix-table .ant-table-tbody>tr:hover>td.ant-table-cell-fix-left,
+.registration-matrix-table .ant-table-tbody>tr:hover>td.ant-table-cell-fix-left-last,
+.registration-matrix-table .ant-table-tbody>tr:nth-child(even):hover>td.ant-table-cell-fix-left,
+.registration-matrix-table .ant-table-tbody>tr:nth-child(even):hover>td.ant-table-cell-fix-left-last {
   background: rgba(121, 231, 255, 0.09) !important;
 }
 

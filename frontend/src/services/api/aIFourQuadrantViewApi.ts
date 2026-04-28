@@ -47,9 +47,9 @@ export type HealthQuadrantConfirmItem = {
   /** 象限名称 */
   q_name?: string
   /** 确认后的异常指标 */
-  abnormalIndicators: string[]
+  abnormal_indicators: string[]
   /** 确认后的建议方案 */
-  recommendationPlans: string[]
+  recommendation_plans: string[]
 }
 
 /** 四象限结果确认 —— 请求参数 */
