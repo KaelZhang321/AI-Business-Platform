@@ -88,9 +88,14 @@ class _TreatmentTriageItem:
     @property
     def dedupe_key(self) -> str:
         """用于同指标冲突裁决的稳定键。"""
+        return_text = ""
         if self.value_or_desc is None or len(self.value_or_desc.strip()) == 0 or self.value_or_desc in self.item_name:
-            return self.item_name
-        return f"{self.item_name}：{self.value_or_desc}"
+            return_text = self.item_name
+        else:
+            return_text = f"{self.item_name}：{self.value_or_desc}"
+        if re.search("^\d{1,2}分$", return_text):
+            return_text = "人体成分评分：" + return_text
+        return return_text
 
 
 @dataclass(frozen=True)
