@@ -23,7 +23,10 @@ from app.bi.meeting_bi.db.async_session import get_meeting_pool
 from app.bi.meeting_bi.schemas.common import BIChartConfig
 from app.bi.meeting_bi.services.chart_store import save_chart
 from app.core.config import settings
-from app.models.schemas import QueryDomain, Text2SQLResponse
+from app.models.schemas.text2sql import (
+    QueryDomain,
+    Text2SQLResponse,
+)
 from app.services.generic_query_executor import GenericQueryExecutor
 
 logger = logging.getLogger(__name__)
@@ -89,7 +92,14 @@ def _build_chart(columns: list[str], rows: list[dict]) -> BIChartConfig | None:
     cat_col = str_cols[0]
     categories = [str(r.get(cat_col, "")) for r in rows]
     if len(num_cols) == 1 and len(rows) <= 8:
-        series = [{"name": num_cols[0], "data": [{"name": categories[i], "value": _to_float(rows[i].get(num_cols[0]))} for i in range(len(rows))]}]
+        series = [
+            {
+                "name": num_cols[0],
+                "data": [
+                    {"name": categories[i], "value": _to_float(rows[i].get(num_cols[0]))} for i in range(len(rows))
+                ],
+            }
+        ]
         return BIChartConfig(chart_type="pie", categories=categories, series=series)
     if len(num_cols) == 1:
         series = [{"name": num_cols[0], "data": [_to_float(r.get(num_cols[0])) for r in rows]}]
@@ -172,7 +182,10 @@ async def _execute_sql(sql: str) -> tuple[list[str], list[dict]]:
 
 def _safe_rows(rows: list[dict]) -> list[dict]:
     """把复杂类型收敛成前端更易消费的轻量值。"""
-    return [{k: (str(v) if v is not None and not isinstance(v, (int, float)) else v) for k, v in row.items()} for row in rows]
+    return [
+        {k: (str(v) if v is not None and not isinstance(v, (int, float)) else v) for k, v in row.items()}
+        for row in rows
+    ]
 
 
 class MeetingBIQueryExecutor:

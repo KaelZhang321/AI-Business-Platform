@@ -24,7 +24,7 @@ from app.api.routes.transcript_extract import router as transcript_extract_route
 from app.core.config import settings
 from app.core.resources import AppResources
 from app.core.error_codes import BusinessError, ErrorCode
-from app.models.schemas import HealthResponse
+from app.models.schemas.health import HealthResponse
 from app.services.api_catalog.business_intents import get_business_intent_catalog_service
 from app.services.identity_vault import IdentityVault
 

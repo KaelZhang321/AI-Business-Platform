@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from app.core.config import settings
 from app.core.model_source import resolve_model_source
-from app.models.schemas import KnowledgeResult
+from app.models.schemas.knowledge import KnowledgeResult
 
 
 class RAGService:

@@ -4,7 +4,11 @@ import json
 import logging
 
 from app.core.config import settings
-from app.models.schemas import IntentType, SubIntentType, IntentResult
+from app.models.schemas.common import (
+    IntentResult,
+    IntentType,
+    SubIntentType,
+)
 from app.services.llm_service import LLMService
 
 
@@ -53,8 +57,22 @@ class IntentClassifier:
         SubIntentType.KNOWLEDGE_MEDICAL: ["医学", "健康", "诊断", "用药", "治疗"],
         # query
         SubIntentType.DATA_MEETING_BI: [
-            "会议", "报名", "签到", "已抵达", "到院", "大区", "成交金额", "收款金额", "投资回报率", "roi",
-            "方案情报", "客户画像", "报名客户", "签到率", "目标达成", "运营数据",
+            "会议",
+            "报名",
+            "签到",
+            "已抵达",
+            "到院",
+            "大区",
+            "成交金额",
+            "收款金额",
+            "投资回报率",
+            "roi",
+            "方案情报",
+            "客户画像",
+            "报名客户",
+            "签到率",
+            "目标达成",
+            "运营数据",
         ],
         SubIntentType.DATA_CUSTOMER: ["客户", "用户数", "会员"],
         SubIntentType.DATA_SALES: ["销售", "业绩", "营收", "订单"],

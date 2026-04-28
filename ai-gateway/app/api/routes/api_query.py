@@ -22,8 +22,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.api.dependencies import get_api_catalog_registry_source, get_ui_catalog_service
-from app.models.schemas import (
-    ApiCatalogIndexJobResponse,
+from app.models.schemas.api_query import (
     ApiQueryDetailRequestRuntime,
     ApiQueryDetailRuntime,
     ApiQueryDetailSourceRuntime,
@@ -37,6 +36,7 @@ from app.models.schemas import (
     ApiQueryRuntimeMetadataResponse,
     ApiQueryUIRuntime,
 )
+from app.models.schemas.catalog_governance import ApiCatalogIndexJobResponse
 from app.core.config import settings
 from app.services.api_catalog.business_intents import get_business_intent_catalog_service
 from app.services.api_catalog.dag_planner import ApiDagPlanner

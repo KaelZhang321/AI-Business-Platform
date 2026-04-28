@@ -14,7 +14,10 @@ from pathlib import Path
 import aiomysql
 
 from app.core.config import settings
-from app.models.schemas import QueryDomain, Text2SQLResponse
+from app.models.schemas.text2sql import (
+    QueryDomain,
+    Text2SQLResponse,
+)
 from app.services.dynamic_ui_service import DynamicUIService
 
 logger = logging.getLogger(__name__)
@@ -23,6 +26,7 @@ _SQL_WRITE_OPERATORS = re.compile(
     r"\b(insert|update|delete|drop|alter|create|grant|revoke|truncate|call|merge)\b",
     re.IGNORECASE,
 )
+
 
 class GenericQueryExecutor:
     """平台通用问数执行器。

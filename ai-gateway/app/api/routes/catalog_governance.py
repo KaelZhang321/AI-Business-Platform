@@ -14,11 +14,11 @@ from app.api.dependencies import (
     get_governance_job_service,
     get_publication_service,
 )
-from app.models.schemas import (
+from app.models.schemas.catalog_governance import (
     ApiCatalogColdStartGovernanceRequest,
+    ApiCatalogGovernanceJobResponse,
     ApiCatalogGovernancePromoteRequest,
     ApiCatalogGovernanceRollbackRequest,
-    ApiCatalogGovernanceJobResponse,
     ApiCatalogGovernanceRunResponse,
     ApiCatalogIncrementalGovernanceRequest,
 )

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from app.core.config import settings
-from app.models.schemas import (
+from app.models.schemas.api_query import (
     ApiQueryBusinessIntent,
     ApiQueryContextStepResult,
     ApiQueryDetailRequestRuntime,
@@ -24,8 +24,8 @@ from app.models.schemas import (
     ApiQueryListFiltersRuntime,
     ApiQueryListPaginationRuntime,
     ApiQueryListQueryContextRuntime,
-    ApiQueryListTableFieldRuntime,
     ApiQueryListRuntime,
+    ApiQueryListTableFieldRuntime,
     ApiQueryResponse,
     ApiQueryUIAction,
     ApiQueryUIRuntime,
@@ -75,9 +75,7 @@ _CREATE_MUTATION_NAME_PATTERNS = (
     re.compile(
         r"(?:新增|新建|创建|添加|录入)(?:一个|一名|一条|一个新的|新的)?(?P<name>.+?)(?:角色|账号|部门|岗位|员工|用户)\s*$"
     ),
-    re.compile(
-        r"(?:新增|新建|创建|添加|录入).*(?:角色|账号|部门|岗位|员工|用户)[：: ]+(?P<name>[^，。；;]+)\s*$"
-    ),
+    re.compile(r"(?:新增|新建|创建|添加|录入).*(?:角色|账号|部门|岗位|员工|用户)[：: ]+(?P<name>[^，。；;]+)\s*$"),
 )
 _NAME_LIKE_FIELD_TITLE_KEYWORDS = ("名称", "名字", "姓名")
 _DELETE_DISPLAY_FIELD_PRIORITY = (
@@ -195,9 +193,8 @@ class ApiQueryResponseBuilder:
             anchor_record,
             multi_step_render_policy=multi_step_render_policy,
         )
-        response_field_label_index = (
-            ui_selection.response_field_label_index
-            or _build_response_field_label_index(ui_selection.runtime_anchor_record)
+        response_field_label_index = ui_selection.response_field_label_index or _build_response_field_label_index(
+            ui_selection.runtime_anchor_record
         )
         aggregate_section_title_index = ui_selection.aggregate_section_title_index or {}
         aggregate_section_runtime_index = ui_selection.aggregate_section_runtime_index or {}
@@ -540,7 +537,9 @@ class ApiQueryResponseBuilder:
             "PlannerButton",
             "PlannerNotice",
         ]
-        components = self._ui_catalog_service.get_component_codes(intent="query", requested_codes=requested_component_codes)
+        components = self._ui_catalog_service.get_component_codes(
+            intent="query", requested_codes=requested_component_codes
+        )
         action_codes = {"remoteMutation", "refresh"}
         base_runtime = ApiQueryUIRuntime(
             components=components,
@@ -599,7 +598,10 @@ class ApiQueryResponseBuilder:
         )
 
         # execution_plan 使用 mutation 接口的步骤，供前端确认后调用
-        from app.models.schemas import ApiQueryExecutionPlan, ApiQueryPlanStep
+        from app.models.schemas.api_query import (
+            ApiQueryExecutionPlan,
+            ApiQueryPlanStep,
+        )
 
         mutation_plan = ApiQueryExecutionPlan(
             plan_id=f"mutation_{state['trace_id'][:8]}",
@@ -752,17 +754,14 @@ class ApiQueryResponseBuilder:
             row=row,
             identifier_field=delete_preview_context.identifier_field,
         )
-        form_state = {
-            "form": {
-                field.submit_key: row.get(field.submit_key)
-                for field in form_fields
-            }
-        }
+        form_state = {"form": {field.submit_key: row.get(field.submit_key) for field in form_fields}}
 
         form_code = f"{delete_preview_context.delete_entry.id}_confirm"
         base_runtime = ApiQueryUIRuntime(
             components=["PlannerButton", "PlannerCard", "PlannerForm", "PlannerMetric"],
-            ui_actions=_build_runtime_actions({"remoteMutation", "refresh"}, ui_catalog_service=self._ui_catalog_service),
+            ui_actions=_build_runtime_actions(
+                {"remoteMutation", "refresh"}, ui_catalog_service=self._ui_catalog_service
+            ),
             form=ApiQueryFormRuntime(
                 enabled=True,
                 form_code=form_code,
@@ -880,7 +879,9 @@ class ApiQueryResponseBuilder:
         ]
         base_runtime = ApiQueryUIRuntime(
             components=["PlannerCard", "PlannerTable", "PlannerForm", "PlannerPagination", "PlannerButton"],
-            ui_actions=_build_runtime_actions({"remoteMutation", "refresh"}, ui_catalog_service=self._ui_catalog_service),
+            ui_actions=_build_runtime_actions(
+                {"remoteMutation", "refresh"}, ui_catalog_service=self._ui_catalog_service
+            ),
         )
         ui_build_result = await _generate_ui_spec_result(
             self._dynamic_ui,
@@ -920,8 +921,6 @@ class ApiQueryResponseBuilder:
         state["plan"] = None
         state["response"] = response
         return response
-
-
 
 
 def _build_business_intents(intent_codes: list[str]) -> list[ApiQueryBusinessIntent]:
@@ -1290,9 +1289,7 @@ def _resolve_delete_payload_key(delete_entry: ApiCatalogEntry, *, identifier_fie
 
     schema_properties = delete_entry.param_schema.properties
     preferred_keys = [field_name for field_name in schema_properties if field_name.lower() in {"id", "ids"}]
-    preferred_keys.extend(
-        [field_name for field_name in schema_properties if field_name.lower().endswith("id")]
-    )
+    preferred_keys.extend([field_name for field_name in schema_properties if field_name.lower().endswith("id")])
     if preferred_keys:
         return preferred_keys[0]
     return identifier_field or "id"
@@ -1359,11 +1356,11 @@ def _build_list_filter_fields(
             if not field_name:
                 continue
             schema = entry.param_schema.properties.get(field_name, {})
-            schema_title = (
-                str(schema.get("title") or "").strip() if isinstance(schema, dict) else ""
-            )
-            label = filter_field.label.strip() if isinstance(filter_field.label, str) and filter_field.label.strip() else (
-                schema_title or field_name
+            schema_title = str(schema.get("title") or "").strip() if isinstance(schema, dict) else ""
+            label = (
+                filter_field.label.strip()
+                if isinstance(filter_field.label, str) and filter_field.label.strip()
+                else (schema_title or field_name)
             )
             filter_fields.append(
                 ApiQueryListFilterFieldRuntime(
@@ -1468,11 +1465,15 @@ def _build_ui_runtime(
     detail_hint = entry.detail_hint
     detail_template_code = (
         detail_hint.template_code.strip()
-        if settings.api_query_template_first_enabled and isinstance(detail_hint.template_code, str) and detail_hint.template_code.strip()
+        if settings.api_query_template_first_enabled
+        and isinstance(detail_hint.template_code, str)
+        and detail_hint.template_code.strip()
         else None
     )
     detail_fallback_mode = (
-        detail_hint.fallback_mode.strip() if isinstance(detail_hint.fallback_mode, str) and detail_hint.fallback_mode.strip() else "dynamic_ui"
+        detail_hint.fallback_mode.strip()
+        if isinstance(detail_hint.fallback_mode, str) and detail_hint.fallback_mode.strip()
+        else "dynamic_ui"
     )
     detail_render_mode = "template_first" if settings.api_query_template_first_enabled else "dynamic_ui"
     identifier_field = detail_hint.identifier_field or _infer_identifier_field(rows)
@@ -2279,9 +2280,7 @@ def _build_wait_select_rows(execution_report: DagExecutionReport) -> list[dict[s
         if not isinstance(options_by_binding, dict):
             continue
         option_rows_by_binding = execution_result.meta.get("option_rows_by_binding")
-        normalized_option_rows_by_binding = (
-            option_rows_by_binding if isinstance(option_rows_by_binding, dict) else {}
-        )
+        normalized_option_rows_by_binding = option_rows_by_binding if isinstance(option_rows_by_binding, dict) else {}
         rows: list[dict[str, Any]] = []
         for binding_key, options in options_by_binding.items():
             if not isinstance(options, list):
@@ -2330,11 +2329,7 @@ def _build_wait_select_row_actions(execution_report: DagExecutionReport) -> list
             "params": {
                 "api": "/api/v1/api-query",
                 "queryParams": {},
-                "body": {
-                    "selection_context": {
-                        "user_select": {"$bindRow": "bindingMap"}
-                    }
-                },
+                "body": {"selection_context": {"user_select": {"$bindRow": "bindingMap"}}},
             },
         }
     ]

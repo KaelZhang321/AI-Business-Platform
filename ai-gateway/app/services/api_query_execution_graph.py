@@ -27,7 +27,7 @@ from typing import Annotated, Any, TypedDict
 from langgraph.graph import END, START, StateGraph
 
 from app.core.config import settings
-from app.models.schemas import (
+from app.models.schemas.api_query import (
     ApiQueryExecutionPlan,
     ApiQueryExecutionResult,
     ApiQueryExecutionStatus,
@@ -55,7 +55,9 @@ class ApiQueryExecutionGraphState(TypedDict, total=False):
 
     plan: ApiQueryExecutionPlan
     trace_id: str
-    records_by_step_id: Annotated[dict[str, DagStepExecutionRecord], lambda left, right: _merge_record_maps(left, right)]
+    records_by_step_id: Annotated[
+        dict[str, DagStepExecutionRecord], lambda left, right: _merge_record_maps(left, right)
+    ]
     execution_order: list[str]
     errors: list[str]
     aggregate_status: ApiQueryExecutionStatus | None
@@ -411,10 +413,7 @@ class ApiQueryExecutionGraph:
                 - 下游执行即使成功，也会把 resolved_params 写回记录，供响应层回溯
             """
             upstream_records = state.get("records_by_step_id") or {}
-            step_data_by_id = {
-                step_id: record.execution_result.data
-                for step_id, record in upstream_records.items()
-            }
+            step_data_by_id = {step_id: record.execution_result.data for step_id, record in upstream_records.items()}
             entry = runtime.step_entries[step.step_id]
             resolved_params, empty_bindings = _resolve_step_params(step.params, step_data_by_id)
             resolved_params = _coerce_single_item_array_params(
@@ -556,7 +555,10 @@ class ApiQueryExecutionGraph:
                             node=step.step_id,
                             execution_status=ApiQueryExecutionStatus.SKIPPED.value,
                         ),
-                        payload={"reason": "missing_required_params", "missing_required_params": missing_required_params},
+                        payload={
+                            "reason": "missing_required_params",
+                            "missing_required_params": missing_required_params,
+                        },
                     ),
                 )
                 execution_result = _build_missing_param_skip_result(
@@ -719,15 +721,9 @@ def _validate_execution_graph_inputs(
     """
 
     if len(plan.steps) > budget.max_step_count:
-        raise RuntimeError(
-            f"执行图步骤数超出上限: {len(plan.steps)} > {budget.max_step_count}"
-        )
+        raise RuntimeError(f"执行图步骤数超出上限: {len(plan.steps)} > {budget.max_step_count}")
 
-    missing_step_entries = [
-        step.step_id
-        for step in plan.steps
-        if step.step_id not in step_entries
-    ]
+    missing_step_entries = [step.step_id for step in plan.steps if step.step_id not in step_entries]
     if missing_step_entries:
         raise RuntimeError(f"缺少步骤目录实体映射: {', '.join(missing_step_entries)}")
 

@@ -10,12 +10,14 @@ import httpx
 from langgraph.graph import END, StateGraph
 
 from app.core.config import settings
-from app.models.schemas import (
-    ChatRequest,
-    ChatResponse,
+from app.models.schemas.common import (
     IntentResult,
     IntentType,
     SubIntentType,
+)
+from app.models.schemas.chat import (
+    ChatRequest,
+    ChatResponse,
 )
 from app.services.dynamic_ui_service import DynamicUIService
 from app.services.intent_classifier import IntentClassifier
@@ -201,7 +203,9 @@ class ChatWorkflow:
             conversation_id=req.conversation_id,
             context=req.context,
         )
-        ui_spec = result.chart_spec or await self._dynamic_ui.generate_ui_spec("query", result.results, {"question": req.message})
+        ui_spec = result.chart_spec or await self._dynamic_ui.generate_ui_spec(
+            "query", result.results, {"question": req.message}
+        )
         sources = [{"sql": result.sql}]
         return {"response_text": result.answer or result.explanation, "ui_spec": ui_spec, "sources": sources}
 

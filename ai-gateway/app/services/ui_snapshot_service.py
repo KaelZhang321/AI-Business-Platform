@@ -4,7 +4,10 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
 
-from app.models.schemas import ApiQueryBusinessIntent, ApiQueryUIRuntime
+from app.models.schemas.api_query import (
+    ApiQueryBusinessIntent,
+    ApiQueryUIRuntime,
+)
 
 
 @dataclass(slots=True)

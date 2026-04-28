@@ -10,11 +10,11 @@ from fastapi import APIRouter, Depends, Request
 
 from app.api.dependencies import get_health_quadrant_service
 from app.core.error_codes import BusinessError, ErrorCode
-from app.models.schemas import (
-    HealthQuadrantConfirmRequest,
-    HealthQuadrantConfirmEnvelopeResponse,
-    HealthQuadrantConfirmResponse,
+from app.models.schemas.health_quadrant import (
     HealthQuadrantBucket,
+    HealthQuadrantConfirmEnvelopeResponse,
+    HealthQuadrantConfirmRequest,
+    HealthQuadrantConfirmResponse,
     HealthQuadrantQueryEnvelopeResponse,
     HealthQuadrantRequest,
     HealthQuadrantResponse,
@@ -43,6 +43,7 @@ def _raise_route_business_error(exc: HealthQuadrantServiceError) -> None:
         raise BusinessError(ErrorCode.EXTERNAL_SERVICE_ERROR, message) from exc
     raise BusinessError(ErrorCode.INTERNAL_ERROR, message) from exc
 
+
 @router.post("", response_model=HealthQuadrantQueryEnvelopeResponse, summary="查询健康四象限（已确认优先）")
 async def build_health_quadrant(
     request: HealthQuadrantRequest,
@@ -50,7 +51,9 @@ async def build_health_quadrant(
     service: HealthQuadrantService = Depends(get_health_quadrant_service),
 ) -> HealthQuadrantQueryEnvelopeResponse:
     """按 StudyID 和象限类型查询四象限。"""
-    trace_id = (raw_request.headers.get("X-Trace-Id") or raw_request.headers.get("X-Request-Id") or "").strip() or uuid4().hex
+    trace_id = (
+        raw_request.headers.get("X-Trace-Id") or raw_request.headers.get("X-Request-Id") or ""
+    ).strip() or uuid4().hex
     route_started_at = time.perf_counter()
     # 查询接口只接受列表形态主诉；这里统一去重并排序，避免签名输入抖动。
     logger.info(
@@ -130,7 +133,9 @@ async def confirm_health_quadrant(
 ) -> HealthQuadrantConfirmEnvelopeResponse:
     """保存前端确认后的四象限结果。"""
 
-    trace_id = (raw_request.headers.get("X-Trace-Id") or raw_request.headers.get("X-Request-Id") or "").strip() or uuid4().hex
+    trace_id = (
+        raw_request.headers.get("X-Trace-Id") or raw_request.headers.get("X-Request-Id") or ""
+    ).strip() or uuid4().hex
     route_started_at = time.perf_counter()
     confirmed_by = (raw_request.headers.get("X-User-Id") or "").strip() or None
     chief_complaint_text = request.chief_complaint_text if request.chief_complaint_text else ""

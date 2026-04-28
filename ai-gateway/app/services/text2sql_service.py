@@ -9,7 +9,11 @@ from __future__ import annotations
 import aiomysql
 
 from app.core.config import settings
-from app.models.schemas import QueryDomain, SubIntentType, Text2SQLResponse
+from app.models.schemas.common import SubIntentType
+from app.models.schemas.text2sql import (
+    QueryDomain,
+    Text2SQLResponse,
+)
 from app.services.generic_query_executor import GenericQueryExecutor
 
 

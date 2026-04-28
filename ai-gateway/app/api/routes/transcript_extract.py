@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends
 
 from app.api.dependencies import get_transcript_extract_service
 from app.core.error_codes import BusinessError, ErrorCode
-from app.models.schemas import (
+from app.models.schemas.transcript_extract import (
     TranscriptExtractEnvelopeResponse,
     TranscriptExtractRequest,
 )

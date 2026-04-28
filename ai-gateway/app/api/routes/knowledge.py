@@ -2,7 +2,10 @@ from fastapi import APIRouter, Depends
 
 from app.core.config import Settings
 from app.core.dependencies import get_settings
-from app.models.schemas import KnowledgeSearchRequest, KnowledgeSearchResponse
+from app.models.schemas.knowledge import (
+    KnowledgeSearchRequest,
+    KnowledgeSearchResponse,
+)
 from app.services.rag_service import RAGService
 
 router = APIRouter()

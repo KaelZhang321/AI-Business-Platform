@@ -22,7 +22,11 @@ from typing import Any
 from pydantic import ValidationError
 
 from app.core.config import settings
-from app.models.schemas import ApiQueryExecutionPlan, ApiQueryPlanStep, ApiQueryRoutingResult
+from app.models.schemas.api_query import (
+    ApiQueryExecutionPlan,
+    ApiQueryPlanStep,
+    ApiQueryRoutingResult,
+)
 from app.services.api_catalog.dag_bindings import (
     DagBindingSyntaxError,
     collect_binding_step_ids,
@@ -825,10 +829,7 @@ def _validate_required_predecessors(
                 if not isinstance(value, str) or not is_dag_binding(value):
                     raise DagPlanValidationError(
                         "planner_binding_semantic_invalid",
-                        (
-                            f"步骤 {step.step_id} 的 required predecessor 绑定缺失或非绑定表达式: "
-                            f"{binding.target_param}"
-                        ),
+                        (f"步骤 {step.step_id} 的 required predecessor 绑定缺失或非绑定表达式: {binding.target_param}"),
                         metadata={
                             "target_api_id": entry.id,
                             "target_step_id": step.step_id,
@@ -851,10 +852,7 @@ def _validate_required_predecessors(
                 if value != expected_expression:
                     raise DagPlanValidationError(
                         "planner_binding_semantic_invalid",
-                        (
-                            f"步骤 {step.step_id} 的 required predecessor 绑定不匹配: "
-                            f"{binding.target_param}={value}"
-                        ),
+                        (f"步骤 {step.step_id} 的 required predecessor 绑定不匹配: {binding.target_param}={value}"),
                         metadata={
                             "target_api_id": entry.id,
                             "target_step_id": step.step_id,

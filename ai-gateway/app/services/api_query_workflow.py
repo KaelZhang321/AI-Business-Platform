@@ -8,7 +8,7 @@ from typing import Any
 from fastapi import HTTPException, status
 from langgraph.graph import END, StateGraph
 
-from app.models.schemas import (
+from app.models.schemas.api_query import (
     ApiQueryExecutionPlan,
     ApiQueryExecutionStatus,
     ApiQueryRequest,
@@ -73,9 +73,7 @@ _DELETE_NAME_PATTERNS = (
     re.compile(
         r"(?:删除|移除|清除|注销|作废)(?:一个|一名|一条|一个名为|名为)?(?P<name>.+?)(?:角色|账号|部门|岗位|员工|用户)\s*$"
     ),
-    re.compile(
-        r"(?:删除|移除|清除|注销|作废).*(?:角色|账号|部门|岗位|员工|用户)[：: ]+(?P<name>[^，。；;]+)\s*$"
-    ),
+    re.compile(r"(?:删除|移除|清除|注销|作废).*(?:角色|账号|部门|岗位|员工|用户)[：: ]+(?P<name>[^，。；;]+)\s*$"),
 )
 
 _PREDECESSOR_SELECT_MODE_TO_BINDING_TEMPLATE = {
@@ -257,9 +255,7 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
             user_token=user_token,
             request_body=request_body,
             selection_context=(
-                dict(request_body.selection_context)
-                if isinstance(request_body.selection_context, dict)
-                else None
+                dict(request_body.selection_context) if isinstance(request_body.selection_context, dict) else None
             ),
             log_prefix=log_prefix,
         )
@@ -493,7 +489,9 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
                     message=message,
                     error_code=routing_result.route_error_code or "route_and_extract_failed",
                     query_domains=list(routing_result.query_domains or state.get("query_domains_hint", [])),
-                    business_intent_codes=list(routing_result.business_intents or state.get("business_intent_codes", [])),
+                    business_intent_codes=list(
+                        routing_result.business_intents or state.get("business_intent_codes", [])
+                    ),
                     reasoning=routing_result.reasoning or (route_hint.reasoning if route_hint else None),
                 )
                 return {
@@ -513,7 +511,9 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
                     message=message,
                     error_code="selected_api_unresolved",
                     query_domains=list(routing_result.query_domains or state.get("query_domains_hint", [])),
-                    business_intent_codes=list(routing_result.business_intents or state.get("business_intent_codes", [])),
+                    business_intent_codes=list(
+                        routing_result.business_intents or state.get("business_intent_codes", [])
+                    ),
                     reasoning=routing_result.reasoning or (route_hint.reasoning if route_hint else None),
                 )
                 return {
@@ -793,7 +793,9 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
                 ),
             )
 
-        mutation_entries = [candidate.entry for candidate in candidates if candidate.entry.operation_safety == "mutation"]
+        mutation_entries = [
+            candidate.entry for candidate in candidates if candidate.entry.operation_safety == "mutation"
+        ]
         if len(mutation_entries) != 1:
             return None
         mutation_entry = mutation_entries[0]
@@ -935,10 +937,7 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
                 target_name=target_name,
                 lookup_entry=lookup_entry,
                 lookup_params=lookup_params,
-                message=(
-                    "删除前置查询缺少必要条件，当前无法安全确认待删除角色："
-                    f"{', '.join(missing_required_params)}"
-                ),
+                message=(f"删除前置查询缺少必要条件，当前无法安全确认待删除角色：{', '.join(missing_required_params)}"),
             )
 
         _, _, executor, _, _ = self._services_getter()
@@ -1061,7 +1060,9 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
                 runtime_context.log_prefix,
             )
 
-        mutation_entries = [candidate.entry for candidate in candidates if candidate.entry.operation_safety == "mutation"]
+        mutation_entries = [
+            candidate.entry for candidate in candidates if candidate.entry.operation_safety == "mutation"
+        ]
         if len(mutation_entries) == 1:
             return mutation_entries[0]
 
@@ -1078,7 +1079,9 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
     ) -> ApiCatalogEntry | None:
         """为删除预检找到同资源的只读查询接口。"""
 
-        candidate_entries = [candidate.entry for candidate in runtime_context.candidates if candidate.entry.id != delete_entry.id]
+        candidate_entries = [
+            candidate.entry for candidate in runtime_context.candidates if candidate.entry.id != delete_entry.id
+        ]
 
         ranked_candidates: list[tuple[int, ApiCatalogEntry]] = []
         for entry in candidate_entries:
@@ -1090,8 +1093,6 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
             return None
         ranked_candidates.sort(key=lambda item: item[0], reverse=True)
         return ranked_candidates[0][1]
-
-
 
     async def _execute_plan(self, state: ApiQueryState) -> dict[str, Any]:
         """第四阶段：通过兼容门面进入 LangGraph 内层执行图。"""
@@ -1137,7 +1138,9 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
 
         registry = self._registry_source_getter()
         predecessor_steps: list[tuple[str, ApiCatalogEntry, dict[str, Any], bool]] = []
-        selected_context = runtime_context.selection_context if isinstance(runtime_context.selection_context, dict) else {}
+        selected_context = (
+            runtime_context.selection_context if isinstance(runtime_context.selection_context, dict) else {}
+        )
         selected_values_by_binding = _parse_user_select_values(selected_context.get("user_select"))
 
         for predecessor in predecessors:
@@ -1185,7 +1188,7 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
                 )
                 selected_params[binding.target_param] = expression
 
-        from app.models.schemas import ApiQueryPlanStep
+        from app.models.schemas.api_query import ApiQueryPlanStep
 
         main_step_id = _build_step_id(selected_entry)
         steps: list[ApiQueryPlanStep] = [
@@ -1244,7 +1247,9 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
             - 如果没有 execution_state 且也不属于任一快路，会抛错暴露编排缺陷
         """
 
-        self._log_node_event(state, node="build_response", phase="response", execution_status=state.get("execution_status"))
+        self._log_node_event(
+            state, node="build_response", phase="response", execution_status=state.get("execution_status")
+        )
         runtime_context = self._get_runtime_context(state)
         builder = self._response_builder_getter()
         # 固定分支已经在 prepare_request 构造出完整响应，这里仍走统一出口以保持日志与 state 镜像一致。
@@ -1354,7 +1359,6 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
         if runtime_context.mutation_form_context is not None:
             return "build_mutation_form"
         return "execute_plan"
-
 
     def _get_runtime_context(self, state: ApiQueryState) -> ApiQueryRuntimeContext:
         """按 trace_id 读取当前请求的 runtime context。"""
@@ -1691,7 +1695,9 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
                 phase=phase,
             ),
             node=node,
-            execution_status=str(execution_status.value if isinstance(execution_status, ApiQueryExecutionStatus) else execution_status)
+            execution_status=str(
+                execution_status.value if isinstance(execution_status, ApiQueryExecutionStatus) else execution_status
+            )
             if execution_status is not None
             else None,
         )
@@ -1994,7 +2000,11 @@ def _extract_lookup_tokens(*texts: str) -> set[str]:
     for text in texts:
         for token in re.split(r"[^a-zA-Z0-9]+", str(text or "").lower()):
             normalized = token.strip()
-            if len(normalized) < 3 or normalized in _DELETE_ENTRY_KEYWORDS or normalized in _DELETE_LOOKUP_SEGMENT_KEYWORDS:
+            if (
+                len(normalized) < 3
+                or normalized in _DELETE_ENTRY_KEYWORDS
+                or normalized in _DELETE_LOOKUP_SEGMENT_KEYWORDS
+            ):
                 continue
             tokens.add(normalized)
     return tokens
@@ -2189,9 +2199,7 @@ def _build_direct_delete_submit_payload(
     """在没有查询候选时，为删除确认页直接构造可提交 payload。"""
 
     payload = {
-        field_name: value
-        for field_name, value in dict(pre_fill_params).items()
-        if value not in (None, "", [], {})
+        field_name: value for field_name, value in dict(pre_fill_params).items() if value not in (None, "", [], {})
     }
     if payload:
         return payload
@@ -2243,9 +2251,7 @@ def _resolve_delete_lookup_payload_key(delete_entry: ApiCatalogEntry, *, identif
 
     schema_properties = delete_entry.param_schema.properties
     preferred_keys = [field_name for field_name in schema_properties if field_name.lower() in {"id", "ids"}]
-    preferred_keys.extend(
-        [field_name for field_name in schema_properties if field_name.lower().endswith("id")]
-    )
+    preferred_keys.extend([field_name for field_name in schema_properties if field_name.lower().endswith("id")])
     if preferred_keys:
         return preferred_keys[0]
     return identifier_field or "id"

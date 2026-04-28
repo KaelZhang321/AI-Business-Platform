@@ -7,7 +7,7 @@ from typing import Any, Sequence
 
 import aiomysql
 
-from app.models.schemas import ApiQueryUIAction
+from app.models.schemas.api_query import ApiQueryUIAction
 from app.utils.json_utils import load_json_object
 
 logger = logging.getLogger(__name__)

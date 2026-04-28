@@ -5,7 +5,10 @@ from sse_starlette.sse import EventSourceResponse
 
 from app.core.config import Settings
 from app.core.dependencies import get_settings
-from app.models.schemas import ChatRequest, ChatResponse
+from app.models.schemas.chat import (
+    ChatRequest,
+    ChatResponse,
+)
 from app.services.chat_workflow import ChatWorkflow
 
 router = APIRouter()

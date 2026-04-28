@@ -8,7 +8,7 @@
 
 from __future__ import annotations
 
-from app.models.schemas import ApiQueryExecutionPlan
+from app.models.schemas.api_query import ApiQueryExecutionPlan
 from app.services.api_catalog.dag_runtime import DagExecutionReport, DagStepExecutionRecord
 from app.services.api_catalog.executor import ApiExecutor
 from app.services.api_catalog.schema import ApiCatalogEntry

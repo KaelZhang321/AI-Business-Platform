@@ -8,7 +8,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Request
 
 from app.core.error_codes import BusinessError, ErrorCode
-from app.models.schemas import (
+from app.models.schemas.smart_meal import (
     SmartMealPackageRecommendEnvelopeResponse,
     SmartMealPackageRecommendItem,
     SmartMealPackageRecommendRequest,

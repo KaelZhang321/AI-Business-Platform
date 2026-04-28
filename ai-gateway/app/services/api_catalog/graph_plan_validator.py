@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from app.models.schemas import ApiQueryExecutionPlan
+from app.models.schemas.api_query import ApiQueryExecutionPlan
 from app.services.api_catalog.dag_bindings import is_dag_binding, parse_binding_expression
 from app.services.api_catalog.graph_models import ApiCatalogSubgraphResult
 from app.services.api_catalog.schema import ApiCatalogEntry
@@ -99,7 +99,9 @@ class GraphPlanValidator:
             raise GraphPlanValidationError(
                 "planner_graph_degraded_forbidden",
                 "当前计划依赖图事实校验，但 Stage 2 未能提供可用子图，已保守终止执行。",
-                metadata={"degraded_reason": subgraph_result.degraded_reason if subgraph_result else "subgraph_missing"},
+                metadata={
+                    "degraded_reason": subgraph_result.degraded_reason if subgraph_result else "subgraph_missing"
+                },
             )
 
         if subgraph_result is None:
@@ -132,8 +134,7 @@ class GraphPlanValidator:
         """
 
         provided_param_paths_by_step = {
-            step.step_id: set(_collect_provided_param_paths(step.params))
-            for step in plan.steps
+            step.step_id: set(_collect_provided_param_paths(step.params)) for step in plan.steps
         }
 
         for step in plan.steps:
@@ -196,7 +197,11 @@ class GraphPlanValidator:
                 },
             )
 
-        target_paths = [field_path for field_path in pair_paths if field_path.target_inject_path == bound_parameter.target_inject_path]
+        target_paths = [
+            field_path
+            for field_path in pair_paths
+            if field_path.target_inject_path == bound_parameter.target_inject_path
+        ]
         if not target_paths:
             raise GraphPlanValidationError(
                 "planner_missing_field_path",
