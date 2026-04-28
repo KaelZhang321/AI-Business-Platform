@@ -15,6 +15,7 @@ from app.services.api_catalog.registry_source import ApiCatalogRegistrySource
 from app.services.api_catalog.semantic_curation_run_repository import SemanticCurationRunRepository
 from app.services.api_catalog.semantic_governance_publication_service import SemanticGovernancePublicationService
 from app.services.health_quadrant_service import HealthQuadrantService
+from app.services.report_intent_service import ReportIntentService
 from app.services.text2sql_service import Text2SQLService
 from app.services.transcript_extract_service import TranscriptExtractService
 from app.services.ui_catalog_service import UICatalogService
@@ -89,3 +90,11 @@ def get_publication_service(
     """返回共享治理发布服务。"""
 
     return resources.semantic_governance_publication_service
+
+
+def get_report_intent_service(
+    resources: AppResources = Depends(get_app_resource_container),
+) -> ReportIntentService:
+    """返回共享报告意图识别服务。"""
+
+    return resources.report_intent_service

@@ -20,6 +20,7 @@ from app.services.model_runtime_config_service import ModelRuntimeConfigService,
 from app.services.prompt_template_repository import PromptTemplateRepository
 from app.services.rag_service import RAGService
 from app.services.health_quadrant_service import HealthQuadrantService
+from app.services.report_intent_service import ReportIntentService
 from app.services.text2sql_service import Text2SQLService
 from app.services.transcript_extract_service import TranscriptExtractService
 from app.services.ui_catalog_service import UICatalogService
@@ -52,6 +53,7 @@ class AppResources:
         self.api_catalog_registry_source: ApiCatalogRegistrySource | None = None
         self.text2sql_service: Text2SQLService | None = None
         self.health_quadrant_service: HealthQuadrantService | None = None
+        self.report_intent_service: ReportIntentService | None = None
         self.transcript_extract_service: TranscriptExtractService | None = None
         self.semantic_curation_run_repository: SemanticCurationRunRepository | None = None
         self.semantic_field_repository: SemanticFieldRepository | None = None
@@ -91,6 +93,7 @@ class AppResources:
         self.api_catalog_registry_source = ApiCatalogRegistrySource(pool=pool)
         self.text2sql_service = Text2SQLService(generic_pool=pool)
         self.health_quadrant_service = HealthQuadrantService(business_pool=pool)
+        self.report_intent_service = ReportIntentService(pool=pool)
         self.transcript_extract_service = TranscriptExtractService(prompt_repository=self.prompt_template_repository)
         self.semantic_curation_run_repository = SemanticCurationRunRepository(pool=pool)
         self.semantic_field_repository = SemanticFieldRepository(pool=pool)
@@ -129,6 +132,7 @@ class AppResources:
             ("transcript_extract_service", self.transcript_extract_service),
             ("text2sql_service", self.text2sql_service),
             ("health_quadrant_service", self.health_quadrant_service),
+            ("report_intent_service", self.report_intent_service),
             ("business_intent_catalog_service", self.business_intent_catalog_service),
             ("ui_catalog_service", self.ui_catalog_service),
             ("api_catalog_registry_source", self.api_catalog_registry_source),

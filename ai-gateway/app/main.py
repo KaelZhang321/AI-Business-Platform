@@ -14,6 +14,7 @@ from app.api.routes import bi, chat, knowledge, query
 from app.api.routes.api_query import router as api_query_router
 from app.api.routes.catalog_governance import router as catalog_governance_router
 from app.api.routes.health_quadrant import router as health_quadrant_router
+from app.api.routes.report_intent import router as report_intent_router
 from app.api.routes.smart_meal import (
     get_smart_meal_package_recommend_service,
     get_smart_meal_risk_service,
@@ -423,6 +424,7 @@ app.include_router(bi.router, prefix="/api/v1")
 app.include_router(api_query_router, prefix="/api/v1")
 app.include_router(catalog_governance_router, prefix="/api/v1")
 app.include_router(health_quadrant_router, prefix="/api/v1")
+app.include_router(report_intent_router, prefix="/api/v1")
 app.include_router(smart_meal_router, prefix="/api/v1")
 app.include_router(transcript_extract_router, prefix="/api/v1")
 
