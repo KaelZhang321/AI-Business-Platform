@@ -736,6 +736,8 @@ class HealthQuadrantService:
                 one_item = _normalize_text(row.get("one_item_name"))
                 two_item = _normalize_text(row.get("two_item_name"))
                 abnormal_item = _normalize_text(row.get("abnormal_item"))
+                if re.search("^\d{1, 2}分$", abnormal_item) or re.search("人体成[份分]", one_item):
+                    abnormal_item = "人体成份检查：" + abnormal_item
                 category = _normalize_text(row.get("category_name"))
                 if not abnormal_item:
                     continue
