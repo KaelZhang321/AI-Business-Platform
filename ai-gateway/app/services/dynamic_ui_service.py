@@ -28,6 +28,11 @@ _LLM_RENDER_ROW_LIMIT = 3
 _LLM_RENDER_KEY_LIMIT = 8
 _LLM_RENDER_STRING_LIMIT = 200
 _LLM_RENDER_MAX_ATTEMPTS = 2
+_AGGREGATE_SECTION_TYPE_KEY = "__sectionType"
+_AGGREGATE_SECTION_DATA_KEY = "data"
+_AGGREGATE_DETAIL_SECTION_TYPE = "detail"
+_AGGREGATE_TABLE_SECTION_TYPE = "table"
+_AGGREGATE_COMPOSITE_SECTION_TYPE = "composite"
 
 
 @dataclass(slots=True)
@@ -2512,6 +2517,7 @@ class DynamicUIService:
             created_by=ctx.get("created_by"),
             request_schema_fields=runtime.list.request_schema_fields if runtime else None,
         )
+        aggregate_runtime_index = self._build_aggregate_section_runtime_index(ctx)
 
         # 1. 先提取标量指标，映射为统一 InfoGrid 概览区。
         scalar_metrics = self._build_composite_metrics(row)
@@ -2546,9 +2552,53 @@ class DynamicUIService:
                 }
             )
 
-        # 2. 再把列表型 section 下钻为表格，保持每个业务块都有稳定 bizFieldKey。
+        # 2. 再按聚合层下发的 section 语义拆块，保持每个业务块都有稳定 bizFieldKey。
         section_title_index = self._build_aggregate_section_title_index(ctx)
         for section_name, section_value in row.items():
+            section_request_fields = self._build_section_request_fields(
+                aggregate_runtime_index=aggregate_runtime_index,
+                section_name=section_name,
+                fallback_fields=list_request_fields,
+                context=ctx,
+            )
+            typed_section = self._unwrap_aggregate_section(section_value)
+            if typed_section is not None:
+                section_type, section_data = typed_section
+                section_title = section_title_index.get(section_name) or self._resolve_field_label(
+                    field_name=section_name,
+                    label_index=resolved_label_index,
+                    field_path=section_name,
+                )
+                if section_type == _AGGREGATE_DETAIL_SECTION_TYPE and isinstance(section_data, dict):
+                    children.append(
+                        {
+                            "type": "PlannerInfoGrid",
+                            "props": {
+                                "title": section_title,
+                                "minColumnWidth": 180,
+                                "items": self._build_detail_items(
+                                    section_data,
+                                    label_index=resolved_label_index,
+                                    field_path_prefix=section_name,
+                                ),
+                                "bizFieldKey": section_name,
+                                **section_request_fields,
+                            },
+                        }
+                    )
+                    continue
+                if section_type == _AGGREGATE_COMPOSITE_SECTION_TYPE and isinstance(section_data, dict):
+                    nested_children = self._build_composite_section_children(
+                        section_name=section_name,
+                        section_data=section_data,
+                        section_title=section_title,
+                        label_index=resolved_label_index,
+                        request_fields=section_request_fields,
+                    )
+                    children.extend(nested_children)
+                    continue
+                section_value = section_data
+
             table_rows = self._extract_table_rows(section_value)
             if not table_rows:
                 continue
@@ -2572,7 +2622,7 @@ class DynamicUIService:
                         ),
                         "dataSource": table_rows,
                         "bizFieldKey": section_name,
-                        **list_request_fields,
+                        **section_request_fields,
                     },
                 }
             )
@@ -2590,6 +2640,125 @@ class DynamicUIService:
                 }
             )
         return self._build_flat_card_spec(root_props=root_props, children=children)
+
+    def _build_composite_section_children(
+        self,
+        *,
+        section_name: str,
+        section_data: dict[str, Any],
+        section_title: str,
+        label_index: dict[str, str],
+        request_fields: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        """把聚合 section 内部的复合对象继续拆成概览和明细块。"""
+
+        children: list[dict[str, Any]] = []
+        metric_items = [
+            {
+                "label": self._resolve_field_label(
+                    field_name=field_name,
+                    label_index=label_index,
+                    field_path=f"{section_name}.{field_path}",
+                ),
+                "value": self._stringify_detail_value(value),
+            }
+            for field_path, field_name, value in self._build_composite_metrics(section_data)
+        ]
+        if metric_items:
+            children.append(
+                {
+                    "type": "PlannerInfoGrid",
+                    "props": {
+                        "title": section_title,
+                        "minColumnWidth": 180,
+                        "items": metric_items,
+                        "bizFieldKey": section_name,
+                        **request_fields,
+                    },
+                }
+            )
+
+        for child_name, child_value in section_data.items():
+            table_rows = self._extract_table_rows(child_value)
+            if not table_rows:
+                continue
+            child_field_path = f"{section_name}.{child_name}"
+            children.append(
+                {
+                    "type": "PlannerTable",
+                    "props": {
+                        "title": self._resolve_field_label(
+                            field_name=child_name,
+                            label_index=label_index,
+                            field_path=child_field_path,
+                        ),
+                        "columns": self._build_table_columns(
+                            table_rows[0],
+                            label_index=label_index,
+                            field_path_prefix=f"{child_field_path}[]",
+                        ),
+                        "dataSource": table_rows,
+                        "bizFieldKey": child_name,
+                        **request_fields,
+                    },
+                }
+            )
+        return children
+
+    @staticmethod
+    def _build_aggregate_section_runtime_index(context: dict[str, Any]) -> dict[str, dict[str, Any]]:
+        """读取多接口聚合 section 对应的二跳运行时元数据。"""
+
+        raw_index = context.get("aggregate_section_runtime_index")
+        if not isinstance(raw_index, dict):
+            return {}
+        normalized: dict[str, dict[str, Any]] = {}
+        for raw_key, raw_value in raw_index.items():
+            if not isinstance(raw_key, str) or not raw_key.strip() or not isinstance(raw_value, dict):
+                continue
+            normalized[raw_key.strip()] = dict(raw_value)
+        return normalized
+
+    @staticmethod
+    def _build_section_request_fields(
+        *,
+        aggregate_runtime_index: dict[str, dict[str, Any]],
+        section_name: str,
+        fallback_fields: dict[str, Any],
+        context: dict[str, Any],
+    ) -> dict[str, Any]:
+        """为聚合 section 构造独立二跳元数据，缺失时兼容旧的终态 runtime。
+
+        多接口聚合页的每个 child 都可能来自不同业务接口。这里优先使用聚合层下发的
+        section runtime，避免身份信息卡、服务记录卡等子块错误复用最后一个接口。
+        """
+
+        section_runtime = aggregate_runtime_index.get(section_name)
+        if not section_runtime:
+            return dict(fallback_fields)
+        return _build_runtime_request_fields(
+            section_runtime.get("api_id"),
+            param_source=section_runtime.get("param_source"),
+            params=section_runtime.get("params") or {},
+            flow_num=context.get("flow_num"),
+            created_by=context.get("created_by"),
+            request_schema_fields=section_runtime.get("request_schema_fields"),
+        )
+
+    @staticmethod
+    def _unwrap_aggregate_section(value: Any) -> tuple[str, Any] | None:
+        """读取聚合层显式下发的 section 类型与真实数据。"""
+
+        if not isinstance(value, dict):
+            return None
+        section_type = value.get(_AGGREGATE_SECTION_TYPE_KEY)
+        if section_type not in {
+            _AGGREGATE_DETAIL_SECTION_TYPE,
+            _AGGREGATE_TABLE_SECTION_TYPE,
+            _AGGREGATE_COMPOSITE_SECTION_TYPE,
+        }:
+            return None
+        return str(section_type), value.get(_AGGREGATE_SECTION_DATA_KEY)
 
     @staticmethod
     def _build_aggregate_section_title_index(context: dict[str, Any]) -> dict[str, str]:
@@ -2678,6 +2847,8 @@ class DynamicUIService:
         """提取复合结果中的标量指标。"""
         metrics: list[tuple[str, str, Any]] = []
         for key, value in row.items():
+            if DynamicUIService._unwrap_aggregate_section(value) is not None:
+                continue
             if isinstance(value, (dict, list)):
                 if isinstance(value, dict):
                     for child_key, child_value in value.items():

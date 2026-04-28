@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import pytest
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api.routes import api_query as api_query_routes
+from app.api import dependencies as api_dependencies
 from app.core.config import settings
+from app.services.api_catalog.business_intents import BusinessIntentCatalogService, set_business_intent_catalog_service
+from app.services.ui_catalog_service import UICatalogService
 from app.models.schemas import (
     ApiQueryExecutionPlan,
     ApiQueryExecutionResult,
@@ -12,7 +17,45 @@ from app.models.schemas import (
     ApiQueryPlanStep,
     ApiQueryRoutingResult,
 )
-from app.services.api_catalog.schema import ApiCatalogDetailHint, ApiCatalogEntry, ApiCatalogSearchResult
+from app.services.api_catalog.schema import ApiCatalogDetailHint, ApiCatalogEntry, ApiCatalogPaginationHint, ApiCatalogSearchResult
+
+
+class StubAppResources:
+    """API 路由测试只注入当前接口依赖的资源桩。"""
+
+    def __init__(self) -> None:
+        self.ui_catalog_service = UICatalogService()
+        self.api_catalog_registry_source = StubRegistrySource(None)
+
+
+def _reset_api_query_singletons() -> None:
+    api_query_routes._workflow = None
+    api_query_routes._retriever = None
+    api_query_routes._extractor = None
+    api_query_routes._executor = None
+    api_query_routes._planner = None
+    api_query_routes._dynamic_ui = None
+    api_query_routes._snapshot_service = None
+
+
+def _get_test_resources() -> StubAppResources:
+    return StubAppResources()
+
+
+def _install_test_dependencies(app: FastAPI) -> None:
+    resources = _get_test_resources()
+    app.dependency_overrides[api_dependencies.get_app_resource_container] = lambda: resources
+
+
+@pytest.fixture(autouse=True)
+def api_query_runtime_test_fixture():
+    """API 路由测试显式注入进程级目录服务，并隔离 route 单例缓存。"""
+
+    _reset_api_query_singletons()
+    set_business_intent_catalog_service(BusinessIntentCatalogService())
+    yield
+    set_business_intent_catalog_service(None)
+    _reset_api_query_singletons()
 
 
 class StubRetriever:
@@ -128,6 +171,7 @@ class StubRegistrySource:
 
 def create_test_app() -> FastAPI:
     app = FastAPI()
+    _install_test_dependencies(app)
     app.include_router(api_query_routes.router, prefix="/api/v1")
     return app
 
@@ -299,7 +343,7 @@ def test_api_query_returns_empty_notice_for_empty_execution(monkeypatch) -> None
         api_query_routes.DynamicUIService(),
         PassThroughSnapshotService(),
     )
-    monkeypatch.setattr(api_query_routes, "_get_services", lambda: stub_services)
+    monkeypatch.setattr(api_query_routes, "_get_services", lambda **_: stub_services)
 
     client = TestClient(create_test_app())
     response = client.post("/api/v1/api-query", json={"query": "查询不存在的客户"})
@@ -331,7 +375,7 @@ def test_api_query_returns_error_notice_for_error_execution(monkeypatch) -> None
         api_query_routes.DynamicUIService(),
         PassThroughSnapshotService(),
     )
-    monkeypatch.setattr(api_query_routes, "_get_services", lambda: stub_services)
+    monkeypatch.setattr(api_query_routes, "_get_services", lambda **_: stub_services)
 
     client = TestClient(create_test_app())
     response = client.post("/api/v1/api-query", json={"query": "查询客户"})
@@ -363,7 +407,7 @@ def test_api_query_returns_skipped_notice_for_missing_required_params(monkeypatc
         api_query_routes.DynamicUIService(),
         PassThroughSnapshotService(),
     )
-    monkeypatch.setattr(api_query_routes, "_get_services", lambda: stub_services)
+    monkeypatch.setattr(api_query_routes, "_get_services", lambda **_: stub_services)
 
     client = TestClient(create_test_app())
     response = client.post("/api/v1/api-query", json={"query": "查询客户详情"})
@@ -396,7 +440,7 @@ def test_api_query_renders_mutation_form_instead_of_skipped_notice(monkeypatch) 
         api_query_routes.DynamicUIService(),
         PassThroughSnapshotService(),
     )
-    monkeypatch.setattr(api_query_routes, "_get_services", lambda: stub_services)
+    monkeypatch.setattr(api_query_routes, "_get_services", lambda **_: stub_services)
 
     client = TestClient(create_test_app())
     response = client.post(
@@ -447,7 +491,7 @@ def test_api_query_write_intent_with_multiple_mutations_still_renders_selected_c
         api_query_routes.DynamicUIService(),
         PassThroughSnapshotService(),
     )
-    monkeypatch.setattr(api_query_routes, "_get_services", lambda: stub_services)
+    monkeypatch.setattr(api_query_routes, "_get_services", lambda **_: stub_services)
 
     client = TestClient(create_test_app())
     response = client.post(
@@ -487,7 +531,7 @@ def test_api_query_truncates_context_pool_and_ui_rows(monkeypatch) -> None:
         api_query_routes.DynamicUIService(),
         PassThroughSnapshotService(),
     )
-    monkeypatch.setattr(api_query_routes, "_get_services", lambda: stub_services)
+    monkeypatch.setattr(api_query_routes, "_get_services", lambda **_: stub_services)
 
     client = TestClient(create_test_app())
     response = client.post("/api/v1/api-query", json={"query": "查询客户列表"})
@@ -522,7 +566,7 @@ def test_api_query_renders_single_object_as_detail_card(monkeypatch) -> None:
         api_query_routes.DynamicUIService(),
         PassThroughSnapshotService(),
     )
-    monkeypatch.setattr(api_query_routes, "_get_services", lambda: stub_services)
+    monkeypatch.setattr(api_query_routes, "_get_services", lambda **_: stub_services)
 
     client = TestClient(create_test_app())
     response = client.post("/api/v1/api-query", json={"query": "查询客户详情"})
@@ -603,7 +647,7 @@ def test_api_query_renders_composite_single_object_as_metrics_and_tables(monkeyp
         api_query_routes.DynamicUIService(),
         PassThroughSnapshotService(),
     )
-    monkeypatch.setattr(api_query_routes, "_get_services", lambda: stub_services)
+    monkeypatch.setattr(api_query_routes, "_get_services", lambda **_: stub_services)
 
     client = TestClient(create_test_app())
     response = client.post("/api/v1/api-query", json={"query": "查询刘海坚的储值方案"})
@@ -669,14 +713,13 @@ def test_api_query_detail_card_uses_detail_request_schema_keys(monkeypatch) -> N
         api_query_routes.DynamicUIService(),
         PassThroughSnapshotService(),
     )
-    monkeypatch.setattr(api_query_routes, "_get_services", lambda: stub_services)
-    monkeypatch.setattr(
-        api_query_routes,
-        "_get_registry_source",
-        lambda: StubRegistrySource({"customer_detail": detail_entry}),
-    )
+    monkeypatch.setattr(api_query_routes, "_get_services", lambda **_: stub_services)
 
-    client = TestClient(create_test_app())
+    app = create_test_app()
+    app.dependency_overrides[api_dependencies.get_api_catalog_registry_source] = lambda: StubRegistrySource(
+        {"customer_detail": detail_entry}
+    )
+    client = TestClient(app)
     response = client.post("/api/v1/api-query", json={"query": "查询客户详情"})
 
     assert response.status_code == 200
@@ -787,7 +830,7 @@ def test_api_query_executes_multi_step_plan_and_returns_multi_step_context_pool(
         api_query_routes.DynamicUIService(),
         PassThroughSnapshotService(),
     )
-    monkeypatch.setattr(api_query_routes, "_get_services", lambda: stub_services)
+    monkeypatch.setattr(api_query_routes, "_get_services", lambda **_: stub_services)
     monkeypatch.setattr(api_query_routes, "_get_planner", lambda: PlannerStub())
 
     client = TestClient(create_test_app())
@@ -907,7 +950,7 @@ def test_api_query_renders_partial_success_with_notice_and_table(monkeypatch) ->
         api_query_routes.DynamicUIService(),
         PassThroughSnapshotService(),
     )
-    monkeypatch.setattr(api_query_routes, "_get_services", lambda: stub_services)
+    monkeypatch.setattr(api_query_routes, "_get_services", lambda **_: stub_services)
     monkeypatch.setattr(api_query_routes, "_get_planner", lambda: PlannerStub())
 
     client = TestClient(create_test_app())
@@ -1024,7 +1067,7 @@ def test_api_query_multi_step_can_fallback_to_summary_table_via_policy(monkeypat
         api_query_routes.DynamicUIService(),
         PassThroughSnapshotService(),
     )
-    monkeypatch.setattr(api_query_routes, "_get_services", lambda: stub_services)
+    monkeypatch.setattr(api_query_routes, "_get_services", lambda **_: stub_services)
     monkeypatch.setattr(api_query_routes, "_get_planner", lambda: PlannerStub())
 
     client = TestClient(create_test_app())
@@ -1239,7 +1282,7 @@ def test_api_query_multi_step_can_render_aggregate_sections(monkeypatch) -> None
         api_query_routes.DynamicUIService(),
         PassThroughSnapshotService(),
     )
-    monkeypatch.setattr(api_query_routes, "_get_services", lambda: stub_services)
+    monkeypatch.setattr(api_query_routes, "_get_services", lambda **_: stub_services)
     monkeypatch.setattr(api_query_routes, "_get_planner", lambda: PlannerStub())
 
     client = TestClient(create_test_app())
@@ -1249,20 +1292,31 @@ def test_api_query_multi_step_can_render_aggregate_sections(monkeypatch) -> None
     body = response.json()
     _assert_api_query_response_keys(body)
     children = _get_root_children(body["ui_spec"])
-    tables = [child for child in children if child["type"] == "PlannerTable"]
-    assert len(tables) == 3
+    info_grids = [child for child in children if child["type"] == "PlannerInfoGrid"]
+    assert len(info_grids) == 3
 
-    # 聚合模式下每个子表都携带后端字段锚点，前端可按 bizFieldKey 进行稳定映射。
-    assert {table["props"]["bizFieldKey"] for table in tables} == {
+    # 聚合模式下详情型子块使用信息网格，并保留稳定 bizFieldKey 供前端映射。
+    assert {grid["props"]["bizFieldKey"] for grid in info_grids} == {
         "healthBasic",
         "healthStatusMedicalHistory",
         "physicalExam",
     }
-    titles = {table["props"]["title"] for table in tables}
+    titles = {grid["props"]["title"] for grid in info_grids}
     assert {"健康基本信息", "病史", "体检情况"} <= titles
-    # 多步骤聚合场景也应携带完整列表 runtime，供前端二跳能力使用。
-    for table in tables:
-        _assert_runtime_metadata(table["props"], trace_id=body["trace_id"], api_suffix="physical_exam")
+    runtime_api_suffix_by_section = {
+        "healthBasic": "health_basic",
+        "healthStatusMedicalHistory": "health_history",
+        "physicalExam": "physical_exam",
+    }
+    for grid in info_grids:
+        section_key = grid["props"]["bizFieldKey"]
+        _assert_runtime_metadata(
+            grid["props"],
+            trace_id=body["trace_id"],
+            api_suffix=runtime_api_suffix_by_section[section_key],
+        )
+        assert grid["props"]["queryParams"] == {"encryptedIdCard": "ENC001"}
+        assert grid["props"]["body"] == {}
 
 
 def test_api_query_multi_step_auto_policy_renders_aggregate_sections(monkeypatch) -> None:
@@ -1468,7 +1522,7 @@ def test_api_query_multi_step_auto_policy_renders_aggregate_sections(monkeypatch
         api_query_routes.DynamicUIService(),
         PassThroughSnapshotService(),
     )
-    monkeypatch.setattr(api_query_routes, "_get_services", lambda: stub_services)
+    monkeypatch.setattr(api_query_routes, "_get_services", lambda **_: stub_services)
     monkeypatch.setattr(api_query_routes, "_get_planner", lambda: PlannerStub())
 
     client = TestClient(create_test_app())
@@ -1478,13 +1532,149 @@ def test_api_query_multi_step_auto_policy_renders_aggregate_sections(monkeypatch
     body = response.json()
     _assert_api_query_response_keys(body)
     children = _get_root_children(body["ui_spec"])
-    tables = [child for child in children if child["type"] == "PlannerTable"]
-    assert len(tables) == 3
-    assert {table["props"]["bizFieldKey"] for table in tables} == {
+    info_grids = [child for child in children if child["type"] == "PlannerInfoGrid"]
+    assert len(info_grids) == 3
+    assert {grid["props"]["bizFieldKey"] for grid in info_grids} == {
         "healthBasic",
         "healthStatusMedicalHistory",
         "physicalExam",
     }
+
+
+def test_api_query_multi_step_aggregate_keeps_explicit_list_section_as_table(monkeypatch) -> None:
+    customer_entry = ApiCatalogEntry(
+        id="customer_list",
+        description="查询客户列表",
+        domain="crm",
+        operation_safety="query",
+        method="GET",
+        path="/api/v1/customers",
+        param_schema={
+            "type": "object",
+            "properties": {"customerInfo": {"type": "string"}},
+            "required": ["customerInfo"],
+        },
+    )
+    customer_tag_entry = ApiCatalogEntry(
+        id="customer_tags",
+        description="客户标签列表",
+        domain="crm",
+        operation_safety="query",
+        method="GET",
+        path="/api/v1/customer-tags",
+        ui_hint="list",
+        response_schema={
+            "type": "object",
+            "properties": {
+                "data": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "tagName": {"type": "string", "description": "标签名称"},
+                            "tagLevel": {"type": "string", "description": "标签等级"},
+                        },
+                    },
+                }
+            },
+        },
+        response_data_path="data",
+        param_schema={
+            "type": "object",
+            "properties": {"customerId": {"type": "string"}},
+            "required": ["customerId"],
+        },
+        pagination_hint=ApiCatalogPaginationHint(enabled=True),
+    )
+
+    class MultiRetriever:
+        async def search(self, query: str, top_k: int = 3, score_threshold: float = 0.3, filters=None):
+            return [
+                ApiCatalogSearchResult(entry=customer_entry, score=0.95),
+                ApiCatalogSearchResult(entry=customer_tag_entry, score=0.94),
+            ]
+
+        async def search_stratified(self, query: str, *, domains, top_k: int = 3, filters=None, **kwargs):
+            return await self.search(query, top_k=top_k, score_threshold=0.3, filters=filters)
+
+    class RouteOnlyExtractor:
+        async def route_query(self, query: str, user_context: dict[str, object], **kwargs):
+            return ApiQueryRoutingResult(
+                query_domains=["crm"],
+                business_intents=["none"],
+                is_multi_domain=True,
+                reasoning="explicit list section runtime test",
+                route_status="ok",
+            )
+
+    class PlannerStub:
+        async def build_plan(self, query, candidates, user_context, route_hint, **kwargs):
+            return ApiQueryExecutionPlan(
+                plan_id="dag_customer_tag_list",
+                steps=[
+                    ApiQueryPlanStep(
+                        step_id="step_get_customer",
+                        api_id="customer_list",
+                        api_path=customer_entry.path,
+                        params={"customerInfo": "刘海坚"},
+                        depends_on=[],
+                    ),
+                    ApiQueryPlanStep(
+                        step_id="step_customer_tags",
+                        api_id="customer_tags",
+                        api_path=customer_tag_entry.path,
+                        params={"customerId": "$[step_get_customer.data][*].customerId"},
+                        depends_on=["step_get_customer"],
+                    ),
+                ],
+            )
+
+        def validate_plan(self, plan, candidates):
+            return {
+                "step_get_customer": customer_entry,
+                "step_customer_tags": customer_tag_entry,
+            }
+
+    class MultiStepExecutor:
+        async def call(self, entry, params, user_token=None, trace_id: str | None = None, user_id: str | None = None):
+            if entry.id == "customer_list":
+                return ApiQueryExecutionResult(
+                    status=ApiQueryExecutionStatus.SUCCESS,
+                    data=[{"customerId": "C001", "customerName": "刘海坚"}],
+                    total=1,
+                    trace_id=trace_id,
+                )
+            return ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.SUCCESS,
+                data=[{"tagName": "高净值", "tagLevel": "A"}],
+                total=1,
+                trace_id=trace_id,
+            )
+
+    monkeypatch.setattr(settings, "api_query_multi_step_render_policy", "aggregate_result")
+    stub_services = (
+        MultiRetriever(),
+        RouteOnlyExtractor(),
+        MultiStepExecutor(),
+        api_query_routes.DynamicUIService(),
+        PassThroughSnapshotService(),
+    )
+    monkeypatch.setattr(api_query_routes, "_get_services", lambda **_: stub_services)
+    monkeypatch.setattr(api_query_routes, "_get_planner", lambda: PlannerStub())
+
+    client = TestClient(create_test_app())
+    response = client.post("/api/v1/api-query", json={"query": "查询客户刘海坚的标签"})
+
+    assert response.status_code == 200
+    body = response.json()
+    children = _get_root_children(body["ui_spec"])
+    tables = [child for child in children if child["type"] == "PlannerTable"]
+    assert len(tables) == 1
+    table = tables[0]
+    assert table["props"]["bizFieldKey"] == "customer_tags"
+    assert table["props"]["dataSource"] == [{"tagName": "高净值", "tagLevel": "A"}]
+    _assert_runtime_metadata(table["props"], trace_id=body["trace_id"], api_suffix="customer_tags")
+    assert table["props"]["queryParams"] == {"customerId": "C001"}
 
 
 def test_api_query_returns_error_response_when_execution_graph_fails(monkeypatch) -> None:
@@ -1555,7 +1745,7 @@ def test_api_query_returns_error_response_when_execution_graph_fails(monkeypatch
         api_query_routes.DynamicUIService(),
         PassThroughSnapshotService(),
     )
-    monkeypatch.setattr(api_query_routes, "_get_services", lambda: stub_services)
+    monkeypatch.setattr(api_query_routes, "_get_services", lambda **_: stub_services)
     monkeypatch.setattr(api_query_routes, "_get_planner", lambda: PlannerStub())
 
     client = TestClient(create_test_app())

@@ -12,6 +12,7 @@ from app.models.schemas import (
     ApiQueryPlanStep,
 )
 from app.services.api_catalog.dag_executor import DagStepExecutionRecord
+from app.services.api_catalog.business_intents import BusinessIntentCatalogService, set_business_intent_catalog_service
 from app.services.api_catalog.schema import ApiCatalogEntry, ApiCatalogPaginationHint, ParamSchema
 from app.services.api_query_response_builder import ApiQueryResponseBuilder
 from app.services.api_query_state import ApiQueryRuntimeContext, ApiQueryState
@@ -20,6 +21,15 @@ from app.services.ui_catalog_service import UICatalogService
 from app.services.ui_snapshot_service import UISnapshotService
 from app.services.ui_spec_guard import UISpecValidationError, UISpecValidationResult
 from app.core.config import settings
+
+
+@pytest.fixture(autouse=True)
+def business_intent_catalog_fixture():
+    """响应构建测试显式注入业务意图目录，避免依赖应用 lifespan。"""
+
+    set_business_intent_catalog_service(BusinessIntentCatalogService())
+    yield
+    set_business_intent_catalog_service(None)
 
 
 @dataclass(slots=True)
@@ -1290,11 +1300,31 @@ async def test_build_execution_response_multi_step_can_use_aggregate_policy(monk
     assert "healthBasic" not in dynamic_ui.captured_context["response_field_label_index"]
     assert "healthStatusMedicalHistory" not in dynamic_ui.captured_context["response_field_label_index"]
     assert "physicalExam" not in dynamic_ui.captured_context["response_field_label_index"]
+    assert dynamic_ui.captured_context["aggregate_section_runtime_index"] == {
+        "healthBasic": {
+            "api_id": "health_basic",
+            "param_source": "queryParams",
+            "params": {"encryptedIdCard": "ENC001"},
+            "request_schema_fields": ["encryptedIdCard"],
+        },
+        "healthStatusMedicalHistory": {
+            "api_id": "health_history",
+            "param_source": "queryParams",
+            "params": {"encryptedIdCard": "ENC001"},
+            "request_schema_fields": ["encryptedIdCard"],
+        },
+        "physicalExam": {
+            "api_id": "physical_exam",
+            "param_source": "queryParams",
+            "params": {"encryptedIdCard": "ENC001"},
+            "request_schema_fields": ["encryptedIdCard"],
+        },
+    }
     assert dynamic_ui.captured_data == [
         {
-            "healthBasic": [{"bloodType": "A型"}],
-            "healthStatusMedicalHistory": [{"history": "高血压"}],
-            "physicalExam": [{"latestExamDate": "2025-04-08"}],
+            "healthBasic": {"__sectionType": "detail", "data": {"bloodType": "A型"}},
+            "healthStatusMedicalHistory": {"__sectionType": "detail", "data": {"history": "高血压"}},
+            "physicalExam": {"__sectionType": "detail", "data": {"latestExamDate": "2025-04-08"}},
         }
     ]
 
@@ -1531,11 +1561,31 @@ async def test_build_execution_response_multi_step_auto_policy_prefers_aggregate
         "healthStatusMedicalHistory": "病史接口",
         "physicalExam": "体检接口",
     }
+    assert dynamic_ui.captured_context["aggregate_section_runtime_index"] == {
+        "healthBasic": {
+            "api_id": "health_basic",
+            "param_source": "queryParams",
+            "params": {"encryptedIdCard": "ENC001"},
+            "request_schema_fields": ["encryptedIdCard"],
+        },
+        "healthStatusMedicalHistory": {
+            "api_id": "health_history",
+            "param_source": "queryParams",
+            "params": {"encryptedIdCard": "ENC001"},
+            "request_schema_fields": ["encryptedIdCard"],
+        },
+        "physicalExam": {
+            "api_id": "physical_exam",
+            "param_source": "queryParams",
+            "params": {"encryptedIdCard": "ENC001"},
+            "request_schema_fields": ["encryptedIdCard"],
+        },
+    }
     assert dynamic_ui.captured_data == [
         {
-            "healthBasic": [{"bloodType": "A型"}],
-            "healthStatusMedicalHistory": [{"history": "高血压"}],
-            "physicalExam": [{"latestExamDate": "2025-04-08"}],
+            "healthBasic": {"__sectionType": "detail", "data": {"bloodType": "A型"}},
+            "healthStatusMedicalHistory": {"__sectionType": "detail", "data": {"history": "高血压"}},
+            "physicalExam": {"__sectionType": "detail", "data": {"latestExamDate": "2025-04-08"}},
         }
     ]
 

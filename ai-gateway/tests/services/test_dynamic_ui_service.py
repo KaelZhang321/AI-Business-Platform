@@ -56,7 +56,6 @@ class StubUICatalogService:
                 "PlannerCard": "自定义卡片说明",
                 "PlannerInfoGrid": "自定义信息网格说明",
                 "PlannerTable": "自定义表格说明",
-                "PlannerDetailCard": "自定义详情说明",
                 "PlannerPagination": "自定义分页说明",
                 "PlannerForm": "自定义表单说明",
                 "PlannerInput": "自定义输入框说明",
@@ -75,7 +74,6 @@ class StubUICatalogService:
                 "PlannerCard",
                 "PlannerInfoGrid",
                 "PlannerTable",
-                "PlannerDetailCard",
                 "PlannerPagination",
                 "PlannerForm",
                 "PlannerInput",
@@ -90,7 +88,6 @@ class StubUICatalogService:
             "PlannerCard",
             "PlannerInfoGrid",
             "PlannerTable",
-            "PlannerDetailCard",
             "PlannerPagination",
             "PlannerForm",
             "PlannerInput",
@@ -123,7 +120,6 @@ def _make_runtime() -> ApiQueryUIRuntime:
             "PlannerMetric",
             "PlannerInfoGrid",
             "PlannerTable",
-            "PlannerDetailCard",
             "PlannerPagination",
             "PlannerForm",
             "PlannerInput",
@@ -301,7 +297,7 @@ async def test_generate_ui_spec_uses_renderer_prompt_json_mode_and_pruned_contex
     user_prompt = messages[1]["content"]
     assert "Renderer Agent" in system_prompt
     assert "UI Catalog" in system_prompt
-    assert "PlannerDetailCard" in system_prompt
+    assert "PlannerInfoGrid" in system_prompt
     assert "自定义表格说明" in system_prompt
     assert "business_intents" in user_prompt
     assert "context_pool" in user_prompt
@@ -743,9 +739,9 @@ async def test_rule_query_spec_composite_uses_aggregate_section_title_index_for_
 
     data = [
         {
-            "healthBasic": [{"bloodType": "A型"}],
-            "healthStatusMedicalHistory": [{"history": "高血压"}],
-            "physicalExam": [{"latestExamDate": "2025-04-08"}],
+            "healthBasic": {"__sectionType": "detail", "data": {"bloodType": "A型"}},
+            "healthStatusMedicalHistory": {"__sectionType": "detail", "data": {"history": "高血压"}},
+            "physicalExam": {"__sectionType": "detail", "data": {"latestExamDate": "2025-04-08"}},
         }
     ]
 
@@ -768,17 +764,76 @@ async def test_rule_query_spec_composite_uses_aggregate_section_title_index_for_
     root = _root_element(spec)
     assert root["type"] == "PlannerBlankContainer"
     card = _root_child_by_type(spec, "PlannerCard")
-    tables = [child for child in _children_of(spec, card) if child["type"] == "PlannerTable"]
-    assert {table["props"]["bizFieldKey"] for table in tables} == {
+    info_grids = [child for child in _children_of(spec, card) if child["type"] == "PlannerInfoGrid"]
+    assert {grid["props"]["bizFieldKey"] for grid in info_grids} == {
         "healthBasic",
         "healthStatusMedicalHistory",
         "physicalExam",
     }
-    assert {table["props"]["title"] for table in tables} == {
+    assert {grid["props"]["title"] for grid in info_grids} == {
         "健康基础档案",
         "医疗史概览",
         "体检结果",
     }
+
+
+@pytest.mark.asyncio
+async def test_rule_query_spec_composite_uses_section_runtime_for_typed_aggregate_children(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """多接口聚合页每个 child 应使用自己的二跳接口元数据。"""
+
+    monkeypatch.setattr(settings, "llm_ui_spec_enabled", False)
+    service = DynamicUIService(catalog_service=UICatalogService())
+
+    spec = await service.generate_ui_spec(
+        intent="query",
+        data=[
+            {
+                "identityContact": {"__sectionType": "detail", "data": {"customerName": "刘海坚"}},
+                "serviceRecords": {
+                    "__sectionType": "table",
+                    "data": [{"visitFrequency": "每月"}],
+                },
+            }
+        ],
+        context={
+            "question": "查询客户刘海坚的信息",
+            "query_render_mode": "composite",
+            "flow_num": "trace-section-runtime",
+            "created_by": "2",
+            "aggregate_section_runtime_index": {
+                "identityContact": {
+                    "api_id": "identity_api",
+                    "param_source": "queryParams",
+                    "params": {"encryptedIdCard": "ENC001", "extra": "DROP"},
+                    "request_schema_fields": ["encryptedIdCard"],
+                },
+                "serviceRecords": {
+                    "api_id": "service_api",
+                    "param_source": "body",
+                    "params": {"encryptedIdCard": "ENC001", "extra": "DROP"},
+                    "request_schema_fields": ["encryptedIdCard"],
+                },
+            },
+        },
+        runtime=_make_runtime(),
+    )
+
+    assert spec is not None
+    card = _root_child_by_type(spec, "PlannerCard")
+    children = _children_of(spec, card)
+    info_grid = next(child for child in children if child["type"] == "PlannerInfoGrid")
+    table = next(child for child in children if child["type"] == "PlannerTable")
+
+    assert info_grid["props"]["api"] == "/api/v1/ui-builder/runtime/endpoints/identity_api/invoke"
+    assert info_grid["props"]["queryParams"] == {"encryptedIdCard": "ENC001"}
+    assert info_grid["props"]["body"] == {}
+    assert table["props"]["api"] == "/api/v1/ui-builder/runtime/endpoints/service_api/invoke"
+    assert table["props"]["queryParams"] == {}
+    assert table["props"]["body"] == {"encryptedIdCard": "ENC001"}
+    assert info_grid["props"]["flowNum"] == "trace-section-runtime"
+    assert table["props"]["createdBy"] == "2"
 
 
 @pytest.mark.asyncio
