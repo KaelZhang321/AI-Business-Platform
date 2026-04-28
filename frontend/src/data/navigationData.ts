@@ -5,7 +5,6 @@ export type AppPage =
   | 'dashboard'
   | 'function-square'
   | 'ai-report-comparison'
-  | 'health-report'
   | 'ai-four-quadrant'
   | 'ai-component-management'
   | 'ui-builder'
@@ -34,7 +33,6 @@ export type NavigationIcon =
   | 'layout-dashboard'
   | 'sparkles'
   | 'search'
-  | 'file-heart'
   | 'bell'
   | 'settings';
 
@@ -67,16 +65,11 @@ export interface NavigationItemDefinition {
 /** 全量页面定义映射：页面标识 → 元信息配置 */
 export const PAGE_DEFINITIONS: Record<AppPage, PageDefinition> = {
   login: { path: '/login', title: '登录', implemented: false },
-  dashboard: { path: '/', title: 'AI业务工作台', implemented: true },
+  dashboard: { path: '/dashboard', title: 'AI业务工作台', implemented: true },
   'function-square': { path: '/function-square', title: '功能广场', implemented: true },
   'ai-report-comparison': {
     path: '/ai-report-comparison',
     title: 'AI报告对比',
-    implemented: true,
-  },
-  'health-report': {
-    path: '/health-report',
-    title: '体检报告',
     implemented: true,
   },
   'ai-four-quadrant': {
@@ -211,11 +204,6 @@ export const NAVIGATION_ITEMS: NavigationItemDefinition[] = [
     page: 'customer-search',
     label: '客户查询',
     icon: 'search',
-  },
-  {
-    page: 'health-report',
-    label: '体检报告',
-    icon: 'file-heart',
   },
 ];
 

@@ -2,28 +2,29 @@
 set -e
 
 # This script is executed on the REMOTE server.
-# Environment variables like ALIYUN_REGISTRY, FULL_IMAGE_NAME, etc. are passed by the deploy script.
+# The deploy script passes FULL_IMAGE_NAME. Do not recalculate it here,
+# otherwise test deployments may accidentally pull the production image.
+IMAGE_TAG="${IMAGE_TAG:-1.0.0}"
+IMAGE_NAME="${IMAGE_NAME:-ai-web}"
+ALIYUN_REGISTRY="${ALIYUN_REGISTRY:-crpi-301jbh81iyvo39lb.cn-beijing.personal.cr.aliyuncs.com}"
 
-if [[ "${PROFILES_ACTIVE}" == "dev" ]]; then
-    NAMESPACE="leczcore_dev"
-else
-    NAMESPACE="leczcore_prod"
+if [ -z "$FULL_IMAGE_NAME" ]; then
+    if [ -z "$ALIYUN_NAMESPACE" ]; then
+        if [[ "${BUILD_ENV}" == "test" || "${PROFILES_ACTIVE}" == "dev" ]]; then
+            ALIYUN_NAMESPACE="leczcore_dev"
+        else
+            ALIYUN_NAMESPACE="leczcore_prod"
+        fi
+    fi
+
+    if [[ "$IMAGE_NAME" == */* ]]; then
+        FULL_IMAGE_NAME="${IMAGE_NAME}:${IMAGE_TAG}"
+    else
+        FULL_IMAGE_NAME="${ALIYUN_REGISTRY}/${ALIYUN_NAMESPACE}/${IMAGE_NAME}:${IMAGE_TAG}"
+    fi
 fi
 
-IMAGE_NAME="crpi-301jbh81iyvo39lb.cn-beijing.personal.cr.aliyuncs.com/${NAMESPACE}/ai-web"  # 镜像名称
-IMAGE_TAG="1.0.0"                         # 镜像标签
-FULL_IMAGE_NAME="${IMAGE_NAME}:${IMAGE_TAG}"
 echo "=== Remote Deployment for $FULL_IMAGE_NAME ==="
-
-
-# 根据 PROFILES_ACTIVE 确定镜像命名空间
-if [[ "${BUILD_ENV}" == "test" ]]; then
-    ALIYUN_NAMESPACE="leczcore_dev"
-elif [[ "${BUILD_ENV}" == "prod" ]]; then
-    ALIYUN_NAMESPACE="leczcore_prod"
-else 
-    ALIYUN_NAMESPACE="leczcore_dev"
-fi
 
 docker pull "$FULL_IMAGE_NAME"
 

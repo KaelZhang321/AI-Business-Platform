@@ -1,7 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { motion } from 'motion/react';
 import { ArrowLeft, Calendar, Package, Hash } from 'lucide-react';
-import rawData from '../../data/healthReportRaw';
+import rawData from '../../data/healthReportRaw.ts';
 import { ReportSidebar } from './ReportSidebar';
 import { ReportOverview } from './ReportOverview';
 import { ReportDataTable } from './ReportDataTable';

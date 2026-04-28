@@ -54,6 +54,8 @@ interface MainContentPanelProps {
   runtimeStatusByCardId: Record<string, 'loading' | 'ready' | 'empty' | 'error'>;
   /** 各卡片的错误信息 */
   runtimeErrorByCardId: Record<string, string>;
+  /** 卡片触发运行时保存（用于 mutation 接口） */
+  onRuntimeCardSave?: (cardId: string, payload: Record<string, unknown>) => Promise<void> | void;
 }
 
 /** 主内容面板组件：展示客户信息头部、布局标签、AI 结果卡片和拖拽排序工作区 */
@@ -80,6 +82,7 @@ export const MainContentPanel: React.FC<MainContentPanelProps> = ({
   runtimeDataByCardId,
   runtimeStatusByCardId,
   runtimeErrorByCardId,
+  onRuntimeCardSave,
 }) => {
   const hasConversationOutput = Boolean(latestAssistantMessage) && aiResults.length > 0;
   const showConversationOutputOnly = hasConversationOutput && !isLayoutViewEnabled;
@@ -173,7 +176,7 @@ export const MainContentPanel: React.FC<MainContentPanelProps> = ({
         )}
 
         <div className="flex flex-1 min-h-0 flex-col p-6">
-          <div className="mb-6 flex items-center justify-between">
+          <div className="mb-3 flex items-center justify-between">
             <h3 className="text-lg font-bold text-slate-900 dark:text-white">AI结果显示区</h3>
             {!selectedCustomer ? (
               <span className="rounded-full bg-red-50 px-3 py-1 text-[10px] font-medium text-red-500">待客户激活</span>
@@ -223,7 +226,7 @@ export const MainContentPanel: React.FC<MainContentPanelProps> = ({
                       最新回复
                     </span>
                   </div> */}
-                  <div className="rounded-xl border border-white/70 bg-white/80 p-3 dark:border-slate-700 dark:bg-slate-900/70">
+                  <div>
                     <AssistantMessageContent content={latestAssistantMessage} />
                   </div>
                   <p className="mt-3 text-[11px] text-slate-500 dark:text-slate-400">
@@ -253,8 +256,12 @@ export const MainContentPanel: React.FC<MainContentPanelProps> = ({
                           >
                             <CardComponent
                               runtimeData={runtimeDataByCardId[id]}
+                              runtimeDataByCardId={runtimeDataByCardId}
                               runtimeStatus={runtimeStatusByCardId[id]}
                               runtimeError={runtimeErrorByCardId[id]}
+                              onRuntimeSave={(payload: Record<string, unknown>) => {
+                                void onRuntimeCardSave?.(id, payload);
+                              }}
                             />
                           </SortableCard>
                         );

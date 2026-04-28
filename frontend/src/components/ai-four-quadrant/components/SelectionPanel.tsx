@@ -1,9 +1,10 @@
-import { useRef, type UIEvent } from 'react'
+import { useRef, useState, type UIEvent } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import { Check, ChevronDown, Loader2, Search } from 'lucide-react'
 import type { ClientOption, ReportOption } from '../types'
 
 interface SelectionPanelProps {
+  quadrantType: 'exam' | 'treatment'
   selectedClient?: ClientOption
   selectedClientId: string | null
   selectedReport?: ReportOption
@@ -25,11 +26,13 @@ interface SelectionPanelProps {
   onLoadMoreClients?: () => void
   onCustomerKeywordChange?: (value: string) => void
   onSelectReport: (id: string) => void
+  onQuadrantTypeChange: (value: 'exam' | 'treatment') => void
   onSetNotes: (value: string) => void
   onStartAnalysis: () => void
 }
 
 export const SelectionPanel = ({
+  quadrantType,
   selectedClient,
   selectedClientId,
   selectedReport,
@@ -51,10 +54,17 @@ export const SelectionPanel = ({
   onLoadMoreClients,
   onCustomerKeywordChange,
   onSelectReport,
+  onQuadrantTypeChange,
   onSetNotes,
   onStartAnalysis,
 }: SelectionPanelProps) => {
   const isTriggeringLoadRef = useRef(false)
+  const [isQuadrantTypeDropdownOpen, setIsQuadrantTypeDropdownOpen] = useState(false)
+  const quadrantTypeOptions: Array<{ value: 'exam' | 'treatment'; label: string; description: string }> = [
+    { value: 'exam', label: '体检象限', description: '基于体检报告生成健康四象限' },
+    { value: 'treatment', label: '治疗象限', description: '基于治疗场景生成治疗四象限' },
+  ]
+  const selectedQuadrantType = quadrantTypeOptions.find((option) => option.value === quadrantType)
 
   const handleClientScroll = (event: UIEvent<HTMLDivElement>) => {
     if (!onLoadMoreClients || !hasMoreClients || isLoadingMoreClients || isTriggeringLoadRef.current) {
@@ -156,9 +166,8 @@ export const SelectionPanel = ({
           <button
             disabled={!selectedClientId}
             onClick={onReportDropdownToggle}
-            className={`w-full flex items-center justify-between px-4 py-3 bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-brand/50 dark:text-white transition-all ${
-              !selectedClientId ? 'opacity-50 cursor-not-allowed' : ''
-            }`}
+            className={`w-full flex items-center justify-between px-4 py-3 bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-brand/50 dark:text-white transition-all ${!selectedClientId ? 'opacity-50 cursor-not-allowed' : ''
+              }`}
           >
             <span className={selectedReport ? 'text-slate-900 dark:text-white' : 'text-slate-400'}>
               {selectedReport ? selectedReport.title : '请先选择客户后再选择报告'}
@@ -203,8 +212,56 @@ export const SelectionPanel = ({
           </AnimatePresence>
         </div>
 
+        <div className="space-y-2 relative">
+          <label className="text-sm font-bold text-brand dark:text-brand-400">象限类型</label>
+          <button
+            type="button"
+            onClick={() => setIsQuadrantTypeDropdownOpen((open) => !open)}
+            className="w-full flex items-center justify-between px-4 py-3 bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-brand/50 dark:text-white transition-all"
+          >
+            <span className="text-left">
+              <span className="block text-sm font-bold text-slate-900 dark:text-white">
+                {selectedQuadrantType?.label ?? '请选择象限类型'}
+              </span>
+              <span className="mt-0.5 block text-xs text-slate-500 dark:text-slate-400">
+                {selectedQuadrantType?.description ?? '选择本次分析的象限类型'}
+              </span>
+            </span>
+            <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform ${isQuadrantTypeDropdownOpen ? 'rotate-180' : ''}`} />
+          </button>
+
+          <AnimatePresence>
+            {isQuadrantTypeDropdownOpen && (
+              <motion.div
+                initial={{ opacity: 0, y: -10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -10 }}
+                className="absolute z-50 top-full left-0 w-full mt-2 bg-white dark:bg-slate-800 border border-slate-100 dark:border-slate-700 rounded-xl shadow-xl overflow-hidden"
+              >
+                {quadrantTypeOptions.map((option) => (
+                  <button
+                    key={option.value}
+                    type="button"
+                    onClick={() => {
+                      onQuadrantTypeChange(option.value)
+                      setIsQuadrantTypeDropdownOpen(false)
+                    }}
+                    className="w-full flex items-center px-4 py-3 hover:bg-slate-50 dark:hover:bg-slate-700/50 transition-colors text-left"
+                  >
+                    <div className="flex-1">
+                      <p className="text-sm font-bold text-slate-900 dark:text-white">{option.label}</p>
+                      <p className="text-xs text-slate-500">{option.description}</p>
+                    </div>
+                    {quadrantType === option.value && <Check className="w-4 h-4 text-brand" />}
+                  </button>
+                ))}
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+
         <div className="space-y-2">
-          <label className="text-sm font-bold text-brand dark:text-brand-400">补充备注给AI小助手</label>
+          <label className="text-sm font-bold text-brand dark:text-brand-400">备注</label>
           <textarea
             placeholder="记录当前症状、近期变化或问诊补充，AI将结合备注和报告综合判断四象限"
             className="w-full p-4 bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-brand/50 min-h-[100px] resize-none dark:text-white"
@@ -215,11 +272,10 @@ export const SelectionPanel = ({
 
         <button
           onClick={onStartAnalysis}
-          className={`w-full py-3 font-bold rounded-xl transition-all flex items-center justify-center space-x-2 ${
-            selectedClientId && selectedReportId && !isAnalyzing
-              ? 'bg-brand text-white hover:bg-brand-hover shadow-lg shadow-brand/20'
-              : 'bg-slate-100 dark:bg-slate-700 text-slate-400 dark:text-slate-500 cursor-not-allowed'
-          }`}
+          className={`w-full py-3 font-bold rounded-xl transition-all flex items-center justify-center space-x-2 ${selectedClientId && selectedReportId && !isAnalyzing
+            ? 'bg-brand text-white hover:bg-brand-hover shadow-lg shadow-brand/20'
+            : 'bg-slate-100 dark:bg-slate-700 text-slate-400 dark:text-slate-500 cursor-not-allowed'
+            }`}
           disabled={!selectedClientId || !selectedReportId || isAnalyzing}
         >
           {isAnalyzing ? (
@@ -236,7 +292,7 @@ export const SelectionPanel = ({
         </button>
       </div>
 
-      <div className="mt-8 space-y-3 shrink-0">
+      <div className="mt-4 space-y-3 shrink-0">
         <h4 className="text-sm font-bold text-slate-900 dark:text-white mb-4">页面提示</h4>
         <div className="flex items-start space-x-2 text-sm text-slate-600 dark:text-slate-400">
           <div className="w-1.5 h-1.5 rounded-full bg-brand mt-1.5 shrink-0" />

@@ -127,23 +127,17 @@ const AIFourQuadrantView = lazy(async () => {
   return { default: module.AIFourQuadrantView };
 });
 
-/** 体检报告页 */
-const HealthReportView = lazy(async () => {
-  const module = await import('./components/HealthReport/HealthReportView');
-  return { default: module.HealthReportView };
-});
-
 /** 页面加载中的验证动画（Suspense fallback） */
 function PageLoadingFallback() {
   return (
-    <section className="rounded-[32px] border border-slate-200/70 bg-white/80 px-8 py-12 shadow-sm">
+    <section className="rounded-[32px] border border-slate-200/70 bg-white/80 px-8 py-12 shadow-sm dark:border-slate-700/70 dark:bg-slate-900/80">
       <div className="space-y-6 animate-pulse">
-        <div className="h-4 w-28 rounded-full bg-slate-200" />
-        <div className="h-10 w-64 rounded-2xl bg-slate-200" />
+        <div className="h-4 w-28 rounded-full bg-slate-200 dark:bg-slate-700" />
+        <div className="h-10 w-64 rounded-2xl bg-slate-200 dark:bg-slate-700" />
         <div className="grid gap-4 md:grid-cols-3">
-          <div className="h-40 rounded-3xl bg-slate-100" />
-          <div className="h-40 rounded-3xl bg-slate-100" />
-          <div className="h-40 rounded-3xl bg-slate-100" />
+          <div className="h-40 rounded-3xl bg-slate-100 dark:bg-slate-800" />
+          <div className="h-40 rounded-3xl bg-slate-100 dark:bg-slate-800" />
+          <div className="h-40 rounded-3xl bg-slate-100 dark:bg-slate-800" />
         </div>
       </div>
     </section>
@@ -158,13 +152,6 @@ const PAGE_RENDERERS: Partial<Record<AppPage, PageRenderer>> = {
   ),
   'ai-report-comparison': ({ navigateToPage, isDarkMode, setIsDarkMode }) => (
     <AIReportComparisonDetailView
-      setCurrentPage={navigateToPage}
-      isDarkMode={isDarkMode}
-      setIsDarkMode={setIsDarkMode}
-    />
-  ),
-  'health-report': ({ navigateToPage, isDarkMode, setIsDarkMode }) => (
-    <HealthReportView
       setCurrentPage={navigateToPage}
       isDarkMode={isDarkMode}
       setIsDarkMode={setIsDarkMode}

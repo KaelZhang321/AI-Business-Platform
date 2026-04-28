@@ -149,6 +149,10 @@ export type RoleCardEndpointRelation = {
   cardId?: string
   /** 接口 ID */
   endpointId?: string
+  /** 操作安全等级（query/list/mutation） */
+  operationSafety?: 'query' | 'list' | 'mutation' | string | null
+  /** 接口维度操作安全等级（兼容字段） */
+  endpointOperationSafety?: 'query' | 'list' | 'mutation' | string | null
   /** 排序 */
   sortOrder?: number
   /** 接口名称 */

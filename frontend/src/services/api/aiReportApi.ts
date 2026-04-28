@@ -1,9 +1,13 @@
 import { apiClient } from '../api'
+import type { PatientExamCleanedResultResponse } from '../../types/patientExamCleanedResult'
 
 /** 后端统一响应包装 */
 type ApiEnvelope<T> = {
   /** 业务数据 */
-  data?: T
+  data?: {
+    data?: T
+    total?: number
+  }
 }
 
 /** 体检记录查询参数 */
@@ -36,6 +40,26 @@ type CustomerListQueryInput = {
   [key: string]: unknown
 }
 
+/** 客户总览统计 */
+export type PatientExamStats = {
+  /** 近三年客户总数 */
+  recentThreeYearsPatientCount?: number | string | null
+  /** 本周新增客户数 */
+  thisWeekPatientCount?: number | string | null
+  /** 上周新增客户数 */
+  lastWeekPatientCount?: number | string | null
+}
+
+/** 指标对比页 AI 咨询请求参数 */
+export type ComparisonChatQueryInput = {
+  /** 用户问题 */
+  query: string
+  /** 前端透传给后端的上下文 */
+  context?: unknown
+  /** 允许命中的页面/组件标识 */
+  targetIds?: string[]
+}
+
 /**
  * AI 报告页相关接口
  */
@@ -54,7 +78,15 @@ export const aiReportApi = {
    */
   async getPatientExamSessionsApi(params: PatientExamSessionsQueryInput) {
     const response = await apiClient.post<ApiEnvelope<unknown[]>>('/bs/api/v1/patient-exams/sessions/query', params)
-    return response.data?.data ?? response.data
+    return response.data?.data?.data ?? response.data?.data ?? response.data
+  },
+  /**
+   * 获取单次体检清洗结果
+   * GET /bs/api/v1/patient-exams/{studyId}/cleaned-result
+   */
+  async getPatientExamCleanedResultApi(studyId: string) {
+    const response = await apiClient.get<PatientExamCleanedResultResponse>(`/bs/api/v1/patient-exams/${studyId}/cleaned-result`)
+    return response.data
   },
   /**
    * 获取客户列表
@@ -62,6 +94,22 @@ export const aiReportApi = {
    */
   async getcustomersListApi(params: CustomerListQueryInput = {}) {
     const response = await apiClient.post<ApiEnvelope<unknown[]>>('/bs/api/v1/patient-exams/my-customers/query', params)
+    return response.data?.data ?? response.data
+  },
+  /**
+   * 获取客户统计数据
+   * GET /bs/api/v1/patient-exams/stats
+   */
+  async getPatientExamStatsApi() {
+    const response = await apiClient.get<ApiEnvelope<PatientExamStats>>('/bs/api/v1/patient-exams/stats')
+    return response.data?.data?.data ?? response.data?.data ?? response.data
+  },
+  /**
+   * 指标对比页 AI 实时咨询
+   * POST /api/v1/api-query
+   */
+  async getComparisonChatRouteApi(params: ComparisonChatQueryInput) {
+    const response = await apiClient.post<ApiEnvelope<unknown>>('/api/v1/report-intent/dialog', params)
     return response.data?.data ?? response.data
   },
 }

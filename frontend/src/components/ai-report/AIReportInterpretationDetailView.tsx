@@ -1,4 +1,4 @@
-import React, { useMemo, useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import type { AppPage } from '../../navigation';
 import { AIReportComparisonReportView } from './AIReportComparisonReportView';
@@ -7,8 +7,8 @@ import { DETAIL_STATS } from './detailView/data';
 import { DetailHeader } from './detailView/DetailHeader';
 import { FilterToolbar } from './detailView/FilterToolbar';
 import { StatsGrid } from './detailView/StatsGrid';
-import type { CustomerRecord, DetailViewMode } from './detailView/types';
-import { aiReportApi } from '../../services/api/aiReportApi';
+import type { CustomerRecord, DetailViewMode, StatCard } from './detailView/types';
+import { aiReportApi, type PatientExamStats } from '../../services/api/aiReportApi';
 
 export { AnimatedList, AnimatedListItem } from './detailView/AnimatedList';
 
@@ -29,6 +29,7 @@ export const AIReportComparisonDetailView: React.FC<AIReportComparisonDetailView
   const [activeStat, setActiveStat] = useState(0);
   const [selectedCustomer, setSelectedCustomer] = useState<CustomerRecord | null>(null);
   const [viewMode, setViewMode] = useState<DetailViewMode>('card');
+  const [stats, setStats] = useState<StatCard[]>(DETAIL_STATS);
   const [customers, setCustomers] = useState<CustomerRecord[]>([]);
   const [isLoadingCustomers, setIsLoadingCustomers] = useState(false);
   const [isLoadingMoreCustomers, setIsLoadingMoreCustomers] = useState(false);
@@ -90,6 +91,38 @@ export const AIReportComparisonDetailView: React.FC<AIReportComparisonDetailView
     return undefined;
   };
 
+  const formatStatValue = (value: unknown) => {
+    const num = toSafeNumber(value);
+    return typeof num === 'number' ? num.toLocaleString('zh-CN') : '-';
+  };
+
+  const buildStatsFromApi = (payload?: PatientExamStats): StatCard[] => {
+    if (!payload) {
+      return DETAIL_STATS.map((stat) => ({ ...stat, value: '-' }));
+    }
+
+    return [
+      {
+        ...DETAIL_STATS[0],
+        value: formatStatValue(payload.recentThreeYearsPatientCount),
+      },
+      {
+        ...DETAIL_STATS[1],
+        value: formatStatValue(payload.thisWeekPatientCount),
+      },
+      {
+        ...DETAIL_STATS[2],
+        label: '上周新增',
+        desc: '上周新增客户数',
+        value: formatStatValue(payload.lastWeekPatientCount),
+      },
+      {
+        ...DETAIL_STATS[3],
+        value: '-',
+      },
+    ];
+  };
+
   const mapCustomer = (item: RawCustomerItem): CustomerRecord => {
     const idValue = item.customerId != null ? String(item.customerId) : `${Date.now()}-${Math.random()}`;
     const name = item.patientName?.trim() || '未知客户';
@@ -117,7 +150,7 @@ export const AIReportComparisonDetailView: React.FC<AIReportComparisonDetailView
     };
   };
 
-  const fetchCustomers = async (pageNo: number, append = false) => {
+  const fetchCustomers = async (pageNo: number, append = false, keyword = searchTerm) => {
     if (append) {
       if (isLoadingMoreCustomers || isLoadingCustomers || !hasMoreCustomers) {
         return;
@@ -132,7 +165,7 @@ export const AIReportComparisonDetailView: React.FC<AIReportComparisonDetailView
       const res = await aiReportApi.getcustomersListApi({
         queryParams: {},
         body: {
-          customerInfo: '李新',
+          customerInfo: keyword.trim(),
         },
         page: String(pageNo),
         size: String(PAGE_SIZE),
@@ -182,20 +215,35 @@ export const AIReportComparisonDetailView: React.FC<AIReportComparisonDetailView
     }
   };
 
-  // 首屏获取客户列表
+  const fetchStats = async () => {
+    try {
+      const res = await aiReportApi.getPatientExamStatsApi();
+      const payload = res as PatientExamStats | undefined;
+      setStats(buildStatsFromApi(payload));
+    } catch (error) {
+      console.error('getPatientExamStatsApi error:', error);
+      setStats(buildStatsFromApi(undefined));
+    }
+  };
+
   useEffect(() => {
-    fetchCustomers(1, false);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    fetchStats();
   }, []);
 
-  const filteredCustomers = useMemo(() => {
-    const keyword = searchTerm.trim();
-    if (!keyword) return customers;
-    return customers.filter((customer) => customer.name.includes(keyword));
-  }, [customers, searchTerm]);
+  // 搜索词变化时请求客户列表
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      fetchCustomers(1, false, searchTerm);
+    }, 300);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchTerm]);
 
   const handleLoadMoreCustomers = () => {
-    fetchCustomers(currentPageNo + 1, true);
+    fetchCustomers(currentPageNo + 1, true, searchTerm);
   };
 
   return (
@@ -232,7 +280,7 @@ export const AIReportComparisonDetailView: React.FC<AIReportComparisonDetailView
               onToggleDarkMode={() => setIsDarkMode(!isDarkMode)}
             />
 
-            <StatsGrid stats={DETAIL_STATS} activeStat={activeStat} onSelectStat={setActiveStat} />
+            <StatsGrid stats={stats} activeStat={activeStat} onSelectStat={setActiveStat} />
 
             <motion.div
               initial={{ opacity: 0, y: -20 }}
@@ -248,19 +296,20 @@ export const AIReportComparisonDetailView: React.FC<AIReportComparisonDetailView
               />
 
               <div className="w-full flex-1 min-h-0 text-sm overflow-hidden">
-                {isLoadingCustomers ? (
+                {isLoadingCustomers && viewMode !== 'list' ? (
                   <div className="py-16 text-center text-slate-500 dark:text-slate-400">客户列表加载中...</div>
                 ) : loadError ? (
                   <div className="py-16 text-center text-rose-500 dark:text-rose-400">{loadError}</div>
-                ) : filteredCustomers.length === 0 ? (
+                ) : customers.length === 0 && viewMode !== 'list' ? (
                   <div className="py-16 text-center text-slate-500 dark:text-slate-400">暂无匹配客户</div>
                 ) : null}
                 <CustomerResults
                   viewMode={viewMode}
-                  customers={filteredCustomers}
+                  customers={customers}
                   onViewDetails={setSelectedCustomer}
                   onLoadMore={handleLoadMoreCustomers}
                   hasMore={hasMoreCustomers}
+                  isLoading={isLoadingCustomers}
                   isLoadingMore={isLoadingMoreCustomers}
                 />
               </div>

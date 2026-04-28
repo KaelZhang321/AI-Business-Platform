@@ -39,10 +39,11 @@ interface DictOption {
 }
 
 const dictCache = new Map<string, DictOption[]>();
+const EMPTY_ROWS: any[] = [];
 
 const uiTokens = {
   cardShell:
-    'rounded-2xl border border-slate-200/80 bg-gradient-to-b from-white to-slate-50/30 p-5 shadow-[0_2px_10px_-3px_rgba(0,0,0,0.05)] dark:border-slate-700/70 dark:from-slate-800 dark:to-slate-800/60',
+    'mb-6 rounded-2xl border border-slate-200/80 bg-gradient-to-b from-white to-slate-50/30 p-5 shadow-[0_2px_10px_-3px_rgba(0,0,0,0.05)] dark:border-slate-700/70 dark:from-slate-800 dark:to-slate-800/60',
   cardHeader: 'mb-4 border-b border-slate-100 pb-3 dark:border-slate-700/60',
   headerAccent: 'h-4 w-1.5 rounded-full bg-blue-500',
   headerTitle: 'font-bold text-slate-800 dark:text-slate-100',
@@ -487,16 +488,22 @@ export const AssistantRenderer = createRenderer(assistantCatalog, {
       pageSizeParam = 'pageSize',
       queryParams = {},
       body = {},
+      bizFieldKey
     } = element.props;
 
-    const normalizedRows = Array.isArray(rows)
-      ? rows
-      : Array.isArray(dataSource)
-        ? dataSource
-        : [];
+    const normalizedRows = useMemo(() => {
+      if (Array.isArray(rows)) {
+        return rows;
+      }
+      if (Array.isArray(dataSource)) {
+        return dataSource;
+      }
+      return EMPTY_ROWS;
+    }, [rows, dataSource]);
 
     const [data, setData] = useState<any[]>(normalizedRows);
     const [total, setTotal] = useState(typeof staticTotal === 'number' ? staticTotal : normalizedRows.length);
+    const [hasPaginationMeta, setHasPaginationMeta] = useState(typeof staticTotal === 'number');
     const [loading, setLoading] = useState(false);
     const pageSize = Number(pageSizeProp) > 0 ? Number(pageSizeProp) : 10;
 
@@ -509,9 +516,17 @@ export const AssistantRenderer = createRenderer(assistantCatalog, {
     const bodyKey = useMemo(() => JSON.stringify(body ?? {}), [body]);
 
     useEffect(() => {
+      if (api) {
+        return;
+      }
+
+      setData(normalizedRows);
+      setTotal(typeof staticTotal === 'number' ? staticTotal : normalizedRows.length);
+      setHasPaginationMeta(typeof staticTotal === 'number');
+    }, [api, normalizedRows, staticTotal]);
+
+    useEffect(() => {
       if (!api) {
-        setData(normalizedRows);
-        setTotal(typeof staticTotal === 'number' ? staticTotal : normalizedRows.length);
         return;
       }
 
@@ -531,18 +546,35 @@ export const AssistantRenderer = createRenderer(assistantCatalog, {
           if (!active) {
             return;
           }
+
           const records =
             res.data?.data?.rows ??
+            res.data?.data?.result ??
             res.data?.data?.data?.records ??
             res.data?.rows ??
             res.data?.data ??
             [];
-          const totalCount =
-            res.data?.data?.total ??
-            res.data?.total ??
-            (Array.isArray(records) ? records.length : 0);
-          setData(Array.isArray(records) ? records : []);
-          setTotal(typeof totalCount === 'number' ? totalCount : 0);
+
+          const nextRows = Array.isArray(records)
+            ? records
+            : (bizFieldKey && Array.isArray((records as Record<string, unknown>)[bizFieldKey]))
+              ? ((records as Record<string, unknown>)[bizFieldKey] as any[])
+              : EMPTY_ROWS;
+
+          const rawTotalCount = res.data?.data?.total ?? res.data?.total;
+          const hasServerPagination =
+            rawTotalCount !== undefined ||
+            res.data?.data?.pageNo !== undefined ||
+            res.data?.data?.pageNum !== undefined ||
+            res.data?.pageNo !== undefined ||
+            res.data?.pageNum !== undefined ||
+            res.data?.data?.pages !== undefined ||
+            res.data?.pages !== undefined;
+          const totalCount = rawTotalCount ?? nextRows.length;
+
+          setData(nextRows);
+          setHasPaginationMeta(hasServerPagination || typeof staticTotal === 'number');
+          setTotal(typeof totalCount === 'number' ? totalCount : Number(totalCount) || 0);
           setLoading(false);
         })
         .catch((err) => {
@@ -555,7 +587,7 @@ export const AssistantRenderer = createRenderer(assistantCatalog, {
       return () => {
         active = false;
       };
-    }, [api, bodyKey, normalizedRows, page, pageParam, pageSize, pageSizeParam, queryParamsKey, staticTotal]);
+    }, [api, bodyKey, page, pageParam, pageSize, pageSizeParam, queryParamsKey, title, bizFieldKey]);
 
     useEffect(() => {
       const handleDataUpdate = (event: Event) => {
@@ -574,7 +606,17 @@ export const AssistantRenderer = createRenderer(assistantCatalog, {
           resData?.data?.total ??
           resData?.total ??
           (Array.isArray(records) ? records.length : 0);
+        const hasServerPagination =
+          resData?.data?.total !== undefined ||
+          resData?.total !== undefined ||
+          resData?.data?.pageNo !== undefined ||
+          resData?.data?.pageNum !== undefined ||
+          resData?.pageNo !== undefined ||
+          resData?.pageNum !== undefined ||
+          resData?.data?.pages !== undefined ||
+          resData?.pages !== undefined;
         setData(Array.isArray(records) ? records : []);
+        setHasPaginationMeta(hasServerPagination || typeof staticTotal === 'number');
         setTotal(typeof totalCount === 'number' ? totalCount : 0);
       };
 
@@ -607,6 +649,16 @@ export const AssistantRenderer = createRenderer(assistantCatalog, {
       return cols;
     }, [columns, rowActions, emit]);
 
+    const tablePagination = hasPaginationMeta
+      ? {
+        current: page,
+        pageSize,
+        total,
+        onChange: (newPage: number) => setBoundPage(newPage),
+        showSizeChanger: false,
+      }
+      : false;
+
     return (
       <div className={uiTokens.tableShell}>
         {title ? <h5 className={uiTokens.tableTitle}>{title}</h5> : null}
@@ -616,14 +668,8 @@ export const AssistantRenderer = createRenderer(assistantCatalog, {
           columns={tableColumns}
           loading={loading}
           rowKey={(record: any) => record.id || record.uid || JSON.stringify(record)}
-          pagination={{
-            current: page,
-            pageSize,
-            total,
-            onChange: (newPage) => setBoundPage(newPage),
-            showSizeChanger: false,
-          }}
-          scroll={{ x: 'max-content' }}
+          pagination={tablePagination}
+          scroll={hasPaginationMeta ? { x: 'max-content' } : { x: 'max-content', y: 420 }}
           className={uiTokens.tableClassName}
         />
       </div>

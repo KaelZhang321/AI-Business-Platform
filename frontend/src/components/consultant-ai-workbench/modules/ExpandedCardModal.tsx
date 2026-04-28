@@ -15,6 +15,8 @@ interface ExpandedCardModalProps {
   runtimeStatusByCardId?: Record<string, 'loading' | 'ready' | 'empty' | 'error'>;
   /** 各卡片的错误信息 */
   runtimeErrorByCardId?: Record<string, string>;
+  /** 卡片触发运行时保存（用于 mutation 接口） */
+  onRuntimeCardSave?: (cardId: string, payload: Record<string, unknown>) => Promise<void> | void;
 }
 
 /** 卡片放大预览弹窗组件：全屏展示单张卡片的详细内容 */
@@ -24,6 +26,7 @@ export const ExpandedCardModal: React.FC<ExpandedCardModalProps> = ({
   runtimeDataByCardId = {},
   runtimeStatusByCardId = {},
   runtimeErrorByCardId = {},
+  onRuntimeCardSave,
 }) => {
   return (
     <AnimatePresence>
@@ -65,8 +68,15 @@ export const ExpandedCardModal: React.FC<ExpandedCardModalProps> = ({
                   <div className="custom-scrollbar flex-1 overflow-y-auto bg-white p-8 dark:bg-slate-900">
                     <CardComponent
                       runtimeData={expandedCardId ? runtimeDataByCardId[expandedCardId] : undefined}
+                      runtimeDataByCardId={runtimeDataByCardId}
                       runtimeStatus={expandedCardId ? runtimeStatusByCardId[expandedCardId] : undefined}
                       runtimeError={expandedCardId ? runtimeErrorByCardId[expandedCardId] : undefined}
+                      onRuntimeSave={(payload: Record<string, unknown>) => {
+                        if (!expandedCardId) {
+                          return;
+                        }
+                        void onRuntimeCardSave?.(expandedCardId, payload);
+                      }}
                     />
                   </div>
                 </>

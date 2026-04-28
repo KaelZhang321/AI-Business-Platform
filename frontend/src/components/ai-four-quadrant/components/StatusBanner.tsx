@@ -3,6 +3,7 @@ import { FileText, Loader2 } from 'lucide-react'
 import type { ClientOption, ReportOption } from '../types'
 
 interface StatusBannerProps {
+  quadrantType: 'exam' | 'treatment'
   showResults: boolean
   isAnalyzing: boolean
   selectedClientId: string | null
@@ -15,6 +16,7 @@ interface StatusBannerProps {
 }
 
 export const StatusBanner = ({
+  quadrantType,
   showResults,
   isAnalyzing,
   selectedClientId,
@@ -25,11 +27,13 @@ export const StatusBanner = ({
   analysisProgress,
   analysisStep,
 }: StatusBannerProps) => {
+  const quadrantTypeLabel = quadrantType === 'treatment' ? '治疗' : '体检'
+
   if (showResults) {
     return (
       <div className="bg-[#1E293B] dark:bg-slate-800 rounded-2xl p-6 flex items-center justify-between shadow-sm shrink-0">
         <div className="space-y-3">
-          <h2 className="text-2xl font-bold text-white">AI 已生成可编辑四象限结果</h2>
+          <h2 className="text-2xl font-bold text-white">AI 已生成可编辑{quadrantTypeLabel}四象限结果</h2>
           <p className="text-sm text-slate-300">医生可以基于 AI 的初始归类直接做二次判断。添加、删除和拖拽能力都内聚在四象限结果区中。</p>
           <div className="flex items-center space-x-3 pt-2">
             <span className="px-4 py-1.5 bg-slate-700/50 text-slate-300 text-xs rounded-full border border-slate-600">立即干预 4项</span>

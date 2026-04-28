@@ -4,7 +4,6 @@ import { aIFourQuadrantViewApi } from '../../services/api/aIFourQuadrantViewApi'
 import {
   ANALYSIS_STEPS,
   EMPTY_QUADRANT_DATA,
-  INITIAL_ANALYSIS_RESULTS,
   INITIAL_CHAT_MESSAGES,
 } from './constants'
 import type { AIFourQuadrantViewProps, ClientOption, QuadrantData, ReportOption } from './types'
@@ -184,10 +183,14 @@ const parseQuadrantResult = (response: unknown): QuadrantData => {
 export const useFourQuadrantState = (navigationParams: AIFourQuadrantViewProps['navigationParams']) => {
   const CLIENT_PAGE_SIZE = 20
   const DEFAULT_CUSTOMER_KEYWORD = ''
+  const navCustomerName = typeof navigationParams?.customerName === 'string'
+    ? navigationParams.customerName.trim()
+    : ''
   const [selectedClientId, setSelectedClientId] = useState<string | null>(null)
   const [selectedReportId, setSelectedReportId] = useState<string | null>(null)
+  const [quadrantType, setQuadrantType] = useState<'exam' | 'treatment'>('exam')
   const [notes, setNotes] = useState('')
-  const [customerKeyword, setCustomerKeyword] = useState(DEFAULT_CUSTOMER_KEYWORD)
+  const [customerKeyword, setCustomerKeyword] = useState(navCustomerName || DEFAULT_CUSTOMER_KEYWORD)
 
   const [isClientDropdownOpen, setIsClientDropdownOpen] = useState(false)
   const [isReportDropdownOpen, setIsReportDropdownOpen] = useState(false)
@@ -261,6 +264,14 @@ export const useFourQuadrantState = (navigationParams: AIFourQuadrantViewProps['
           return
         }
 
+        if (navCustomerName) {
+          const matchedByName = mapped.find((item) => item.name === navCustomerName)
+          if (matchedByName) {
+            setSelectedClientId(matchedByName.id)
+            return
+          }
+        }
+
         if (navigationParams?.customerId) {
           const idFromNav = String(navigationParams.customerId)
           const exists = mapped.some((item) => item.id === idFromNav)
@@ -311,7 +322,15 @@ export const useFourQuadrantState = (navigationParams: AIFourQuadrantViewProps['
       mounted = false
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [navigationParams])
+  }, [navigationParams, navCustomerName])
+
+  useEffect(() => {
+    if (!navCustomerName) {
+      return
+    }
+
+    setCustomerKeyword((prev) => (prev === navCustomerName ? prev : navCustomerName))
+  }, [navCustomerName])
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -426,10 +445,10 @@ export const useFourQuadrantState = (navigationParams: AIFourQuadrantViewProps['
       const payload = {
         sex,
         age: Number.isFinite(age) ? age : 0,
-        study_id: '2604150032' || studyId,
+        study_id: studyId,
         single_exam_items: [],
         chief_complaint_text: notes.trim(),
-        quadrant_type: 'exam',
+        quadrant_type: quadrantType,
       }
 
       const response = await aIFourQuadrantViewApi.getHealthQuadrantAnalysisApi(payload)
@@ -443,23 +462,13 @@ export const useFourQuadrantState = (navigationParams: AIFourQuadrantViewProps['
       })
 
       clearInterval(interval)
-      setQuadrantData({
-        monitoring: mapped.monitoring.length > 0 ? mapped.monitoring : [...INITIAL_ANALYSIS_RESULTS.monitoring],
-        intervention: mapped.intervention.length > 0 ? mapped.intervention : [...INITIAL_ANALYSIS_RESULTS.intervention],
-        maintenance: mapped.maintenance.length > 0 ? mapped.maintenance : [...INITIAL_ANALYSIS_RESULTS.maintenance],
-        prevention: mapped.prevention.length > 0 ? mapped.prevention : [...INITIAL_ANALYSIS_RESULTS.prevention],
-      })
+      setQuadrantData(mapped)
       setAnalysisProgress(100)
       setShowResults(true)
     } catch (error) {
       console.error('getHealthQuadrantAnalysisApi error:', error)
       clearInterval(interval)
-      setQuadrantData({
-        monitoring: [...INITIAL_ANALYSIS_RESULTS.monitoring],
-        intervention: [...INITIAL_ANALYSIS_RESULTS.intervention],
-        maintenance: [...INITIAL_ANALYSIS_RESULTS.maintenance],
-        prevention: [...INITIAL_ANALYSIS_RESULTS.prevention],
-      })
+      setQuadrantData(EMPTY_QUADRANT_DATA)
       setAnalysisProgress(100)
       setShowResults(true)
     } finally {
@@ -496,10 +505,10 @@ export const useFourQuadrantState = (navigationParams: AIFourQuadrantViewProps['
       const payload = {
         sex,
         age: Number.isFinite(age) ? age : 0,
-        study_id: '2604150032' || studyId,
+        study_id: studyId,
         single_exam_items: [],
         chief_complaint_text: currentInput,
-        quadrant_type: 'exam',
+        quadrant_type: quadrantType,
       }
 
       const response = await aIFourQuadrantViewApi.getHealthQuadrantAnalysisApi(payload)
@@ -542,10 +551,10 @@ export const useFourQuadrantState = (navigationParams: AIFourQuadrantViewProps['
       return {
         q_code: qCode,
         q_name: QUADRANT_NAME_BY_CODE[qCode] ?? '',
-        abnormalIndicators: items
+        abnormal_indicators: items
           .filter((item) => item.category === 'abnormal' || !item.category)
           .map((item) => item.content),
-        recommendationPlans: items
+        recommendation_plans: items
           .filter((item) => item.category === 'recommendation')
           .map((item) => item.content),
       }
@@ -570,6 +579,8 @@ export const useFourQuadrantState = (navigationParams: AIFourQuadrantViewProps['
     setSelectedClientId,
     selectedReportId,
     setSelectedReportId,
+    quadrantType,
+    setQuadrantType,
     notes,
     setNotes,
     customerKeyword,

@@ -78,7 +78,16 @@ const RegistrationSection: React.FC = () => {
           <StackedBarChart categories={categories} series={series} height="100%" onBarClick={handleChartClick} />
         </DashboardCard>
         <DashboardCard title="金额等级矩阵" subtitle="各大区报名与抵达明细">
-          {matrixLoading ? <LoadingSkeleton /> : <DataTable<MatrixRow> columns={columns} dataSource={matrixData || []} rowKey="region" />}
+          {matrixLoading ? (
+            <LoadingSkeleton />
+          ) : (
+            <DataTable<MatrixRow>
+              className="registration-matrix-table"
+              columns={columns}
+              dataSource={matrixData || []}
+              rowKey="region"
+            />
+          )}
         </DashboardCard>
       </div>
       <DrillDownModal<RegistrationDetail>
