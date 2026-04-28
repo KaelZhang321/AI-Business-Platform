@@ -49,7 +49,7 @@ export function MeetingBiView() {
     <div className="relative min-h-screen overflow-auto bg-[#050f24]">
       <button
         type="button"
-        onClick={() => navigate(PAGE_PATHS.dashboard)}
+        onClick={() => navigate(PAGE_PATHS['function-square'])}
         className="fixed left-0 top-0 z-[1200] inline-flex items-center gap-2 rounded-full border border-cyan-300/20 bg-slate-950/70 px-4 py-2 text-sm font-medium text-cyan-50 shadow-lg backdrop-blur-md transition hover:border-cyan-300/40 hover:bg-slate-900/85"
       >
         <ArrowLeft className="h-4 w-4" />

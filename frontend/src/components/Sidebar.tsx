@@ -208,7 +208,7 @@ const splitNavigationMenus = (menus: NavigationItemDefinition[]) => {
   const footerItems = menus.filter((item) => FOOTER_PAGE_VALUES.has(item.page));
   return {
     mainItems: mainItems.length > 0 ? mainItems : NAVIGATION_ITEMS,
-    footerItems: footerItems.length > 0 ? footerItems : FOOTER_NAVIGATION_ITEMS,
+    footerItems,
   };
 };
 
@@ -295,7 +295,7 @@ export function Sidebar({
   onLogout,
 }: SidebarProps) {
   const navigate = useNavigate();          // 路由导航
-  /** 后端返回的员工菜单，接口异常时保持默认本地菜单 */
+  /** 后端返回的员工菜单，接口异常时仅主菜单保持默认本地菜单 */
   const [navigationMenus, setNavigationMenus] = React.useState(() => splitNavigationMenus(NAVIGATION_ITEMS));
 
   /** 导航到指定页面 */
@@ -420,9 +420,11 @@ export function Sidebar({
       </nav>
 
       {/* 4. Bottom Sections (Notifications & Settings) */}
-      <div className={`px-4 py-4 space-y-1 relative z-10 shrink-0`}>
-        {navigationMenus.footerItems.map((item) => renderNavigationItem(item))}
-      </div>
+      {navigationMenus.footerItems.length > 0 && (
+        <div className={`px-4 py-4 space-y-1 relative z-10 shrink-0`}>
+          {navigationMenus.footerItems.map((item) => renderNavigationItem(item))}
+        </div>
+      )}
 
       {/* 5. Theme Switcher & User Profile */}
       <div className={`p-4 border-t relative z-10 shrink-0 ${isDarkMode ? 'border-slate-800' : 'border-slate-100'}`}>

@@ -1,4 +1,4 @@
-import { apiClient as client, type ApiResponse } from './client';
+import { apiClient as client, unwrapApiResponse, type ApiResponse } from './client';
 
 export interface ProgressItem {
   region: string
@@ -13,4 +13,7 @@ export interface ProgressSummary {
 }
 
 export const fetchProgress = () =>
-  client.get<ApiResponse<ProgressSummary>>('/api/v1/bi/progress/ranking').then(r => r.data.data)
+  client.get<ApiResponse<ProgressSummary>>('/api/v1/bi/progress/ranking').then(r => unwrapApiResponse<ProgressSummary>(r.data, {
+    items: [],
+    avg_completion_rate: null,
+  }))

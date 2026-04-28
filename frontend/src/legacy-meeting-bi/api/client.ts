@@ -157,3 +157,18 @@ export interface ApiResponse<T> {
   data: T
 }
 
+export type MaybeApiResponse<T> = ApiResponse<T> | T
+
+export function unwrapApiResponse<T>(payload: MaybeApiResponse<T>, fallback: T): T {
+  if (
+    payload &&
+    typeof payload === 'object' &&
+    !Array.isArray(payload) &&
+    'data' in payload
+  ) {
+    const data = (payload as ApiResponse<T>).data
+    return data === undefined ? fallback : data
+  }
+
+  return payload === undefined ? fallback : payload as T
+}

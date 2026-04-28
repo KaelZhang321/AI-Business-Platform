@@ -1,4 +1,4 @@
-import { apiClient as client, type ApiResponse } from './client';
+import { apiClient as client, unwrapApiResponse, type ApiResponse } from './client';
 
 export interface KpiItem {
   label: string
@@ -17,4 +17,4 @@ export interface KpiOverview {
 }
 
 export const fetchKpiOverview = () =>
-  client.get<ApiResponse<KpiOverview>>('/api/v1/bi/kpi/overview').then(r => r.data.data)
+  client.get<ApiResponse<KpiOverview>>('/api/v1/bi/kpi/overview').then(r => unwrapApiResponse<KpiOverview | null>(r.data, null))
