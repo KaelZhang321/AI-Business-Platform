@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import aiomysql
+
 from app.core.config import settings
 
 
@@ -16,6 +18,39 @@ def build_business_mysql_conn_params(*, include_connect_timeout: bool = True) ->
     if include_connect_timeout:
         conn_params["connect_timeout"] = settings.api_catalog_mysql_connect_timeout_seconds
     return conn_params
+
+
+async def create_business_mysql_pool(
+    *,
+    minsize: int = 1,
+    maxsize: int = 3,
+    include_connect_timeout: bool = True,
+) -> aiomysql.Pool:
+    """创建统一的业务 MySQL 连接池。
+
+    功能：
+        仓库里已经统一了“业务库连接参数”的组装逻辑，但多个 repository 仍各自手写
+        `aiomysql.create_pool(...)`。这里把“建业务库连接池”也上提成公共方法，避免
+        后续再出现池参数、超时策略和字符集口径漂移。
+
+    Args:
+        minsize: 连接池最小连接数。
+        maxsize: 连接池最大连接数。
+        include_connect_timeout: 是否把业务库统一超时写入连接参数。
+
+    Returns:
+        已创建好的 `aiomysql.Pool`。
+
+    Edge Cases:
+        该方法只负责“业务库”建池，不覆盖 ODS / DW 等其它数据源，避免把不同库的超时
+        和连接策略强行揉成一套。
+    """
+
+    return await aiomysql.create_pool(
+        minsize=minsize,
+        maxsize=maxsize,
+        **build_business_mysql_conn_params(include_connect_timeout=include_connect_timeout),
+    )
 
 
 def _build_mysql_conn_params(

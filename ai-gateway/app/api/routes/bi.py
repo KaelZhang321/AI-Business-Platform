@@ -103,8 +103,11 @@ def operations_kpi(
 
 
 @router.get("/bi/operations/trend", response_model=list[TrendPoint], tags=["会议BI"])
-def operations_trend(db: Session = Depends(get_bi_db)):
-    return get_trend_data(db)
+def operations_trend(
+    scene: str | None = Query(None),
+    db: Session = Depends(get_bi_db)
+):
+    return get_trend_data(db, scene)
 
 
 @router.get("/bi/achievement/chart", response_model=list[AchievementBar], tags=["会议BI"])

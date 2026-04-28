@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+from dataclasses import dataclass
 from typing import Any, Literal
 
 from app.core.config import settings
@@ -23,6 +24,7 @@ from app.models.schemas import (
     ApiQueryListFiltersRuntime,
     ApiQueryListPaginationRuntime,
     ApiQueryListQueryContextRuntime,
+    ApiQueryListTableFieldRuntime,
     ApiQueryListRuntime,
     ApiQueryResponse,
     ApiQueryUIAction,
@@ -31,6 +33,7 @@ from app.models.schemas import (
 from app.services.api_catalog.dag_executor import DagExecutionReport, DagStepExecutionRecord
 from app.services.api_catalog.registry_source import ApiCatalogRegistrySource
 from app.services.api_catalog.schema import ApiCatalogEntry
+from app.services.api_catalog.schema_utils import extract_schema_description, resolve_schema_at_data_path
 from app.services.api_query_request_schema_gate import build_request_schema_gated_fields
 from app.services.api_query_state import ApiQueryExecutionState, ApiQueryRuntimeContext, ApiQueryState
 from app.services.api_query_state import ApiQueryDeletePreviewContext
@@ -87,6 +90,34 @@ _DELETE_DISPLAY_FIELD_PRIORITY = (
 # 这里固定保留 5 条是为了给 Renderer 足够上下文，又避免把大结果集整包塞进生成链路导致注意力失焦。
 _CONTEXT_ROW_LIMIT = 5
 _SELECT_CANDIDATE_ROW_LIMIT = 50
+_DEFAULT_MULTI_STEP_RENDER_POLICY = "terminal_result"
+_SUPPORTED_MULTI_STEP_RENDER_POLICIES = {
+    "terminal_result",
+    "composite_result",
+    "summary_table",
+    "aggregate_result",
+    "auto_result",
+}
+_RESPONSE_SCHEMA_FALLBACK_PATHS = ("result", "data", "payload", "list", "records")
+_AGGREGATE_SECTION_TYPE_KEY = "__sectionType"
+_AGGREGATE_SECTION_DATA_KEY = "data"
+_AGGREGATE_DETAIL_SECTION_TYPE = "detail"
+_AGGREGATE_TABLE_SECTION_TYPE = "table"
+_AGGREGATE_COMPOSITE_SECTION_TYPE = "composite"
+_PAGINATION_PARAM_NAMES = {"page", "pageNo", "pageNum", "pageSize", "size", "limit"}
+
+
+@dataclass(frozen=True, slots=True)
+class _QueryUISelection:
+    """封装本次查询读态渲染主数据，确保数据与渲染模式同源。"""
+
+    data_for_ui: list[dict[str, Any]]
+    render_mode: str
+    source: str
+    runtime_anchor_record: DagStepExecutionRecord | None = None
+    response_field_label_index: dict[str, str] | None = None
+    aggregate_section_title_index: dict[str, str] | None = None
+    aggregate_section_runtime_index: dict[str, dict[str, Any]] | None = None
 
 
 class ApiQueryResponseBuilder:
@@ -158,12 +189,25 @@ class ApiQueryResponseBuilder:
         created_by = _normalize_response_created_by(runtime_context.user_context)
 
         # 运行时契约与 UI 主数据必须从同一份执行报告派生，避免前端看到的元数据与表格内容错位。
-        data_for_ui = _build_ui_data_from_execution_report(execution_report, anchor_record)
+        multi_step_render_policy = _resolve_multi_step_render_policy(settings.api_query_multi_step_render_policy)
+        ui_selection = _select_query_ui_payload(
+            execution_report,
+            anchor_record,
+            multi_step_render_policy=multi_step_render_policy,
+        )
+        response_field_label_index = (
+            ui_selection.response_field_label_index
+            or _build_response_field_label_index(ui_selection.runtime_anchor_record)
+        )
+        aggregate_section_title_index = ui_selection.aggregate_section_title_index or {}
+        aggregate_section_runtime_index = ui_selection.aggregate_section_runtime_index or {}
+        data_for_ui = ui_selection.data_for_ui
         runtime = _build_runtime_from_execution_report(
             execution_report,
             anchor_record,
             business_intents=business_intents,
             ui_catalog_service=self._ui_catalog_service,
+            runtime_anchor_record=ui_selection.runtime_anchor_record,
         )
         runtime = await _enrich_detail_runtime_request_schema(
             runtime,
@@ -178,20 +222,29 @@ class ApiQueryResponseBuilder:
                 "question": state["query_text"],
                 "user_query": state["query_text"],
                 "title": _build_execution_title(execution_report, anchor_record),
-                "detail_title": anchor_record.entry.description if anchor_record else "详情信息",
+                "detail_title": (
+                    anchor_record.entry.name or anchor_record.entry.description if anchor_record else "详情信息"
+                ),
                 "total": _build_response_total(anchor_record),
                 "api_id": anchor_record.entry.id if anchor_record else None,
                 "error": _build_response_error(execution_report),
                 "empty_message": "未查到符合条件的数据，请调整筛选条件后重试。",
                 "skip_message": _build_execution_skip_message(execution_report),
                 "partial_message": "部分步骤执行失败或被短路，当前仅展示可安全返回的数据。",
-                "query_render_mode": _infer_query_render_mode(execution_report, anchor_record),
+                "query_render_mode": ui_selection.render_mode,
                 "flow_num": state["trace_id"],
                 "created_by": created_by,
                 "request_params": dict(anchor_record.resolved_params) if anchor_record is not None else {},
                 "context_pool": {step_id: step.model_dump(exclude_none=True) for step_id, step in context_pool.items()},
                 "row_actions": _build_wait_select_row_actions(execution_report),
                 "business_intents": [intent.model_dump() for intent in business_intents],
+                # 把 response_schema 的 description/title 预先解析成字段显示名索引；
+                # Renderer 仅消费该只读映射做展示，不会污染实际请求参数键名。
+                "response_field_label_index": response_field_label_index,
+                # 多步骤聚合场景下，把 section -> 接口名称映射下发给渲染层，
+                # 确保 child.props.title 与业务注册表 ui_api_endpoints.name 一致。
+                "aggregate_section_title_index": aggregate_section_title_index,
+                "aggregate_section_runtime_index": aggregate_section_runtime_index,
             },
             status=aggregate_status,
             runtime=runtime,
@@ -241,12 +294,15 @@ class ApiQueryResponseBuilder:
             )
 
         logger.info(
-            "%s success mode=%s status=%s api_id=%s step_count=%s",
+            "%s success mode=%s status=%s api_id=%s step_count=%s render_policy=%s render_mode=%s payload_source=%s",
             runtime_context.log_prefix,
             state["request_mode"],
             aggregate_status,
             anchor_record.entry.id if anchor_record else None,
             len(execution_report.records_by_step_id),
+            multi_step_render_policy,
+            ui_selection.render_mode,
+            ui_selection.source,
         )
         response = ApiQueryResponse(
             trace_id=state["trace_id"],
@@ -477,6 +533,7 @@ class ApiQueryResponseBuilder:
         requested_component_codes = [
             "PlannerCard",
             "PlannerMetric",
+            "PlannerInfoGrid",
             "PlannerForm",
             "PlannerInput",
             "PlannerSelect",
@@ -1292,6 +1349,33 @@ def _build_list_filter_fields(
         - 标签优先取 title/label，保证前端不必再猜字段中文名
     """
 
+    # 业务原因：当目录已经配置 list_view_meta.filter_fields 时，应严格以元数据为准，
+    # 防止 request_schema 的“技术参数膨胀”污染首屏筛选体验。
+    if entry.list_view_meta.filter_fields:
+        required_fields = set(entry.param_schema.required)
+        filter_fields: list[ApiQueryListFilterFieldRuntime] = []
+        for filter_field in entry.list_view_meta.filter_fields:
+            field_name = filter_field.field.strip()
+            if not field_name:
+                continue
+            schema = entry.param_schema.properties.get(field_name, {})
+            schema_title = (
+                str(schema.get("title") or "").strip() if isinstance(schema, dict) else ""
+            )
+            label = filter_field.label.strip() if isinstance(filter_field.label, str) and filter_field.label.strip() else (
+                schema_title or field_name
+            )
+            filter_fields.append(
+                ApiQueryListFilterFieldRuntime(
+                    name=field_name,
+                    label=label,
+                    value_type=_normalize_runtime_value_type(schema.get("type") if isinstance(schema, dict) else None),
+                    component=filter_field.component,
+                    required=field_name in required_fields,
+                )
+            )
+        return filter_fields
+
     excluded_fields = set(_LIST_FILTER_EXCLUDED_FIELDS)
     if page_param:
         excluded_fields.add(page_param)
@@ -1311,10 +1395,44 @@ def _build_list_filter_fields(
                 name=field_name,
                 label=label,
                 value_type=_normalize_runtime_value_type(field_schema.get("type")),
+                component="number" if _normalize_runtime_value_type(field_schema.get("type")) == "number" else "input",
                 required=field_name in required_fields,
             )
         )
     return filter_fields
+
+
+def _build_list_table_fields(entry: ApiCatalogEntry) -> list[ApiQueryListTableFieldRuntime]:
+    """根据目录元数据构造列表列白名单。
+
+    功能：
+        `list_view_meta.table_fields` 是“首屏展示字段”的最终约束来源。这里转成 runtime 契约后，
+        渲染层就不需要再从 response 行对象猜测列结构。
+
+    Returns:
+        配置为空时返回空列表，表示继续沿用历史自动推断列逻辑。
+    """
+    table_fields: list[ApiQueryListTableFieldRuntime] = []
+    for index, table_field in enumerate(entry.list_view_meta.table_fields, start=1):
+        title = table_field.title.strip() if isinstance(table_field.title, str) and table_field.title.strip() else None
+        if table_field.fields:
+            field_name = table_field.field or f"__combined_{index}"
+            table_fields.append(
+                ApiQueryListTableFieldRuntime(
+                    name=field_name,
+                    title=title,
+                    source_fields=list(table_field.fields),
+                    separator=table_field.separator,
+                    empty_value=table_field.empty_value,
+                )
+            )
+            continue
+
+        field_name = table_field.field.strip() if isinstance(table_field.field, str) else ""
+        if not field_name:
+            continue
+        table_fields.append(ApiQueryListTableFieldRuntime(name=field_name, title=title))
+    return table_fields
 
 
 def _has_write_business_intent(business_intents: list[ApiQueryBusinessIntent]) -> bool:
@@ -1348,6 +1466,15 @@ def _build_ui_runtime(
     param_source = _infer_param_source(entry.method)
 
     detail_hint = entry.detail_hint
+    detail_template_code = (
+        detail_hint.template_code.strip()
+        if settings.api_query_template_first_enabled and isinstance(detail_hint.template_code, str) and detail_hint.template_code.strip()
+        else None
+    )
+    detail_fallback_mode = (
+        detail_hint.fallback_mode.strip() if isinstance(detail_hint.fallback_mode, str) and detail_hint.fallback_mode.strip() else "dynamic_ui"
+    )
+    detail_render_mode = "template_first" if settings.api_query_template_first_enabled else "dynamic_ui"
     identifier_field = detail_hint.identifier_field or _infer_identifier_field(rows)
     detail_enabled = (
         execution_result.status == ApiQueryExecutionStatus.SUCCESS
@@ -1360,6 +1487,7 @@ def _build_ui_runtime(
     page_param = pagination_hint.page_param or "pageNum"
     page_size_param = pagination_hint.page_size_param or "pageSize"
     filter_fields = _build_list_filter_fields(entry, page_param=page_param, page_size_param=page_size_param)
+    table_fields = _build_list_table_fields(entry)
     is_list_payload = isinstance(execution_result.data, list)
     pagination_enabled = (
         execution_result.status in {ApiQueryExecutionStatus.SUCCESS, ApiQueryExecutionStatus.EMPTY}
@@ -1372,8 +1500,9 @@ def _build_ui_runtime(
 
     requested_component_codes = [
         "PlannerCard",
+        "PlannerMetric",
+        "PlannerInfoGrid",
         "PlannerTable",
-        "PlannerDetailCard",
         "PlannerNotice",
         "PlannerPagination",
     ]
@@ -1416,6 +1545,7 @@ def _build_ui_runtime(
                 mutation_target=pagination_hint.mutation_target if pagination_enabled else None,
             ),
             filters=ApiQueryListFiltersRuntime(enabled=bool(filter_fields), fields=filter_fields),
+            table_fields=table_fields,
             query_context=ApiQueryListQueryContextRuntime(
                 enabled=list_enabled,
                 current_params=current_params,
@@ -1430,6 +1560,10 @@ def _build_ui_runtime(
             api_id=(detail_hint.api_id or entry.id) if detail_enabled else None,
             route_url="/api/v1/api-query" if detail_enabled else None,
             ui_action=(detail_hint.ui_action or "remoteQuery") if detail_enabled else None,
+            render_mode=detail_render_mode if detail_enabled else "dynamic_ui",
+            template_code=detail_template_code if detail_enabled else None,
+            fallback_mode=detail_fallback_mode if detail_enabled else "dynamic_ui",
+            detail_view_meta=entry.detail_view_meta.model_dump(),
             request=ApiQueryDetailRequestRuntime(
                 param_source=param_source if detail_enabled else None,
                 identifier_param=(detail_hint.query_param or identifier_field) if detail_enabled else None,
@@ -2129,31 +2263,9 @@ def _normalize_rows(data: list[dict[str, Any]] | dict[str, Any] | None) -> list[
 def _build_ui_data_from_execution_report(
     execution_report: DagExecutionReport,
     anchor_record: DagStepExecutionRecord | None,
-) -> list[dict[str, Any]]:
-    """为当前规则渲染器构造可展示的数据集。"""
-    wait_select_rows = _build_wait_select_rows(execution_report)
-    if wait_select_rows:
-        return wait_select_rows
-
-    if len(execution_report.records_by_step_id) <= 1 and anchor_record is not None:
-        return _normalize_data_for_ui(anchor_record.execution_result)
-
-    summary_rows: list[dict[str, Any]] = []
-    for step_id in execution_report.execution_order:
-        record = execution_report.records_by_step_id[step_id]
-        shaped_data, shaped_meta = _shape_context_data(record.execution_result.data)
-        summary_rows.append(
-            {
-                "stepId": step_id,
-                "domain": record.entry.domain,
-                "apiPath": record.entry.path,
-                "status": record.execution_result.status.value,
-                "recordCount": _count_execution_rows(record.execution_result),
-                "renderCount": shaped_meta["render_row_count"],
-                "truncated": shaped_meta["truncated"],
-            }
-        )
-    return summary_rows
+) -> _QueryUISelection:
+    """为查询读态挑选主数据与渲染模式。"""
+    return _select_query_ui_payload(execution_report, anchor_record, multi_step_render_policy="summary_table")
 
 
 def _build_wait_select_rows(execution_report: DagExecutionReport) -> list[dict[str, Any]]:
@@ -2166,21 +2278,44 @@ def _build_wait_select_rows(execution_report: DagExecutionReport) -> list[dict[s
         options_by_binding = execution_result.meta.get("options_by_binding")
         if not isinstance(options_by_binding, dict):
             continue
+        option_rows_by_binding = execution_result.meta.get("option_rows_by_binding")
+        normalized_option_rows_by_binding = (
+            option_rows_by_binding if isinstance(option_rows_by_binding, dict) else {}
+        )
         rows: list[dict[str, Any]] = []
         for binding_key, options in options_by_binding.items():
             if not isinstance(options, list):
                 continue
+            option_rows = normalized_option_rows_by_binding.get(binding_key)
+            option_rows_list = option_rows if isinstance(option_rows, list) else []
+            value_to_row: dict[str, dict[str, Any]] = {}
+            for candidate_row in option_rows_list:
+                if not isinstance(candidate_row, dict):
+                    continue
+                for candidate_value in candidate_row.values():
+                    if candidate_value in (None, ""):
+                        continue
+                    key = _build_wait_select_candidate_key(candidate_value)
+                    value_to_row.setdefault(key, dict(candidate_row))
             for index, value in enumerate(options[:_SELECT_CANDIDATE_ROW_LIMIT], start=1):
+                matched_row = value_to_row.get(_build_wait_select_candidate_key(value), {})
                 rows.append(
                     {
                         "bindingKey": binding_key,
                         "candidateIndex": index,
                         "candidateValue": value,
+                        "candidateRow": matched_row,
                         "bindingMap": {binding_key: value},
+                        **matched_row,
                     }
                 )
         return rows
     return []
+
+
+def _build_wait_select_candidate_key(value: Any) -> str:
+    """将候选值标准化为可匹配键，兼容基础类型差异。"""
+    return str(value)
 
 
 def _build_wait_select_row_actions(execution_report: DagExecutionReport) -> list[dict[str, Any]]:
@@ -2256,6 +2391,7 @@ def _build_runtime_from_execution_report(
     *,
     business_intents: list[ApiQueryBusinessIntent],
     ui_catalog_service: UICatalogService,
+    runtime_anchor_record: DagStepExecutionRecord | None = None,
 ) -> ApiQueryUIRuntime:
     """根据执行报告推导前端运行时契约。"""
     wait_select_runtime = _build_wait_select_runtime(
@@ -2265,11 +2401,16 @@ def _build_runtime_from_execution_report(
     if wait_select_runtime is not None:
         return wait_select_runtime
 
-    if len(execution_report.records_by_step_id) == 1 and anchor_record is not None:
+    # 终态渲染时 runtime 必须绑定到同一条业务记录，避免“展示终态数据 + 多步骤默认能力”错配触发 Guard 冻结。
+    resolved_runtime_anchor = runtime_anchor_record
+    if resolved_runtime_anchor is None and len(execution_report.records_by_step_id) == 1:
+        resolved_runtime_anchor = anchor_record
+
+    if resolved_runtime_anchor is not None:
         return _build_ui_runtime(
-            anchor_record.entry,
-            anchor_record.execution_result,
-            params=anchor_record.resolved_params,
+            resolved_runtime_anchor.entry,
+            resolved_runtime_anchor.execution_result,
+            params=resolved_runtime_anchor.resolved_params,
             business_intents=business_intents,
             ui_catalog_service=ui_catalog_service,
         )
@@ -2315,19 +2456,594 @@ def _build_wait_select_runtime(
     return None
 
 
+def _resolve_multi_step_render_policy(raw_policy: str | None) -> str:
+    """解析多步骤渲染策略并做历史兼容归一。
+
+    功能：
+        将运行时配置中的渲染策略标准化为受支持值，确保后续 payload 选择逻辑
+        只有一套稳定分支，不会因为配置漂移出现“同链路不同环境渲染不一致”。
+
+    Args:
+        raw_policy: 环境变量/配置中心透传的策略值，允许为空或历史值。
+
+    Returns:
+        归一化后的策略值；仅会返回 `_SUPPORTED_MULTI_STEP_RENDER_POLICIES`
+        中的合法成员。
+
+    兼容说明：
+        旧环境常把策略固定为 terminal_result，会导致多步骤健康查询只展示最后一个接口。
+        为降低线上配置漂移带来的回归风险，terminal_result/composite_result 在运行期自动
+        折叠到 auto_result，由 auto 策略按步骤形态决定是否聚合展示。
+
+    Edge Cases:
+        - 传入空值或未知值：回退 `_DEFAULT_MULTI_STEP_RENDER_POLICY`
+        - 传入历史值 `terminal_result/composite_result`：统一折叠到 `auto_result`
+    """
+
+    policy = str(raw_policy or "").strip().lower()
+    # 历史策略值不再直接执行，统一转为 auto 以避免多步骤链路继续单锚点退化。
+    if policy in {"terminal_result", "composite_result"}:
+        return "auto_result"
+    if policy in _SUPPORTED_MULTI_STEP_RENDER_POLICIES:
+        return policy
+    return _DEFAULT_MULTI_STEP_RENDER_POLICY
+
+
+def _select_query_ui_payload(
+    execution_report: DagExecutionReport,
+    anchor_record: DagStepExecutionRecord | None,
+    *,
+    multi_step_render_policy: str,
+) -> _QueryUISelection:
+    """按策略选择查询读态主数据，并保证渲染模式与数据来源一致。
+
+    功能：
+        把同一份执行报告折叠为“前端可直接渲染”的主载荷。该函数是多步骤查询从
+        DAG 结果进入 UI 的唯一策略闸门，必须保证：
+        1) 有候选值待用户选择时优先进入 wait-select；
+        2) 多步骤策略分支互斥、可解释；
+        3) 最终 render_mode 与 payload 形态一致，避免 Renderer 误判。
+
+    Args:
+        execution_report: DAG 执行报告，包含步骤顺序、状态、执行结果。
+        anchor_record: 响应锚点记录；单步骤场景用于详情/列表推断兜底。
+        multi_step_render_policy: 已归一化的多步骤渲染策略。
+
+    Returns:
+        `_QueryUISelection`，包含渲染主数据、渲染模式、数据来源和可选运行时锚点。
+
+    约束：
+        1. WAIT_SELECT_REQUIRED 始终优先，避免被策略分支绕开。
+        2. 多步骤默认采用 terminal_result，直接展示最后一个成功步骤的数据。
+        3. composite_result 在规则渲染阶段先回退到 terminal_result，后续可叠加 LLM 组合视图。
+        4. aggregate_result 会把多步骤业务结果聚合成一个复合对象，供 Renderer 同屏拆块展示。
+        5. auto_result 会在 terminal 与 aggregate 之间自动选择，兼顾“终态优先”与“多块并列展示”。
+
+    Edge Cases:
+        - 没有可展示业务数据：回退 summary_table，保证链路可解释性
+        - auto_result 且 terminal 为空：自动尝试 aggregate，再失败才回退 summary
+    """
+    # 1) 交互优先：只要命中 WAIT_SELECT_REQUIRED，必须先让用户做 disambiguation。
+    wait_select_rows = _build_wait_select_rows(execution_report)
+    if wait_select_rows:
+        return _QueryUISelection(
+            data_for_ui=wait_select_rows,
+            render_mode="table",
+            source="wait_select_candidates",
+        )
+
+    # 2) 单步骤链路不做复杂策略分流，直接按结果形态推断 detail/table/composite。
+    if len(execution_report.records_by_step_id) <= 1:
+        if anchor_record is None:
+            return _QueryUISelection(data_for_ui=[], render_mode="table", source="empty")
+        rows = _normalize_data_for_ui(anchor_record.execution_result)
+        return _QueryUISelection(
+            data_for_ui=rows,
+            render_mode=_infer_render_mode_from_rows(rows, anchor_record),
+            source="single_step_anchor",
+            runtime_anchor_record=anchor_record,
+        )
+
+    if multi_step_render_policy == "summary_table":
+        summary_rows = _build_multi_step_summary_rows(execution_report)
+        return _QueryUISelection(
+            data_for_ui=summary_rows,
+            render_mode="summary_table",
+            source="multi_step_summary",
+            runtime_anchor_record=None,
+        )
+
+    # multi-step 聚合也需要 list runtime（api/query/body）供每个 section 表格注入请求元数据。
+    terminal_record = _select_terminal_business_record(execution_report, anchor_record)
+
+    # 3) 显式聚合策略：优先把多个叶子业务步骤同屏拆块展示。
+    if multi_step_render_policy == "aggregate_result":
+        (
+            aggregated_payload,
+            aggregate_label_index,
+            aggregate_title_index,
+            aggregate_runtime_index,
+        ) = _build_multi_step_aggregate_payload(execution_report)
+        if aggregated_payload:
+            return _build_multi_step_aggregate_selection(
+                aggregated_payload=aggregated_payload,
+                aggregate_label_index=aggregate_label_index,
+                aggregate_title_index=aggregate_title_index,
+                aggregate_runtime_index=aggregate_runtime_index,
+                source="multi_step_aggregate",
+                runtime_anchor_record=terminal_record,
+            )
+
+    # 4) terminal 与 auto 共用终态记录计算，避免双分支重复扫描执行图。
+    if multi_step_render_policy == "auto_result":
+        (
+            aggregated_payload,
+            aggregate_label_index,
+            aggregate_title_index,
+            aggregate_runtime_index,
+        ) = _build_multi_step_aggregate_payload(execution_report)
+        # auto 策略优先保证“多块业务完整性”；不满足再回到 terminal 简洁视图。
+        if _should_use_aggregate_result(execution_report, aggregated_payload):
+            return _build_multi_step_aggregate_selection(
+                aggregated_payload=aggregated_payload,
+                aggregate_label_index=aggregate_label_index,
+                aggregate_title_index=aggregate_title_index,
+                aggregate_runtime_index=aggregate_runtime_index,
+                source="multi_step_auto_aggregate",
+                runtime_anchor_record=terminal_record,
+            )
+        if terminal_record is not None:
+            return _build_terminal_selection(terminal_record)
+        if aggregated_payload:
+            return _build_multi_step_aggregate_selection(
+                aggregated_payload=aggregated_payload,
+                aggregate_label_index=aggregate_label_index,
+                aggregate_title_index=aggregate_title_index,
+                aggregate_runtime_index=aggregate_runtime_index,
+                source="multi_step_auto_aggregate_fallback",
+                runtime_anchor_record=terminal_record,
+            )
+        summary_rows = _build_multi_step_summary_rows(execution_report)
+        return _QueryUISelection(
+            data_for_ui=summary_rows,
+            render_mode="summary_table",
+            source="multi_step_summary_fallback",
+            runtime_anchor_record=None,
+        )
+
+    if terminal_record is not None:
+        return _build_terminal_selection(terminal_record)
+
+    # 当 terminal/composite 找不到可展示业务数据时，回退到步骤汇总表保证可解释性。
+    summary_rows = _build_multi_step_summary_rows(execution_report)
+    return _QueryUISelection(
+        data_for_ui=summary_rows,
+        render_mode="summary_table",
+        source="multi_step_summary_fallback",
+        runtime_anchor_record=None,
+    )
+
+
+def _build_terminal_selection(record: DagStepExecutionRecord) -> _QueryUISelection:
+    """把终态 record 折叠成统一的 QueryUISelection。"""
+
+    rows = _normalize_data_for_ui(record.execution_result)
+    return _QueryUISelection(
+        data_for_ui=rows,
+        render_mode=_infer_render_mode_from_rows(rows, record),
+        source=f"terminal:{record.step.step_id}",
+        runtime_anchor_record=record,
+    )
+
+
+def _build_multi_step_aggregate_selection(
+    *,
+    aggregated_payload: dict[str, Any],
+    aggregate_label_index: dict[str, str],
+    aggregate_title_index: dict[str, str],
+    aggregate_runtime_index: dict[str, dict[str, Any]],
+    source: str,
+    runtime_anchor_record: DagStepExecutionRecord | None,
+) -> _QueryUISelection:
+    """构造聚合渲染选择对象。"""
+
+    return _QueryUISelection(
+        data_for_ui=[aggregated_payload],
+        render_mode="composite",
+        source=source,
+        runtime_anchor_record=runtime_anchor_record,
+        response_field_label_index=aggregate_label_index,
+        aggregate_section_title_index=aggregate_title_index,
+        aggregate_section_runtime_index=aggregate_runtime_index,
+    )
+
+
+def _should_use_aggregate_result(
+    execution_report: DagExecutionReport,
+    aggregated_payload: dict[str, Any],
+) -> bool:
+    """判断 auto_result 是否应切换到 aggregate 渲染。
+
+    功能：
+        以“业务完整性优先”为目标，为 auto 策略提供一致的聚合开关。该函数只关心
+        步骤拓扑与可展示 section 数，不绑定具体业务字段名，避免领域耦合。
+
+    Args:
+        execution_report: 当前 DAG 执行报告。
+        aggregated_payload: 已按叶子步骤聚合的候选 payload。
+
+    Returns:
+        `True` 表示应采用聚合同屏展示；`False` 表示保持 terminal 终态展示。
+
+    策略：
+        - 至少存在 2 个叶子业务步骤；
+        - 且当前可渲染的聚合 section 至少 2 个。
+
+    Edge Cases:
+        - 聚合结果为空时无条件返回 False
+        - 只有 1 个叶子步骤时保持 terminal，避免把简单链路过度展开
+    """
+
+    if not aggregated_payload:
+        return False
+    leaf_step_count = len(_collect_leaf_step_ids(execution_report))
+    section_count = len(aggregated_payload)
+    return leaf_step_count >= 2 and section_count >= 2
+
+
+def _build_multi_step_aggregate_payload(
+    execution_report: DagExecutionReport,
+) -> tuple[dict[str, Any], dict[str, str], dict[str, str], dict[str, dict[str, Any]]]:
+    """聚合同一执行链路的叶子步骤结果，供 composite 同屏展示。
+
+    功能：
+        将多步骤执行报告压缩为“section -> typed payload”的结构，同时构建字段标签索引，
+        让 Renderer 能在一个页面中稳定展示多块业务数据（例如健康基本信息/病史/体检）。
+
+    Args:
+        execution_report: DAG 执行报告。
+
+    Returns:
+        四元组 `(payload, label_index, title_index, runtime_index)`：
+        - payload: 聚合后的 section 数据；
+        - label_index: 供表头/字段中文名解析的标签索引。
+        - title_index: section 对应的标题映射，优先来源于接口注册名。
+        - runtime_index: section 对应的二跳接口元数据，避免多接口聚合时误用终态接口。
+
+    设计意图：
+        - terminal_result 只保留最后一步，适合“链路末端即最终答案”的场景；
+        - aggregate_result 需要把每个业务步骤都保留为独立 section，保证“健康基本信息 + 病史 + 体检”
+          等并列语义不会在 UI 端被截断为单锚点结果。
+
+    Edge Cases:
+        - 上游识别步骤（如客户检索）不进入聚合输出，仅保留叶子业务步骤
+        - 步骤状态非 SUCCESS/PARTIAL_SUCCESS/EMPTY 时跳过，避免错误数据污染展示
+        - section key 冲突时自动加后缀，保证输出键唯一
+    """
+
+    preferred_statuses = {
+        ApiQueryExecutionStatus.SUCCESS,
+        ApiQueryExecutionStatus.PARTIAL_SUCCESS,
+        ApiQueryExecutionStatus.EMPTY,
+    }
+    leaf_step_ids = _collect_leaf_step_ids(execution_report)
+    payload: dict[str, Any] = {}
+    label_index: dict[str, str] = {}
+    title_index: dict[str, str] = {}
+    runtime_index: dict[str, dict[str, Any]] = {}
+    section_key_counter: dict[str, int] = {}
+
+    # 1) 仅遍历执行顺序里的叶子业务步骤，确保输出顺序与执行链路一致。
+    for step_id in execution_report.execution_order:
+        # 聚合视图只展示“终态业务块”，跳过客户识别、参数准备等上游依赖步骤，
+        # 避免出现“4 步执行只想看 3 块业务结果”时把中间跳板步骤也渲染出来。
+        if leaf_step_ids and step_id not in leaf_step_ids:
+            continue
+        record = execution_report.records_by_step_id[step_id]
+        if record.execution_result.status not in preferred_statuses:
+            continue
+
+        rows = _normalize_data_for_ui(record.execution_result)
+        if not rows:
+            continue
+
+        # 2) section key 直接对齐业务接口尾段（如 healthBasic / physicalExam），
+        # 让前端可以稳定把 child 与后端字段做一一映射。
+        section_key = _build_aggregate_section_key(record, section_key_counter)
+        section_type = _infer_aggregate_section_type(record, rows)
+        payload[section_key] = _build_aggregate_section_payload(section_type=section_type, rows=rows)
+        runtime_index[section_key] = _build_aggregate_section_runtime(record)
+
+        section_title = _build_aggregate_section_title(record, fallback=section_key)
+        if section_title:
+            title_index[section_key] = section_title
+
+        # 3) 合并步骤级字段标签：
+        #    - 既保留叶子字段短路径（便于通用列构建）；
+        #    - 也补齐 section 前缀路径（便于跨 section 精准命中）。
+        step_label_index = _build_response_field_label_index(record)
+        for field_path, label in step_label_index.items():
+            if "[]" in field_path:
+                leaf_path = field_path.split("[]", 1)[-1].lstrip(".")
+                if leaf_path:
+                    label_index.setdefault(leaf_path, label)
+                    label_index.setdefault(f"{section_key}.{field_path}", label)
+                    label_index.setdefault(f"{section_key}[].{leaf_path}", label)
+                    label_index.setdefault(f"{section_key}.{leaf_path}", label)
+                continue
+            if "." in field_path:
+                leaf_path = field_path.split(".", 1)[-1]
+                label_index.setdefault(leaf_path, label)
+                label_index.setdefault(f"{section_key}.{field_path}", label)
+                label_index.setdefault(f"{section_key}[].{leaf_path}", label)
+                label_index.setdefault(f"{section_key}.{leaf_path}", label)
+                continue
+            label_index.setdefault(field_path, label)
+            label_index.setdefault(f"{section_key}[].{field_path}", label)
+            label_index.setdefault(f"{section_key}.{field_path}", label)
+
+    return payload, label_index, title_index, runtime_index
+
+
+def _build_aggregate_section_runtime(record: DagStepExecutionRecord) -> dict[str, Any]:
+    """记录聚合 section 自己的接口调用元数据。"""
+
+    return {
+        "api_id": record.entry.id,
+        "param_source": _infer_param_source(record.entry.method),
+        "params": dict(record.resolved_params),
+        "request_schema_fields": list(record.entry.param_schema.properties),
+    }
+
+
+def _build_aggregate_section_payload(*, section_type: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """为多步骤聚合 section 写入显式渲染语义。"""
+
+    if section_type in {_AGGREGATE_DETAIL_SECTION_TYPE, _AGGREGATE_COMPOSITE_SECTION_TYPE} and rows:
+        data: Any = rows[0]
+    else:
+        data = rows
+    return {
+        _AGGREGATE_SECTION_TYPE_KEY: section_type,
+        _AGGREGATE_SECTION_DATA_KEY: data,
+    }
+
+
+def _infer_aggregate_section_type(record: DagStepExecutionRecord, rows: list[dict[str, Any]]) -> str:
+    """根据接口元数据和执行事实推断聚合 section 的展示语义。
+
+    多步骤聚合不能再只依赖 `list[dict]` 形态；档案类接口经常返回单元素数组，
+    但业务语义仍是“客户详情”。这里优先保留显式列表信号，避免真实列表只有一条
+    记录时被误渲染成详情卡。
+    """
+
+    if len(rows) == 1 and _has_nested_business_blocks(rows[0]):
+        return _AGGREGATE_COMPOSITE_SECTION_TYPE
+    if _is_detail_like_aggregate_section(record, rows):
+        return _AGGREGATE_DETAIL_SECTION_TYPE
+    return _AGGREGATE_TABLE_SECTION_TYPE
+
+
+def _is_detail_like_aggregate_section(record: DagStepExecutionRecord, rows: list[dict[str, Any]]) -> bool:
+    """判断聚合叶子步骤是否应按单对象详情展示。"""
+
+    if len(rows) != 1:
+        return False
+    if record.execution_result.total > len(rows):
+        return False
+    if _has_pagination_params(record.resolved_params):
+        return False
+    entry = record.entry
+    if str(entry.ui_hint or "").strip().lower() == "list":
+        return False
+    if entry.pagination_hint.enabled:
+        return False
+    if entry.list_view_meta.filter_fields or entry.list_view_meta.table_fields:
+        return False
+    return True
+
+
+def _has_pagination_params(params: dict[str, Any]) -> bool:
+    """识别调用参数中是否已携带列表分页语义。"""
+
+    return any(param_name in params for param_name in _PAGINATION_PARAM_NAMES)
+
+
+def _collect_leaf_step_ids(execution_report: DagExecutionReport) -> set[str]:
+    """计算执行计划中的叶子步骤集合。
+
+    功能：
+        通过依赖关系剔除“被其他步骤消费”的中间节点，保留链路终端业务节点，
+        作为 aggregate 展示的候选步骤集合。
+
+    Args:
+        execution_report: DAG 执行报告。
+
+    Returns:
+        叶子步骤 ID 集合；为空时表示计划结构异常或无可聚合叶子步骤。
+
+    Edge Cases:
+        - 计划中存在 depends_on 指向未知步骤时会被安全忽略
+    """
+
+    all_step_ids = {step.step_id for step in execution_report.plan.steps}
+    depended_step_ids: set[str] = set()
+    for step in execution_report.plan.steps:
+        for depended_step_id in step.depends_on:
+            if depended_step_id in all_step_ids:
+                depended_step_ids.add(depended_step_id)
+    leaf_step_ids = all_step_ids - depended_step_ids
+    return leaf_step_ids
+
+
+def _build_aggregate_section_key(
+    record: DagStepExecutionRecord,
+    section_key_counter: dict[str, int],
+) -> str:
+    """生成聚合渲染 section 键名，优先复用业务接口尾段。
+
+    功能：
+        产出可作为前端 `bizFieldKey` 的稳定键名。优先复用 API path 尾段，
+        既能保持业务可读性，也能避免依赖 step_id 的编排偶然性。
+
+    Args:
+        record: 当前步骤执行记录。
+        section_key_counter: section 键冲突计数器。
+
+    Returns:
+        唯一且可安全拼接路径的 section 键名。
+
+    Edge Cases:
+        - path 含特殊字符：统一清洗为 `_`
+        - 同名接口尾段冲突：追加 `_2/_3...` 后缀保证唯一
+    """
+
+    api_tail = record.entry.path.rsplit("/", 1)[-1] if isinstance(record.entry.path, str) else ""
+    base_key = api_tail.strip() if api_tail.strip() else record.step.step_id
+    # 统一清洗非法字符，避免 path 中的连字符、空格等破坏字段路径拼接。
+    normalized_key = re.sub(r"[^0-9a-zA-Z_]", "_", base_key)
+    if not normalized_key:
+        normalized_key = re.sub(r"[^0-9a-zA-Z_]", "_", record.step.step_id) or "section"
+
+    current_index = section_key_counter.get(normalized_key, 0) + 1
+    section_key_counter[normalized_key] = current_index
+    if current_index == 1:
+        return normalized_key
+    return f"{normalized_key}_{current_index}"
+
+
+def _build_aggregate_section_title(
+    record: DagStepExecutionRecord,
+    *,
+    fallback: str,
+) -> str:
+    """推断聚合 section 的展示标题。
+
+    功能：
+        优先使用接口注册名（`ui_api_endpoints.name`）作为业务标题，
+        再回退到接口描述，确保聚合子块标题与业务配置一致。
+
+    Args:
+        record: 当前步骤执行记录。
+        fallback: 当接口描述缺失时的兜底标题。
+
+    Returns:
+        section 展示标题。
+
+    Edge Cases:
+        - name/description 均为空：回退到 `fallback`
+    """
+    entry_name = (record.entry.name or "").strip()
+    if entry_name:
+        return entry_name
+    description = (record.entry.description or "").strip()
+    if description:
+        return description
+    return fallback
+
+
+def _select_terminal_business_record(
+    execution_report: DagExecutionReport,
+    anchor_record: DagStepExecutionRecord | None,
+) -> DagStepExecutionRecord | None:
+    """选择多步骤链路的终态业务记录。
+
+    功能：
+        从执行顺序末尾向前扫描，找到“状态可展示且有渲染数据”的最后一步，
+        用于 terminal 视图和 auto 策略的终态回退。
+
+    Args:
+        execution_report: DAG 执行报告。
+        anchor_record: 响应锚点记录，用于扫描失败时的兜底。
+
+    Returns:
+        可作为终态展示的数据记录；找不到时返回 `None`。
+
+    Edge Cases:
+        - 末尾步骤为空但状态 EMPTY：仍可返回用于空态解释
+        - 全链路无可展示步骤：回退 anchor 或最终返回 None
+    """
+
+    preferred_statuses = (
+        ApiQueryExecutionStatus.SUCCESS,
+        ApiQueryExecutionStatus.PARTIAL_SUCCESS,
+        ApiQueryExecutionStatus.EMPTY,
+    )
+    # 逆序扫描确保“最靠近业务终态”的步骤优先被选中。
+    for step_id in reversed(execution_report.execution_order):
+        record = execution_report.records_by_step_id[step_id]
+        if record.execution_result.status not in preferred_statuses:
+            continue
+        if _normalize_data_for_ui(record.execution_result):
+            return record
+        if record.execution_result.status == ApiQueryExecutionStatus.EMPTY:
+            return record
+
+    if anchor_record is None:
+        return None
+    if _normalize_data_for_ui(anchor_record.execution_result):
+        return anchor_record
+    return None
+
+
+def _build_multi_step_summary_rows(execution_report: DagExecutionReport) -> list[dict[str, Any]]:
+    """构造多步骤执行汇总行。"""
+    summary_rows: list[dict[str, Any]] = []
+    for step_id in execution_report.execution_order:
+        record = execution_report.records_by_step_id[step_id]
+        _, shaped_meta = _shape_context_data(record.execution_result.data)
+        summary_rows.append(
+            {
+                "stepId": step_id,
+                "domain": record.entry.domain,
+                "apiPath": record.entry.path,
+                "status": record.execution_result.status.value,
+                "recordCount": _count_execution_rows(record.execution_result),
+                "renderCount": shaped_meta["render_row_count"],
+                "truncated": shaped_meta["truncated"],
+            }
+        )
+    return summary_rows
+
+
+def _infer_render_mode_from_rows(
+    rows: list[dict[str, Any]],
+    record: DagStepExecutionRecord | None,
+) -> str:
+    """根据行数据形态推断渲染模式。"""
+    if not rows:
+        return "table"
+    if len(rows) == 1 and record is not None and isinstance(record.execution_result.data, dict):
+        if _has_nested_business_blocks(record.execution_result.data):
+            # 单对象中同时包含概览块与明细集合时，继续走 detail 会把复杂结构字符串化。
+            # 这里显式切到 composite，让下游规则渲染按“指标 + 表格”语义拆分展示。
+            return "composite"
+        return "detail"
+    return "table"
+
+
+def _has_nested_business_blocks(payload: dict[str, Any]) -> bool:
+    """判断单对象结果是否包含可拆分的复合业务块。"""
+
+    for value in payload.values():
+        if isinstance(value, dict) and value:
+            return True
+        if isinstance(value, list) and any(isinstance(item, dict) for item in value):
+            return True
+    return False
+
+
 def _infer_query_render_mode(
     execution_report: DagExecutionReport,
     anchor_record: DagStepExecutionRecord | None,
 ) -> str:
     """推断当前查询结果应使用的读态渲染模式。"""
 
-    if len(execution_report.records_by_step_id) > 1:
-        return "summary_table"
-    if anchor_record is None:
-        return "table"
-    if isinstance(anchor_record.execution_result.data, dict):
-        return "detail"
-    return "table"
+    return _select_query_ui_payload(
+        execution_report,
+        anchor_record,
+        multi_step_render_policy="summary_table",
+    ).render_mode
 
 
 def _build_execution_title(execution_report: DagExecutionReport, anchor_record: DagStepExecutionRecord | None) -> str:
@@ -2377,6 +3093,140 @@ def _build_response_execution_plan(
         entry = step_entries.get(step.step_id)
         enriched_steps.append(step.model_copy(update={"api_id": entry.id if entry else step.api_id}))
     return plan.model_copy(update={"steps": enriched_steps})
+
+
+def _build_response_field_label_index(
+    runtime_anchor_record: DagStepExecutionRecord | None,
+) -> dict[str, str]:
+    """根据终态 record 的 response_schema 构建字段显示名索引。
+
+    功能：
+        ui_spec 中的 `label/title` 需要展示业务语义文案，而不是原始字段键名。
+        这里统一把 schema 的 description/title 展开成稳定索引，供 Renderer 在
+        `PlannerInfoGrid / PlannerTable` 组件中复用。
+
+    返回键规范：
+        - 顶层字段：`field`
+        - 嵌套对象字段：`parent.child`
+        - 数组对象字段：`listField[].child`
+    """
+
+    if runtime_anchor_record is None:
+        return {}
+    entry = runtime_anchor_record.entry
+    response_schema = entry.response_schema
+    if not isinstance(response_schema, dict) or not response_schema:
+        return _normalize_entry_field_labels(entry.field_labels)
+
+    for schema_node in _iter_response_schema_label_nodes(response_schema, entry.response_data_path):
+        label_index: dict[str, str] = {}
+        _collect_schema_field_labels(schema_node, label_index, prefix="")
+        if label_index:
+            return _merge_label_index_with_entry_labels(label_index, entry.field_labels)
+
+    return _normalize_entry_field_labels(entry.field_labels)
+
+
+def _iter_response_schema_label_nodes(
+    response_schema: dict[str, Any],
+    response_data_path: str,
+):
+    """按声明路径优先、候选路径兜底返回可用于抽取 label 的 schema 节点。"""
+
+    candidates: list[str] = []
+    preferred_path = (response_data_path or "").strip()
+    if preferred_path:
+        candidates.append(preferred_path)
+    for fallback_path in _RESPONSE_SCHEMA_FALLBACK_PATHS:
+        if fallback_path not in candidates:
+            candidates.append(fallback_path)
+    if not candidates:
+        candidates.append("")
+
+    seen: set[str] = set()
+    for path in candidates:
+        if path in seen:
+            continue
+        seen.add(path)
+        schema_node, _ = resolve_schema_at_data_path(response_schema, path)
+        if isinstance(schema_node, dict) and schema_node:
+            yield schema_node
+
+
+def _normalize_entry_field_labels(field_labels: dict[str, str]) -> dict[str, str]:
+    """过滤并标准化 catalog `field_labels`。"""
+
+    normalized: dict[str, str] = {}
+    if not isinstance(field_labels, dict):
+        return normalized
+    for raw_key, raw_label in field_labels.items():
+        if not isinstance(raw_key, str) or not raw_key.strip():
+            continue
+        if not isinstance(raw_label, str) or not raw_label.strip():
+            continue
+        normalized[raw_key.strip()] = raw_label.strip()
+    return normalized
+
+
+def _merge_label_index_with_entry_labels(
+    label_index: dict[str, str],
+    field_labels: dict[str, str],
+) -> dict[str, str]:
+    """优先保留 schema 抽取结果，再用 field_labels 补齐缺失键。"""
+
+    merged = dict(label_index)
+    for key, value in _normalize_entry_field_labels(field_labels).items():
+        merged.setdefault(key, value)
+    return merged
+
+
+def _collect_schema_field_labels(
+    schema_node: dict[str, Any],
+    label_index: dict[str, str],
+    *,
+    prefix: str,
+) -> None:
+    """递归抽取 schema 字段描述，并按路径写入索引。"""
+
+    properties = schema_node.get("properties")
+    if not isinstance(properties, dict):
+        return
+
+    for field_name, field_schema in properties.items():
+        if not isinstance(field_schema, dict):
+            continue
+        field_path = f"{prefix}.{field_name}" if prefix else field_name
+        label = extract_schema_description(field_schema)
+        if label:
+            label_index[field_path] = label
+        _collect_nested_schema_labels(
+            field_schema,
+            label_index,
+            field_path=field_path,
+        )
+
+
+def _collect_nested_schema_labels(
+    field_schema: dict[str, Any],
+    label_index: dict[str, str],
+    *,
+    field_path: str,
+) -> None:
+    """处理 object / array<object> 的子字段描述。"""
+
+    field_type = str(field_schema.get("type") or "").strip().lower()
+    if field_type == "object":
+        _collect_schema_field_labels(field_schema, label_index, prefix=field_path)
+        return
+    if field_type != "array":
+        return
+
+    items = field_schema.get("items")
+    if not isinstance(items, dict):
+        return
+    if str(items.get("type") or "").strip().lower() != "object":
+        return
+    _collect_schema_field_labels(items, label_index, prefix=f"{field_path}[]")
 
 
 def _build_context_pool(

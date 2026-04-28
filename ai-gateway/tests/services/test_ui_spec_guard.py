@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from app.models.schemas import (
+    ApiQueryListRuntime,
     ApiQueryDetailRequestRuntime,
     ApiQueryDetailRuntime,
     ApiQueryDetailSourceRuntime,
@@ -136,3 +137,42 @@ def test_ui_spec_guard_rejects_request_fields_outside_request_schema() -> None:
 
     assert result.is_valid is False
     assert {error.code for error in result.errors} >= {"request_field_not_allowed"}
+
+
+def test_ui_spec_guard_merges_request_schema_whitelists_for_same_api_id() -> None:
+    guard = UISpecGuard()
+    runtime = ApiQueryUIRuntime(
+        components=["PlannerCard", "PlannerTable", "PlannerNotice"],
+        ui_actions=[],
+        list=ApiQueryListRuntime(
+            enabled=True,
+            api_id="shared_api",
+            request_schema_fields=["customer_ids"],
+        ),
+        detail=ApiQueryDetailRuntime(
+            enabled=True,
+            api_id="shared_api",
+            request=ApiQueryDetailRequestRuntime(
+                param_source="queryParams",
+                identifier_param="id",
+                request_schema_fields=["id"],
+            ),
+            source=ApiQueryDetailSourceRuntime(
+                identifier_field="id",
+                value_type="string",
+                required=True,
+            ),
+        ),
+    )
+    spec = _make_spec(child_type="PlannerTable")
+    spec["elements"]["child_1"]["props"].update(
+        {
+            "api": build_runtime_invoke_api("shared_api"),
+            "queryParams": {"customer_ids": ["C001"], "id": "C001"},
+            "body": {},
+        }
+    )
+
+    result = guard.validate(spec, intent="query", runtime=runtime)
+
+    assert result.is_valid is True

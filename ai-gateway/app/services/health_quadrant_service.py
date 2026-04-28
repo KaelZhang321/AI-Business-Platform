@@ -136,11 +136,17 @@ class HealthQuadrantService:
         llm_service: HealthQuadrantLLMService | None = None,
         mysql_pools: HealthQuadrantMySQLPools | None = None,
         treatment_repository: HealthQuadrantTreatmentRepository | None = None,
+        business_pool: aiomysql.Pool | None = None,
     ) -> None:
-        self._repository = repository or HealthQuadrantRepository()
+        self._repository = repository or HealthQuadrantRepository(pool=business_pool)
         # 健康四象限的终检意见抽取需要稳定结构化输出，默认优先走 Ark（ARK_DEFAULT_MODEL）。
         self._llm_service = llm_service or HealthQuadrantLLMService()
-        self._mysql_pools = mysql_pools or HealthQuadrantMySQLPools(minsize=1, maxsize=3)
+        self._mysql_pools = mysql_pools or HealthQuadrantMySQLPools(
+            minsize=1,
+            maxsize=3,
+            business_pool=business_pool,
+        )
+        self._owns_mysql_pools = mysql_pools is None
         self._treatment_repository = treatment_repository or HealthQuadrantTreatmentRepository(
             mysql_pools=self._mysql_pools
         )
@@ -508,10 +514,11 @@ class HealthQuadrantService:
         except Exception as exc:
             logger.warning("health quadrant close treatment repository failed error=%s", exc, exc_info=True)
 
-        try:
-            await self._mysql_pools.close()
-        except Exception as exc:
-            logger.warning("health quadrant close mysql pools failed error=%s", exc, exc_info=True)
+        if self._owns_mysql_pools:
+            try:
+                await self._mysql_pools.close()
+            except Exception as exc:
+                logger.warning("health quadrant close mysql pools failed error=%s", exc, exc_info=True)
 
         if self._dw_http_client is not None:
             try:
@@ -1532,9 +1539,9 @@ def _looks_like_imaging(item_name: str, category: str | None) -> bool:
     return False
 
 
-def _finalize_exam_recommendations(chief_complaint_text: str, buckets: list[dict[str, Any]]) -> None:
+def _finalize_exam_recommendations(chief_complaint_items: list, buckets: list[dict[str, Any]]) -> None:
     # 规则解释：保留前序链路已经写入的个性化推荐项，再补默认推荐模板，避免覆盖业务输入。
-    if len(chief_complaint_text.strip()) > 0:
+    if len(chief_complaint_items) > 0:
         _merge_recommendation_defaults(buckets[3], ["全基因检测"])
     for bucket in buckets:
         bucket["abnormal_indicators"] = _deduplicate_text_list(bucket["abnormal_indicators"])

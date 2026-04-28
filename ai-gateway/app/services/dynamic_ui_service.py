@@ -28,6 +28,11 @@ _LLM_RENDER_ROW_LIMIT = 3
 _LLM_RENDER_KEY_LIMIT = 8
 _LLM_RENDER_STRING_LIMIT = 200
 _LLM_RENDER_MAX_ATTEMPTS = 2
+_AGGREGATE_SECTION_TYPE_KEY = "__sectionType"
+_AGGREGATE_SECTION_DATA_KEY = "data"
+_AGGREGATE_DETAIL_SECTION_TYPE = "detail"
+_AGGREGATE_TABLE_SECTION_TYPE = "table"
+_AGGREGATE_COMPOSITE_SECTION_TYPE = "composite"
 
 
 @dataclass(slots=True)
@@ -156,25 +161,30 @@ class DynamicUIService:
             - Guard 失败时绝不透传半成品 Spec，而是统一冻结为只读提示视图
             - 冻结视图不依赖 LLM，确保在渲染链路失真时依旧可稳定返回
         """
+        blank_container_enabled = intent in {"query", "mutation_form"}
+        render_runtime = self._ensure_blank_container_runtime(runtime) if blank_container_enabled else runtime
         candidate_spec = await self._build_candidate_spec(
             intent,
             data,
             context,
             status=status,
-            runtime=runtime,
+            runtime=render_runtime,
             trace_id=trace_id,
         )
         if candidate_spec is None:
             return UISpecBuildResult()
 
+        if blank_container_enabled:
+            candidate_spec = self._migrate_detail_cards_to_info_grid(candidate_spec)
+            candidate_spec = self._ensure_blank_container_root(candidate_spec)
         candidate_spec = self._sanitize_runtime_request_metadata(
             candidate_spec,
             intent=intent,
             context=context,
-            runtime=runtime,
+            runtime=render_runtime,
         )
 
-        validation = self._get_guard().validate(candidate_spec, intent=intent, runtime=runtime)
+        validation = self._get_guard().validate(candidate_spec, intent=intent, runtime=render_runtime)
         if validation.is_valid:
             return UISpecBuildResult(spec=candidate_spec, validation=validation, frozen=False)
 
@@ -205,6 +215,19 @@ class DynamicUIService:
             LLM 生成的详情卡片和动作对象可能会把展示 label 混进 `body/queryParams`，
             导致请求键名漂移。这里基于 runtime 契约重新回写已知节点的请求元数据，
             保证前端真正执行时只看到 request_schema 允许的键。
+
+        Args:
+            spec: 候选 UI Spec（通常来自规则渲染或 LLM 渲染）。
+            intent: 当前渲染意图（query / mutation_form / knowledge 等）。
+            context: 响应层透传的渲染上下文。
+            runtime: 当前请求可暴露的运行时契约。
+
+        Returns:
+            已标准化 runtime 元数据的 Spec；若不满足处理条件则原样返回。
+
+        Edge Cases:
+            - runtime 缺失或 spec 非 flat：跳过改写，避免误污染旧结构
+            - `elements` 非字典：直接返回原 Spec，交给 Guard 统一兜底
         """
 
         if runtime is None or not self._is_flat_spec(spec):
@@ -242,9 +265,31 @@ class DynamicUIService:
         context: dict[str, Any],
         runtime: ApiQueryUIRuntime,
     ) -> None:
-        """修正查询页中列表、详情和行级动作的请求元数据。"""
+        """修正查询页中列表、详情和行级动作的请求元数据。
+
+        功能：
+            query 页面同时存在列表、筛选、详情和分页等多个交互入口。
+            这里统一把这些节点的请求参数回写到 runtime 契约，避免前端在不同入口
+            读到不一致的 `api/queryParams/body`，导致同一查询链路出现行为分叉。
+
+        Args:
+            elements: flat spec 的 `elements` 映射。
+            state: flat spec 的 `state`，用于回填详情标识值。
+            context: 渲染上下文，包含 flow_num/created_by/request_params 等事实字段。
+            runtime: query 运行时契约。
+
+        Returns:
+            无返回值，原地更新 `elements` 中相关节点的请求元数据。
+
+        Edge Cases:
+            - list 未启用：只尝试详情节点修正
+            - detail 未启用或缺少 identifier：直接跳过详情回填，避免生成无效请求
+            - row_actions 来自上游 `context.row_actions` 时，优先保留上游显式动作定义
+        """
 
         if runtime.list.enabled:
+            # 1. 先构造三类稳定参数模板：列表基线、筛选提交、筛选重置。
+            # 这样做是为了保证同页不同按钮读取的是同一份 runtime 口径。
             list_request_fields = _build_runtime_request_fields(
                 runtime.list.api_id,
                 param_source=runtime.list.param_source,
@@ -253,6 +298,7 @@ class DynamicUIService:
                 created_by=context.get("created_by"),
                 request_schema_fields=runtime.list.request_schema_fields,
             )
+            detail_runtime_strategy_fields = self._build_detail_runtime_strategy_fields(runtime)
             filter_fields = list(runtime.list.filters.fields)
             filter_submit_request_fields = _build_runtime_request_fields(
                 runtime.list.api_id,
@@ -270,6 +316,8 @@ class DynamicUIService:
                 created_by=context.get("created_by"),
                 request_schema_fields=runtime.list.request_schema_fields,
             )
+
+            # 2. 再按组件类型批量覆写，确保 Table/Pagination/Button 一致消费同一契约。
             for element in elements.values():
                 if not isinstance(element, dict):
                     continue
@@ -291,6 +339,7 @@ class DynamicUIService:
                                 "label": "查看详情",
                                 "params": {
                                     "api_id": runtime.detail.api_id,
+                                    **detail_runtime_strategy_fields,
                                     **_build_runtime_request_fields(
                                         runtime.detail.api_id,
                                         param_source=runtime.detail.request.param_source,
@@ -323,6 +372,7 @@ class DynamicUIService:
                         }
                     )
                 elif element_type == "PlannerButton":
+                    # 查询/重置按钮必须走固定动作覆盖，避免 LLM 把 label 改写后参数失真。
                     label = props.get("label")
                     if label == "查询":
                         self._overwrite_button_action_params(
@@ -342,6 +392,7 @@ class DynamicUIService:
         if not runtime.detail.enabled or not runtime.detail.api_id:
             return
 
+        # 3. 详情信息入口单独处理：先定位主键值，再按 detail request_schema 回写请求。
         detail_identifier_param = runtime.detail.request.identifier_param or runtime.detail.source.identifier_field
         if not isinstance(detail_identifier_param, str) or not detail_identifier_param:
             return
@@ -360,7 +411,7 @@ class DynamicUIService:
             request_schema_fields=runtime.detail.request.request_schema_fields or [detail_identifier_param],
         )
         for element in elements.values():
-            if not isinstance(element, dict) or element.get("type") != "PlannerDetailCard":
+            if not isinstance(element, dict) or element.get("type") not in {"PlannerDetailCard", "PlannerInfoGrid"}:
                 continue
             props = element.get("props")
             if isinstance(props, dict):
@@ -373,7 +424,25 @@ class DynamicUIService:
         context: dict[str, Any],
         runtime: ApiQueryUIRuntime,
     ) -> None:
-        """修正 mutation 表单页的表单和提交按钮请求元数据。"""
+        """修正 mutation 表单页的表单和提交按钮请求元数据。
+
+        功能：
+            mutation 页面属于“高风险确认后写入”路径，提交参数必须完全受 runtime 契约约束。
+            这里统一把表单容器和提交按钮的动作参数回写到同一请求模板，避免前端从不同
+            节点读取时出现键名漂移或字段缺失。
+
+        Args:
+            elements: flat spec 的 `elements` 映射。
+            context: 渲染上下文，含 submit_payload/flow_num/created_by 等事实字段。
+            runtime: mutation form 运行时契约。
+
+        Returns:
+            无返回值，原地更新相关节点元数据。
+
+        Edge Cases:
+            - form 未启用或 api_id 缺失：直接跳过，防止暴露不可提交的假写入口
+            - submit_payload 缺失：回退字段级 `$bindState` 模板保证“用户最终输入”可提交
+        """
 
         if not runtime.form.enabled or not runtime.form.api_id:
             return
@@ -437,8 +506,29 @@ class DynamicUIService:
         state: dict[str, Any],
         runtime: ApiQueryUIRuntime,
     ) -> Any:
-        """尽量从稳定来源恢复详情主键值，而不是依赖展示 label。"""
+        """恢复详情请求的主键值，优先选择稳定来源而非展示文案。
 
+        功能：
+            详情请求是否正确命中，核心取决于 identifier 值是否稳定。由于 UI 可能被 LLM
+            重新组织，不能只依赖某个固定字段位置，这里按“契约优先 -> 状态回填 -> 展示兜底”
+            顺序分层恢复，最大化命中率。
+
+        Args:
+            elements: 当前 flat spec 元素映射。
+            context: 渲染上下文（含 request_params/form_state）。
+            state: 当前页面 state。
+            runtime: 详情运行时契约。
+
+        Returns:
+            恢复出的 identifier 值；无法恢复时返回 `None`。
+
+        Edge Cases:
+            - request_params 缺失：自动回退 form_state 和 detail card 扫描
+            - label 被中文 description 替换：同时匹配字段名与展示名
+            - 所有来源都为空：返回 None，避免发送错误主键
+        """
+
+        # 1. 首选 request_params：这是响应层传下来的原始请求事实，优先级最高。
         request_params = context.get("request_params")
         if isinstance(request_params, dict):
             identifier_param = runtime.detail.request.identifier_param
@@ -448,6 +538,7 @@ class DynamicUIService:
             if isinstance(source_identifier_field, str) and source_identifier_field in request_params:
                 return request_params.get(source_identifier_field)
 
+        # 2. 次选 form_state：兼容用户在页面内改写后回查详情的场景。
         root_state = context.get("form_state")
         if isinstance(root_state, dict):
             identifier_param = runtime.detail.request.identifier_param
@@ -458,8 +549,19 @@ class DynamicUIService:
 
         source_identifier_field = runtime.detail.source.identifier_field
         if isinstance(source_identifier_field, str):
+            # 详情卡 label 可能已被 schema description/title 替换；
+            # 主键回填时需同时兼容“原始字段名”和“展示字段名”两条匹配路径。
+            label_index = self._build_response_field_label_index(context)
+            identifier_labels = {
+                source_identifier_field,
+                self._resolve_field_label(
+                    field_name=source_identifier_field,
+                    label_index=label_index,
+                    field_path=source_identifier_field,
+                ),
+            }
             for element in elements.values():
-                if not isinstance(element, dict) or element.get("type") != "PlannerDetailCard":
+                if not isinstance(element, dict) or element.get("type") not in {"PlannerDetailCard", "PlannerInfoGrid"}:
                     continue
                 props = element.get("props")
                 if not isinstance(props, dict):
@@ -470,9 +572,10 @@ class DynamicUIService:
                 for item in items:
                     if not isinstance(item, dict):
                         continue
-                    if item.get("label") == source_identifier_field:
+                    if item.get("label") in identifier_labels:
                         return item.get("value")
 
+        # 3. 最后兜底页面 state，保证在上下文缺失时仍尽力恢复主键。
         identifier_param = runtime.detail.request.identifier_param
         if isinstance(identifier_param, str):
             state_value = read_state_value(state, f"/form/{identifier_param}")
@@ -486,7 +589,22 @@ class DynamicUIService:
         context: dict[str, Any],
         runtime: ApiQueryUIRuntime,
     ) -> dict[str, Any]:
-        """解析 mutation 表单提交模板。"""
+        """解析 mutation 表单提交模板。
+
+        功能：
+            mutation 页面既要支持通用字段绑定，也要支持删除确认等“自定义 payload”场景。
+            这里统一处理优先级：先尊重上下文显式模板，再回退字段绑定模板。
+
+        Args:
+            context: 渲染上下文，可能携带 `submit_payload` 覆盖模板。
+            runtime: mutation form 运行时契约。
+
+        Returns:
+            提交 payload 模板（可包含 `$bindState` 占位符）。
+
+        Edge Cases:
+            - submit_payload 非字典：回退字段绑定模板，避免前端拿到不可执行参数
+        """
 
         custom_submit_payload = context.get("submit_payload")
         if isinstance(custom_submit_payload, dict):
@@ -525,6 +643,91 @@ class DynamicUIService:
         if self._guard is None:
             self._guard = UISpecGuard(catalog_service=self._get_catalog_service())
         return self._guard
+
+    @staticmethod
+    def _ensure_blank_container_runtime(runtime: ApiQueryUIRuntime | None) -> ApiQueryUIRuntime | None:
+        """确保显式运行时允许 `PlannerBlankContainer` 根容器。
+
+        功能：
+            新版 flat spec 统一以空白容器承载业务卡片。很多旧调用点会传入显式
+            `runtime.components`，如果不在这里补齐根容器，Guard 会在业务组件都合法时
+            因根节点未启用而冻结页面。
+        """
+        if runtime is None or not runtime.components:
+            return runtime
+        if "PlannerBlankContainer" in runtime.components:
+            return runtime
+        return runtime.model_copy(update={"components": ["PlannerBlankContainer", *runtime.components]})
+
+    @staticmethod
+    def _ensure_blank_container_root(spec: dict[str, Any]) -> dict[str, Any]:
+        """把历史 `PlannerCard` 根节点兜底包装成 `PlannerBlankContainer`。
+
+        功能：
+            规则渲染已优先生成新结构；这层兜底用于 LLM 或旧树形转换路径，避免同一接口
+            在不同渲染来源下出现两套根容器协议。
+        """
+        if not DynamicUIService._is_flat_spec(spec):
+            return spec
+        elements = spec.get("elements")
+        root_id = spec.get("root")
+        if not isinstance(elements, dict) or not isinstance(root_id, str):
+            return spec
+        root_element = elements.get(root_id)
+        if not isinstance(root_element, dict) or root_element.get("type") == "PlannerBlankContainer":
+            return spec
+
+        wrapped = deepcopy(spec)
+        wrapped_elements = wrapped.get("elements")
+        if not isinstance(wrapped_elements, dict):
+            return spec
+        original_root = wrapped_elements.pop(root_id, None)
+        if not isinstance(original_root, dict):
+            return spec
+
+        content_id = DynamicUIService._next_available_child_id(wrapped_elements)
+        wrapped_elements[content_id] = original_root
+        wrapped_elements[root_id] = {
+            "type": "PlannerBlankContainer",
+            "props": {"minHeight": 160},
+            "children": [content_id],
+        }
+        return wrapped
+
+    @staticmethod
+    def _next_available_child_id(elements: dict[str, Any]) -> str:
+        """分配不与现有元素冲突的 `child_*` ID。"""
+        index = 1
+        while f"child_{index}" in elements:
+            index += 1
+        return f"child_{index}"
+
+    @staticmethod
+    def _migrate_detail_cards_to_info_grid(spec: dict[str, Any]) -> dict[str, Any]:
+        """把历史详情卡组件迁移为新版信息网格组件。
+
+        功能：
+            LLM 或旧模板可能仍输出 `PlannerDetailCard`。新版查询 UI 统一使用
+            `PlannerInfoGrid` 承载详情字段，因此在 Guard 校验前做无损迁移，保留
+            items、runtime 请求元数据和业务键。
+        """
+        if not DynamicUIService._is_flat_spec(spec):
+            return spec
+        elements = spec.get("elements")
+        if not isinstance(elements, dict):
+            return spec
+        migrated = deepcopy(spec)
+        migrated_elements = migrated.get("elements")
+        if not isinstance(migrated_elements, dict):
+            return spec
+        for element in migrated_elements.values():
+            if not isinstance(element, dict) or element.get("type") != "PlannerDetailCard":
+                continue
+            element["type"] = "PlannerInfoGrid"
+            props = element.setdefault("props", {})
+            if isinstance(props, dict):
+                props.setdefault("minColumnWidth", 180)
+        return migrated
 
     async def _build_candidate_spec(
         self,
@@ -965,7 +1168,7 @@ class DynamicUIService:
                 f"{action_catalog}\n\n"
                 "# Rendering Rules\n"
                 "1. 同质数组优先使用 PlannerTable。\n"
-                "2. 单对象详情优先使用 PlannerDetailCard。\n"
+                "2. 单对象详情优先使用 PlannerInfoGrid。\n"
                 "3. 如果存在局部失败或跳过信息，应使用 PlannerNotice 做显式提示。\n"
                 "4. 当前 read_only 链路优先返回 root/state/elements 结构；state 在纯读场景下通常为空对象。\n"
                 "5. 严禁捏造未注册的组件、动作、props 或数据字段。\n\n"
@@ -1096,10 +1299,18 @@ class DynamicUIService:
         Edge Cases:
             - runtime 为空时回退最小只读能力，避免模型误生成交互动作
             - 列表/详情/表单都会保留 enabled 与关键元数据，兼容不同渲染模式的判定
+
+        Args:
+            runtime: 响应层构建的运行时契约。
+
+        Returns:
+            供 Renderer 使用的轻量 runtime 目录。
         """
         if runtime is None:
             return {"mode": "read_only", "components": []}
 
+        # 这里有意保留 enabled/api_id/param_source 等“可执行约束字段”，
+        # 不保留完整 schema 细节，平衡模型约束与 prompt 体积。
         return {
             "mode": runtime.mode,
             "components": list(runtime.components),
@@ -1176,6 +1387,13 @@ class DynamicUIService:
         Edge Cases:
             - 深层非标量对象会被折叠成字符串摘要，防止递归结构把 prompt 撑爆
             - 超长字符串、超长数组和超大对象都会按固定阈值截断，保证 prompt 规模可预测
+
+        Args:
+            value: 待裁剪的任意值。
+            depth: 当前递归深度，用于控制深层对象展开上限。
+
+        Returns:
+            裁剪后的值，保持“可解释优先”而非“全量保真”。
         """
         if value is None:
             return None
@@ -1411,7 +1629,7 @@ class DynamicUIService:
             收口到稳定的宏观原语：
 
             - 同质列表 → `PlannerTable`
-            - 单对象详情 → `PlannerDetailCard`
+            - 单对象详情 → `PlannerInfoGrid`
             - 局部失败提示 → `PlannerNotice`
 
             这样做的核心收益是：先把网关对外的 UI 语言稳定下来，后续无论是规则渲染
@@ -1430,7 +1648,9 @@ class DynamicUIService:
             - 单条列表结果不自动升格为详情卡，只有 route 层显式标记 `detail` 才切详情视图
             - 多步骤摘要表仍然走 `PlannerTable`，但会通过 notice 显式暴露“只展示安全结果”
         """
+        # 1. 先冻结页面级文案：标题、副标题、局部失败提示统一在根卡片收口。
         render_mode = (context or {}).get("query_render_mode") or "table"
+        label_index = self._build_response_field_label_index(context)
         root_props = {
             "title": (context or {}).get("question", "数据查询结果"),
             "subtitle": self._build_query_subtitle(rows, context, render_mode),
@@ -1440,10 +1660,20 @@ class DynamicUIService:
             subtitle = root_props.get("subtitle")
             root_props["subtitle"] = f"{subtitle} · {partial_message}" if subtitle else partial_message
 
+        # 2. detail/composite 属于显式渲染模式，优先分流，避免被后续表格兜底覆盖。
         if render_mode == "detail":
+            detail_view_meta = (
+                runtime.detail.detail_view_meta
+                if runtime and isinstance(runtime.detail.detail_view_meta, dict)
+                else None
+            )
             detail_props = {
                 "title": (context or {}).get("detail_title", "详情信息"),
-                "items": self._build_detail_items(rows[0]),
+                "items": self._build_detail_items(
+                    rows[0],
+                    label_index=label_index,
+                    detail_view_meta=detail_view_meta,
+                ),
             }
             if runtime and runtime.detail.enabled and runtime.detail.api_id:
                 detail_identifier_field = runtime.detail.source.identifier_field
@@ -1463,12 +1693,48 @@ class DynamicUIService:
                 root_props=root_props,
                 children=[
                     {
-                        "type": "PlannerDetailCard",
-                        "props": detail_props,
+                        "type": "PlannerInfoGrid",
+                        "props": {"minColumnWidth": 180, **detail_props},
                     }
                 ],
             )
 
+        if render_mode == "composite":
+            return self._build_query_composite_spec(
+                row=rows[0] if rows else {},
+                root_props=root_props,
+                context=context,
+                runtime=runtime,
+                label_index=label_index,
+            )
+
+        # 仅当结果本身是单对象时才回退详情卡。对多行数据仍应保留表格渲染，
+        # 否则 LLM 失败后的规则兜底会把列表误折叠成详情卡，破坏既有列表语义。
+        if not (runtime and runtime.list.enabled) and len(rows) <= 1:
+            detail_view_meta = (
+                runtime.detail.detail_view_meta
+                if runtime and isinstance(runtime.detail.detail_view_meta, dict)
+                else None
+            )
+            return self._build_flat_card_spec(
+                root_props=root_props,
+                children=[
+                    {
+                        "type": "PlannerInfoGrid",
+                        "props": {
+                            "title": (context or {}).get("detail_title", "详情信息"),
+                            "minColumnWidth": 180,
+                            "items": self._build_detail_items(
+                                rows[0] if rows else {},
+                                label_index=label_index,
+                                detail_view_meta=detail_view_meta,
+                            ),
+                        },
+                    }
+                ],
+            )
+
+        # 3. table 视图：先构建筛选状态与请求模板，再组装查询/重置/分页动作。
         filters_state = _build_query_filter_state(runtime)
         filter_fields = list(runtime.list.filters.fields) if runtime else []
         current_params = dict(runtime.list.query_context.current_params) if runtime else {}
@@ -1516,15 +1782,7 @@ class DynamicUIService:
         for index, field in enumerate(filter_fields, start=1):
             element_id = f"filter_field_{index}"
             elements["query-filters"]["children"].append(element_id)
-            elements[element_id] = {
-                "type": "PlannerInput",
-                "props": {
-                    "label": field.label,
-                    "value": {"$bindState": f"/filters/{field.name}"},
-                    "placeholder": f"请输入{field.label}",
-                    "required": field.required,
-                },
-            }
+            elements[element_id] = self._build_query_filter_element(field)
 
         if runtime and runtime.list.enabled:
             elements["filter_reset"] = {
@@ -1555,22 +1813,31 @@ class DynamicUIService:
             }
             elements["query-filters"]["children"].extend(["filter_reset", "filter_submit"])
 
+        configured_table_fields = runtime.list.table_fields if runtime else None
+        table_rows = self._build_table_rows(rows, configured_fields=configured_table_fields)
         table_props: dict[str, Any] = {
-            "columns": self._build_table_columns(rows[0]),
-            "dataSource": rows,
+            "columns": self._build_table_columns(
+                table_rows[0],
+                label_index=label_index,
+                configured_fields=configured_table_fields,
+            ),
+            "dataSource": table_rows,
             **list_request_fields,
         }
         context_row_actions = (context or {}).get("row_actions")
         if isinstance(context_row_actions, list) and context_row_actions:
+            # 上游显式动作优先级最高（例如 WAIT_SELECT 场景），避免被默认详情动作覆盖。
             table_props["rowActions"] = self._normalize_row_actions(context_row_actions)
         elif runtime and runtime.detail.enabled:
             # 详情动作只下发运行时契约，不在网关 UI 层硬编码具体业务参数。
+            detail_runtime_strategy_fields = self._build_detail_runtime_strategy_fields(runtime)
             table_props["rowActions"] = [
                 {
                     "action": runtime.detail.ui_action or "remoteQuery",
                     "label": "查看详情",
                     "params": {
                         "api_id": runtime.detail.api_id,
+                        **detail_runtime_strategy_fields,
                         **_build_runtime_request_fields(
                             runtime.detail.api_id,
                             param_source=runtime.detail.request.param_source,
@@ -1604,6 +1871,63 @@ class DynamicUIService:
             "root": "root",
             "state": {"filters": filters_state},
             "elements": elements,
+        }
+
+    @staticmethod
+    def _build_detail_runtime_strategy_fields(runtime: ApiQueryUIRuntime) -> dict[str, Any]:
+        """提取详情跳转所需的模板优先/动态兜底策略字段。"""
+
+        detail_runtime = runtime.detail
+        params: dict[str, Any] = {
+            "renderMode": detail_runtime.render_mode or "dynamic_ui",
+            "fallbackMode": detail_runtime.fallback_mode or "dynamic_ui",
+        }
+        if detail_runtime.template_code:
+            params["templateCode"] = detail_runtime.template_code
+        return params
+
+    @staticmethod
+    def _build_query_filter_element(field: ApiQueryListFilterFieldRuntime) -> dict[str, Any]:
+        """将筛选字段 runtime 契约映射为具体组件。
+
+        功能：
+            `list_view_meta.filter_fields.component` 的设计目标不是装饰性配置，而是让目录元数据
+            真正控制首屏筛选控件形态。这里仅开放当前渲染层已具备稳定语义的三类组件：
+            `input / number / select`。
+
+        Args:
+            field: 已归一化的筛选字段 runtime。
+
+        Returns:
+            单个筛选组件的 flat spec 节点。
+
+        Edge Cases:
+            - 未知组件值统一回退为 `PlannerInput`，保证旧数据或脏数据不打断列表页渲染
+            - `select` 目前只表达组件语义，不强制要求 options；后续可再补 dict/options 源
+        """
+
+        bind_state = {"$bindState": f"/filters/{field.name}"}
+        if field.component == "select":
+            return {
+                "type": "PlannerSelect",
+                "props": {
+                    "label": field.label,
+                    "value": bind_state,
+                    "placeholder": f"请选择{field.label}",
+                    "required": field.required,
+                },
+            }
+
+        input_mode = "number" if field.component == "number" else "text"
+        return {
+            "type": "PlannerInput",
+            "props": {
+                "label": field.label,
+                "value": bind_state,
+                "placeholder": f"请输入{field.label}",
+                "required": field.required,
+                "inputMode": input_mode,
+            },
         }
 
     def _notice_spec(self, title: str, message: str, tone: str) -> dict[str, Any]:
@@ -1731,16 +2055,16 @@ class DynamicUIService:
         children: list[dict[str, Any]],
         state: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """构造 `PlannerCard` 根节点的 flat spec。
+        """构造 `PlannerBlankContainer -> PlannerCard -> 内容组件` 的 flat spec。
 
         功能：
-            第五阶段后续还会继续引入 `PlannerForm / PlannerSelect / PlannerButton`。
-            先把 flat spec 的根结构抽成一个 helper，后面任务 3、4、5 可以直接复用，
-            避免每次都手搓 `root/elements` 造成协议细节再次分散。
+            `PlannerBlankContainer` 只负责页面级留白和多卡片承载，业务标题、副标题和动作
+            仍收敛在内部 `PlannerCard`。这样单接口、多接口和复合接口都能共享同一套
+            根容器协议，同时不破坏卡片内组件的二跳刷新元数据。
 
         Args:
-            root_props: 根卡片展示属性。
-            children: 已准备好的子元素列表。
+            root_props: 内部业务卡片展示属性。
+            children: 已准备好的卡片内容组件列表。
             state: 当前视图初始状态；读态页面通常为空对象。
 
         Returns:
@@ -1748,19 +2072,47 @@ class DynamicUIService:
 
         Edge Cases:
             - `state=None` 时统一回退空对象，避免前端处理两套状态空值语义
-            - 子元素 ID 按顺序编号，保证快照和测试断言稳定
+            - 所有生成节点都使用稳定 `child_*` ID，业务语义放在 props 中而不是元素 ID 中
         """
+        return self._build_flat_container_spec(
+            children=[{"type": "PlannerCard", "props": root_props, "children": children}],
+            state=state,
+        )
+
+    def _build_flat_container_spec(
+        self,
+        *,
+        children: list[dict[str, Any]],
+        state: dict[str, Any] | None = None,
+        root_props: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """把卡片树递归物化为以 `PlannerBlankContainer` 为根的 flat spec。"""
         elements: dict[str, Any] = {
             "root": {
-                "type": "PlannerCard",
-                "props": root_props,
+                "type": "PlannerBlankContainer",
+                "props": {"minHeight": 160, **(root_props or {})},
                 "children": [],
             }
         }
-        for index, child in enumerate(children, start=1):
-            child_id = f"child_{index}"
-            elements["root"]["children"].append(child_id)
-            elements[child_id] = child
+        next_index = 1
+
+        def materialize(node: dict[str, Any]) -> str:
+            nonlocal next_index
+            element_id = f"child_{next_index}"
+            next_index += 1
+            raw_children = node.get("children")
+            payload = {key: value for key, value in node.items() if key != "children"}
+            child_ids: list[str] = []
+            if isinstance(raw_children, list):
+                for child in raw_children:
+                    if isinstance(child, dict) and "type" in child:
+                        child_ids.append(materialize(child))
+            if child_ids:
+                payload["children"] = child_ids
+            elements[element_id] = payload
+            return element_id
+
+        elements["root"]["children"] = [materialize(child) for child in children if isinstance(child, dict)]
         return {
             "root": "root",
             "state": state or {},
@@ -1816,41 +2168,248 @@ class DynamicUIService:
         return f"{normalized[:limit]}..."
 
     @staticmethod
-    def _build_table_columns(sample_row: dict[str, Any]) -> list[dict[str, str]]:
+    def _build_table_columns(
+        sample_row: dict[str, Any],
+        *,
+        label_index: dict[str, str] | None = None,
+        field_path_prefix: str = "",
+        configured_fields: list[Any] | None = None,
+    ) -> list[dict[str, str]]:
         """把行对象字段映射成 `PlannerTable.columns`。
 
         功能：
             这里输出稳定的列元数据而不是裸字符串，是为了给后续前端表格实现预留
             `title / dataIndex / key` 三元组契约，避免任务 2 做完后任务 5 又得返工改列结构。
         """
-        return [
-            {
-                "key": key,
-                "title": key,
-                "dataIndex": key,
-            }
-            for key in sample_row.keys()
-        ]
+        resolved_label_index = label_index or {}
+        columns: list[dict[str, str]] = []
+        # 业务原因：当 runtime 已经显式下发 table_fields 时，列表列必须严格按白名单渲染，
+        # 不能再由首行数据“猜”列，否则会出现配置失效和敏感字段意外曝光。
+        if configured_fields:
+            for configured_field in configured_fields:
+                key = str(getattr(configured_field, "name", "") or "").strip()
+                if not key:
+                    continue
+                field_path = f"{field_path_prefix}.{key}" if field_path_prefix else key
+                configured_title = getattr(configured_field, "title", None)
+                title = (
+                    configured_title.strip()
+                    if isinstance(configured_title, str) and configured_title.strip()
+                    else DynamicUIService._resolve_field_label(
+                        field_name=key,
+                        label_index=resolved_label_index,
+                        field_path=field_path,
+                    )
+                )
+                columns.append(
+                    {
+                        "key": key,
+                        "title": title,
+                        "dataIndex": key,
+                    }
+                )
+            return columns
+
+        for key in sample_row.keys():
+            field_path = f"{field_path_prefix}.{key}" if field_path_prefix else key
+            columns.append(
+                {
+                    "key": key,
+                    "title": DynamicUIService._resolve_field_label(
+                        field_name=key,
+                        label_index=resolved_label_index,
+                        field_path=field_path,
+                    ),
+                    "dataIndex": key,
+                }
+            )
+        return columns
 
     @staticmethod
-    def _build_detail_items(row: dict[str, Any]) -> list[dict[str, str]]:
-        """把对象详情映射成 `PlannerDetailCard.items`。
+    def _build_table_rows(
+        rows: list[dict[str, Any]],
+        *,
+        configured_fields: list[Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        """按列表列元数据补齐表格派生列。
+
+        功能：
+            组合列是 UI 展示层能力，不应该污染业务接口原始响应。这里复制行对象后写入
+            `__combined_N` 这类派生字段，让 `PlannerTable.columns.dataIndex` 仍保持简单字符串，
+            前端无需理解组合列规则也能稳定展示。
+        """
+        if not configured_fields:
+            return rows
+
+        rendered_rows: list[dict[str, Any]] = []
+        for row in rows:
+            rendered_row = dict(row)
+            for field in configured_fields:
+                source_fields = list(getattr(field, "source_fields", []) or [])
+                if not source_fields:
+                    continue
+                column_key = str(getattr(field, "name", "") or "").strip()
+                if not column_key:
+                    continue
+                rendered_row[column_key] = DynamicUIService._compose_table_field_value(row, field)
+            rendered_rows.append(rendered_row)
+        return rendered_rows
+
+    @staticmethod
+    def _compose_table_field_value(row: dict[str, Any], field: Any) -> str:
+        """把组合列来源字段折叠成单元格文本。
+
+        功能：
+            组合列用于“省市区”“主诊-主责-主治”等弱结构展示。空值应被跳过，只有
+            所有来源字段都为空时才显示 `empty_value`，避免出现连续分隔符或无意义空白。
+        """
+        source_fields = list(getattr(field, "source_fields", []) or [])
+        separator = getattr(field, "separator", "")
+        empty_value = getattr(field, "empty_value", "-")
+        values: list[str] = []
+        for source_field in source_fields:
+            value = row.get(source_field)
+            if value is None or value == "":
+                continue
+            values.append(DynamicUIService._stringify_detail_value(value))
+        return str(separator).join(values) if values else str(empty_value or "-")
+
+    @staticmethod
+    def _build_detail_items(
+        row: dict[str, Any],
+        *,
+        label_index: dict[str, str] | None = None,
+        field_path_prefix: str = "",
+        detail_view_meta: dict[str, Any] | None = None,
+    ) -> list[dict[str, str]]:
+        """把对象详情映射成 `PlannerInfoGrid.items`。
 
         功能：
             详情视图的目标是“稳定展示事实”，不是透传原始对象结构。
-            因此这里统一把值折叠成可读字符串，避免复杂嵌套对象直接把详情卡 props 撑穿。
+            对复杂嵌套结构仍保持跳过，避免把结构化明细压成超长字符串；
+            但 `list[string]` 这类“多值标签集合”在健康档案、风险标签等详情页里非常常见，
+            若一律跳过会导致元数据虽已声明展示字段，用户却完全看不到内容。因此这里单独
+            放通“标量数组”，统一折叠为一行文本；真正的 `list[object]` / `dict` 仍交给
+            composite 模式拆分成表格或指标区展示。
         """
-        return [
-            {
-                "label": key,
-                "value": DynamicUIService._stringify_detail_value(value),
-            }
-            for key, value in row.items()
-        ]
+        resolved_label_index = label_index or {}
+        items = []
+        # 1. 先挑选“可展示字段集合”：优先尊重 detail_view_meta，再回退历史自动规则。
+        selected_fields = DynamicUIService._select_detail_fields(
+            row=row,
+            detail_view_meta=detail_view_meta,
+        )
+        for key in selected_fields:
+            value = row.get(key)
+            # 业务原因：详情卡允许 `list[string]` 这类轻量多值字段按“标签集合”展示，
+            # 但必须继续拦截 dict / list[object]，避免把结构化数据错误压平成难读长串。
+            if isinstance(value, dict) or DynamicUIService._is_non_scalar_detail_list(value):
+                continue
+            field_path = f"{field_path_prefix}.{key}" if field_path_prefix else key
+            items.append(
+                {
+                    "label": DynamicUIService._resolve_field_label(
+                        field_name=key,
+                        label_index=resolved_label_index,
+                        field_path=field_path,
+                    ),
+                    "value": DynamicUIService._stringify_detail_value(value),
+                }
+            )
+        return items or [{"label": "提示", "value": "暂无可展示的标量字段"}]
+
+    @staticmethod
+    def _select_detail_fields(
+        *,
+        row: dict[str, Any],
+        detail_view_meta: dict[str, Any] | None,
+    ) -> list[str]:
+        """按详情元数据挑选最终展示字段。
+
+        功能：
+            该方法把 `detail_view_meta` 的四个字段转换成可执行规则，确保详情页展示行为稳定可审计。
+
+        Args:
+            row: 当前详情对象。
+            detail_view_meta: 详情元数据字典（display/required/exclude/groups）。
+
+        Returns:
+            最终展示字段顺序列表。
+
+        Edge Cases:
+            - 元数据缺失或全空：回退到历史行为（按对象 key 顺序）
+            - display/required 都配置但全被 exclude 覆盖：返回空列表，由上层输出“暂无字段”提示
+        """
+
+        if not row:
+            return []
+        if not isinstance(detail_view_meta, dict):
+            return list(row.keys())
+
+        # 1. 先归一化元数据字段，过滤脏值，保证后续集合运算不会被异常输入污染。
+        display_fields = DynamicUIService._normalize_meta_field_list(detail_view_meta.get("display_fields"))
+        required_fields = DynamicUIService._normalize_meta_field_list(detail_view_meta.get("required_fields"))
+        exclude_fields = set(DynamicUIService._normalize_meta_field_list(detail_view_meta.get("exclude_fields")))
+        groups = detail_view_meta.get("groups")
+
+        if not display_fields and not required_fields and not exclude_fields:
+            return list(row.keys())
+
+        # 2. 字段准入优先级固定为：exclude > required > display。
+        allowed_fields: list[str] = []
+        for field_name in required_fields + display_fields:
+            if field_name not in row or field_name in exclude_fields:
+                continue
+            if field_name not in allowed_fields:
+                allowed_fields.append(field_name)
+
+        if not allowed_fields:
+            return []
+
+        # 3. groups 只控制布局顺序，不参与字段准入。这里按分组顺序重排已有字段。
+        if not isinstance(groups, list):
+            return allowed_fields
+        ordered_fields: list[str] = []
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            for field_name in DynamicUIService._normalize_meta_field_list(group.get("fields")):
+                if field_name in allowed_fields and field_name not in ordered_fields:
+                    ordered_fields.append(field_name)
+        for field_name in allowed_fields:
+            if field_name not in ordered_fields:
+                ordered_fields.append(field_name)
+        return ordered_fields
+
+    @staticmethod
+    def _normalize_meta_field_list(raw_fields: Any) -> list[str]:
+        """将元数据字段列表归一化为去重后的字段名数组。"""
+
+        if not isinstance(raw_fields, list):
+            return []
+        normalized: list[str] = []
+        for item in raw_fields:
+            if not isinstance(item, str):
+                continue
+            field_name = item.strip()
+            if not field_name or field_name in normalized:
+                continue
+            normalized.append(field_name)
+        return normalized
 
     @staticmethod
     def _stringify_detail_value(value: Any) -> str:
-        """将详情值折叠为可展示文本。"""
+        """将详情值折叠为可展示文本。
+
+        功能：
+            详情卡本质上是“单值事实面板”，因此这里会把可安全压平的值统一转成字符串。
+            其中 `list[string] / list[number] / list[bool]` 统一用顿号拼接，满足中文场景下
+            多标签字段的紧凑阅读需求；复杂对象数组则由上游 `_build_detail_items` 继续拦截。
+
+        Edge Cases:
+            - 空数组统一展示为 `-`，避免前端出现空白值
+            - 数组里夹杂空串/None 时自动过滤，减少由脏数据造成的多余分隔符
+        """
         if value is None:
             return "-"
         if isinstance(value, bool):
@@ -1859,7 +2418,40 @@ class DynamicUIService:
             return str(value)
         if isinstance(value, str):
             return value
+        if isinstance(value, list):
+            scalar_items = [DynamicUIService._stringify_detail_value(item) for item in value if item not in (None, "")]
+            return "、".join(item for item in scalar_items if item and item != "-") or "-"
         return str(value)
+
+    @staticmethod
+    def _is_non_scalar_detail_list(value: Any) -> bool:
+        """判断详情字段是否属于不应在详情卡压平展示的复杂数组。
+
+        功能：
+            `PlannerDetailCard` 只适合展示轻量事实值。这里把数组再分成两类：
+            1. 标量数组：允许继续展示，例如异常指标、标签、症状清单；
+            2. 复杂数组：必须拦截，例如 `list[object]`、嵌套数组、混合结构脏数据。
+
+        Args:
+            value: 待判断的字段值。
+
+        Returns:
+            `True` 表示应跳过该字段；`False` 表示可以交给 `_stringify_detail_value` 压平展示。
+
+        Edge Cases:
+            - 空数组视为可展示，最终会被格式化为 `-`
+            - 混入 dict/list 的脏数组按复杂结构处理，避免输出不可预测字符串
+        """
+
+        if not isinstance(value, list):
+            return False
+        for item in value:
+            if item is None:
+                continue
+            if isinstance(item, (str, int, float, bool)):
+                continue
+            return True
+        return False
 
     @staticmethod
     def _build_query_subtitle(
@@ -1876,11 +2468,412 @@ class DynamicUIService:
         total = (context or {}).get("total")
         if render_mode == "detail":
             return "当前展示单条记录详情"
+        if render_mode == "composite":
+            return "当前展示复合结果（概览指标 + 明细列表）"
         if render_mode == "summary_table":
             return f"当前展示 {len(rows)} 个执行步骤的汇总结果"
         if isinstance(total, int) and total > len(rows):
             return f"共 {total} 条，当前展示 {len(rows)} 条"
         return f"当前展示 {len(rows)} 条"
+
+    def _build_query_composite_spec(
+        self,
+        *,
+        row: dict[str, Any],
+        root_props: dict[str, Any],
+        context: dict[str, Any] | None,
+        runtime: ApiQueryUIRuntime | None,
+        label_index: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """把单对象复合结果拆分成指标和明细表。
+
+        功能：
+            复合结果常见于“一个 summary + 多个 records 列表”的查询语义。
+            若继续复用 detail 模式，会把 nested dict/list 退化成字符串，用户不可读。
+            这里按数据形态拆分组件，保持通用且不依赖具体字段命名。
+
+        Args:
+            row: 单对象复合结果（通常含 summary 对象 + 多个 records 数组）。
+            root_props: 根卡片属性（title/subtitle）。
+            context: 渲染上下文。
+            runtime: query 运行时契约。
+            label_index: response_schema 派生的字段中文名索引。
+
+        Returns:
+            flat spec，子节点按“概览指标 + 明细表”组织。
+
+        Edge Cases:
+            - 没有可表格化 section 时回退详情卡，避免输出空页面
+            - summary 无法推断业务字段名时不强行写入 bizFieldKey
+        """
+
+        ctx = context if isinstance(context, dict) else {}
+        children: list[dict[str, Any]] = []
+        list_request_fields = _build_runtime_request_fields(
+            runtime.list.api_id if runtime else None,
+            param_source=runtime.list.param_source if runtime else None,
+            params=dict(runtime.list.query_context.current_params) if runtime else {},
+            flow_num=ctx.get("flow_num"),
+            created_by=ctx.get("created_by"),
+            request_schema_fields=runtime.list.request_schema_fields if runtime else None,
+        )
+        aggregate_runtime_index = self._build_aggregate_section_runtime_index(ctx)
+
+        # 1. 先提取标量指标，映射为统一 InfoGrid 概览区。
+        scalar_metrics = self._build_composite_metrics(row)
+        resolved_label_index = label_index or {}
+        summary_field_key = self._infer_composite_summary_field_key(row, scalar_metrics)
+        info_grid_items: list[dict[str, str]] = []
+        for field_path, field_name, value in scalar_metrics:
+            info_grid_items.append(
+                {
+                    "label": self._resolve_field_label(
+                        field_name=field_name,
+                        label_index=resolved_label_index,
+                        field_path=field_path,
+                    ),
+                    "value": self._stringify_detail_value(value),
+                }
+            )
+
+        # 复合视图的概览信息统一收敛为一个 InfoGrid，
+        # 避免同一组指标拆成多个 Metric 造成视觉噪声与层级碎片化。
+        if info_grid_items:
+            children.append(
+                {
+                    "type": "PlannerInfoGrid",
+                    "props": {
+                        "items": info_grid_items,
+                        **({"bizFieldKey": summary_field_key} if summary_field_key else {}),
+                        # 概览卡与明细表来自同一个业务接口，必须携带同一份二跳元数据，
+                        # 否则前端只能刷新表格而无法按分区刷新或追踪概览数据来源。
+                        **list_request_fields,
+                    },
+                }
+            )
+
+        # 2. 再按聚合层下发的 section 语义拆块，保持每个业务块都有稳定 bizFieldKey。
+        section_title_index = self._build_aggregate_section_title_index(ctx)
+        for section_name, section_value in row.items():
+            section_request_fields = self._build_section_request_fields(
+                aggregate_runtime_index=aggregate_runtime_index,
+                section_name=section_name,
+                fallback_fields=list_request_fields,
+                context=ctx,
+            )
+            typed_section = self._unwrap_aggregate_section(section_value)
+            if typed_section is not None:
+                section_type, section_data = typed_section
+                section_title = section_title_index.get(section_name) or self._resolve_field_label(
+                    field_name=section_name,
+                    label_index=resolved_label_index,
+                    field_path=section_name,
+                )
+                if section_type == _AGGREGATE_DETAIL_SECTION_TYPE and isinstance(section_data, dict):
+                    children.append(
+                        {
+                            "type": "PlannerInfoGrid",
+                            "props": {
+                                "title": section_title,
+                                "minColumnWidth": 180,
+                                "items": self._build_detail_items(
+                                    section_data,
+                                    label_index=resolved_label_index,
+                                    field_path_prefix=section_name,
+                                ),
+                                "bizFieldKey": section_name,
+                                **section_request_fields,
+                            },
+                        }
+                    )
+                    continue
+                if section_type == _AGGREGATE_COMPOSITE_SECTION_TYPE and isinstance(section_data, dict):
+                    nested_children = self._build_composite_section_children(
+                        section_name=section_name,
+                        section_data=section_data,
+                        section_title=section_title,
+                        label_index=resolved_label_index,
+                        request_fields=section_request_fields,
+                    )
+                    children.extend(nested_children)
+                    continue
+                section_value = section_data
+
+            table_rows = self._extract_table_rows(section_value)
+            if not table_rows:
+                continue
+            section_field_path = section_name
+            children.append(
+                {
+                    "type": "PlannerTable",
+                    "props": {
+                        # 聚合渲染优先使用后端下发的 section 标题（接口名称）；
+                        # 没有时再回退字段 label 解析，保持旧行为兼容。
+                        "title": section_title_index.get(section_name)
+                        or self._resolve_field_label(
+                            field_name=section_name,
+                            label_index=resolved_label_index,
+                            field_path=section_field_path,
+                        ),
+                        "columns": self._build_table_columns(
+                            table_rows[0],
+                            label_index=resolved_label_index,
+                            field_path_prefix=f"{section_name}[]",
+                        ),
+                        "dataSource": table_rows,
+                        "bizFieldKey": section_name,
+                        **section_request_fields,
+                    },
+                }
+            )
+
+        # 3. 极端兜底：既无指标也无列表时，至少保留信息网格让用户看到事实内容。
+        if not children:
+            children.append(
+                {
+                    "type": "PlannerInfoGrid",
+                    "props": {
+                        "title": ctx.get("detail_title", "详情信息"),
+                        "minColumnWidth": 180,
+                        "items": self._build_detail_items(row, label_index=resolved_label_index),
+                    },
+                }
+            )
+        return self._build_flat_card_spec(root_props=root_props, children=children)
+
+    def _build_composite_section_children(
+        self,
+        *,
+        section_name: str,
+        section_data: dict[str, Any],
+        section_title: str,
+        label_index: dict[str, str],
+        request_fields: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        """把聚合 section 内部的复合对象继续拆成概览和明细块。"""
+
+        children: list[dict[str, Any]] = []
+        metric_items = [
+            {
+                "label": self._resolve_field_label(
+                    field_name=field_name,
+                    label_index=label_index,
+                    field_path=f"{section_name}.{field_path}",
+                ),
+                "value": self._stringify_detail_value(value),
+            }
+            for field_path, field_name, value in self._build_composite_metrics(section_data)
+        ]
+        if metric_items:
+            children.append(
+                {
+                    "type": "PlannerInfoGrid",
+                    "props": {
+                        "title": section_title,
+                        "minColumnWidth": 180,
+                        "items": metric_items,
+                        "bizFieldKey": section_name,
+                        **request_fields,
+                    },
+                }
+            )
+
+        for child_name, child_value in section_data.items():
+            table_rows = self._extract_table_rows(child_value)
+            if not table_rows:
+                continue
+            child_field_path = f"{section_name}.{child_name}"
+            children.append(
+                {
+                    "type": "PlannerTable",
+                    "props": {
+                        "title": self._resolve_field_label(
+                            field_name=child_name,
+                            label_index=label_index,
+                            field_path=child_field_path,
+                        ),
+                        "columns": self._build_table_columns(
+                            table_rows[0],
+                            label_index=label_index,
+                            field_path_prefix=f"{child_field_path}[]",
+                        ),
+                        "dataSource": table_rows,
+                        "bizFieldKey": child_name,
+                        **request_fields,
+                    },
+                }
+            )
+        return children
+
+    @staticmethod
+    def _build_aggregate_section_runtime_index(context: dict[str, Any]) -> dict[str, dict[str, Any]]:
+        """读取多接口聚合 section 对应的二跳运行时元数据。"""
+
+        raw_index = context.get("aggregate_section_runtime_index")
+        if not isinstance(raw_index, dict):
+            return {}
+        normalized: dict[str, dict[str, Any]] = {}
+        for raw_key, raw_value in raw_index.items():
+            if not isinstance(raw_key, str) or not raw_key.strip() or not isinstance(raw_value, dict):
+                continue
+            normalized[raw_key.strip()] = dict(raw_value)
+        return normalized
+
+    @staticmethod
+    def _build_section_request_fields(
+        *,
+        aggregate_runtime_index: dict[str, dict[str, Any]],
+        section_name: str,
+        fallback_fields: dict[str, Any],
+        context: dict[str, Any],
+    ) -> dict[str, Any]:
+        """为聚合 section 构造独立二跳元数据，缺失时兼容旧的终态 runtime。
+
+        多接口聚合页的每个 child 都可能来自不同业务接口。这里优先使用聚合层下发的
+        section runtime，避免身份信息卡、服务记录卡等子块错误复用最后一个接口。
+        """
+
+        section_runtime = aggregate_runtime_index.get(section_name)
+        if not section_runtime:
+            return dict(fallback_fields)
+        return _build_runtime_request_fields(
+            section_runtime.get("api_id"),
+            param_source=section_runtime.get("param_source"),
+            params=section_runtime.get("params") or {},
+            flow_num=context.get("flow_num"),
+            created_by=context.get("created_by"),
+            request_schema_fields=section_runtime.get("request_schema_fields"),
+        )
+
+    @staticmethod
+    def _unwrap_aggregate_section(value: Any) -> tuple[str, Any] | None:
+        """读取聚合层显式下发的 section 类型与真实数据。"""
+
+        if not isinstance(value, dict):
+            return None
+        section_type = value.get(_AGGREGATE_SECTION_TYPE_KEY)
+        if section_type not in {
+            _AGGREGATE_DETAIL_SECTION_TYPE,
+            _AGGREGATE_TABLE_SECTION_TYPE,
+            _AGGREGATE_COMPOSITE_SECTION_TYPE,
+        }:
+            return None
+        return str(section_type), value.get(_AGGREGATE_SECTION_DATA_KEY)
+
+    @staticmethod
+    def _build_aggregate_section_title_index(context: dict[str, Any]) -> dict[str, str]:
+        """读取聚合 section 标题映射。
+
+        功能：
+            把后端基于 API Catalog 产出的 `section -> 接口名称` 映射收敛成安全字典，
+            供 composite 渲染优先使用，避免标题退化成技术字段名。
+
+        Args:
+            context: 查询渲染上下文。
+
+        Returns:
+            仅包含非空字符串键值对的标题映射字典。
+
+        Edge Cases:
+            - 缺失或脏值输入时返回空字典，渲染层会回退到原有 label 解析逻辑
+        """
+        raw_index = context.get("aggregate_section_title_index")
+        if not isinstance(raw_index, dict):
+            return {}
+        normalized: dict[str, str] = {}
+        for raw_key, raw_value in raw_index.items():
+            if not isinstance(raw_key, str) or not raw_key.strip():
+                continue
+            if not isinstance(raw_value, str) or not raw_value.strip():
+                continue
+            normalized[raw_key.strip()] = raw_value.strip()
+        return normalized
+
+    @staticmethod
+    def _build_response_field_label_index(context: dict[str, Any] | None) -> dict[str, str]:
+        """从渲染上下文读取 response_schema 字段显示名索引。"""
+
+        if not isinstance(context, dict):
+            return {}
+        label_index = context.get("response_field_label_index")
+        if not isinstance(label_index, dict):
+            return {}
+
+        normalized: dict[str, str] = {}
+        for raw_path, raw_label in label_index.items():
+            if not isinstance(raw_path, str) or not raw_path.strip():
+                continue
+            if not isinstance(raw_label, str) or not raw_label.strip():
+                continue
+            normalized[raw_path.strip()] = raw_label.strip()
+        return normalized
+
+    @staticmethod
+    def _resolve_field_label(
+        *,
+        field_name: str,
+        label_index: dict[str, str],
+        field_path: str,
+    ) -> str:
+        """解析字段展示名，优先使用 schema description/title。
+
+        业务接口的 response_schema 和真实响应偶尔只存在大小写差异，例如
+        schema 声明 `fId`，但响应返回 `fid`。这里必须保留精确匹配优先，
+        再做大小写无关兜底，避免此类脏契约让表头退回技术字段名。
+        """
+
+        exact_label = label_index.get(field_path) or label_index.get(field_name)
+        if exact_label:
+            return exact_label
+
+        normalized_field_path = field_path.casefold()
+        normalized_field_name = field_name.casefold()
+        for raw_path, label in label_index.items():
+            normalized_path = raw_path.casefold()
+            if normalized_path in {normalized_field_path, normalized_field_name}:
+                return label
+        return field_name
+
+    @staticmethod
+    def _extract_table_rows(value: Any) -> list[dict[str, Any]]:
+        """从复合字段中提取可用于表格渲染的行数据。"""
+        if isinstance(value, list):
+            rows = [item for item in value if isinstance(item, dict)]
+            return rows
+        return []
+
+    @staticmethod
+    def _build_composite_metrics(row: dict[str, Any]) -> list[tuple[str, str, Any]]:
+        """提取复合结果中的标量指标。"""
+        metrics: list[tuple[str, str, Any]] = []
+        for key, value in row.items():
+            if DynamicUIService._unwrap_aggregate_section(value) is not None:
+                continue
+            if isinstance(value, (dict, list)):
+                if isinstance(value, dict):
+                    for child_key, child_value in value.items():
+                        if isinstance(child_value, (dict, list)):
+                            continue
+                        metrics.append((f"{key}.{child_key}", child_key, child_value))
+                continue
+            metrics.append((key, key, value))
+        return metrics
+
+    @staticmethod
+    def _infer_composite_summary_field_key(
+        row: dict[str, Any],
+        metrics: list[tuple[str, str, Any]],
+    ) -> str | None:
+        """推断复合视图概览区对应的业务字段名。"""
+
+        prefix_candidates = [field_path.split(".", 1)[0] for field_path, _, _ in metrics if "." in field_path]
+        if prefix_candidates:
+            return prefix_candidates[0]
+
+        for key, value in row.items():
+            if isinstance(value, dict):
+                return key
+        return None
 
     # ── 指标构建 ──
 

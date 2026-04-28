@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import aiomysql
+
 from app.core.config import settings
 from app.models.schemas import QueryDomain, SubIntentType, Text2SQLResponse
 from app.services.generic_query_executor import GenericQueryExecutor
@@ -22,7 +24,8 @@ class Text2SQLService:
         - 会议 BI 未启用时，直接阻断并返回清晰配置错误
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, generic_pool: aiomysql.Pool | None = None) -> None:
+        self._generic_pool = generic_pool
         self._generic_executor: GenericQueryExecutor | None = None
         self._meeting_bi_executor = None
 
@@ -68,8 +71,15 @@ class Text2SQLService:
         return await self._get_generic_executor().train_from_schema(sql_file)
 
     async def close(self) -> None:
-        """关闭通用执行器持有的连接资源。"""
-        await self._get_generic_executor().close()
+        """关闭已初始化的通用执行器。
+
+        功能：
+            shutdown 阶段只释放真实创建过的资源，避免为了关闭而反向实例化执行器。
+        """
+
+        if self._generic_executor is not None:
+            await self._generic_executor.close()
+            self._generic_executor = None
 
     @staticmethod
     def resolve_domain(
@@ -94,7 +104,7 @@ class Text2SQLService:
     def _get_generic_executor(self) -> GenericQueryExecutor:
         """懒加载通用问数执行器，避免应用启动即初始化重资源对象。"""
         if self._generic_executor is None:
-            self._generic_executor = GenericQueryExecutor()
+            self._generic_executor = GenericQueryExecutor(pool=self._generic_pool)
         return self._generic_executor
 
     def _get_meeting_bi_executor(self):

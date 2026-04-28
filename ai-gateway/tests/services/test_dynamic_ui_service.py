@@ -13,6 +13,7 @@ from app.models.schemas import (
     ApiQueryDetailSourceRuntime,
     ApiQueryListPaginationRuntime,
     ApiQueryListQueryContextRuntime,
+    ApiQueryListTableFieldRuntime,
     ApiQueryListRuntime,
     ApiQueryUIAction,
     ApiQueryUIRuntime,
@@ -51,9 +52,10 @@ class StubUICatalogService:
     def get_component_catalog(self, *, intent: str | None = None, requested_codes=None) -> dict[str, str]:
         if intent == "query":
             return {
+                "PlannerBlankContainer": "自定义空白容器说明",
                 "PlannerCard": "自定义卡片说明",
+                "PlannerInfoGrid": "自定义信息网格说明",
                 "PlannerTable": "自定义表格说明",
-                "PlannerDetailCard": "自定义详情说明",
                 "PlannerPagination": "自定义分页说明",
                 "PlannerForm": "自定义表单说明",
                 "PlannerInput": "自定义输入框说明",
@@ -68,9 +70,10 @@ class StubUICatalogService:
     def get_component_codes(self, *, intent: str | None = None, requested_codes=None) -> list[str]:
         if intent == "query":
             return [
+                "PlannerBlankContainer",
                 "PlannerCard",
+                "PlannerInfoGrid",
                 "PlannerTable",
-                "PlannerDetailCard",
                 "PlannerPagination",
                 "PlannerForm",
                 "PlannerInput",
@@ -81,9 +84,10 @@ class StubUICatalogService:
 
     def get_all_component_codes(self) -> set[str]:
         return {
+            "PlannerBlankContainer",
             "PlannerCard",
+            "PlannerInfoGrid",
             "PlannerTable",
-            "PlannerDetailCard",
             "PlannerPagination",
             "PlannerForm",
             "PlannerInput",
@@ -111,9 +115,11 @@ class StubUICatalogService:
 def _make_runtime() -> ApiQueryUIRuntime:
     return ApiQueryUIRuntime(
         components=[
+            "PlannerBlankContainer",
             "PlannerCard",
+            "PlannerMetric",
+            "PlannerInfoGrid",
             "PlannerTable",
-            "PlannerDetailCard",
             "PlannerPagination",
             "PlannerForm",
             "PlannerInput",
@@ -190,19 +196,29 @@ def _root_element(spec: dict[str, object]) -> dict[str, object]:
 
 
 def _root_child_by_type(spec: dict[str, object], component_type: str) -> dict[str, object]:
-    """按根卡片下的组件类型取回元素，便于断言规则回退是否命中。"""
-    root = _root_element(spec)
+    """按组件类型递归取回元素，兼容根空容器下的二跳业务组件。"""
     elements = spec["elements"]
-    child_ids = root.get("children", [])
+    assert isinstance(elements, dict)
+    for element in elements.values():
+        assert isinstance(element, dict)
+        if element.get("type") == component_type:
+            return element
+    raise AssertionError(f"missing child type: {component_type}")
+
+
+def _children_of(spec: dict[str, object], element: dict[str, object]) -> list[dict[str, object]]:
+    """按元素 children 顺序取回直接子元素。"""
+    elements = spec["elements"]
+    child_ids = element.get("children", [])
     assert isinstance(elements, dict)
     assert isinstance(child_ids, list)
+    children: list[dict[str, object]] = []
     for child_id in child_ids:
         assert isinstance(child_id, str)
         child = elements[child_id]
         assert isinstance(child, dict)
-        if child.get("type") == component_type:
-            return child
-    raise AssertionError(f"missing child type: {component_type}")
+        children.append(child)
+    return children
 
 
 @pytest.mark.asyncio
@@ -281,13 +297,14 @@ async def test_generate_ui_spec_uses_renderer_prompt_json_mode_and_pruned_contex
     user_prompt = messages[1]["content"]
     assert "Renderer Agent" in system_prompt
     assert "UI Catalog" in system_prompt
-    assert "PlannerDetailCard" in system_prompt
+    assert "PlannerInfoGrid" in system_prompt
     assert "自定义表格说明" in system_prompt
     assert "business_intents" in user_prompt
     assert "context_pool" in user_prompt
     assert "C004" not in user_prompt
     assert "resolved_params" not in user_prompt
-    assert spec["elements"]["root"]["props"]["title"] == "LLM 详情视图"
+    assert _root_element(spec)["type"] == "PlannerBlankContainer"
+    assert _root_child_by_type(spec, "PlannerCard")["props"]["title"] == "LLM 详情视图"
 
 
 @pytest.mark.asyncio
@@ -325,7 +342,8 @@ async def test_generate_ui_spec_retries_without_json_mode_when_backend_rejects_r
     assert len(service._llm_service.calls) == 2
     assert service._llm_service.calls[0]["response_format"] == {"type": "json_object"}
     assert service._llm_service.calls[1]["response_format"] is None
-    assert spec["elements"]["root"]["props"]["title"] == "纯文本兜底成功"
+    assert _root_element(spec)["type"] == "PlannerBlankContainer"
+    assert _root_child_by_type(spec, "PlannerCard")["props"]["title"] == "纯文本兜底成功"
 
 
 @pytest.mark.asyncio
@@ -363,7 +381,8 @@ async def test_generate_ui_spec_parses_dirty_renderer_json_payload(
     )
 
     assert spec is not None
-    assert spec["elements"]["root"]["props"]["title"] == "脏 JSON 也要能解析"
+    assert _root_element(spec)["type"] == "PlannerBlankContainer"
+    assert _root_child_by_type(spec, "PlannerCard")["props"]["title"] == "脏 JSON 也要能解析"
     assert spec["state"] == {}
 
 
@@ -443,7 +462,7 @@ async def test_generate_ui_spec_sanitizes_llm_detail_request_keys_to_request_sch
 
     assert result.frozen is False
     assert result.spec is not None
-    detail = _root_child_by_type(result.spec, "PlannerDetailCard")
+    detail = _root_child_by_type(result.spec, "PlannerInfoGrid")
     assert detail["props"]["queryParams"] == {"id": 71593}
     assert detail["props"]["body"] == {}
 
@@ -513,7 +532,8 @@ async def test_generate_ui_spec_result_freezes_invalid_renderer_spec(
     assert result.validation.is_valid is False
     assert result.spec is not None
     notice = _root_child_by_type(result.spec, "PlannerNotice")
-    assert result.spec["elements"]["root"]["props"]["title"] == "客户详情"
+    assert _root_element(result.spec)["type"] == "PlannerBlankContainer"
+    assert _root_child_by_type(result.spec, "PlannerCard")["props"]["title"] == "客户详情"
     assert "已冻结当前操作视图" in notice["props"]["text"]
 
 
@@ -541,7 +561,9 @@ async def test_rule_query_spec_exposes_runtime_metadata_for_list_components(
 
     assert spec is not None
     root = _root_element(spec)
-    assert root["children"] == ["query-filters", "report-table", "report-pagination"]
+    assert root["type"] == "PlannerBlankContainer"
+    card = _root_child_by_type(spec, "PlannerCard")
+    assert card["children"] == ["query-filters", "report-table", "report-pagination"]
 
     elements = spec["elements"]
     assert isinstance(elements, dict)
@@ -566,6 +588,9 @@ async def test_rule_query_spec_exposes_runtime_metadata_for_list_components(
     assert row_action["action"] == "remoteQuery"
     assert "type" not in row_action
     assert row_action["params"]["api"] == "/api/v1/ui-builder/runtime/endpoints/customer_detail/invoke"
+    assert row_action["params"]["renderMode"] == "dynamic_ui"
+    assert row_action["params"]["fallbackMode"] == "dynamic_ui"
+    assert "templateCode" not in row_action["params"]
     assert row_action["params"]["queryParams"] == {"customerId": {"$bindRow": "customerId"}}
     assert row_action["params"]["body"] == {}
     assert row_action["params"]["flowNum"] == "trace-query-001"
@@ -584,12 +609,536 @@ async def test_rule_query_spec_exposes_runtime_metadata_for_list_components(
 
 
 @pytest.mark.asyncio
+async def test_rule_query_spec_composite_renders_metrics_and_tables_without_stringifying_nested_blocks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """composite 模式应拆分指标与明细表，而不是把嵌套结构塞进详情字符串。"""
+    monkeypatch.setattr(settings, "llm_ui_spec_enabled", False)
+    service = DynamicUIService(catalog_service=UICatalogService())
+
+    data = [
+        {
+            "summaryCard": {
+                "storeFundCount": 12,
+                "storeLeftFunds": 13245060.0,
+                "storeAvailableAmount": 11954620.0,
+            },
+            "deliveryRecords": [
+                {
+                    "deliveryDate": "2024-10-01T00:00",
+                    "deliveryProject": "肝脏解毒支持（白金版）",
+                    "deliveryAmount": 27103.46,
+                },
+                {
+                    "deliveryDate": "2024-09-30T00:00",
+                    "deliveryProject": "免疫功能调理",
+                    "deliveryAmount": 20000.0,
+                },
+            ],
+            "curePlanRecords": [
+                {
+                    "fid": "P001",
+                    "fcreateTime": "2024-11-20T09:44",
+                    "fproductBillProjectName": "免疫力改善-C治疗",
+                    "fprojectAmount": 298000.0,
+                }
+            ],
+        }
+    ]
+
+    spec = await service.generate_ui_spec(
+        intent="query",
+        data=data,
+        context={
+            "question": "查询刘海坚的储值方案",
+            "query_render_mode": "composite",
+            "flow_num": "trace-query-001",
+            "created_by": "user-001",
+            "response_field_label_index": {
+                "summaryCard.storeLeftFunds": "储值总余额",
+                "deliveryRecords": "交付记录",
+                "deliveryRecords[].deliveryDate": "交付日期",
+                "curePlanRecords": "调理方案记录",
+                "curePlanRecords[].fId": "订单ID",
+                "curePlanRecords[].fCreateTime": "创建时间",
+                "curePlanRecords[].fProductBillProjectName": "治疗项目名称",
+                "curePlanRecords[].fProjectAmount": "方案金额",
+            },
+        },
+        runtime=_make_runtime().model_copy(
+            update={
+                "list": ApiQueryListRuntime(
+                    enabled=True,
+                    api_id="fa969d461ef059ab82f1dd6d3c2aa116",
+                    param_source="body",
+                    request_schema_fields=["encryptedIdCard"],
+                    query_context=ApiQueryListQueryContextRuntime(
+                        enabled=True,
+                        current_params={"encryptedIdCard": "ENC001", "展示标签": "SHOULD_DROP"},
+                    ),
+                )
+            }
+        ),
+    )
+
+    assert spec is not None
+    root = _root_element(spec)
+    assert root["type"] == "PlannerBlankContainer"
+    card = _root_child_by_type(spec, "PlannerCard")
+    children = _children_of(spec, card)
+    child_types = [child["type"] for child in children]
+
+    assert "PlannerInfoGrid" in child_types
+    assert child_types.count("PlannerTable") >= 2
+    assert "PlannerDetailCard" not in child_types
+
+    info_grid = next(child for child in children if child["type"] == "PlannerInfoGrid")
+    info_items = {(item["label"], item["value"]) for item in info_grid["props"]["items"]}
+    assert ("储值总余额", "13245060.0") in info_items
+    assert info_grid["props"]["bizFieldKey"] == "summaryCard"
+    assert info_grid["props"]["api"] == "/api/v1/ui-builder/runtime/endpoints/fa969d461ef059ab82f1dd6d3c2aa116/invoke"
+    assert info_grid["props"]["queryParams"] == {}
+    assert info_grid["props"]["body"] == {"encryptedIdCard": "ENC001"}
+    assert info_grid["props"]["flowNum"] == "trace-query-001"
+    assert info_grid["props"]["createdBy"] == "user-001"
+
+    tables = [child for child in children if child["type"] == "PlannerTable"]
+    table_titles = [table["props"].get("title") for table in tables]
+    assert "交付记录" in table_titles
+    assert "调理方案记录" in table_titles
+
+    delivery_table = next(table for table in tables if table["props"].get("title") == "交付记录")
+    assert delivery_table["props"]["bizFieldKey"] == "deliveryRecords"
+    assert delivery_table["props"]["columns"][0]["dataIndex"] == "deliveryDate"
+    assert delivery_table["props"]["columns"][0]["title"] == "交付日期"
+    assert delivery_table["props"]["dataSource"][0]["deliveryProject"] == "肝脏解毒支持（白金版）"
+    cure_plan_table = next(table for table in tables if table["props"].get("title") == "调理方案记录")
+    assert cure_plan_table["props"]["bizFieldKey"] == "curePlanRecords"
+    cure_plan_columns = cure_plan_table["props"]["columns"]
+    assert [column["dataIndex"] for column in cure_plan_columns] == [
+        "fid",
+        "fcreateTime",
+        "fproductBillProjectName",
+        "fprojectAmount",
+    ]
+    assert [column["title"] for column in cure_plan_columns] == [
+        "订单ID",
+        "创建时间",
+        "治疗项目名称",
+        "方案金额",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_rule_query_spec_composite_uses_aggregate_section_title_index_for_table_titles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """聚合渲染下，表格标题应优先使用后端下发的 section 标题映射。"""
+    monkeypatch.setattr(settings, "llm_ui_spec_enabled", False)
+    service = DynamicUIService(catalog_service=UICatalogService())
+
+    data = [
+        {
+            "healthBasic": {"__sectionType": "detail", "data": {"bloodType": "A型"}},
+            "healthStatusMedicalHistory": {"__sectionType": "detail", "data": {"history": "高血压"}},
+            "physicalExam": {"__sectionType": "detail", "data": {"latestExamDate": "2025-04-08"}},
+        }
+    ]
+
+    spec = await service.generate_ui_spec(
+        intent="query",
+        data=data,
+        context={
+            "question": "查询客户刘海坚的健康数据",
+            "query_render_mode": "composite",
+            "aggregate_section_title_index": {
+                "healthBasic": "健康基础档案",
+                "healthStatusMedicalHistory": "医疗史概览",
+                "physicalExam": "体检结果",
+            },
+        },
+        runtime=_make_runtime(),
+    )
+
+    assert spec is not None
+    root = _root_element(spec)
+    assert root["type"] == "PlannerBlankContainer"
+    card = _root_child_by_type(spec, "PlannerCard")
+    info_grids = [child for child in _children_of(spec, card) if child["type"] == "PlannerInfoGrid"]
+    assert {grid["props"]["bizFieldKey"] for grid in info_grids} == {
+        "healthBasic",
+        "healthStatusMedicalHistory",
+        "physicalExam",
+    }
+    assert {grid["props"]["title"] for grid in info_grids} == {
+        "健康基础档案",
+        "医疗史概览",
+        "体检结果",
+    }
+
+
+@pytest.mark.asyncio
+async def test_rule_query_spec_composite_uses_section_runtime_for_typed_aggregate_children(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """多接口聚合页每个 child 应使用自己的二跳接口元数据。"""
+
+    monkeypatch.setattr(settings, "llm_ui_spec_enabled", False)
+    service = DynamicUIService(catalog_service=UICatalogService())
+
+    spec = await service.generate_ui_spec(
+        intent="query",
+        data=[
+            {
+                "identityContact": {"__sectionType": "detail", "data": {"customerName": "刘海坚"}},
+                "serviceRecords": {
+                    "__sectionType": "table",
+                    "data": [{"visitFrequency": "每月"}],
+                },
+            }
+        ],
+        context={
+            "question": "查询客户刘海坚的信息",
+            "query_render_mode": "composite",
+            "flow_num": "trace-section-runtime",
+            "created_by": "2",
+            "aggregate_section_runtime_index": {
+                "identityContact": {
+                    "api_id": "identity_api",
+                    "param_source": "queryParams",
+                    "params": {"encryptedIdCard": "ENC001", "extra": "DROP"},
+                    "request_schema_fields": ["encryptedIdCard"],
+                },
+                "serviceRecords": {
+                    "api_id": "service_api",
+                    "param_source": "body",
+                    "params": {"encryptedIdCard": "ENC001", "extra": "DROP"},
+                    "request_schema_fields": ["encryptedIdCard"],
+                },
+            },
+        },
+        runtime=_make_runtime(),
+    )
+
+    assert spec is not None
+    card = _root_child_by_type(spec, "PlannerCard")
+    children = _children_of(spec, card)
+    info_grid = next(child for child in children if child["type"] == "PlannerInfoGrid")
+    table = next(child for child in children if child["type"] == "PlannerTable")
+
+    assert info_grid["props"]["api"] == "/api/v1/ui-builder/runtime/endpoints/identity_api/invoke"
+    assert info_grid["props"]["queryParams"] == {"encryptedIdCard": "ENC001"}
+    assert info_grid["props"]["body"] == {}
+    assert table["props"]["api"] == "/api/v1/ui-builder/runtime/endpoints/service_api/invoke"
+    assert table["props"]["queryParams"] == {}
+    assert table["props"]["body"] == {"encryptedIdCard": "ENC001"}
+    assert info_grid["props"]["flowNum"] == "trace-section-runtime"
+    assert table["props"]["createdBy"] == "2"
+
+
+@pytest.mark.asyncio
+async def test_rule_query_spec_detail_uses_schema_description_labels(monkeypatch: pytest.MonkeyPatch) -> None:
+    """detail 模式应优先展示 response_schema 描述作为字段标签。"""
+
+    monkeypatch.setattr(settings, "llm_ui_spec_enabled", False)
+    service = DynamicUIService(catalog_service=UICatalogService())
+
+    spec = await service.generate_ui_spec(
+        intent="query",
+        data=[{"customerId": "C001", "level": "VIP"}],
+        context={
+            "question": "查询客户详情",
+            "query_render_mode": "detail",
+            "response_field_label_index": {
+                "customerId": "客户编号",
+                "level": "客户等级",
+            },
+        },
+        runtime=_make_runtime(),
+    )
+
+    assert spec is not None
+    detail_card = _root_child_by_type(spec, "PlannerInfoGrid")
+    assert detail_card["props"]["items"] == [
+        {"label": "客户编号", "value": "C001"},
+        {"label": "客户等级", "value": "VIP"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_rule_query_spec_table_uses_schema_description_column_titles(monkeypatch: pytest.MonkeyPatch) -> None:
+    """table 模式应优先展示 response_schema 描述作为列标题。"""
+
+    monkeypatch.setattr(settings, "llm_ui_spec_enabled", False)
+    service = DynamicUIService(catalog_service=UICatalogService())
+
+    spec = await service.generate_ui_spec(
+        intent="query",
+        data=[{"customerId": "C001", "customerName": "张三"}],
+        context={
+            "question": "查询客户列表",
+            "query_render_mode": "table",
+            "response_field_label_index": {
+                "customerId": "客户编号",
+                "customerName": "客户姓名",
+            },
+        },
+        runtime=_make_list_runtime(),
+    )
+
+    assert spec is not None
+    table = _root_child_by_type(spec, "PlannerTable")
+    columns = table["props"]["columns"]
+    assert columns[0]["title"] == "客户编号"
+    assert columns[1]["title"] == "客户姓名"
+
+
+@pytest.mark.asyncio
+async def test_rule_query_spec_table_columns_strictly_follow_runtime_table_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """当 runtime 下发 table_fields 时，列表列必须严格按白名单渲染。"""
+
+    monkeypatch.setattr(settings, "llm_ui_spec_enabled", False)
+    service = DynamicUIService(catalog_service=UICatalogService())
+
+    runtime = _make_list_runtime().model_copy(
+        update={
+            "list": _make_list_runtime().list.model_copy(
+                update={
+                    "table_fields": [
+                        ApiQueryListTableFieldRuntime(name="customerName", title="客户姓名"),
+                        ApiQueryListTableFieldRuntime(name="mainTeacherName", title="主市场老师"),
+                    ]
+                }
+            )
+        }
+    )
+
+    spec = await service.generate_ui_spec(
+        intent="query",
+        data=[{"customerId": "C001", "customerName": "张三", "mainTeacherName": "王雪梅", "age": 65}],
+        context={"question": "查询客户列表"},
+        runtime=runtime,
+    )
+
+    assert spec is not None
+    table = _root_child_by_type(spec, "PlannerTable")
+    columns = table["props"]["columns"]
+    assert [column["dataIndex"] for column in columns] == ["customerName", "mainTeacherName"]
+    assert [column["title"] for column in columns] == ["客户姓名", "主市场老师"]
+
+
+@pytest.mark.asyncio
+async def test_rule_query_spec_table_renders_combined_runtime_field(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """组合列应生成派生 dataIndex，并按配置折叠来源字段。"""
+
+    monkeypatch.setattr(settings, "llm_ui_spec_enabled", False)
+    service = DynamicUIService(catalog_service=UICatalogService())
+
+    runtime = _make_list_runtime().model_copy(
+        update={
+            "list": _make_list_runtime().list.model_copy(
+                update={
+                    "table_fields": [
+                        ApiQueryListTableFieldRuntime(name="customerName", title="客户姓名"),
+                        ApiQueryListTableFieldRuntime(
+                            name="__combined_2",
+                            title="地址",
+                            source_fields=["province", "city", "county"],
+                            separator="",
+                            empty_value="-",
+                        ),
+                        ApiQueryListTableFieldRuntime(
+                            name="__combined_3",
+                            title="主市场老师",
+                            source_fields=["mainTeacherName", "mainTeacherNo"],
+                            separator=" / ",
+                            empty_value="-",
+                        ),
+                    ]
+                }
+            )
+        }
+    )
+
+    spec = await service.generate_ui_spec(
+        intent="query",
+        data=[
+            {
+                "customerName": "刘海坚",
+                "province": None,
+                "city": "和平区",
+                "county": None,
+                "mainTeacherName": "王雪梅",
+                "mainTeacherNo": "MK405829",
+                "age": 65,
+            }
+        ],
+        context={"question": "查询客户列表"},
+        runtime=runtime,
+    )
+
+    assert spec is not None
+    table = _root_child_by_type(spec, "PlannerTable")
+    columns = table["props"]["columns"]
+    row = table["props"]["dataSource"][0]
+    assert [column["dataIndex"] for column in columns] == ["customerName", "__combined_2", "__combined_3"]
+    assert [column["title"] for column in columns] == ["客户姓名", "地址", "主市场老师"]
+    assert row["__combined_2"] == "和平区"
+    assert row["__combined_3"] == "王雪梅 / MK405829"
+
+
+
+@pytest.mark.asyncio
+async def test_rule_query_spec_detail_applies_detail_view_meta_priority_and_group_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """详情字段应按 exclude>required>display 过滤，并按 groups 排序。"""
+
+    monkeypatch.setattr(settings, "llm_ui_spec_enabled", False)
+    service = DynamicUIService(catalog_service=UICatalogService())
+
+    runtime = _make_runtime().model_copy(
+        update={
+            "detail": ApiQueryDetailRuntime(
+                enabled=True,
+                api_id="customer_detail",
+                route_url="/api/v1/api-query",
+                ui_action="remoteQuery",
+                request=ApiQueryDetailRequestRuntime(
+                    param_source="queryParams",
+                    identifier_param="id",
+                ),
+                source=ApiQueryDetailSourceRuntime(
+                    identifier_field="id",
+                    value_type="string",
+                    required=True,
+                ),
+                detail_view_meta={
+                    "display_fields": ["id", "name", "phone"],
+                    "required_fields": ["id", "mainTeacherName"],
+                    "exclude_fields": ["phone"],
+                    "groups": [
+                        {"title": "服务归属", "fields": ["mainTeacherName"]},
+                        {"title": "基础信息", "fields": ["name", "id"]},
+                    ],
+                },
+            )
+        }
+    )
+
+    spec = await service.generate_ui_spec(
+        intent="query",
+        data=[{"id": "C001", "name": "刘海坚", "phone": "13900000000", "mainTeacherName": "王雪梅", "age": 65}],
+        context={"question": "查询客户详情", "query_render_mode": "detail"},
+        runtime=runtime,
+    )
+
+    assert spec is not None
+    detail_card = _root_child_by_type(spec, "PlannerInfoGrid")
+    items = detail_card["props"]["items"]
+    assert [item["label"] for item in items] == ["mainTeacherName", "name", "id"]
+    assert [item["value"] for item in items] == ["王雪梅", "刘海坚", "C001"]
+
+
+@pytest.mark.asyncio
+async def test_rule_query_spec_detail_stringifies_scalar_array_with_chinese_delimiter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """详情卡应展示 list[string] 字段，并用顿号折叠为单行文本。"""
+
+    monkeypatch.setattr(settings, "llm_ui_spec_enabled", False)
+    service = DynamicUIService(catalog_service=UICatalogService())
+
+    runtime = _make_runtime().model_copy(
+        update={
+            "detail": _make_runtime().detail.model_copy(
+                update={
+                    "detail_view_meta": {
+                        "display_fields": ["physicalExamPackage", "keyAbnormalIndicators", "doctorAdvice"],
+                        "required_fields": [],
+                        "exclude_fields": [],
+                        "groups": [
+                            {
+                                "title": "体检情况",
+                                "fields": ["physicalExamPackage", "keyAbnormalIndicators", "doctorAdvice"],
+                            }
+                        ],
+                    }
+                }
+            )
+        }
+    )
+
+    spec = await service.generate_ui_spec(
+        intent="query",
+        data=[
+            {
+                "physicalExamPackage": "个性定制体检套餐",
+                "keyAbnormalIndicators": ["食物不耐受", "甲状腺结节", "糖尿病前期"],
+                "doctorAdvice": "建议复查",
+            }
+        ],
+        context={"question": "查询客户体检情况", "query_render_mode": "detail"},
+        runtime=runtime,
+    )
+
+    assert spec is not None
+    detail_card = _root_child_by_type(spec, "PlannerInfoGrid")
+    items = detail_card["props"]["items"]
+    assert [item["label"] for item in items] == ["physicalExamPackage", "keyAbnormalIndicators", "doctorAdvice"]
+    assert [item["value"] for item in items] == ["个性定制体检套餐", "食物不耐受、甲状腺结节、糖尿病前期", "建议复查"]
+
+
+@pytest.mark.asyncio
+async def test_rule_query_spec_table_row_action_exposes_template_first_strategy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """详情配置了模板编码时，row action 需显式透传模板优先与动态兜底策略。"""
+
+    monkeypatch.setattr(settings, "llm_ui_spec_enabled", False)
+    monkeypatch.setattr(settings, "api_query_template_first_enabled", True)
+    service = DynamicUIService(catalog_service=StubUICatalogService())
+
+    runtime = _make_list_runtime().model_copy(
+        update={
+            "detail": _make_list_runtime().detail.model_copy(
+                update={
+                    "render_mode": "template_first",
+                    "template_code": "customer_detail_template",
+                    "fallback_mode": "dynamic_ui",
+                }
+            )
+        }
+    )
+
+    spec = await service.generate_ui_spec(
+        intent="query",
+        data=[{"customerId": "C001", "customerName": "张三"}],
+        context={
+            "question": "查询客户列表",
+            "flow_num": "trace-template-001",
+            "created_by": "user-001",
+        },
+        runtime=runtime,
+    )
+
+    assert spec is not None
+    table = _root_child_by_type(spec, "PlannerTable")
+    row_action = table["props"]["rowActions"][0]
+    assert row_action["params"]["renderMode"] == "template_first"
+    assert row_action["params"]["templateCode"] == "customer_detail_template"
+    assert row_action["params"]["fallbackMode"] == "dynamic_ui"
+
+@pytest.mark.asyncio
 async def test_mutation_form_skipped_status_still_renders_planner_form() -> None:
     """mutation confirm 场景虽然状态是 SKIPPED，但必须渲染可提交表单。"""
 
     service = DynamicUIService(catalog_service=UICatalogService())
     runtime = ApiQueryUIRuntime(
         components=[
+            "PlannerBlankContainer",
             "PlannerCard",
             "PlannerMetric",
             "PlannerForm",
@@ -694,6 +1243,5 @@ async def test_mutation_form_skipped_status_still_renders_planner_form() -> None
     assert submit["on"]["press"]["params"]["flowNum"] == ""
     assert submit["on"]["press"]["params"]["createdBy"] == ""
     root = _root_element(result.spec)
-    child_ids = root.get("children", [])
-    assert isinstance(child_ids, list)
-    assert "PlannerNotice" not in [elements[child_id].get("type") for child_id in child_ids if isinstance(child_id, str)]
+    assert root["type"] == "PlannerBlankContainer"
+    assert "PlannerNotice" not in [element.get("type") for element in elements.values() if isinstance(element, dict)]

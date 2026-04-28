@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import pytest
 
-import app.services.api_catalog.registry_source as registry_source_module
-from app.core.config import settings
 from app.services.api_catalog.registry_source import ApiCatalogRegistrySource, ApiCatalogSourceError
 
 
@@ -86,7 +84,7 @@ def _mysql_row() -> dict[str, object]:
         "endpointId": "ep_1",
         "tagId": "tag_customer",
         "tagName": "客户管理",
-        "endpointName": "客户列表",
+        "name": "客户列表",
         "path": "/api/customer/list",
         "method": "GET",
         "summary": "查询当前登录用户名下的客户列表",
@@ -97,6 +95,18 @@ def _mysql_row() -> dict[str, object]:
         "predecessorSpecs": (
             '[{"predecessor_api_id":"role_list_v1","required":true,"order":1,'
             '"param_bindings":[{"target_param":"roleId","source_path":"$.data[*].id","select_mode":"user_select"}]}]'
+        ),
+        "listViewMeta": (
+            '{"filter_fields":[{"field":"customerInfo","label":"客户关键词"}],'
+            '"table_fields":[{"field":"name","title":"客户姓名"},'
+            '{"field":["province","city","county"],"title":"地址","separator":"","empty_value":"-"},'
+            '{"fields":["mainTeacherName","mainTeacherNo"],"title":"主市场老师","separator":" / ","empty_value":"-"}]}'
+        ),
+        "detailViewMeta": (
+            '{"display_fields":["name","mainTeacherName","phone"],'
+            '"required_fields":["name"],'
+            '"exclude_fields":["phone"],'
+            '"groups":[{"title":"基础信息","fields":["name"]},{"title":"服务归属","fields":["mainTeacherName"]}]}'
         ),
         "operationSafety": "query",
         "endpointStatus": "active",
@@ -115,45 +125,22 @@ def _mysql_row() -> dict[str, object]:
 
 
 @pytest.mark.asyncio
-async def test_registry_source_loads_entries_from_mysql_and_appends_builtin_dict(monkeypatch) -> None:
+async def test_registry_source_loads_entries_from_mysql_and_appends_builtin_dict() -> None:
     """验证唯一主链路：MySQL 联表成功后产出标准目录并自动补齐 builtin 字典接口。"""
     capture: dict[str, object] = {}
     fake_pool = FakePool([_mysql_row()], capture)
-
-    async def fake_create_pool(**kwargs):
-        capture["conn_kwargs"] = kwargs
-        return fake_pool
-
-    monkeypatch.setattr(settings, "business_mysql_host", "ai-platform-mysql")
-    monkeypatch.setattr(settings, "business_mysql_port", 3306)
-    monkeypatch.setattr(settings, "business_mysql_user", "ai_platform")
-    monkeypatch.setattr(settings, "business_mysql_password", "ai_platform_dev")
-    monkeypatch.setattr(settings, "business_mysql_database", "ai_platform_business")
-    monkeypatch.setattr(settings, "api_catalog_mysql_connect_timeout_seconds", 7.5)
-    monkeypatch.setattr(registry_source_module.aiomysql, "create_pool", fake_create_pool)
-
-    source = ApiCatalogRegistrySource()
+    source = ApiCatalogRegistrySource(pool=fake_pool)  # type: ignore[arg-type]
     entries = await source.load_entries()
     await source.close()
 
-    assert capture["conn_kwargs"] == {
-        "host": "ai-platform-mysql",
-        "port": 3306,
-        "user": "ai_platform",
-        "password": "ai_platform_dev",
-        "db": "ai_platform_business",
-        "charset": "utf8mb4",
-        "connect_timeout": 7.5,
-        "minsize": 1,
-        "maxsize": 5,
-    }
     assert "FROM ui_api_endpoints e" in str(capture["sql"])
-    assert fake_pool.closed is True
-    assert fake_pool.wait_closed_called is True
+    assert fake_pool.closed is False
+    assert fake_pool.wait_closed_called is False
 
     entry_by_path = {entry.path: entry for entry in entries}
     customer_entry = entry_by_path["/api/customer/list"]
     assert customer_entry.id == "ep_1"
+    assert customer_entry.name == "客户列表"
     assert customer_entry.domain == "crm"
     assert customer_entry.env == "prod"
     assert customer_entry.tag_name == "客户管理"
@@ -174,6 +161,18 @@ async def test_registry_source_loads_entries_from_mysql_and_appends_builtin_dict
     assert [profile.field_name for profile in customer_entry.response_field_profiles] == ["customerId"]
     assert customer_entry.response_field_profiles[0].json_path == "data.list[].customerId"
     assert customer_entry.response_field_profiles[0].raw_description == "客户ID"
+    assert [field.field for field in customer_entry.list_view_meta.filter_fields] == ["customerInfo"]
+    assert customer_entry.list_view_meta.table_fields[0].field == "name"
+    assert customer_entry.list_view_meta.table_fields[1].field is None
+    assert customer_entry.list_view_meta.table_fields[1].fields == ["province", "city", "county"]
+    assert customer_entry.list_view_meta.table_fields[1].separator == ""
+    assert customer_entry.list_view_meta.table_fields[2].fields == ["mainTeacherName", "mainTeacherNo"]
+    assert customer_entry.list_view_meta.table_fields[2].separator == " / "
+    assert customer_entry.detail_view_meta.display_fields == ["name", "mainTeacherName", "phone"]
+    assert customer_entry.detail_view_meta.required_fields == ["name"]
+    assert customer_entry.detail_view_meta.exclude_fields == ["phone"]
+    assert customer_entry.detail_view_meta.groups[0].title == "基础信息"
+    assert customer_entry.detail_view_meta.groups[0].fields == ["name"]
     assert len(customer_entry.predecessors) == 1
     predecessor = customer_entry.predecessors[0]
     assert predecessor.predecessor_api_id == "role_list_v1"
@@ -196,32 +195,21 @@ async def test_registry_source_loads_entries_from_mysql_and_appends_builtin_dict
 
 
 @pytest.mark.asyncio
-async def test_registry_source_raises_when_mysql_load_fails(monkeypatch) -> None:
-    """MySQL 是唯一权威来源，连接失败时必须硬失败，避免静默回退到过期配置。"""
-
-    async def failing_create_pool(**kwargs):  # pragma: no cover - invoked via registry source
-        raise RuntimeError("boom")
-
-    monkeypatch.setattr(registry_source_module.aiomysql, "create_pool", failing_create_pool)
+async def test_registry_source_requires_injected_pool() -> None:
+    """注册表访问器未注入业务库连接池时必须硬失败。"""
 
     source = ApiCatalogRegistrySource()
-    with pytest.raises(ApiCatalogSourceError, match="无法从 MySQL 加载注册表"):
+    with pytest.raises(ApiCatalogSourceError, match="业务库连接池未注入"):
         await source.load_entries()
     await source.close()
 
 
 @pytest.mark.asyncio
-async def test_registry_source_get_entry_by_id_hits_mysql_exactly_once(monkeypatch) -> None:
+async def test_registry_source_get_entry_by_id_hits_mysql_exactly_once() -> None:
     """`direct` 快路必须支持按主键精确查目录，不能退化成全量加载。"""
     capture: dict[str, object] = {}
     fake_pool = FakePool([_mysql_row()], capture)
-
-    async def fake_create_pool(**kwargs):
-        return fake_pool
-
-    monkeypatch.setattr(registry_source_module.aiomysql, "create_pool", fake_create_pool)
-
-    source = ApiCatalogRegistrySource()
+    source = ApiCatalogRegistrySource(pool=fake_pool)  # type: ignore[arg-type]
     entry = await source.get_entry_by_id("ep_1")
     await source.close()
 
@@ -232,35 +220,25 @@ async def test_registry_source_get_entry_by_id_hits_mysql_exactly_once(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_registry_source_get_entry_by_id_returns_builtin_dict_without_mysql(monkeypatch) -> None:
+async def test_registry_source_get_entry_by_id_returns_builtin_dict_without_mysql() -> None:
     """内置字典接口不在 MySQL 中持久化，快路必须能在网关内直接命中。"""
-    mysql_called = False
-
-    async def fake_create_pool(**kwargs):  # pragma: no cover - should never be invoked
-        nonlocal mysql_called
-        mysql_called = True
-        raise AssertionError("builtin dict lookup should not hit mysql")
-
-    monkeypatch.setattr(registry_source_module.aiomysql, "create_pool", fake_create_pool)
-
     source = ApiCatalogRegistrySource()
     entry = await source.get_entry_by_id("system_dicts_v1")
     await source.close()
 
     assert entry is not None
     assert entry.id == "system_dicts_v1"
-    assert mysql_called is False
 
 
 @pytest.mark.asyncio
-async def test_registry_source_marks_mutation_entry_for_confirmation(monkeypatch) -> None:
+async def test_registry_source_marks_mutation_entry_for_confirmation() -> None:
     """mutation 接口进入 catalog 层时就要带上确认语义，避免后续 workflow 再做场景特判。"""
     capture: dict[str, object] = {}
     row = _mysql_row()
     row.update(
         {
             "endpointId": "ep_delete_role",
-            "endpointName": "删除角色",
+            "name": "删除角色",
             "path": "/system/employee/sys-role/delete",
             "method": "POST",
             "summary": "删除指定角色",
@@ -272,13 +250,7 @@ async def test_registry_source_marks_mutation_entry_for_confirmation(monkeypatch
         }
     )
     fake_pool = FakePool([row], capture)
-
-    async def fake_create_pool(**kwargs):
-        return fake_pool
-
-    monkeypatch.setattr(registry_source_module.aiomysql, "create_pool", fake_create_pool)
-
-    source = ApiCatalogRegistrySource()
+    source = ApiCatalogRegistrySource(pool=fake_pool)  # type: ignore[arg-type]
     entries = await source.load_entries()
     await source.close()
 
@@ -290,7 +262,7 @@ async def test_registry_source_marks_mutation_entry_for_confirmation(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_registry_source_falls_back_when_predecessor_column_missing(monkeypatch) -> None:
+async def test_registry_source_falls_back_when_predecessor_column_missing() -> None:
     capture: dict[str, object] = {}
 
     class FailingPredecessorCursor(FakeCursor):
@@ -314,13 +286,7 @@ async def test_registry_source_falls_back_when_predecessor_column_missing(monkey
             return FailingPredecessorAcquire(self._rows, self._capture)
 
     fake_pool = FailingPredecessorPool([_mysql_row()], capture)
-
-    async def fake_create_pool(**kwargs):
-        return fake_pool
-
-    monkeypatch.setattr(registry_source_module.aiomysql, "create_pool", fake_create_pool)
-
-    source = ApiCatalogRegistrySource()
+    source = ApiCatalogRegistrySource(pool=fake_pool)  # type: ignore[arg-type]
     entries = await source.load_entries()
     await source.close()
 

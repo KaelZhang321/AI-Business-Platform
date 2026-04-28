@@ -13,17 +13,20 @@ from fastapi.responses import JSONResponse
 from app.api.routes import bi, chat, knowledge, query
 from app.api.routes.api_query import router as api_query_router
 from app.api.routes.catalog_governance import router as catalog_governance_router
-from app.api.routes.health_quadrant import get_health_quadrant_service, router as health_quadrant_router
+from app.api.routes.health_quadrant import router as health_quadrant_router
+from app.api.routes.report_intent import router as report_intent_router
+from app.api.routes.smart_meal import (
+    get_smart_meal_package_recommend_service,
+    get_smart_meal_risk_service,
+    router as smart_meal_router,
+)
+from app.api.routes.transcript_extract import router as transcript_extract_router
 from app.core.config import settings
+from app.core.resources import AppResources
 from app.core.error_codes import BusinessError, ErrorCode
 from app.models.schemas import HealthResponse
-from app.services.api_catalog.business_intents import (
-    close_business_intent_catalog_service,
-    get_business_intent_catalog_service,
-)
+from app.services.api_catalog.business_intents import get_business_intent_catalog_service
 from app.services.identity_vault import IdentityVault
-from app.services.model_runtime_config_service import close_model_runtime_config_service
-from app.services.rag_service import RAGService
 
 logger = logging.getLogger(__name__)
 
@@ -203,16 +206,33 @@ async def lifespan(app: FastAPI):
 
     logger.info("AI网关启动完成 — 服务状态: %s", _service_status)
 
-    # 将共享服务实例挂载到 app.state，供 route 层按需获取
-    app.state.rag_service = RAGService()
+    # 将共享资源容器挂载到 app.state，供 route 层按需获取。
+    app.state.resources = AppResources()
+    await app.state.resources.start()
+    app.state.rag_service = app.state.resources.rag_service
     await get_business_intent_catalog_service().warmup()
     # 健康四象限依赖三套数据库。启动期预热连接池可降低首个请求的冷启动时延。
-    health_quadrant_service = get_health_quadrant_service()
     try:
-        await health_quadrant_service.warmup()
+        await app.state.resources.health_quadrant_service.warmup()
         logger.info("HealthQuadrantService 连接池预热完成")
     except Exception as exc:
         logger.warning("HealthQuadrantService 连接池预热失败: %s", exc)
+
+    # 智能订餐风险识别服务预热连接池，降低首请求延迟。
+    smart_meal_risk_service = get_smart_meal_risk_service()
+    try:
+        await smart_meal_risk_service.warmup()
+        logger.info("SmartMealRiskService 连接池预热完成")
+    except Exception as exc:
+        logger.warning("SmartMealRiskService 连接池预热失败: %s", exc)
+
+    # 智能订餐套餐推荐服务预热连接池，避免首个推荐请求触发建池抖动。
+    smart_meal_package_recommend_service = get_smart_meal_package_recommend_service()
+    try:
+        await smart_meal_package_recommend_service.warmup()
+        logger.info("SmartMealPackageRecommendService 连接池预热完成")
+    except Exception as exc:
+        logger.warning("SmartMealPackageRecommendService 连接池预热失败: %s", exc)
 
     # ── 启动缓存失效监听器（S5-6 + S5-11 语义缓存联动）────
     cache_task = None
@@ -256,31 +276,28 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.warning("关闭 ChatWorkflow 失败: %s", exc)
 
-    # RAGService（Neo4j / ES / ClickHouse）
-    try:
-        await app.state.rag_service.close()
-    except Exception as exc:
-        logger.warning("关闭 RAGService 失败: %s", exc)
+    # AppResources 持有共享业务库连接池，必须先关闭上层服务，再统一释放底层 pool。
+    resources = getattr(app.state, "resources", None)
+    if isinstance(resources, AppResources):
+        try:
+            await resources.close()
+            logger.info("AppResources 已关闭")
+        except Exception as exc:
+            logger.warning("关闭 AppResources 失败: %s", exc)
 
-    # Business intent catalog MySQL pool
+    # 智能订餐风险识别服务资源
     try:
-        await close_business_intent_catalog_service()
+        await get_smart_meal_risk_service().close()
+        logger.info("SmartMealRiskService 已关闭")
     except Exception as exc:
-        logger.warning("关闭 Business Intent Catalog 失败: %s", exc)
+        logger.warning("关闭 SmartMealRiskService 失败: %s", exc)
 
-    # Health Quadrant 多数据源连接池
+    # 智能订餐套餐推荐服务资源
     try:
-        await get_health_quadrant_service().close()
-        logger.info("HealthQuadrantService 已关闭")
+        await get_smart_meal_package_recommend_service().close()
+        logger.info("SmartMealPackageRecommendService 已关闭")
     except Exception as exc:
-        logger.warning("关闭 HealthQuadrantService 失败: %s", exc)
-
-    # Runtime 模型配置服务（MySQL 连接池）
-    try:
-        await close_model_runtime_config_service()
-        logger.info("ModelRuntimeConfigService 已关闭")
-    except Exception as exc:
-        logger.warning("关闭 ModelRuntimeConfigService 失败: %s", exc)
+        logger.warning("关闭 SmartMealPackageRecommendService 失败: %s", exc)
 
     # Elasticsearch
     if es_client:
@@ -407,6 +424,9 @@ app.include_router(bi.router, prefix="/api/v1")
 app.include_router(api_query_router, prefix="/api/v1")
 app.include_router(catalog_governance_router, prefix="/api/v1")
 app.include_router(health_quadrant_router, prefix="/api/v1")
+app.include_router(report_intent_router, prefix="/api/v1")
+app.include_router(smart_meal_router, prefix="/api/v1")
+app.include_router(transcript_extract_router, prefix="/api/v1")
 
 # MCP Server 路由
 from app.mcp_server.server import mcp_server  # noqa: E402

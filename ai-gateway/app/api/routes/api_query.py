@@ -21,6 +21,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
+from app.api.dependencies import get_api_catalog_registry_source, get_ui_catalog_service
 from app.models.schemas import (
     ApiCatalogIndexJobResponse,
     ApiQueryDetailRequestRuntime,
@@ -65,16 +66,17 @@ _extractor: ApiParamExtractor | None = None
 _executor: ApiExecutor | None = None
 _planner: ApiDagPlanner | None = None
 _dynamic_ui: DynamicUIService | None = None
-_ui_catalog: UICatalogService | None = None
 _snapshot_service: UISnapshotService | None = None
-_registry_source: ApiCatalogRegistrySource | None = None
 _api_query_llm: ApiQueryLLMService | None = None
 _workflow: ApiQueryWorkflow | None = None
 _catalog_index_job_service: ApiCatalogIndexJobService | None = None
 _bearer = HTTPBearer(auto_error=False)
 
 
-def _get_services() -> tuple[ApiCatalogRetriever, ApiParamExtractor, ApiExecutor, DynamicUIService, UISnapshotService]:
+def _get_services(
+    *,
+    ui_catalog_service: UICatalogService,
+) -> tuple[ApiCatalogRetriever, ApiParamExtractor, ApiExecutor, DynamicUIService, UISnapshotService]:
     """获取 `/api-query` 所需的进程级单例依赖。"""
 
     global _retriever, _extractor, _executor, _dynamic_ui, _snapshot_service
@@ -98,9 +100,10 @@ def _get_services() -> tuple[ApiCatalogRetriever, ApiParamExtractor, ApiExecutor
         _extractor = ApiParamExtractor(llm_service=_get_api_query_llm_service())
     if _executor is None:
         _executor = ApiExecutor()
-    if _dynamic_ui is None:
+    current_catalog_service = getattr(_dynamic_ui, "_catalog_service", None)
+    if _dynamic_ui is None or current_catalog_service is not ui_catalog_service:
         _dynamic_ui = DynamicUIService(
-            catalog_service=_get_ui_catalog_service(),
+            catalog_service=ui_catalog_service,
             llm_service=_get_api_query_llm_service(),
         )
     if _snapshot_service is None:
@@ -117,15 +120,6 @@ def _get_api_query_llm_service() -> ApiQueryLLMService:
     return _api_query_llm
 
 
-def _get_ui_catalog_service() -> UICatalogService:
-    """获取 UI 目录单例。"""
-
-    global _ui_catalog
-    if _ui_catalog is None:
-        _ui_catalog = UICatalogService()
-    return _ui_catalog
-
-
 def _get_planner() -> ApiDagPlanner:
     """获取第三阶段 Planner 单例。"""
 
@@ -135,16 +129,11 @@ def _get_planner() -> ApiDagPlanner:
     return _planner
 
 
-def _get_registry_source() -> ApiCatalogRegistrySource:
-    """获取治理注册表访问单例。"""
-
-    global _registry_source
-    if _registry_source is None:
-        _registry_source = ApiCatalogRegistrySource()
-    return _registry_source
-
-
-def _get_response_builder() -> ApiQueryResponseBuilder:
+def _get_response_builder(
+    *,
+    ui_catalog_service: UICatalogService,
+    registry_source: ApiCatalogRegistrySource,
+) -> ApiQueryResponseBuilder:
     """获取响应收口器。
 
     功能：
@@ -152,26 +141,34 @@ def _get_response_builder() -> ApiQueryResponseBuilder:
         拿到的永远是当前依赖视角。
     """
 
-    _, _, _, dynamic_ui, snapshot_service = _get_services()
+    _, _, _, dynamic_ui, snapshot_service = _get_services(ui_catalog_service=ui_catalog_service)
     return ApiQueryResponseBuilder(
         dynamic_ui=dynamic_ui,
         snapshot_service=snapshot_service,
-        ui_catalog_service=_get_ui_catalog_service(),
-        registry_source=_get_registry_source(),
+        ui_catalog_service=ui_catalog_service,
+        registry_source=registry_source,
     )
 
 
-def _get_workflow() -> ApiQueryWorkflow:
+def _build_workflow(
+    *,
+    ui_catalog_service: UICatalogService,
+    registry_source: ApiCatalogRegistrySource,
+    allowed_business_intent_codes_getter: callable,
+) -> ApiQueryWorkflow:
     """获取 `/api-query` 外层工作流单例。"""
 
     global _workflow
     if _workflow is None:
         _workflow = ApiQueryWorkflow(
-            services_getter=lambda: _get_services(),
+            services_getter=lambda: _get_services(ui_catalog_service=ui_catalog_service),
             planner_getter=lambda: _get_planner(),
-            response_builder_getter=lambda: _get_response_builder(),
-            registry_source_getter=lambda: _get_registry_source(),
-            allowed_business_intent_codes_getter=lambda: get_business_intent_catalog_service().get_allowed_codes(),
+            response_builder_getter=lambda: _get_response_builder(
+                ui_catalog_service=ui_catalog_service,
+                registry_source=registry_source,
+            ),
+            registry_source_getter=lambda: registry_source,
+            allowed_business_intent_codes_getter=allowed_business_intent_codes_getter,
         )
     return _workflow
 
@@ -196,6 +193,8 @@ async def api_query(
     request_body: ApiQueryRequest,
     request: Request,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
+    ui_catalog_service: UICatalogService = Depends(get_ui_catalog_service),
+    registry_source: ApiCatalogRegistrySource = Depends(get_api_catalog_registry_source),
 ) -> ApiQueryResponse:
     """调用 `/api-query` 外层工作流。
 
@@ -246,7 +245,11 @@ async def api_query(
             payload={"query_length": len(request_body.query)},
         ),
     )
-    return await _get_workflow().run(
+    return await _build_workflow(
+        ui_catalog_service=ui_catalog_service,
+        registry_source=registry_source,
+        allowed_business_intent_codes_getter=lambda: get_business_intent_catalog_service().get_allowed_codes(),
+    ).run(
         request_body,
         trace_id=trace_id,
         interaction_id=interaction_id,
@@ -257,7 +260,9 @@ async def api_query(
 
 
 @router.get("/runtime-metadata", response_model=ApiQueryRuntimeMetadataResponse, summary="获取 api_query 运行时元数据")
-async def get_runtime_metadata() -> ApiQueryRuntimeMetadataResponse:
+async def get_runtime_metadata(
+    catalog_service: UICatalogService = Depends(get_ui_catalog_service),
+) -> ApiQueryRuntimeMetadataResponse:
     """返回前端运行时所需的 UI 目录与模板场景。
 
     功能：
@@ -273,7 +278,6 @@ async def get_runtime_metadata() -> ApiQueryRuntimeMetadataResponse:
         - 目录服务会先 warmup，确保首个前端请求不会因为惰性加载拿到不完整动作集
     """
 
-    catalog_service = _get_ui_catalog_service()
     await catalog_service.warmup()
     return ApiQueryRuntimeMetadataResponse(
         ui_runtime=ApiQueryUIRuntime(

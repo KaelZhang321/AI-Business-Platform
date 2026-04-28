@@ -91,6 +91,16 @@ class Settings(BaseSettings):
 
     # 动态UI
     llm_ui_spec_enabled: bool = False
+    # 详情页模板优先策略总开关：
+    # - false: 全量走 dynamic_ui 详情渲染（不下发 templateCode）
+    # - true: 下发 template_first 策略（templateCode/fallbackMode 由目录 hint 提供）
+    api_query_template_first_enabled: bool = False
+    # 多步骤查询渲染策略：
+    # - auto_result: 自动在 terminal / aggregate 间切换（推荐默认值）
+    # - terminal_result/composite_result: 兼容旧值，运行期会自动归一到 auto_result
+    # - aggregate_result: 同屏聚合展示所有叶子业务步骤
+    # - summary_table: 仅展示执行步骤汇总
+    api_query_multi_step_render_policy: str = "auto_result"
 
     # API Query 专用 LLM（Volcengine Ark）
     # 这一组配置只服务 `/api/v1/api-query`，避免把网关内其他问答/聊天链路强行绑到同一供应商。
@@ -100,7 +110,11 @@ class Settings(BaseSettings):
 
     # Runtime LLM 配置（MySQL 驱动）
     llm_runtime_config_table: str = "llm_service_backend_config"
+    llm_prompt_template_table: str = "llm_prompt_template"
     llm_runtime_config_cache_ttl_seconds: int = Field(60, ge=1, le=3600)
+    transcript_extract_llm_timeout_seconds: float = Field(120.0, ge=0.1, le=600.0)
+    smart_meal_risk_llm_timeout_seconds: float = Field(120.0, ge=0.1, le=600.0)
+    smart_meal_recommend_llm_timeout_seconds: float = Field(120.0, ge=0.1, le=600.0)
 
     # API Query Stage-2
     api_query_route_timeout_seconds: float = 60.0
@@ -118,9 +132,9 @@ class Settings(BaseSettings):
     api_query_runtime_timeout_seconds: float = 60.0
     api_query_runtime_enabled: bool = True
     api_query_execution_max_step_count: int = Field(8, ge=1, le=50)
-    api_query_execution_step_timeout_seconds: float = Field(30.0, ge=0.1, le=60.0)
-    api_query_execution_graph_timeout_seconds: float = Field(20.0, ge=0.1, le=120.0)
-    api_query_execution_min_step_budget_seconds: float = Field(0.5, ge=0.1, le=10.0)
+    api_query_execution_step_timeout_seconds: float = Field(600.0, ge=0.1, le=600.0)
+    api_query_execution_graph_timeout_seconds: float = Field(30.0, ge=0.1, le=120.0)
+    api_query_execution_min_step_budget_seconds: float = Field(5, ge=0.1, le=10.0)
 
     # Intent classification
     intent_confidence_threshold: float = Field(0.55, ge=0.0, le=1.0)

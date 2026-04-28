@@ -68,6 +68,12 @@ def _get_collection_schema() -> CollectionSchema:
             description="接口注册表主键，对齐 ui_api_endpoints.id，用于增量更新和精确命中。",
         ),
         FieldSchema(
+            name="name",
+            dtype=DataType.VARCHAR,
+            max_length=256,
+            description="接口名称，来源于业务注册表 ui_api_endpoints.name，用于 UI 标题与业务语义展示。",
+        ),
+        FieldSchema(
             name="description",
             dtype=DataType.VARCHAR,
             max_length=1024,
@@ -186,6 +192,16 @@ def _get_collection_schema() -> CollectionSchema:
             name="template_hint",
             dtype=DataType.JSON,
             description="模板匹配提示，标记该接口是否适合走预设 ui_page_templates 快速渲染。",
+        ),
+        FieldSchema(
+            name="list_view_meta",
+            dtype=DataType.JSON,
+            description="列表首屏元数据，严格约束筛选字段和表格列展示白名单。",
+        ),
+        FieldSchema(
+            name="detail_view_meta",
+            dtype=DataType.JSON,
+            description="详情页元数据，定义字段准入规则与分组布局。",
         ),
         FieldSchema(
             name="predecessors",
@@ -430,6 +446,7 @@ class ApiCatalogIndexer:
         # 准备插入数据
         data = [
             [entry.id],
+            [entry.name],
             [entry.description],
             [entry.domain],
             [entry.env],
@@ -452,6 +469,8 @@ class ApiCatalogIndexer:
             [entry.detail_hint.model_dump()],
             [entry.pagination_hint.model_dump()],
             [entry.template_hint.model_dump()],
+            [entry.list_view_meta.model_dump()],
+            [entry.detail_view_meta.model_dump()],
             [entry.predecessors and [item.model_dump() for item in entry.predecessors] or []],
             [embedding],
         ]
