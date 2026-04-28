@@ -321,8 +321,8 @@ public class PatientExamApplicationService {
         }
         String flag = abnormalFlag.trim();
         return switch (flag) {
-            case "1", "H", "h", "↑", "高", "偏高" -> "high";
-            case "2", "L", "l", "↓", "低", "偏低" -> "low";
+            case "2", "H", "h", "↑", "高", "偏高" -> "high";
+            case "1", "L", "l", "↓", "低", "偏低" -> "low";
             default -> null;
         };
     }
