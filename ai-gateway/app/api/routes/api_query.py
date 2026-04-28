@@ -21,7 +21,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from app.api.dependencies import get_api_catalog_registry_source, get_ui_catalog_service
+from app.api.dependencies import get_api_catalog_registry_source, get_api_query_workflow, get_ui_catalog_service
 from app.models.schemas import (
     ApiCatalogIndexJobResponse,
     ApiQueryDetailRequestRuntime,
@@ -61,116 +61,8 @@ from app.services.workflows.types import WorkflowRunContext, WorkflowTraceContex
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api-query", tags=["API Query"])
 
-_retriever: ApiCatalogRetriever | None = None
-_extractor: ApiParamExtractor | None = None
-_executor: ApiExecutor | None = None
-_planner: ApiDagPlanner | None = None
-_dynamic_ui: DynamicUIService | None = None
-_snapshot_service: UISnapshotService | None = None
-_api_query_llm: ApiQueryLLMService | None = None
-_workflow: ApiQueryWorkflow | None = None
 _catalog_index_job_service: ApiCatalogIndexJobService | None = None
 _bearer = HTTPBearer(auto_error=False)
-
-
-def _get_services(
-    *,
-    ui_catalog_service: UICatalogService,
-) -> tuple[ApiCatalogRetriever, ApiParamExtractor, ApiExecutor, DynamicUIService, UISnapshotService]:
-    """获取 `/api-query` 所需的进程级单例依赖。"""
-
-    global _retriever, _extractor, _executor, _dynamic_ui, _snapshot_service
-    if _retriever is None:
-        # 本期开关：关闭图谱时直接走纯向量召回，避免进入 Neo4j 相关分支。
-        if settings.api_catalog_graph_enabled or settings.api_catalog_graph_validation_enabled:
-            _retriever = ApiCatalogHybridRetriever()
-            logger.info(
-                "api_query retriever mode=hybrid graph_enabled=%s graph_validation_enabled=%s",
-                settings.api_catalog_graph_enabled,
-                settings.api_catalog_graph_validation_enabled,
-            )
-        else:
-            _retriever = ApiCatalogRetriever()
-            logger.info(
-                "api_query retriever mode=plain graph_enabled=%s graph_validation_enabled=%s",
-                settings.api_catalog_graph_enabled,
-                settings.api_catalog_graph_validation_enabled,
-            )
-    if _extractor is None:
-        _extractor = ApiParamExtractor(llm_service=_get_api_query_llm_service())
-    if _executor is None:
-        _executor = ApiExecutor()
-    current_catalog_service = getattr(_dynamic_ui, "_catalog_service", None)
-    if _dynamic_ui is None or current_catalog_service is not ui_catalog_service:
-        _dynamic_ui = DynamicUIService(
-            catalog_service=ui_catalog_service,
-            llm_service=_get_api_query_llm_service(),
-        )
-    if _snapshot_service is None:
-        _snapshot_service = UISnapshotService()
-    return _retriever, _extractor, _executor, _dynamic_ui, _snapshot_service
-
-
-def _get_api_query_llm_service() -> ApiQueryLLMService:
-    """获取 `/api-query` 共享的 LLM 单例。"""
-
-    global _api_query_llm
-    if _api_query_llm is None:
-        _api_query_llm = ApiQueryLLMService()
-    return _api_query_llm
-
-
-def _get_planner() -> ApiDagPlanner:
-    """获取第三阶段 Planner 单例。"""
-
-    global _planner
-    if _planner is None:
-        _planner = ApiDagPlanner(llm_service=_get_api_query_llm_service())
-    return _planner
-
-
-def _get_response_builder(
-    *,
-    ui_catalog_service: UICatalogService,
-    registry_source: ApiCatalogRegistrySource,
-) -> ApiQueryResponseBuilder:
-    """获取响应收口器。
-
-    功能：
-        这里继续保持“按次装配、不额外缓存”的策略，保证测试 monkeypatch 与热重载场景
-        拿到的永远是当前依赖视角。
-    """
-
-    _, _, _, dynamic_ui, snapshot_service = _get_services(ui_catalog_service=ui_catalog_service)
-    return ApiQueryResponseBuilder(
-        dynamic_ui=dynamic_ui,
-        snapshot_service=snapshot_service,
-        ui_catalog_service=ui_catalog_service,
-        registry_source=registry_source,
-    )
-
-
-def _build_workflow(
-    *,
-    ui_catalog_service: UICatalogService,
-    registry_source: ApiCatalogRegistrySource,
-    allowed_business_intent_codes_getter: callable,
-) -> ApiQueryWorkflow:
-    """获取 `/api-query` 外层工作流单例。"""
-
-    global _workflow
-    if _workflow is None:
-        _workflow = ApiQueryWorkflow(
-            services_getter=lambda: _get_services(ui_catalog_service=ui_catalog_service),
-            planner_getter=lambda: _get_planner(),
-            response_builder_getter=lambda: _get_response_builder(
-                ui_catalog_service=ui_catalog_service,
-                registry_source=registry_source,
-            ),
-            registry_source_getter=lambda: registry_source,
-            allowed_business_intent_codes_getter=allowed_business_intent_codes_getter,
-        )
-    return _workflow
 
 
 def _get_catalog_index_job_service() -> ApiCatalogIndexJobService:
@@ -195,6 +87,7 @@ async def api_query(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
     ui_catalog_service: UICatalogService = Depends(get_ui_catalog_service),
     registry_source: ApiCatalogRegistrySource = Depends(get_api_catalog_registry_source),
+    workflow: ApiQueryWorkflow = Depends(get_api_query_workflow),
 ) -> ApiQueryResponse:
     """调用 `/api-query` 外层工作流。
 
@@ -245,11 +138,7 @@ async def api_query(
             payload={"query_length": len(request_body.query)},
         ),
     )
-    return await _build_workflow(
-        ui_catalog_service=ui_catalog_service,
-        registry_source=registry_source,
-        allowed_business_intent_codes_getter=lambda: get_business_intent_catalog_service().get_allowed_codes(),
-    ).run(
+    return await workflow.run(
         request_body,
         trace_id=trace_id,
         interaction_id=interaction_id,

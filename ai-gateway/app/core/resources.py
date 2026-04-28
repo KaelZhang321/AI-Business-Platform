@@ -6,9 +6,15 @@ import logging
 
 import aiomysql
 
+from app.core.config import settings
 from app.core.mysql import create_business_mysql_pool
 from app.services.api_catalog.business_intents import BusinessIntentCatalogService, set_business_intent_catalog_service
 from app.services.api_catalog.governance_job_service import ApiCatalogGovernanceJobService
+from app.services.api_catalog.dag_planner import ApiDagPlanner
+from app.services.api_catalog.executor import ApiExecutor
+from app.services.api_catalog.hybrid_retriever import ApiCatalogHybridRetriever
+from app.services.api_catalog.param_extractor import ApiParamExtractor
+from app.services.api_catalog.retriever import ApiCatalogRetriever
 from app.services.api_catalog.registry_source import ApiCatalogRegistrySource
 from app.services.api_catalog.semantic_curation_run_repository import SemanticCurationRunRepository
 from app.services.api_catalog.semantic_field_repository import SemanticFieldRepository
@@ -16,14 +22,28 @@ from app.services.api_catalog.semantic_governance_proposal_repository import Sem
 from app.services.api_catalog.semantic_governance_proposal_service import SemanticGovernanceProposalService
 from app.services.api_catalog.ui_blueprint_repository import UiBlueprintRepository
 from app.services.api_catalog.semantic_governance_publication_service import SemanticGovernancePublicationService
+from app.services.api_query_llm_service import ApiQueryLLMService
+from app.services.api_query_workflow import ApiQueryWorkflow
+from app.services.api_query_response_builder import ApiQueryResponseBuilder
+from app.services.chat_workflow import ChatWorkflow
+from app.services.customer_profile_fixed_service import CustomerProfileFixedService
 from app.services.model_runtime_config_service import ModelRuntimeConfigService, set_model_runtime_config_service
 from app.services.prompt_template_repository import PromptTemplateRepository
 from app.services.rag_service import RAGService
 from app.services.health_quadrant_service import HealthQuadrantService
+from app.services.health_quadrant_mysql_pools import HealthQuadrantMySQLPools
 from app.services.report_intent_service import ReportIntentService
+from app.services.semantic_cache import SemanticCacheService
+from app.services.smart_meal_llm_service import SmartMealLLMService
+from app.services.smart_meal_package_recommend_service import SmartMealPackageRecommendService
+from app.services.smart_meal_risk_service import SmartMealRiskService
 from app.services.text2sql_service import Text2SQLService
 from app.services.transcript_extract_service import TranscriptExtractService
 from app.services.ui_catalog_service import UICatalogService
+from app.services.ui_snapshot_service import UISnapshotService
+from app.services.dynamic_ui_service import DynamicUIService
+from app.services.intent_classifier import IntentClassifier
+from app.services.llm_service import LLMService
 
 logger = logging.getLogger(__name__)
 
@@ -53,8 +73,25 @@ class AppResources:
         self.api_catalog_registry_source: ApiCatalogRegistrySource | None = None
         self.text2sql_service: Text2SQLService | None = None
         self.health_quadrant_service: HealthQuadrantService | None = None
+        self.health_quadrant_mysql_pools: HealthQuadrantMySQLPools | None = None
         self.report_intent_service: ReportIntentService | None = None
         self.transcript_extract_service: TranscriptExtractService | None = None
+        self.dynamic_ui_service: DynamicUIService | None = None
+        self.llm_service: LLMService | None = None
+        self.intent_classifier: IntentClassifier | None = None
+        self.semantic_cache_service: SemanticCacheService | None = None
+        self.chat_workflow: ChatWorkflow | None = None
+        self.smart_meal_llm_service: SmartMealLLMService | None = None
+        self.smart_meal_risk_service: SmartMealRiskService | None = None
+        self.smart_meal_package_recommend_service: SmartMealPackageRecommendService | None = None
+        self.api_query_llm_service: ApiQueryLLMService | None = None
+        self.api_catalog_retriever: ApiCatalogRetriever | ApiCatalogHybridRetriever | None = None
+        self.api_param_extractor: ApiParamExtractor | None = None
+        self.api_executor: ApiExecutor | None = None
+        self.api_dag_planner: ApiDagPlanner | None = None
+        self.ui_snapshot_service: UISnapshotService | None = None
+        self.api_query_workflow: ApiQueryWorkflow | None = None
+        self.customer_profile_service: CustomerProfileFixedService | None = None
         self.semantic_curation_run_repository: SemanticCurationRunRepository | None = None
         self.semantic_field_repository: SemanticFieldRepository | None = None
         self.semantic_governance_proposal_repository: SemanticGovernanceProposalRepository | None = None
@@ -84,6 +121,9 @@ class AppResources:
         pool = self.business_mysql_pool
 
         self.rag_service = RAGService()
+        self.llm_service = LLMService()
+        self.intent_classifier = IntentClassifier(llm_service=self.llm_service)
+        self.semantic_cache_service = SemanticCacheService()
         self.model_runtime_config_service = ModelRuntimeConfigService(pool=pool)
         set_model_runtime_config_service(self.model_runtime_config_service)
         self.prompt_template_repository = PromptTemplateRepository(pool=pool)
@@ -93,8 +133,38 @@ class AppResources:
         self.api_catalog_registry_source = ApiCatalogRegistrySource(pool=pool)
         self.text2sql_service = Text2SQLService(generic_pool=pool)
         self.health_quadrant_service = HealthQuadrantService(business_pool=pool)
+        self.health_quadrant_mysql_pools = HealthQuadrantMySQLPools(business_pool=pool)
         self.report_intent_service = ReportIntentService(pool=pool)
         self.transcript_extract_service = TranscriptExtractService(prompt_repository=self.prompt_template_repository)
+        self.dynamic_ui_service = DynamicUIService(catalog_service=self.ui_catalog_service, llm_service=self.llm_service)
+        self.chat_workflow = ChatWorkflow(
+            intent_classifier=self.intent_classifier,
+            rag_service=self.rag_service,
+            text2sql_service=self.text2sql_service,
+            dynamic_ui=self.dynamic_ui_service,
+            llm_service=self.llm_service,
+            semantic_cache=self.semantic_cache_service,
+        )
+        self.smart_meal_llm_service = SmartMealLLMService()
+        self.smart_meal_risk_service = SmartMealRiskService(
+            llm_service=self.smart_meal_llm_service,
+            mysql_pools=self.health_quadrant_mysql_pools,
+        )
+        self.smart_meal_package_recommend_service = SmartMealPackageRecommendService(
+            mysql_pools=self.health_quadrant_mysql_pools,
+            llm_service=self.smart_meal_llm_service,
+        )
+        self.api_query_llm_service = ApiQueryLLMService()
+        self.api_catalog_retriever = (
+            ApiCatalogHybridRetriever()
+            if settings.api_catalog_graph_enabled or settings.api_catalog_graph_validation_enabled
+            else ApiCatalogRetriever()
+        )
+        self.api_param_extractor = ApiParamExtractor(llm_service=self.api_query_llm_service)
+        self.api_executor = ApiExecutor()
+        self.api_dag_planner = ApiDagPlanner(llm_service=self.api_query_llm_service)
+        self.ui_snapshot_service = UISnapshotService()
+        self.customer_profile_service = CustomerProfileFixedService()
         self.semantic_curation_run_repository = SemanticCurationRunRepository(pool=pool)
         self.semantic_field_repository = SemanticFieldRepository(pool=pool)
         self.semantic_governance_proposal_repository = SemanticGovernanceProposalRepository(pool=pool)
@@ -112,6 +182,29 @@ class AppResources:
             proposal_service=self.semantic_governance_proposal_service,
             proposal_repository=self.semantic_governance_proposal_repository,
             semantic_field_repository=self.semantic_field_repository,
+        )
+        self.api_query_workflow = ApiQueryWorkflow(
+            services_getter=lambda: (
+                self.api_catalog_retriever if self.api_catalog_retriever is not None else ApiCatalogRetriever(),
+                self.api_param_extractor if self.api_param_extractor is not None else ApiParamExtractor(),
+                self.api_executor if self.api_executor is not None else ApiExecutor(),
+                self.dynamic_ui_service if self.dynamic_ui_service is not None else DynamicUIService(),
+                self.ui_snapshot_service if self.ui_snapshot_service is not None else UISnapshotService(),
+            ),
+            planner_getter=lambda: self.api_dag_planner if self.api_dag_planner is not None else ApiDagPlanner(),
+            response_builder_getter=lambda: ApiQueryResponseBuilder(
+                dynamic_ui=self.dynamic_ui_service if self.dynamic_ui_service is not None else DynamicUIService(),
+                snapshot_service=self.ui_snapshot_service if self.ui_snapshot_service is not None else UISnapshotService(),
+                ui_catalog_service=self.ui_catalog_service if self.ui_catalog_service is not None else UICatalogService(pool=pool),
+                registry_source=self.api_catalog_registry_source if self.api_catalog_registry_source is not None else ApiCatalogRegistrySource(pool=pool),
+            ),
+            registry_source_getter=lambda: self.api_catalog_registry_source if self.api_catalog_registry_source is not None else ApiCatalogRegistrySource(pool=pool),
+            allowed_business_intent_codes_getter=lambda: (
+                self.business_intent_catalog_service.get_allowed_codes()
+                if self.business_intent_catalog_service is not None
+                else set()
+            ),
+            customer_profile_service=self.customer_profile_service,
         )
 
         self._started = True
@@ -132,7 +225,13 @@ class AppResources:
             ("transcript_extract_service", self.transcript_extract_service),
             ("text2sql_service", self.text2sql_service),
             ("health_quadrant_service", self.health_quadrant_service),
+            ("smart_meal_risk_service", self.smart_meal_risk_service),
+            ("smart_meal_package_recommend_service", self.smart_meal_package_recommend_service),
+            ("smart_meal_llm_service", self.smart_meal_llm_service),
             ("report_intent_service", self.report_intent_service),
+            ("chat_workflow", self.chat_workflow),
+            ("api_query_workflow", self.api_query_workflow),
+            ("api_query_llm_service", self.api_query_llm_service),
             ("business_intent_catalog_service", self.business_intent_catalog_service),
             ("ui_catalog_service", self.ui_catalog_service),
             ("api_catalog_registry_source", self.api_catalog_registry_source),

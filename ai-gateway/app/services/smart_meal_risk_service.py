@@ -98,8 +98,6 @@ class SmartMealRiskService:
         if self._owned_mysql_pools:
             await self._mysql_pools.close()
 
-        await self._llm_service.close()
-
     async def identify_risks(
         self,
         *,

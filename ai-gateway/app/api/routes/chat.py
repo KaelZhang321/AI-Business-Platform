@@ -3,16 +3,16 @@ from collections.abc import AsyncGenerator
 from fastapi import APIRouter, Depends, HTTPException
 from sse_starlette.sse import EventSourceResponse
 
+from app.api.dependencies import get_chat_workflow
 from app.core.config import Settings
 from app.core.dependencies import get_settings
 from app.models.schemas import ChatRequest, ChatResponse
 from app.services.chat_workflow import ChatWorkflow
 
 router = APIRouter()
-workflow = ChatWorkflow()
 
 
-async def _stream_chat(request: ChatRequest, settings: Settings) -> AsyncGenerator[str, None]:
+async def _stream_chat(request: ChatRequest, workflow: ChatWorkflow) -> AsyncGenerator[str, None]:
     """SSE流式输出对话响应。
 
     STREAM_END 由 ChatWorkflow.stream() 内部的 on_graph_end 事件唯一发出，
@@ -23,10 +23,14 @@ async def _stream_chat(request: ChatRequest, settings: Settings) -> AsyncGenerat
 
 
 @router.post("/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest, settings: Settings = Depends(get_settings)):
+async def chat(
+    request: ChatRequest,
+    settings: Settings = Depends(get_settings),
+    workflow: ChatWorkflow = Depends(get_chat_workflow),
+):
     """对话主入口 - SSE流式输出"""
     if request.stream:
-        return EventSourceResponse(_stream_chat(request, settings))
+        return EventSourceResponse(_stream_chat(request, workflow))
     try:
         response = await workflow.run(request)
     except Exception as exc:  # pragma: no cover - runtime safety
