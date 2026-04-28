@@ -65,7 +65,7 @@ export const AIFourQuadrantView = ({
   } = useFourQuadrantState(mergedNavigationParams)
 
   return (
-    <div className="space-y-6 pb-12 h-full flex flex-col relative">
+    <div className="space-y-6 h-full flex flex-col relative">
       <TargetCursor targetSelector=".cursor-target" containerSelector=".quadrants-container" />
 
       <FourQuadrantHeader

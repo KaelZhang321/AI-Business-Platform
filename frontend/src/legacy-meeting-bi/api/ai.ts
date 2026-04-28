@@ -1,4 +1,4 @@
-import { apiClient as client, type ApiResponse } from './client';
+import { apiClient as client, unwrapApiResponse, type ApiResponse } from './client';
 import { apiBasePath } from '../utils/base-path'
 
 export type ChartValue = string | number | null
@@ -27,7 +27,7 @@ export interface AiQueryResponse {
 }
 
 export const postAiQuery = (question: string) =>
-  client.post<ApiResponse<AiQueryResponse>>('/api/v1/bi/ai/query', { question }).then(r => r.data.data)
+  client.post<ApiResponse<AiQueryResponse>>('/api/v1/bi/ai/query', { question }).then(r => unwrapApiResponse<AiQueryResponse | null>(r.data, null))
 
 export type SseEventType = 'sql' | 'data' | 'chart' | 'answer' | 'error'
 

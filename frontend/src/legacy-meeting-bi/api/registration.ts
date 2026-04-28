@@ -1,4 +1,4 @@
-import { apiClient as client, type ApiResponse } from './client';
+import { apiClient as client, unwrapApiResponse, type ApiResponse } from './client';
 
 export interface RegionLevelCount {
   region: string
@@ -20,10 +20,10 @@ export interface MatrixRow {
 }
 
 export const fetchRegistrationChart = () =>
-  client.get<ApiResponse<RegionLevelCount[]>>('/api/v1/bi/registration/chart').then(r => r.data.data)
+  client.get<ApiResponse<RegionLevelCount[]>>('/api/v1/bi/registration/chart').then(r => unwrapApiResponse<RegionLevelCount[]>(r.data, []))
 
 export const fetchRegistrationMatrix = () =>
-  client.get<ApiResponse<MatrixRow[]>>('/api/v1/bi/registration/matrix').then(r => r.data.data)
+  client.get<ApiResponse<MatrixRow[]>>('/api/v1/bi/registration/matrix').then(r => unwrapApiResponse<MatrixRow[]>(r.data, []))
 
 export interface RegistrationDetail {
   customer_name: string | null
@@ -36,4 +36,4 @@ export interface RegistrationDetail {
 }
 
 export const fetchRegistrationDetail = (region?: string, level?: string) =>
-  client.get<ApiResponse<RegistrationDetail[]>>('/api/v1/bi/registration/detail', { params: { region, level } }).then(r => r.data.data)
+  client.get<ApiResponse<RegistrationDetail[]>>('/api/v1/bi/registration/detail', { params: { region, level } }).then(r => unwrapApiResponse<RegistrationDetail[]>(r.data, []))
