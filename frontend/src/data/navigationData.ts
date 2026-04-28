@@ -1,8 +1,13 @@
 // 导航数据源：集中定义页面元信息、菜单结构与占位文案，供路由和侧边栏统一复用。
+/** 应用页面标识联合类型 —— 系统中所有可导航页面的唯一标识 */
 export type AppPage =
   | 'login'
   | 'dashboard'
   | 'function-square'
+  | 'ai-report-comparison'
+  | 'ai-four-quadrant'
+  | 'ai-component-management'
+  | 'ui-builder'
   | 'meeting-bi'
   | 'consultant-ai'
   | 'medical-ai'
@@ -22,6 +27,7 @@ export type AppPage =
   | 'notices'
   | 'settings';
 
+/** 导航图标类型（对应 Lucide 图标名称） */
 export type NavigationIcon =
   | 'home'
   | 'layout-dashboard'
@@ -30,25 +36,53 @@ export type NavigationIcon =
   | 'bell'
   | 'settings';
 
+/** 页面定义：每个页面的基本元信息 */
 export interface PageDefinition {
+  /** URL 路径 */
   path: string;
+  /** 中文标题 */
   title: string;
+  /** 是否已有真实视图实现 */
   implemented: boolean;
+  /** 占位页描述文案（仅未实现页面使用） */
   placeholderDescription?: string;
 }
 
+/** 导航菜单项定义：侧边栏一级/二级菜单的结构 */
 export interface NavigationItemDefinition {
+  /** 对应的页面标识 */
   page: AppPage;
+  /** 显示文本 */
   label: string;
+  /** 图标名称（可选） */
   icon?: NavigationIcon;
+  /** 角标数字（可选） */
   badge?: number;
+  /** 子页面标识列表（可选） */
   children?: AppPage[];
 }
 
+/** 全量页面定义映射：页面标识 → 元信息配置 */
 export const PAGE_DEFINITIONS: Record<AppPage, PageDefinition> = {
   login: { path: '/login', title: '登录', implemented: false },
-  dashboard: { path: '/', title: 'AI业务工作台', implemented: true },
+  dashboard: { path: '/dashboard', title: 'AI业务工作台', implemented: true },
   'function-square': { path: '/function-square', title: '功能广场', implemented: true },
+  'ai-report-comparison': {
+    path: '/ai-report-comparison',
+    title: 'AI报告对比',
+    implemented: true,
+  },
+  'ai-four-quadrant': {
+    path: '/ai-four-quadrant',
+    title: 'AI四象限健康评估',
+    implemented: true,
+  },
+  'ai-component-management': {
+    path: '/ai-component-management',
+    title: 'AI组件管理',
+    implemented: true,
+  },
+  'ui-builder': { path: '/ui-builder', title: 'JSON Render Builder', implemented: true },
   'meeting-bi': { path: '/meeting-bi', title: '会议BI', implemented: true },
   'consultant-ai': { path: '/consultant-ai', title: '我的AI工作台', implemented: true },
   'medical-ai': { path: '/medical-ai', title: '医疗AI工作台', implemented: true },
@@ -129,6 +163,7 @@ export const PAGE_DEFINITIONS: Record<AppPage, PageDefinition> = {
   },
 };
 
+/** 主导航菜单项列表（侧边栏上部） */
 export const NAVIGATION_ITEMS: NavigationItemDefinition[] = [
   {
     page: 'dashboard',
@@ -155,6 +190,11 @@ export const NAVIGATION_ITEMS: NavigationItemDefinition[] = [
     ],
   },
   {
+    page: 'ai-component-management',
+    label: 'AI组件管理',
+    icon: 'sparkles',
+  },
+  {
     page: 'ai-diagnosis',
     label: '特色服务',
     icon: 'sparkles',
@@ -167,7 +207,13 @@ export const NAVIGATION_ITEMS: NavigationItemDefinition[] = [
   },
 ];
 
+/** 底部导航菜单项列表（侧边栏下方） */
 export const FOOTER_NAVIGATION_ITEMS: NavigationItemDefinition[] = [
+  {
+    page: 'ui-builder',
+    label: 'UI Builder',
+    icon: 'layout-dashboard',
+  },
   {
     page: 'notices',
     label: '通知公告',

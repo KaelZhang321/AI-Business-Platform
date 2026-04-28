@@ -2,16 +2,25 @@
 import { create } from 'zustand';
 import { authService, type UserPermission } from '../services/auth';
 
+/** 全局认证状态接口定义 */
 interface AppState {
+  /** 当前访问令牌（从 localStorage 初始化） */
   token: string | null;
+  /** 当前登录用户信息 */
   user: UserPermission | null;
+  /** 是否已认证（token 有效且用户信息已加载） */
   isAuthenticated: boolean;
+  /** 账号密码登录 */
   login: (username: string, password: string) => Promise<void>;
+  /** IAM 统一认证登录（通过授权码） */
   iamLogin: (code: string) => Promise<void>;
+  /** 登出并清除认证状态 */
   logout: () => void;
+  /** 应用启动时恢复会话：通过 /me 接口重新拉取用户信息 */
   restoreSession: () => Promise<void>;
 }
 
+/** Zustand 全局认证状态仓库：维护登录用户、token 和会话恢复动作 */
 export const useAppStore = create<AppState>((set) => ({
   token: authService.getToken(),
   user: null,

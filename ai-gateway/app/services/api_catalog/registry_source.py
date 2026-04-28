@@ -1,0 +1,841 @@
+from __future__ import annotations
+
+import aiomysql
+from datetime import UTC, datetime
+import logging
+import re
+from typing import Any
+
+from app.services.api_catalog.schema_utils import (
+    describe_schema_type,
+    extract_schema_description,
+    resolve_schema_at_data_path,
+    schema_is_array,
+)
+from app.services.api_catalog.schema import (
+    ApiCatalogDetailViewMeta,
+    ApiCatalogDetailHint,
+    ApiCatalogEntry,
+    ApiCatalogFieldProfile,
+    ApiCatalogListViewMeta,
+    ApiCatalogPaginationHint,
+    ApiCatalogPredecessorParamBinding,
+    ApiCatalogPredecessorSpec,
+    ApiCatalogTemplateHint,
+    ParamSchema,
+)
+from app.utils.json_utils import load_json_object, load_json_value
+
+logger = logging.getLogger(__name__)
+
+_API_CATALOG_REGISTRY_SELECT_SQL = """
+SELECT
+    e.id AS endpointId,
+    e.tag_id AS tagId,
+    t.name AS tagName,
+    e.name AS name,
+    e.path AS path,
+    e.method AS method,
+    e.summary AS summary,
+    CAST(e.request_schema AS CHAR) AS requestSchema,
+    CAST(e.response_schema AS CHAR) AS responseSchema,
+    CAST(e.sample_request AS CHAR) AS sampleRequest,
+    CAST(e.sample_response AS CHAR) AS sampleResponse,
+    CAST(e.predecessor_specs AS CHAR) AS predecessorSpecs,
+    CAST(e.list_view_meta AS CHAR) AS listViewMeta,
+    CAST(e.detail_view_meta AS CHAR) AS detailViewMeta,
+    e.operation_safety AS operationSafety,
+    e.status AS endpointStatus,
+    s.id AS sourceId,
+    SUBSTRING_INDEX(s.code,'_', 1) AS sourceCode,
+    s.name AS sourceName,
+    s.source_type AS sourceType,
+    s.base_url AS baseUrl,
+    s.doc_url AS docUrl,
+    s.auth_type AS authType,
+    CAST(s.auth_config AS CHAR) AS authConfig,
+    CAST(s.default_headers AS CHAR) AS defaultHeaders,
+    s.env AS env,
+    s.status AS sourceStatus
+FROM ui_api_endpoints e
+LEFT JOIN ui_api_sources s ON e.source_id = s.id
+LEFT JOIN ui_api_tags t ON e.tag_id = t.id
+WHERE e.status = 'active'
+"""
+
+_API_CATALOG_REGISTRY_SELECT_BY_ID_SQL = _API_CATALOG_REGISTRY_SELECT_SQL + "AND e.id = %s\n"
+_API_CATALOG_REGISTRY_SELECT_CHANGED_IDS_SQL = """
+SELECT e.id AS endpointId
+FROM ui_api_endpoints e
+WHERE e.status = 'active'
+  AND e.updated_at >= %s
+ORDER BY e.updated_at ASC
+LIMIT %s
+"""
+
+
+class ApiCatalogSourceError(RuntimeError):
+    """Raised when the registry source cannot be loaded."""
+
+
+class ApiCatalogRegistrySource:
+    """从权威元数据源构建 `ApiCatalogEntry` 列表。
+
+    功能：
+        统一从业务 MySQL 直连抽取接口元数据，产出可直接入库到 Milvus 的标准化目录记录。
+
+    Edge Cases:
+        - SQL 里显式 `CAST(JSON AS CHAR)`，是为了消除不同 MySQL 驱动对 JSON 返回类型的差异
+        - 业务库连接池必须由上层注入，注册表读取不再自行建池
+    """
+
+    def __init__(self, *, pool: aiomysql.Pool | None = None) -> None:
+        self._pool = pool
+
+    async def load_entries(self) -> list[ApiCatalogEntry]:
+        """仅从业务 MySQL 加载接口目录记录。
+
+        Returns:
+            标准化后的 `ApiCatalogEntry` 列表，且始终附带 builtin 字典接口。
+
+        Raises:
+            ApiCatalogSourceError: 当 MySQL 元数据不可用或返回空结果时抛出。
+        """
+        try:
+            remote_entries = await self._load_mysql_entries()
+        except Exception as exc:
+            raise ApiCatalogSourceError(f"无法从 MySQL 加载注册表: {exc}") from exc
+        return _append_builtin_entries(remote_entries)
+
+    async def get_entry_by_id(self, api_id: str) -> ApiCatalogEntry | None:
+        """按接口主键精确加载单条目录记录。
+
+        功能：
+            `direct` 快路不应该为了拿一条接口定义去重走 Milvus 或全量注册表加载。
+            这里提供精确查找路径，让二跳场景直接对齐 `ui_api_endpoints.id`。
+
+        Args:
+            api_id: 目标接口 ID，对应业务元数据表主键。
+
+        Returns:
+            命中时返回单条 `ApiCatalogEntry`；未命中返回 `None`。
+
+        Raises:
+            ApiCatalogSourceError: 当 MySQL 查询失败时抛出。
+        """
+        builtin_entry = _find_builtin_entry_by_id(api_id)
+        if builtin_entry is not None:
+            return builtin_entry
+
+        try:
+            rows = await self._fetch_rows_with_predecessor_fallback(_API_CATALOG_REGISTRY_SELECT_BY_ID_SQL, (api_id,))
+        except Exception as exc:
+            raise ApiCatalogSourceError(f"无法从 MySQL 加载接口 {api_id}: {exc}") from exc
+
+        if not rows:
+            return None
+        return _build_entry_from_mysql_row(rows[0])
+
+    async def load_changed_api_ids(self, *, updated_since: datetime | None, limit: int = 500) -> list[str]:
+        """按 `updated_at` 探测增量接口 ID。
+
+        功能：
+            稳态阶段如果上游只发“发生过变更”的事件而未携带 API ID，可通过该方法做窗口探测。
+
+        Args:
+            updated_since: 增量窗口起点。为空时回退到 Unix Epoch，表示全量扫描。
+            limit: 最大返回数量，防止单次治理任务被历史积压拖成长事务。
+        """
+
+        lower_bound = updated_since or datetime(1970, 1, 1, tzinfo=UTC)
+        rows = await self._fetch_mysql_rows(
+            _API_CATALOG_REGISTRY_SELECT_CHANGED_IDS_SQL,
+            (
+                lower_bound.strftime("%Y-%m-%d %H:%M:%S"),
+                max(1, int(limit)),
+            ),
+        )
+        api_ids: list[str] = []
+        seen: set[str] = set()
+        for row in rows:
+            api_id = str(row.get("endpointId") or "").strip()
+            if not api_id or api_id in seen:
+                continue
+            seen.add(api_id)
+            api_ids.append(api_id)
+        return api_ids
+
+    async def _load_mysql_entries(self) -> list[ApiCatalogEntry]:
+        """从业务 MySQL 直连抽取接口目录元数据。
+
+        功能：
+            直接对齐设计稿里的 `ui_api_endpoints + ui_api_sources + ui_api_tags` 三表拍平逻辑，
+            避免在网关和 business-server 之间再绕一层 REST 元数据代理。
+        """
+        rows = await self._fetch_rows_with_predecessor_fallback(_API_CATALOG_REGISTRY_SELECT_SQL)
+        entries = [_build_entry_from_mysql_row(row) for row in rows]
+        if not entries:
+            raise ApiCatalogSourceError("MySQL metadata returned no endpoints")
+        return _dedupe_by_signature(entries)
+
+    async def _fetch_mysql_rows(
+        self,
+        sql: str,
+        params: tuple[Any, ...] | None = None,
+    ) -> list[dict[str, Any]]:
+        """执行注册表元数据 SQL，并返回字典行结果。
+
+        功能：
+            全量加载和按主键精确查找共用同一套底层 SQL 访问入口，避免连接池和游标
+            生命周期分叉后出现“一个路径能查、另一个路径忘了关连接”的隐性问题。
+        """
+        pool = await self._get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cursor:
+                if params is None:
+                    await cursor.execute(sql)
+                else:
+                    await cursor.execute(sql, params)
+                rows = await cursor.fetchall()
+                return [dict(row) for row in rows]
+
+    async def _fetch_rows_with_predecessor_fallback(
+        self,
+        sql: str,
+        params: tuple[Any, ...] | None = None,
+    ) -> list[dict[str, Any]]:
+        """兼容 predecessor 字段尚未发布的环境。"""
+        try:
+            return await self._fetch_mysql_rows(sql, params)
+        except Exception as exc:
+            if not _is_mysql_unknown_predecessor_column_error(exc):
+                raise
+            rows = await self._fetch_mysql_rows(_strip_predecessor_specs_projection(sql), params)
+            for row in rows:
+                row["predecessorSpecs"] = "[]"
+            return rows
+
+    async def _get_pool(self) -> aiomysql.Pool:
+        """读取应用级注入的 API Catalog 连接池。"""
+        if self._pool is None:
+            raise ApiCatalogSourceError("业务库连接池未注入，请通过 AppResources 或测试桩显式提供。")
+        return self._pool
+
+    async def close(self) -> None:
+        """注册表访问器不持有连接池所有权，因此 close 为 no-op。"""
+
+
+def _build_entry_from_mysql_row(row: dict[str, Any]) -> ApiCatalogEntry:
+    """把 SQL 联表结果转换成统一的目录对象。
+
+    设计意图：
+        通过一层 payload 适配复用 `_build_entry()`，让“SQL 主源”和“历史 REST 主源”
+        共用同一套拍平与字段推断逻辑，减少后续演进时的分叉维护成本。
+    """
+    source_payload = {
+        "id": row.get("sourceId"),
+        "code": row.get("sourceCode"),
+        "name": row.get("sourceName"),
+        "sourceType": row.get("sourceType"),
+        "baseUrl": row.get("baseUrl"),
+        "docUrl": row.get("docUrl"),
+        "authType": row.get("authType"),
+        "authConfig": row.get("authConfig"),
+        "defaultHeaders": row.get("defaultHeaders"),
+        "env": row.get("env"),
+        "status": row.get("sourceStatus"),
+    }
+    endpoint_payload = {
+        "id": row.get("endpointId"),
+        "tagId": row.get("tagId"),
+        "tagName": row.get("tagName"),
+        "name": row.get("name"),
+        "path": row.get("path"),
+        "method": row.get("method"),
+        "summary": row.get("summary"),
+        "requestSchema": row.get("requestSchema"),
+        "responseSchema": row.get("responseSchema"),
+        "sampleRequest": row.get("sampleRequest"),
+        "sampleResponse": row.get("sampleResponse"),
+        "predecessorSpecs": row.get("predecessorSpecs"),
+        "listViewMeta": row.get("listViewMeta"),
+        "detailViewMeta": row.get("detailViewMeta"),
+        "operationSafety": row.get("operationSafety"),
+        "status": row.get("endpointStatus"),
+    }
+    return _build_entry(source_payload, endpoint_payload)
+
+
+def _build_entry(
+    source: dict[str, Any],
+    endpoint: dict[str, Any],
+    tag_name_by_id: dict[str, str] | None = None,
+) -> ApiCatalogEntry:
+    """把一条接口元数据拍平成 `ApiCatalogEntry`。
+
+    Args:
+        source: 接口源元数据，提供 domain/env/auth/base_url 等外围信息。
+        endpoint: 单条接口定义，包含 path/schema/sample 等接口级信息。
+        tag_name_by_id: 由 `/tags` 拉取到的显式标签映射。
+
+    Returns:
+        可直接入库 Milvus 的标准目录对象。
+    """
+    method = str(endpoint.get("method") or "GET").upper()
+    path = str(endpoint.get("path") or "")
+    name = str(endpoint.get("name") or "").strip()
+    summary = str(endpoint.get("summary") or "").strip()
+
+    request_schema = load_json_object(endpoint.get("requestSchema"))
+    response_schema = load_json_object(endpoint.get("responseSchema"))
+    sample_request = load_json_object(endpoint.get("sampleRequest"))
+    sample_response = load_json_object(endpoint.get("sampleResponse"))
+    predecessors = _parse_predecessor_specs(endpoint.get("predecessorSpecs"))
+    list_view_meta = _parse_list_view_meta(endpoint.get("listViewMeta"))
+    detail_view_meta = _parse_detail_view_meta(endpoint.get("detailViewMeta"))
+    operation_safety = _normalize_operation_safety(endpoint.get("operationSafety"))
+
+    auth_type = str(source.get("authType") or "").strip()
+    auth_required = auth_type.lower() not in {"", "none", "public", "anonymous"}
+    source_code = str(source.get("code") or "").strip()
+    source_name = str(source.get("name") or "").strip()
+    tag_name = _resolve_tag_name(endpoint, tag_name_by_id or {})
+    response_data_path = _infer_response_data_path(sample_response, response_schema)
+    field_labels = _extract_field_labels(response_schema)
+
+    return ApiCatalogEntry(
+        id=str(endpoint.get("id") or f"{method}:{path}"),
+        name=name,
+        description=summary or name or f"{method} {path}",
+        example_queries=_build_example_queries(name, summary),
+        tags=_compact_list([tag_name, source_name, source_code, method]),
+        domain=_normalize_domain(source_code or source_name or "generic"),
+        env=str(source.get("env") or "shared"),
+        status=_normalize_status(endpoint.get("status") or source.get("status") or "active"),
+        tag_name=_normalize_tag_name(tag_name),
+        business_intents=_infer_business_intents(name, summary, path),
+        operation_safety=operation_safety,
+        requires_confirmation=_infer_requires_confirmation(operation_safety=operation_safety),
+        method=method,
+        path=path,
+        auth_required=auth_required,
+        executor_config={
+            # registry 条目统一切到 runtime invoke；只有 builtin / 特殊条目继续走旧直连执行器。
+            "executor_type": "runtime_invoke",
+            "source_id": source.get("id"),
+            "source_code": source_code,
+            "source_name": source_name,
+            "source_type": source.get("sourceType"),
+            "base_url": source.get("baseUrl"),
+            "doc_url": source.get("docUrl"),
+            "auth_type": auth_type,
+            "auth_config": load_json_object(source.get("authConfig")),
+            "default_headers": load_json_object(source.get("defaultHeaders")),
+        },
+        security_rules={
+            "auth_required": auth_required,
+            "read_only": method == "GET",
+            "operation_safety": operation_safety,
+            "query_safe": operation_safety == "query",
+            "source_status": source.get("status"),
+            "endpoint_status": endpoint.get("status"),
+            "enforcement": "delegated_to_business_server",
+        },
+        param_schema=_to_param_schema(request_schema),
+        response_schema=response_schema,
+        sample_request=sample_request,
+        response_data_path=response_data_path,
+        field_labels=field_labels,
+        ui_hint=_infer_ui_hint(summary, path, sample_response),
+        detail_hint=ApiCatalogDetailHint(),
+        pagination_hint=ApiCatalogPaginationHint(),
+        template_hint=ApiCatalogTemplateHint(),
+        list_view_meta=list_view_meta,
+        detail_view_meta=detail_view_meta,
+        request_field_profiles=_extract_request_field_profiles(method, _to_param_schema(request_schema)),
+        response_field_profiles=_extract_response_field_profiles(response_schema, response_data_path, field_labels),
+        predecessors=predecessors,
+    )
+
+
+def _parse_predecessor_specs(raw_value: Any) -> list[ApiCatalogPredecessorSpec]:
+    """解析注册表中的 `predecessor_specs`。"""
+    payload = load_json_value(raw_value, [])
+    if not isinstance(payload, list):
+        return []
+
+    specs: list[ApiCatalogPredecessorSpec] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        predecessor_api_id = str(item.get("predecessor_api_id") or "").strip()
+        if not predecessor_api_id:
+            continue
+
+        raw_bindings = item.get("param_bindings")
+        bindings_payload = raw_bindings if isinstance(raw_bindings, list) else []
+        bindings: list[ApiCatalogPredecessorParamBinding] = []
+        for binding in bindings_payload:
+            if not isinstance(binding, dict):
+                continue
+            target_param = str(binding.get("target_param") or "").strip()
+            source_path = str(binding.get("source_path") or "").strip()
+            if not target_param or not source_path:
+                continue
+            select_mode = str(binding.get("select_mode") or "single").strip() or "single"
+            if select_mode not in {"single", "first", "user_select", "all"}:
+                select_mode = "single"
+            bindings.append(
+                ApiCatalogPredecessorParamBinding(
+                    target_param=target_param,
+                    source_path=source_path,
+                    select_mode=select_mode,  # type: ignore[arg-type]
+                )
+            )
+
+        try:
+            spec = ApiCatalogPredecessorSpec(
+                predecessor_api_id=predecessor_api_id,
+                required=bool(item.get("required", True)),
+                order=int(item.get("order", 100)),
+                param_bindings=bindings,
+            )
+        except (TypeError, ValueError):
+            continue
+        specs.append(spec)
+
+    specs.sort(key=lambda value: (value.order, value.predecessor_api_id))
+    return specs
+
+
+def _append_builtin_entries(entries: list[ApiCatalogEntry]) -> list[ApiCatalogEntry]:
+    by_signature = {(entry.method, entry.path): entry for entry in entries}
+    dict_entry = _build_system_dict_entry()
+    by_signature.setdefault((dict_entry.method, dict_entry.path), dict_entry)
+    return list(by_signature.values())
+
+
+def _find_builtin_entry_by_id(api_id: str) -> ApiCatalogEntry | None:
+    """按 ID 匹配网关内置目录项。
+
+    功能：
+        内置字典接口不在业务 MySQL 中持久化；`direct` 快路如果命中这类接口，
+        必须先在网关内置目录里完成一次短路匹配，避免多打一趟注定为空的 SQL。
+    """
+    dict_entry = _build_system_dict_entry()
+    if dict_entry.id == api_id:
+        return dict_entry
+    return None
+
+
+def _build_system_dict_entry() -> ApiCatalogEntry:
+    """注册系统级万能字典接口。
+
+    设计意图：
+        字典项本质上是“高复用的枚举读取能力”，应以单条通用接口注册，
+        再通过 `allowed_values` 约束可用字典编码，避免为每个下拉框膨胀一条 API。
+    """
+    allowed_values = ["customer_region", "customer_level", "industry", "contract_type"]
+    param_schema = ParamSchema(
+        type="object",
+        properties={
+            "types": {
+                "type": "string",
+                "description": "字典编码，多个用逗号分隔",
+                "allowed_values": allowed_values,
+            }
+        },
+        required=["types"],
+    )
+    response_schema = {
+        "type": "object",
+        "properties": {
+            "data": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "label": {"type": "string", "description": "显示文案"},
+                        "value": {"type": "string", "description": "提交值"},
+                        "type": {"type": "string", "description": "字典编码"},
+                    },
+                },
+            }
+        },
+    }
+    field_labels = {"label": "标签", "value": "值"}
+    return ApiCatalogEntry(
+        id="system_dicts_v1",
+        name="系统字典",
+        description="批量获取系统级字典项。用于生成表单下拉选项和枚举值映射。",
+        example_queries=["获取客户等级字典", "查询客户区域下拉选项", "获取合同类型字典"],
+        tags=["system", "dictionary", "options"],
+        domain="system",
+        env="shared",
+        status="active",
+        tag_name="dictionary",
+        business_intents=["query_business_data"],
+        operation_safety="query",
+        requires_confirmation=False,
+        method="GET",
+        path="/api/system/dicts",
+        auth_required=True,
+        executor_config={
+            "executor_type": "legacy_http",
+            "source_id": "builtin",
+            "source_code": "system",
+            "source_name": "System Builtins",
+            "auth_type": "bearer",
+        },
+        security_rules={
+            "auth_required": True,
+            "read_only": True,
+            "operation_safety": "query",
+            "query_safe": True,
+            "enforcement": "delegated_to_business_server",
+        },
+        param_schema=param_schema,
+        response_schema=response_schema,
+        sample_request={"types": "customer_region,customer_level"},
+        response_data_path="data",
+        field_labels=field_labels,
+        ui_hint="list",
+        detail_hint=ApiCatalogDetailHint(),
+        pagination_hint=ApiCatalogPaginationHint(),
+        template_hint=ApiCatalogTemplateHint(),
+        list_view_meta=ApiCatalogListViewMeta(),
+        detail_view_meta=ApiCatalogDetailViewMeta(),
+        request_field_profiles=_extract_request_field_profiles("GET", param_schema),
+        response_field_profiles=_extract_response_field_profiles(response_schema, "data", field_labels),
+    )
+
+
+def _dedupe_by_signature(entries: list[ApiCatalogEntry]) -> list[ApiCatalogEntry]:
+    by_signature: dict[tuple[str, str], ApiCatalogEntry] = {}
+    for entry in entries:
+        by_signature[(entry.method, entry.path)] = entry
+    return list(by_signature.values())
+
+
+def _normalize_domain(value: str) -> str:
+    normalized = re.sub(r"[^a-zA-Z0-9]+", "_", value.strip().lower()).strip("_")
+    return normalized or "generic"
+
+
+def _normalize_tag_name(value: str | None) -> str | None:
+    if not value:
+        return None
+    # `tag_name` 直接参与标量过滤，不能因为团队使用中文标签就被归一化成空值。
+    normalized = re.sub(r"[^\w]+", "_", value.strip().lower()).strip("_")
+    return normalized or None
+
+
+def _normalize_status(value: Any) -> str:
+    normalized = str(value or "active").strip().lower()
+    if normalized in {"active", "enabled", "online"}:
+        return "active"
+    if normalized in {"deprecated", "archived"}:
+        return "deprecated"
+    return "inactive"
+
+
+def _normalize_operation_safety(value: Any) -> str:
+    """规范化接口安全语义。
+
+    功能：
+        `operation_safety` 是 /api-query 的硬安全边界。这里默认回退到 `mutation`，
+        目的是在元数据缺失或脏值混入时宁可阻断，也不把未确认的接口放行到真实执行链路。
+    """
+    normalized = str(value or "mutation").strip().lower()
+    if normalized == "query":
+        return "query"
+    elif normalized == "list":
+        return "list"
+    return "mutation"
+
+
+def _build_example_queries(name: str, summary: str) -> list[str]:
+    queries = []
+    if summary:
+        queries.append(summary)
+    if name:
+        queries.append(f"查询{name}")
+    return _compact_list(queries)
+
+
+def _resolve_tag_name(endpoint: dict[str, Any], tag_name_by_id: dict[str, str]) -> str | None:
+    """解析接口标签名。
+
+    优先级：
+        1. endpoint 自带的 `tagName`
+        2. 外部显式提供的 `tagId -> tagName` 映射
+
+    注意：
+        如果两者都缺失，返回 `None`，而不是把 `tagId` 当作可读标签名写入目录。
+    """
+    direct_tag_name = _first_non_empty(endpoint.get("tagName"))
+    if direct_tag_name:
+        return direct_tag_name
+
+    tag_id = _first_non_empty(endpoint.get("tagId"))
+    if not tag_id:
+        return None
+
+    resolved = tag_name_by_id.get(str(tag_id))
+    if resolved:
+        return resolved
+
+    logger.debug("UI Builder endpoint tag could not be resolved: endpoint_id=%s tag_id=%s", endpoint.get("id"), tag_id)
+    return None
+
+
+def _infer_business_intents(name: str, summary: str, path: str) -> list[str]:
+    haystack = f"{name} {summary} {path}".lower()
+    if any(keyword in haystack for keyword in ("detail", "详情", "info", "profile")):
+        return ["query_business_data", "query_detail_data"]
+    return ["query_business_data"]
+
+
+def _infer_response_data_path(sample_response: Any, response_schema: dict[str, Any]) -> str:
+    if isinstance(sample_response, dict):
+        if isinstance(sample_response.get("data"), dict):
+            data = sample_response["data"]
+            if isinstance(data.get("list"), list):
+                return "data.list"
+            if isinstance(data.get("records"), list):
+                return "data.records"
+            return "data"
+        if isinstance(sample_response.get("list"), list):
+            return "list"
+        if isinstance(sample_response.get("records"), list):
+            return "records"
+
+    properties = response_schema.get("properties")
+    if isinstance(properties, dict):
+        data_property = properties.get("data")
+        if isinstance(data_property, dict):
+            data_props = data_property.get("properties")
+            if isinstance(data_props, dict):
+                if isinstance(data_props.get("list"), dict):
+                    return "data.list"
+                if isinstance(data_props.get("records"), dict):
+                    return "data.records"
+    return "data"
+
+
+def _extract_field_labels(response_schema: dict[str, Any]) -> dict[str, str]:
+    labels: dict[str, str] = {}
+    candidates = _schema_property_candidates(response_schema)
+    for name, schema in candidates.items():
+        if not isinstance(schema, dict):
+            continue
+        label = schema.get("description") or schema.get("title")
+        if isinstance(label, str) and label.strip():
+            labels[name] = label.strip()
+    return labels
+
+
+def _schema_property_candidates(response_schema: dict[str, Any]) -> dict[str, Any]:
+    properties = response_schema.get("properties")
+    if not isinstance(properties, dict):
+        return {}
+
+    data_property = properties.get("data")
+    if isinstance(data_property, dict):
+        data_properties = data_property.get("properties")
+        if isinstance(data_properties, dict):
+            list_property = data_properties.get("list") or data_properties.get("records")
+            if isinstance(list_property, dict):
+                items = list_property.get("items")
+                item_properties = items.get("properties") if isinstance(items, dict) else None
+                if isinstance(item_properties, dict):
+                    return item_properties
+            return data_properties
+    return properties
+
+
+def _infer_ui_hint(summary: str, path: str, sample_response: Any) -> str:
+    haystack = f"{summary} {path}".lower()
+    if any(keyword in haystack for keyword in ("trend", "report", "chart", "统计", "趋势")):
+        return "chart"
+    if any(keyword in haystack for keyword in ("summary", "概览", "汇总")):
+        return "metric"
+    if isinstance(sample_response, dict):
+        if isinstance(sample_response.get("data"), dict) and any(
+            isinstance(sample_response["data"].get(key), list) for key in ("list", "records")
+        ):
+            return "table"
+    return "table"
+
+
+def _infer_requires_confirmation(*, operation_safety: str) -> bool:
+    """推断接口是否需要确认。
+
+    功能：
+        Phase 04 先把“高风险 mutation 默认需要确认”固化进 catalog 层，避免后续 workflow
+        继续靠零散 if/else 去补判安全语义。等业务元数据表补齐显式字段后，这里再切换为主读 DB。
+    """
+    return operation_safety == "mutation"
+
+
+def _extract_request_field_profiles(method: str, param_schema: ParamSchema) -> list[ApiCatalogFieldProfile]:
+    """提取请求侧原始字段画像。
+
+    功能：
+        GraphRAG 后续要做字段名称 / 类型 / 描述三元归一，因此 catalog 层必须先保存原始证据，
+        避免 resolver 每次都重新遍历 schema 并重复推断字段位置。
+    """
+    location: str = "queryParams" if method.upper() == "GET" else "body"
+    required_fields = set(param_schema.required)
+    profiles: list[ApiCatalogFieldProfile] = []
+    for field_name, field_schema in param_schema.properties.items():
+        if not isinstance(field_schema, dict):
+            continue
+        profiles.append(
+            ApiCatalogFieldProfile(
+                direction="request",
+                location=location,
+                field_name=field_name,
+                json_path=f"{location}.{field_name}",
+                raw_field_type=describe_schema_type(field_schema),
+                raw_description=extract_schema_description(field_schema),
+                required=field_name in required_fields,
+                array_mode=schema_is_array(field_schema),
+            )
+        )
+    return profiles
+
+
+def _extract_response_field_profiles(
+    response_schema: dict[str, Any],
+    response_data_path: str,
+    field_labels: dict[str, str],
+) -> list[ApiCatalogFieldProfile]:
+    """提取响应侧原始字段画像。
+
+    功能：
+        第一阶段不追求穷尽所有深层字段，只稳定提取主数据区的业务字段，供 GraphRAG 建图使用。
+    """
+    data_schema, array_mode = resolve_schema_at_data_path(response_schema, response_data_path)
+    if not isinstance(data_schema, dict):
+        return []
+
+    properties = data_schema.get("properties")
+    if not isinstance(properties, dict):
+        return []
+
+    profiles: list[ApiCatalogFieldProfile] = []
+    for field_name, field_schema in properties.items():
+        if not isinstance(field_schema, dict):
+            continue
+        json_path = f"{response_data_path}[].{field_name}" if array_mode else f"{response_data_path}.{field_name}"
+        profiles.append(
+            ApiCatalogFieldProfile(
+                direction="response",
+                location="response",
+                field_name=field_name,
+                json_path=json_path,
+                raw_field_type=describe_schema_type(field_schema),
+                raw_description=extract_schema_description(field_schema, fallback_label=field_labels.get(field_name)),
+                required=False,
+                array_mode=array_mode or schema_is_array(field_schema),
+            )
+        )
+    return profiles
+
+
+def _to_param_schema(value: dict[str, Any]) -> ParamSchema:
+    if not isinstance(value, dict):
+        return ParamSchema()
+    if value.get("type") and value.get("properties") is not None:
+        try:
+            return ParamSchema(**value)
+        except Exception:
+            return ParamSchema()
+    properties = value.get("properties")
+    if isinstance(properties, dict):
+        return ParamSchema(type="object", properties=properties, required=value.get("required") or [])
+    return ParamSchema()
+
+
+def _strip_predecessor_specs_projection(sql: str) -> str:
+    """移除 SQL 中 predecessor 字段投影。"""
+    lines = sql.splitlines()
+    filtered = [
+        line
+        for line in lines
+        if "predecessor_specs" not in line.lower() and "predecessorspecs" not in line.lower()
+        and "list_view_meta" not in line.lower()
+        and "detail_view_meta" not in line.lower()
+        and "listviewmeta" not in line.lower()
+        and "detailviewmeta" not in line.lower()
+    ]
+    return "\n".join(filtered)
+
+
+def _is_mysql_unknown_predecessor_column_error(exc: Exception) -> bool:
+    """判断是否为 `predecessor_specs/list_view_meta/detail_view_meta` 字段缺失导致的 Unknown column。
+
+    功能：
+        目录元数据是滚动发布，部分环境可能先升级网关代码、后升级数据表字段。
+        这里统一把“元数据增强字段缺失”归并为同类兼容错误，触发回退 SQL，保证老环境可读。
+    """
+    message = str(exc).lower()
+    if "unknown column" not in message:
+        return False
+    return any(
+        keyword in message
+        for keyword in ("predecessor", "list_view_meta", "detail_view_meta", "listviewmeta", "detailviewmeta")
+    )
+
+
+def _parse_list_view_meta(raw_value: Any) -> ApiCatalogListViewMeta:
+    """解析列表元数据。
+
+    功能：
+        该解析器必须容忍脏配置和历史空值。元数据错误不能阻断主查询链路，应回退为空配置，
+        让渲染层继续沿用旧逻辑兜底。
+    """
+    payload = load_json_value(raw_value, {})
+    if not isinstance(payload, dict):
+        return ApiCatalogListViewMeta()
+    try:
+        return ApiCatalogListViewMeta.model_validate(payload)
+    except Exception:
+        return ApiCatalogListViewMeta()
+
+
+def _parse_detail_view_meta(raw_value: Any) -> ApiCatalogDetailViewMeta:
+    """解析详情元数据。
+
+    功能：
+        详情字段白名单直接影响最终展示字段集合；当配置不合法时，必须显式回退默认空配置，
+        避免抛异常导致整条目录加载失败。
+    """
+    payload = load_json_value(raw_value, {})
+    if not isinstance(payload, dict):
+        return ApiCatalogDetailViewMeta()
+    try:
+        return ApiCatalogDetailViewMeta.model_validate(payload)
+    except Exception:
+        return ApiCatalogDetailViewMeta()
+
+
+def _compact_list(values: list[Any]) -> list[str]:
+    result: list[str] = []
+    for value in values:
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text and text not in result:
+            result.append(text)
+    return result
+
+
+def _first_non_empty(*values: Any) -> str | None:
+    for value in values:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        if value not in (None, "") and not isinstance(value, str):
+            return str(value)
+    return None

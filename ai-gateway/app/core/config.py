@@ -7,12 +7,22 @@ class Settings(BaseSettings):
     app_debug: bool = True
     app_port: int = 8000
 
-    # MySQL
-    ai_mysql_host: str = "localhost"
-    ai_mysql_port: int = 3306
-    ai_mysql_user: str = "ai_platform"
-    ai_mysql_password: str = "ai_platform_dev"
-    ai_mysql_database: str = "ai_platform"
+    # Business MySQL
+    # ai-gateway 直连的治理元数据和问数库统一收敛到业务库配置，避免维护第二套网关专属 MySQL 变量。
+    business_mysql_host: str = Field(default="localhost")
+    business_mysql_port: int = Field(default=3306)
+    business_mysql_user: str = Field(default="ai_platform")
+    business_mysql_password: str = Field(default="ai_platform_dev")
+    business_mysql_database: str = Field(default="ai_platform_business")
+
+    # Health Quadrant ODS MySQL
+    health_quadrant_ods_mysql_host: str = Field(default="rm-2ze7k76808sos442l.mysql.rds.aliyuncs.com")
+    health_quadrant_ods_mysql_port: int = Field(default=3306)
+    health_quadrant_ods_mysql_user: str = Field(default="pro_platform")
+    health_quadrant_ods_mysql_password: str = Field(default="xxxxxxxxx")
+    health_quadrant_ods_mysql_database: str = Field(default="dc_ods")
+    health_quadrant_mysql_connect_timeout_seconds: float = Field(5.0, ge=0.1, le=60.0)
+    dw_route_url: str = Field(default="http://127.0.0.1:8085/api/v1")
 
     # Redis
     redis_url: str = "redis://:redis_dev@localhost:6379/0"
@@ -20,7 +30,7 @@ class Settings(BaseSettings):
     # Milvus
     milvus_host: str = "localhost"
     milvus_port: int = 19530
-    milvus_collection: str = "knowledge_chunks"
+    milvus_collection: str = "api_catalog"
     milvus_vector_field: str = "embedding"
     milvus_output_fields: list[str] = ["doc_id", "title", "content", "doc_type", "metadata"]
     milvus_search_limit: int = Field(20, ge=1, le=100)
@@ -57,6 +67,7 @@ class Settings(BaseSettings):
 
     # Embedding & Reranker
     embedding_model_name: str = "BAAI/bge-m3"
+    embedding_model_path: str = ""
     reranker_model_name: str = "BAAI/bge-reranker-large"
     rag_rerank_limit: int = 8
 
@@ -80,16 +91,87 @@ class Settings(BaseSettings):
 
     # 动态UI
     llm_ui_spec_enabled: bool = False
+    # 详情页模板优先策略总开关：
+    # - false: 全量走 dynamic_ui 详情渲染（不下发 templateCode）
+    # - true: 下发 template_first 策略（templateCode/fallbackMode 由目录 hint 提供）
+    api_query_template_first_enabled: bool = False
+    # 多步骤查询渲染策略：
+    # - auto_result: 自动在 terminal / aggregate 间切换（推荐默认值）
+    # - terminal_result/composite_result: 兼容旧值，运行期会自动归一到 auto_result
+    # - aggregate_result: 同屏聚合展示所有叶子业务步骤
+    # - summary_table: 仅展示执行步骤汇总
+    api_query_multi_step_render_policy: str = "auto_result"
+
+    # API Query 专用 LLM（Volcengine Ark）
+    # 这一组配置只服务 `/api/v1/api-query`，避免把网关内其他问答/聊天链路强行绑到同一供应商。
+    ark_api_key: str = ""
+    ark_api_base: str = "https://ark.cn-beijing.volces.com/api/v3"
+    ark_default_model: str = "doubao-1-5-pro-32k-250115"
+
+    # Runtime LLM 配置（MySQL 驱动）
+    llm_runtime_config_table: str = "llm_service_backend_config"
+    llm_prompt_template_table: str = "llm_prompt_template"
+    llm_runtime_config_cache_ttl_seconds: int = Field(60, ge=1, le=3600)
+    transcript_extract_llm_timeout_seconds: float = Field(120.0, ge=0.1, le=600.0)
+    smart_meal_risk_llm_timeout_seconds: float = Field(120.0, ge=0.1, le=600.0)
+    smart_meal_recommend_llm_timeout_seconds: float = Field(120.0, ge=0.1, le=600.0)
+
+    # API Query Stage-2
+    api_query_route_timeout_seconds: float = 60.0
+    api_query_route_retry_count: int = 1
+    api_query_retrieval_timeout_seconds: float = 0.8
+    api_query_retrieval_per_domain_top_k: int = 2
+    # 第二阶段默认改为 0.4，是为了更贴近设计文档中的“宁可少给候选，也不喂垃圾接口”的保守策略。
+    api_query_score_threshold: float = 0.4
+    api_query_runtime_invoke_url_template: str = (
+        "https://beta-ai-platform.kaibol.net/ai-platform/api/v1/ui-builder/runtime/endpoints/{id}/invoke"
+        # "http://39.96.197.81:8080/api/v1/ui-builder/runtime/endpoints/{id}/invoke"
+    )
+    api_query_runtime_flow_num: int = 1212
+    api_query_runtime_created_by: str = ""
+    api_query_runtime_timeout_seconds: float = 60.0
+    api_query_runtime_enabled: bool = True
+    api_query_execution_max_step_count: int = Field(8, ge=1, le=50)
+    api_query_execution_step_timeout_seconds: float = Field(600.0, ge=0.1, le=600.0)
+    api_query_execution_graph_timeout_seconds: float = Field(30.0, ge=0.1, le=120.0)
+    api_query_execution_min_step_budget_seconds: float = Field(5, ge=0.1, le=10.0)
 
     # Intent classification
     intent_confidence_threshold: float = Field(0.55, ge=0.0, le=1.0)
 
     # 业务编排层
     business_server_url: str = "http://localhost:8080"
+    business_server_timeout_seconds: float = 15.0
+
+    # API Catalog Indexer
+    api_catalog_mysql_connect_timeout_seconds: float = Field(5.0, ge=0.1, le=60.0)
+    api_catalog_milvus_connect_timeout_seconds: float = Field(5.0, ge=0.1, le=60.0)
+
+    # API Catalog GraphRAG
+    # 这一组配置集中承载 GraphRAG 的运行时护栏，避免后续 graph sync / retriever / validator
+    # 在各自 service 里继续散落 ad-hoc 常量，导致灰度和降级行为难以统一。
+    api_catalog_graph_enabled: bool = False
+    api_catalog_graph_expand_hops: int = Field(1, ge=1, le=3)
+    api_catalog_graph_anchor_top_k: int = Field(3, ge=1, le=10)
+    api_catalog_graph_support_limit: int = Field(12, ge=1, le=100)
+    api_catalog_graph_validation_enabled: bool = False
+    api_catalog_graph_strict_for_mutation: bool = True
+    api_catalog_graph_cache_enabled: bool = False
+    api_catalog_graph_cache_ttl_seconds: int = Field(21600, ge=1, le=86400)
+    api_catalog_graph_field_degree_cutoff: int = Field(50, ge=1, le=10000)
+    api_catalog_graph_related_domain_enabled: bool = True
+    api_catalog_interaction_snapshot_ttl_seconds: int = Field(1800, ge=30, le=86400)
+    api_catalog_graph_cache_singleflight_ttl_seconds: int = Field(15, ge=1, le=300)
+
+    # 身份金库
+    identity_vault_enabled: bool = True
+    gateway_jwt_secret: str = ""
 
     # 外部LLM API
     openai_api_key: str = ""
     openai_base_url: str = ""
+    # 默认为 False：避免开发机/容器继承到脏代理变量后把模型请求错误转发到代理。
+    model_router_trust_env: bool = False
 
     # LangSmith 可观测性
     langsmith_api_key: str = ""

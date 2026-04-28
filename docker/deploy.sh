@@ -1,7 +1,7 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════
 # AI业务中台 — 一键部署脚本
-# 用法: cd docker && bash deploy.sh [infra|gateway|business|frontend|all]
+# 用法: cd docker && bash deploy.sh [infra|gateway|gateway-reindex|business|frontend|all]
 # ═══════════════════════════════════════════════════════════
 
 set -e
@@ -38,6 +38,31 @@ deploy_gateway() {
     log_info "AI 网关已启动，等待健康检查..."
     sleep 5
     docker logs ai-platform-ai-gateway --tail 20
+}
+
+rebuild_gateway_index() {
+    local compose_file="docker-compose.ai-gateway.yml"
+    local container_id=""
+    local container_state=""
+
+    log_info "按需重建 AI 网关 API Catalog 向量索引..."
+    cd "$COMPOSE_DIR"
+
+    container_id="$(docker compose -f "$compose_file" ps -q ai-gateway)"
+    if [ -z "$container_id" ]; then
+        log_error "未找到 ai-gateway 容器。请先执行: bash deploy.sh gateway"
+        exit 1
+    fi
+
+    container_state="$(docker inspect -f '{{.State.Status}}' "$container_id")"
+    if [ "$container_state" != "running" ]; then
+        log_error "ai-gateway 容器当前状态为 '$container_state'，无法执行重建。请先启动服务。"
+        exit 1
+    fi
+
+    log_info "在运行中的 ai-gateway 容器内执行全量索引重建..."
+    docker compose -f "$compose_file" exec -T ai-gateway python -m app.services.api_catalog.indexer
+    log_info "AI 网关 API Catalog 索引重建完成"
 }
 
 # ── 3. 业务编排层 ───────────────────────────────────────
@@ -97,11 +122,12 @@ deploy_all() {
 # ── 主入口 ──────────────────────────────────────────────
 case "${1:-all}" in
     gateway)  ensure_network && deploy_gateway ;;
+    gateway-reindex|reindex) rebuild_gateway_index ;;
     business) ensure_network && deploy_business ;;
     frontend) deploy_frontend ;;
     all)      deploy_all ;;
     *)
-        echo "用法: bash deploy.sh [infra|gateway|business|frontend|all]"
+        echo "用法: bash deploy.sh [infra|gateway|gateway-reindex|business|frontend|all]"
         exit 1
         ;;
 esac

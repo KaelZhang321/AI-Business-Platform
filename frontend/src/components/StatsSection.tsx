@@ -3,20 +3,21 @@ import React from 'react';
 import { Activity, Settings, CheckSquare, BarChart2, Zap, Layers, TrendingUp, Bell, CheckSquare as CheckSquareIcon, Sparkles } from 'lucide-react';
 import { NOTICES } from '../data/mockData';
 
+/** 单个统计卡片组件：展示指标名称、数值、单位和趋势变化 */
 function StatCard({ title, value, unit, trend, icon: Icon, trendUp }: { title: string, value: string, unit: string, trend: string, icon: any, trendUp?: boolean }) {
   return (
-    <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm flex flex-col hover:shadow-md transition-shadow">
+    <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm flex flex-col hover:shadow-md transition-shadow dark:bg-slate-900 dark:border-slate-700 dark:hover:shadow-slate-950/30">
       <div className="flex justify-between items-start mb-3">
-        <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">{title}</span>
-        <div className="p-1.5 bg-brand-light rounded-lg">
+        <span className="text-xs font-bold text-slate-500 uppercase tracking-wider dark:text-slate-400">{title}</span>
+        <div className="p-1.5 bg-brand-light rounded-lg dark:bg-brand/20">
           <Icon className="w-4 h-4 text-brand" />
         </div>
       </div>
       <div className="flex items-baseline space-x-1">
-        <span className="text-2xl font-bold text-slate-900 tracking-tight">{value}</span>
-        <span className="text-xs text-slate-500 font-bold">{unit}</span>
+        <span className="text-2xl font-bold text-slate-900 tracking-tight dark:text-slate-100">{value}</span>
+        <span className="text-xs text-slate-500 font-bold dark:text-slate-400">{unit}</span>
       </div>
-      <div className={`text-[10px] mt-2 font-bold flex items-center ${trendUp ? 'text-brand' : 'text-slate-400'}`}>
+      <div className={`text-[10px] mt-2 font-bold flex items-center ${trendUp ? 'text-brand' : 'text-slate-400 dark:text-slate-500'}`}>
         {trendUp && <TrendingUp className="w-3 h-3 mr-1" />}
         {trend}
       </div>
@@ -24,17 +25,18 @@ function StatCard({ title, value, unit, trend, icon: Icon, trendUp }: { title: s
   );
 }
 
+/** 统计区域组件：展示首页核心经营指标和通知公告列表 */
 export function StatsSection() {
   return (
     <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
       {/* Left: AI Stats */}
-      <section className="xl:col-span-1 bg-white/40 backdrop-blur-xl border border-white/60 rounded-[32px] p-6 shadow-[0_8px_30px_rgb(0,0,0,0.02)]">
+      <section className="xl:col-span-1 bg-white/40 backdrop-blur-xl border border-white/60 rounded-[32px] p-6 shadow-[0_8px_30px_rgb(0,0,0,0.02)] dark:bg-slate-900/60 dark:border-slate-700/60">
         <div className="flex items-center justify-between mb-6">
-          <h2 className="text-lg font-bold text-slate-900 flex items-center">
+          <h2 className="text-lg font-bold text-slate-900 flex items-center dark:text-slate-100">
             <Activity className="w-5 h-5 mr-2 text-brand" />
             AI 效能统计
           </h2>
-          <button className="p-1.5 text-slate-400 hover:text-brand hover:bg-brand-light rounded-xl transition-colors">
+          <button className="p-1.5 text-slate-400 hover:text-brand hover:bg-brand-light rounded-xl transition-colors dark:text-slate-500 dark:hover:bg-brand/20">
             <Settings className="w-4 h-4" />
           </button>
         </div>
@@ -47,9 +49,9 @@ export function StatsSection() {
       </section>
 
       {/* Right: Notices */}
-      <section className="xl:col-span-2 bg-white/40 backdrop-blur-xl border border-white/60 rounded-[32px] p-6 shadow-[0_8px_30px_rgb(0,0,0,0.02)] flex flex-col">
+      <section className="xl:col-span-2 bg-white/40 backdrop-blur-xl border border-white/60 rounded-[32px] p-6 shadow-[0_8px_30px_rgb(0,0,0,0.02)] flex flex-col dark:bg-slate-900/60 dark:border-slate-700/60">
         <div className="flex items-center justify-between mb-6">
-          <h2 className="text-lg font-bold text-slate-900 flex items-center">
+          <h2 className="text-lg font-bold text-slate-900 flex items-center dark:text-slate-100">
             <Bell className="w-5 h-5 mr-2 text-brand" />
             通知公告
           </h2>
@@ -62,19 +64,19 @@ export function StatsSection() {
           {NOTICES.map((notice) => (
             <div key={notice.id} className="group">
               <div className="flex justify-between items-start mb-3">
-                <h3 className="text-base font-bold text-slate-900 group-hover:text-brand transition-colors leading-snug pr-4 cursor-pointer">{notice.title}</h3>
+                <h3 className="text-base font-bold text-slate-900 group-hover:text-brand transition-colors leading-snug pr-4 cursor-pointer dark:text-slate-100">{notice.title}</h3>
                 {!notice.read && <span className="w-2 h-2 rounded-full bg-[#FF5F57] shrink-0 mt-1.5 shadow-[0_0_5px_rgba(255,95,87,0.5)]"></span>}
               </div>
-              <div className="bg-brand-light/50 rounded-xl p-3.5 mb-3 border border-brand-border/50 group-hover:bg-brand-light transition-colors">
+              <div className="bg-brand-light/50 rounded-xl p-3.5 mb-3 border border-brand-border/50 group-hover:bg-brand-light transition-colors dark:bg-brand/10 dark:border-brand/25 dark:group-hover:bg-brand/15">
                 <div className="flex items-center text-[10px] font-bold text-brand mb-1.5 uppercase tracking-wider">
                   <Sparkles className="w-3.5 h-3.5 mr-1" /> AI 摘要
                 </div>
-                <p className="text-sm text-slate-600 leading-relaxed line-clamp-2">
+                <p className="text-sm text-slate-600 leading-relaxed line-clamp-2 dark:text-slate-300">
                   {notice.aiSummary}
                 </p>
               </div>
               <div className="flex items-center justify-between">
-                <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">{notice.date}</span>
+                <span className="text-xs font-bold text-slate-400 uppercase tracking-wider dark:text-slate-500">{notice.date}</span>
                 {!notice.read ? (
                   <button className="text-xs font-bold text-brand hover:text-brand-hover hover:underline">
                     标记已读

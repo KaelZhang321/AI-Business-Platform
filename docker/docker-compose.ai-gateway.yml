@@ -2,24 +2,29 @@ services:
   ai-gateway:
     container_name: ai-platform-ai-gateway
     image: ai-platform/ai-gateway:${AI_GATEWAY_IMAGE_TAG:-local}
+    network_mode: host
     build:
       context: ../ai-gateway
       dockerfile: Dockerfile
       args:
         BASE_IMAGE: alibaba-cloud-linux-3-registry.cn-hangzhou.cr.aliyuncs.com/alinux3/python:3.11.1
         PIP_INDEX_URL: https://mirrors.aliyun.com/pypi/simple/
+        TORCH_VERSION: "2.4.1+cpu"
+        TORCH_INDEX_URL: https://download.pytorch.org/whl/cpu
     env_file:
       - path: ../ai-gateway/.env
         required: false
     environment:
+      TZ: Asia/Shanghai
       PYTHONUNBUFFERED: "1"
       HF_HOME: /opt/model-cache/huggingface
       TRANSFORMERS_CACHE: /opt/model-cache/huggingface
       XDG_CACHE_HOME: /opt/model-cache
-    ports:
-      - "${AI_GATEWAY_HOST_PORT:-8000}:8000"
+      # 默认把宿主机预置的本地 embedding 模型挂到容器稳定路径，避免容器重建后模型目录丢失。
+      EMBEDDING_MODEL_PATH: ${EMBEDDING_MODEL_PATH:-/app/BAAI/bge-m3}
     volumes:
       - /data/ai_platform_infra/chroma:/opt/model-cache/.cache/chroma
+      - ../ai-gateway:/app
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
       interval: 30s
@@ -27,8 +32,3 @@ services:
       retries: 5
       start_period: 45s
     restart: unless-stopped
-
-networks:
-  default:
-    external: true
-    name: ai-platform-net

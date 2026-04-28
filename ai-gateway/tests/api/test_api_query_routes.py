@@ -1,0 +1,1026 @@
+from __future__ import annotations
+
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from app.api.routes import api_query as api_query_routes
+from app.models.schemas import (
+    ApiCatalogIndexJobResponse,
+    ApiCatalogIndexJobStatus,
+    ApiQueryResponse,
+    ApiQueryExecutionResult,
+    ApiQueryExecutionStatus,
+    ApiQueryRoutingResult,
+    ApiQueryUIAction,
+)
+from app.services.api_catalog.schema import (
+    ApiCatalogDetailHint,
+    ApiCatalogEntry,
+    ApiCatalogPaginationHint,
+    ApiCatalogSearchResult,
+    ApiCatalogTemplateHint,
+)
+from app.services.dynamic_ui_service import UISpecBuildResult
+from app.services.ui_spec_guard import UISpecValidationError, UISpecValidationResult
+
+
+class StubRetriever:
+    def __init__(self, entry: ApiCatalogEntry) -> None:
+        self._entry = entry
+        self.last_filters = None
+
+    async def search(self, query: str, top_k: int = 3, score_threshold: float = 0.3, filters=None):
+        self.last_filters = filters
+        return [ApiCatalogSearchResult(entry=self._entry, score=0.91)]
+
+    async def search_stratified(self, query: str, *, domains, top_k: int = 3, filters=None, **kwargs):
+        return await self.search(query, top_k=top_k, filters=filters)
+
+
+class StubExtractor:
+    def __init__(
+        self,
+        entry: ApiCatalogEntry,
+        params: dict[str, object],
+        *,
+        business_intents: list[str] | None = None,
+        route_status: str = "ok",
+        route_error_code: str | None = None,
+    ) -> None:
+        self._entry = entry
+        self._params = params
+        self._business_intents = business_intents or ["none"]
+        self._route_status = route_status
+        self._route_error_code = route_error_code
+
+    async def route_query(self, query: str, user_context: dict[str, object], **kwargs):
+        return ApiQueryRoutingResult(
+            query_domains=[self._entry.domain] if self._route_status == "ok" else [],
+            business_intents=list(self._business_intents),
+            is_multi_domain=False,
+            reasoning="stub route",
+            route_status=self._route_status,
+            route_error_code=self._route_error_code,
+        )
+
+    async def extract_routing_result(self, query: str, candidates, user_context: dict[str, object], **kwargs):
+        return ApiQueryRoutingResult(
+            selected_api_id=self._entry.id,
+            query_domains=[self._entry.domain],
+            business_intents=list(self._business_intents),
+            params=dict(self._params),
+        )
+
+
+class StubExecutor:
+    def __init__(self, result: ApiQueryExecutionResult) -> None:
+        self._result = result
+
+    async def call(
+        self,
+        entry: ApiCatalogEntry,
+        params: dict[str, object],
+        user_token: str | None = None,
+        trace_id: str | None = None,
+        user_id: str | None = None,
+    ):
+        return self._result.model_copy(update={"trace_id": trace_id or self._result.trace_id})
+
+
+class StubDynamicUI:
+    async def generate_ui_spec(self, intent: str, data, context=None, *, status=None, runtime=None):
+        flow_num = context.get("flow_num", "") if isinstance(context, dict) else ""
+        created_by = context.get("created_by", "") if isinstance(context, dict) else ""
+
+        def runtime_metadata(api_id: str | None, *, param_source: str | None, params: dict[str, object]) -> dict[str, object]:
+            is_body_request = (param_source or "").lower() == "body"
+            return {
+                "api": (
+                    f"/api/v1/ui-builder/runtime/endpoints/{api_id}/invoke"
+                    if isinstance(api_id, str) and api_id
+                    else ""
+                ),
+                "queryParams": {} if is_body_request else dict(params),
+                "body": dict(params) if is_body_request else {},
+                "flowNum": flow_num,
+                "createdBy": created_by,
+            }
+
+        if status == ApiQueryExecutionStatus.ERROR:
+            return _build_flat_stub_spec(
+                root_props={"title": "查询失败", "subtitle": None},
+                children=[
+                    {"type": "PlannerNotice", "props": {"tone": "info", "text": context["error"]}},
+                ],
+            )
+
+        if status == ApiQueryExecutionStatus.EMPTY:
+            return _build_flat_stub_spec(
+                root_props={"title": "暂无数据", "subtitle": None},
+                children=[
+                    {"type": "PlannerNotice", "props": {"tone": "info", "text": context["empty_message"]}},
+                ],
+            )
+
+        if status == ApiQueryExecutionStatus.SKIPPED:
+            # mutation_form 快路：context 有 api_id 字段
+            if intent == "mutation_form":
+                form_api_id = runtime.form.api_id if runtime else context.get("api_id")
+                form_metadata = runtime_metadata(form_api_id, param_source="body", params={})
+                return _build_flat_stub_spec(
+                    root_props={"title": context.get("title", "确认修改"), "subtitle": None},
+                    children=[
+                        {
+                            "type": "PlannerForm",
+                            "props": {
+                                "formCode": context.get("form_code", "form"),
+                                **form_metadata,
+                            },
+                        },
+                    ],
+                )
+            return _build_flat_stub_spec(
+                root_props={"title": context["title"], "subtitle": None},
+                children=[
+                    {"type": "PlannerNotice", "props": {"tone": "info", "text": context["skip_message"]}},
+                ],
+            )
+
+        if isinstance(data, dict) or (isinstance(context, dict) and context.get("query_render_mode") == "detail"):
+            detail_row = data if isinstance(data, dict) else (data[0] if isinstance(data, list) and data else {})
+            detail_props: dict[str, object] = {
+                "title": context.get("detail_title", "详情信息") if isinstance(context, dict) else "详情信息",
+                "items": [{"label": key, "value": str(value)} for key, value in detail_row.items()],
+            }
+            if runtime and runtime.detail.enabled:
+                detail_props.update(
+                    runtime_metadata(
+                        runtime.detail.api_id,
+                        param_source=runtime.detail.request.param_source,
+                        params={"customerId": detail_row.get("customerId")},
+                    )
+                )
+            return _build_flat_stub_spec(
+                root_props={
+                    "title": context.get("title", "查询结果") if isinstance(context, dict) else "查询结果",
+                    "subtitle": "当前展示单条记录详情",
+                },
+                children=[{"type": "PlannerInfoGrid", "props": {"minColumnWidth": 180, **detail_props}}],
+            )
+
+        table_rows = data if isinstance(data, list) and data else [{"customerId": "C001", "customerName": "张三"}]
+        list_params = (
+            runtime.list.query_context.current_params
+            if runtime and runtime.list.enabled
+            else {}
+        )
+        list_metadata = runtime_metadata(
+            runtime.list.api_id if runtime and runtime.list.enabled else None,
+            param_source=runtime.list.param_source if runtime and runtime.list.enabled else None,
+            params=list_params,
+        )
+        row_actions = []
+        if runtime and runtime.detail.enabled:
+            detail_strategy_params: dict[str, object] = {
+                "renderMode": runtime.detail.render_mode,
+                "fallbackMode": runtime.detail.fallback_mode,
+            }
+            if runtime.detail.template_code:
+                detail_strategy_params["templateCode"] = runtime.detail.template_code
+            row_actions.append(
+                {
+                    "action": "remoteQuery",
+                    "label": "查看详情",
+                    "params": {
+                        "api_id": runtime.detail.api_id,
+                        **detail_strategy_params,
+                        **runtime_metadata(
+                            runtime.detail.api_id,
+                            param_source=runtime.detail.request.param_source,
+                            params={"customerId": {"$bindRow": "customerId"}},
+                        ),
+                    },
+                }
+            )
+
+        return _build_flat_stub_spec(
+            root_props={
+                "title": "查询结果",
+                "subtitle": "当前展示 1 条",
+            },
+            children=[
+                {
+                    "id": "query-filters",
+                    "type": "PlannerForm",
+                    "props": {"formCode": "query_filters", **list_metadata},
+                },
+                {
+                    "id": "report-table",
+                    "type": "PlannerTable",
+                    "props": {
+                        "columns": [
+                            {"key": "customerId", "title": "customerId", "dataIndex": "customerId"},
+                            {"key": "customerName", "title": "customerName", "dataIndex": "customerName"},
+                        ],
+                        "dataSource": table_rows,
+                        "rowActions": row_actions,
+                        **list_metadata,
+                    },
+                },
+                {
+                    "id": "report-pagination",
+                    "type": "PlannerPagination",
+                    "props": {
+                        "enabled": bool(runtime and runtime.list.pagination.enabled),
+                        "total": runtime.list.pagination.total if runtime else len(table_rows),
+                        "currentPage": runtime.list.pagination.current_page if runtime else None,
+                        "pageSize": runtime.list.pagination.page_size if runtime else None,
+                        "pageParam": runtime.list.pagination.page_param if runtime else None,
+                        "pageSizeParam": runtime.list.pagination.page_size_param if runtime else None,
+                        **list_metadata,
+                    },
+                },
+            ],
+        )
+
+
+class FormRuntimeDynamicUI:
+    """模拟 Renderer 返回带表单提交动作的最终 Spec。"""
+
+    async def generate_ui_spec(self, intent: str, data, context=None, *, status=None, runtime=None):
+        return _build_flat_stub_spec(
+            root_props={"title": "客户编辑", "subtitle": "请确认后提交"},
+            state={
+                "form": {
+                    "customerId": "C001",
+                    "industry": "medical",
+                }
+            },
+            children=[
+                {"type": "PlannerMetric", "props": {"label": "客户ID", "value": "C001"}},
+                {
+                    "type": "PlannerSelect",
+                    "props": {
+                        "label": "所属行业",
+                        "value": {"$bindState": "/form/industry"},
+                        "dictCode": "industry",
+                    },
+                },
+                {
+                    "type": "PlannerButton",
+                    "props": {"label": "确认保存"},
+                    "on": {
+                        "press": {
+                            "action": "remoteMutation",
+                            "params": {
+                                "api_id": "customer_update",
+                                "body": {
+                                    "customerId": {"$bindState": "/form/customerId"},
+                                    "industry": {"$bindState": "/form/industry"},
+                                },
+                                "queryParams": {},
+                            },
+                        }
+                    },
+                },
+            ],
+        )
+
+
+class StubSnapshotService:
+    def __init__(self, should_capture: bool = False) -> None:
+        self._should_capture = should_capture
+        self.last_snapshot_payload: dict[str, object] | None = None
+
+    def should_capture(self, business_intents):
+        return self._should_capture
+
+    def create_snapshot(self, *, trace_id: str, business_intents, ui_spec, ui_runtime, metadata):
+        self.last_snapshot_payload = {
+            "trace_id": trace_id,
+            "business_intents": business_intents,
+            "ui_spec": ui_spec,
+            "ui_runtime": ui_runtime,
+            "metadata": metadata,
+        }
+
+        class Snapshot:
+            snapshot_id = "snap_test_001"
+
+        return Snapshot()
+
+
+class StubRegistrySource:
+    """模拟 `direct` 模式按 api_id 精确查目录的主链路。"""
+
+    def __init__(self, entry: ApiCatalogEntry | dict[str, ApiCatalogEntry] | None) -> None:
+        self._entry = entry
+        self.last_api_id: str | None = None
+
+    async def get_entry_by_id(self, api_id: str) -> ApiCatalogEntry | None:
+        self.last_api_id = api_id
+        if isinstance(self._entry, dict):
+            return self._entry.get(api_id)
+        return self._entry
+
+
+class FrozenDynamicUI:
+    """模拟第五阶段 Guard 命中后的冻结视图输出。"""
+
+    async def generate_ui_spec_result(
+        self, intent: str, data, context=None, *, status=None, runtime=None, trace_id=None
+    ):
+        return UISpecBuildResult(
+            spec=_build_flat_stub_spec(
+                root_props={"title": (context or {}).get("title", "界面已安全冻结"), "subtitle": None},
+                children=[
+                    {
+                        "type": "PlannerNotice",
+                        "props": {
+                            "tone": "info",
+                            "text": "界面渲染组件存在异常，为保障您的数据安全，已冻结当前操作视图。",
+                        },
+                    }
+                ],
+            ),
+            validation=UISpecValidationResult(
+                errors=[
+                    UISpecValidationError(
+                        code="unknown_action",
+                        path="$.elements.child_1.props.action.type",
+                        message="动作未注册",
+                    )
+                ]
+            ),
+            frozen=True,
+        )
+
+
+class StubUICatalogService:
+    """用于验证 `runtime-metadata` 已切到目录服务主链路。"""
+
+    def __init__(self) -> None:
+        self.warmup_called = False
+
+    async def warmup(self, *, force_refresh: bool = False) -> None:
+        self.warmup_called = True
+
+    def get_component_codes(self, *, intent: str | None = None, requested_codes=None) -> list[str]:
+        if intent == "query":
+            return [
+                "PlannerCard",
+                "PlannerMetric",
+                "PlannerTable",
+                "PlannerDetailCard",
+                "PlannerForm",
+                "PlannerInput",
+                "PlannerSelect",
+                "PlannerButton",
+                "PlannerNotice",
+            ]
+        return ["Card"]
+
+    def build_runtime_actions(self, action_codes=None) -> list[ApiQueryUIAction]:
+        return [
+            ApiQueryUIAction(
+                code="remoteQuery",
+                description="由目录服务提供的查询动作",
+                enabled=True,
+                params_schema={"type": "object"},
+            ),
+            ApiQueryUIAction(
+                code="remoteMutation",
+                description="由目录服务提供的写动作",
+                enabled=False,
+                params_schema={"type": "object"},
+            ),
+        ]
+
+    def get_template_scenarios(self) -> list[dict[str, object]]:
+        return [
+            {
+                "code": "custom_template",
+                "description": "自定义模板快路",
+                "enabled": True,
+            }
+        ]
+
+
+class StubCatalogIndexJobService:
+    """模拟管理端索引重建任务服务。"""
+
+    def __init__(self) -> None:
+        self.started = False
+        self.requested_job_id: str | None = None
+        self.snapshot = ApiCatalogIndexJobResponse(
+            job_id="job_catalog_index_001",
+            status=ApiCatalogIndexJobStatus.RUNNING,
+            message="API Catalog 重建任务已启动。",
+            reused_existing_job=False,
+            requested_at="2026-04-12T09:30:00Z",
+            started_at="2026-04-12T09:30:00Z",
+            finished_at=None,
+            pid=4321,
+            exit_code=None,
+            command=["python", "-m", "app.services.api_catalog.indexer"],
+            stdout_tail="",
+            stderr_tail="",
+        )
+
+    async def start_rebuild(self) -> ApiCatalogIndexJobResponse:
+        self.started = True
+        return self.snapshot
+
+    def get_job(self, job_id: str) -> ApiCatalogIndexJobResponse | None:
+        self.requested_job_id = job_id
+        if job_id != self.snapshot.job_id:
+            return None
+        return self.snapshot
+
+
+def create_test_app() -> FastAPI:
+    app = FastAPI()
+    app.include_router(api_query_routes.router, prefix="/api/v1")
+    return app
+
+
+def test_api_query_route_delegates_to_workflow(monkeypatch) -> None:
+    """路由层应只做 HTTP 适配，并把上下文交给 workflow。"""
+
+    captured: dict[str, object] = {}
+
+    class FakeWorkflow:
+        async def run(
+            self,
+            request_body,
+            *,
+            trace_id: str,
+            interaction_id: str | None,
+            conversation_id: str | None,
+            user_context: dict[str, object],
+            user_token: str | None,
+        ):
+            captured.update(
+                {
+                    "request_body": request_body.model_dump(mode="json", exclude_none=True),
+                    "trace_id": trace_id,
+                    "interaction_id": interaction_id,
+                    "conversation_id": conversation_id,
+                    "user_context": user_context,
+                    "user_token": user_token,
+                }
+            )
+            return ApiQueryResponse(
+                trace_id=trace_id,
+                execution_status=ApiQueryExecutionStatus.SUCCESS,
+                execution_plan=None,
+                ui_runtime=None,
+                ui_spec={"root": "page", "state": {}, "elements": {"page": {"id": "page", "type": "PlannerCard"}}},
+                error=None,
+            )
+
+    monkeypatch.setattr(api_query_routes, "_get_workflow", lambda: FakeWorkflow())
+
+    client = TestClient(create_test_app())
+    response = client.post(
+        "/api/v1/api-query",
+        json={"query": "查询张三客户", "conversation_id": "conv-route-001"},
+        headers={
+            "X-Trace-Id": "trace-route-001",
+            "X-Interaction-Id": "ia-route-001",
+            "Authorization": "Bearer route-token",
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured == {
+        "request_body": {
+            "query": "查询张三客户",
+            "conversation_id": "conv-route-001",
+            "top_k": 3,
+            "envs": [],
+            "tag_names": [],
+        },
+        "trace_id": "trace-route-001",
+        "interaction_id": "ia-route-001",
+        "conversation_id": "conv-route-001",
+        "user_context": {},
+        "user_token": "Bearer route-token",
+    }
+
+
+def test_catalog_index_route_triggers_async_job_instead_of_running_indexer_directly(monkeypatch) -> None:
+    """管理端重建入口应只返回任务句柄，不能在 HTTP 请求内同步跑完整索引。"""
+
+    stub_job_service = StubCatalogIndexJobService()
+    monkeypatch.setattr(api_query_routes, "_get_catalog_index_job_service", lambda: stub_job_service)
+
+    client = TestClient(create_test_app())
+    response = client.post("/api/v1/api-query/catalog/index")
+
+    assert response.status_code == 202
+    assert stub_job_service.started is True
+    assert response.json()["job_id"] == "job_catalog_index_001"
+    assert response.json()["status"] == "RUNNING"
+
+
+def test_catalog_index_route_returns_job_snapshot(monkeypatch) -> None:
+    """任务状态查询必须复用同一份任务表，而不是重新触发一次索引。"""
+
+    stub_job_service = StubCatalogIndexJobService()
+    monkeypatch.setattr(api_query_routes, "_get_catalog_index_job_service", lambda: stub_job_service)
+
+    client = TestClient(create_test_app())
+    response = client.get("/api/v1/api-query/catalog/index/job_catalog_index_001")
+
+    assert response.status_code == 200
+    assert stub_job_service.requested_job_id == "job_catalog_index_001"
+    assert response.json()["message"] == "API Catalog 重建任务已启动。"
+
+
+def _build_flat_stub_spec(
+    *,
+    root_props: dict[str, object],
+    children: list[dict[str, object]],
+    state: dict[str, object] | None = None,
+) -> dict[str, object]:
+    """为路由测试构造 flat spec。
+
+    功能：
+        任务 1 的目标是把 `api_query` 对外 Spec 契约统一为 `root/state/elements`。
+        路由测试桩也必须跟着切到新协议，否则测试会继续把旧结构误当成正确行为。
+    """
+    elements: dict[str, object] = {
+        "root": {
+            "type": "PlannerBlankContainer",
+            "props": {"minHeight": 160},
+            "children": ["child_1"],
+        },
+        "child_1": {
+            "type": "PlannerCard",
+            "props": root_props,
+            "children": [],
+        },
+    }
+    for index, child in enumerate(children, start=2):
+        child_id = str(child.get("id") or f"child_{index}")
+        child_payload = dict(child)
+        child_payload.pop("id", None)
+        elements["child_1"]["children"].append(child_id)
+        elements[child_id] = child_payload
+    return {
+        "root": "root",
+        "state": state or {},
+        "elements": elements,
+    }
+
+
+def _assert_api_query_response_keys(body: dict[str, object]) -> None:
+    """断言 `/api-query` 仅暴露收口后的对外字段。"""
+
+    assert set(body.keys()) == {"trace_id", "execution_status", "execution_plan", "ui_spec", "error"}
+
+
+def _assert_runtime_metadata(
+    payload: dict[str, object],
+    *,
+    trace_id: str,
+    api_suffix: str | None = None,
+) -> None:
+    """断言 UI 节点 props 已携带前端二跳请求所需元数据。"""
+
+    if api_suffix is not None:
+        assert payload["api"] == f"/api/v1/ui-builder/runtime/endpoints/{api_suffix}/invoke"
+    assert "queryParams" in payload
+    assert "body" in payload
+    assert payload["flowNum"] == trace_id
+    assert "createdBy" in payload
+
+
+def _make_entry(**overrides) -> ApiCatalogEntry:
+    defaults = {
+        "id": "customer_list",
+        "description": "查询客户列表",
+        "domain": "crm",
+        "operation_safety": "query",
+        "method": "GET",
+        "path": "/api/v1/customers",
+        "detail_hint": ApiCatalogDetailHint(
+            enabled=True,
+            api_id="customer_detail",
+            identifier_field="customerId",
+            query_param="customerId",
+            template_code="customer_detail_template",
+            fallback_mode="dynamic_ui",
+        ),
+        "pagination_hint": ApiCatalogPaginationHint(
+            enabled=True,
+            api_id="customer_list",
+            page_param="pageNum",
+            page_size_param="pageSize",
+            mutation_target="report-table.props.dataSource",
+        ),
+        "template_hint": ApiCatalogTemplateHint(
+            enabled=True,
+            template_code="customer_list_template",
+            render_mode="java_template",
+            fallback_mode="dynamic_ui",
+        ),
+    }
+    return ApiCatalogEntry(**{**defaults, **overrides})
+
+
+def test_api_query_returns_runtime_contract(monkeypatch) -> None:
+    monkeypatch.setattr(api_query_routes.settings, "api_query_template_first_enabled", True)
+    entry = _make_entry()
+    stub_retriever = StubRetriever(entry)
+    stub_services = (
+        stub_retriever,
+        StubExtractor(entry, {"pageNum": 1, "pageSize": 1}),
+        StubExecutor(
+            ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.SUCCESS,
+                data=[{"customerId": "C001", "customerName": "张三"}],
+                total=8,
+            )
+        ),
+        StubDynamicUI(),
+        StubSnapshotService(),
+    )
+    monkeypatch.setattr(api_query_routes, "_get_services", lambda: stub_services)
+
+    client = TestClient(create_test_app())
+    response = client.post(
+        "/api/v1/api-query",
+        json={"query": "查询张三客户"},
+        headers={"X-Trace-Id": "trace-query-001", "X-Interaction-Id": "ia-query-001"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    _assert_api_query_response_keys(body)
+    assert body["trace_id"] == "trace-query-001"
+    assert body["execution_status"] == "SUCCESS"
+    assert body["execution_plan"]["steps"][0]["step_id"] == "step_customer_list"
+    assert body["execution_plan"]["steps"][0]["api_id"] == "customer_list"
+    elements = body["ui_spec"]["elements"]
+    root = elements[body["ui_spec"]["root"]]
+    assert root["type"] == "PlannerBlankContainer"
+    card = elements[root["children"][0]]
+    assert card["type"] == "PlannerCard"
+    assert card["children"] == ["query-filters", "report-table", "report-pagination"]
+    filters = body["ui_spec"]["elements"]["query-filters"]
+    table = body["ui_spec"]["elements"]["report-table"]
+    pagination = body["ui_spec"]["elements"]["report-pagination"]
+    _assert_runtime_metadata(filters["props"], trace_id="trace-query-001", api_suffix="customer_list")
+    _assert_runtime_metadata(table["props"], trace_id="trace-query-001", api_suffix="customer_list")
+    _assert_runtime_metadata(pagination["props"], trace_id="trace-query-001", api_suffix="customer_list")
+    assert pagination["props"]["total"] == 8
+    assert table["props"]["rowActions"][0]["action"] == "remoteQuery"
+    assert "type" not in table["props"]["rowActions"][0]
+    assert table["props"]["rowActions"][0]["params"]["api_id"] == "customer_detail"
+    assert table["props"]["rowActions"][0]["params"]["renderMode"] == "template_first"
+    assert table["props"]["rowActions"][0]["params"]["templateCode"] == "customer_detail_template"
+    assert table["props"]["rowActions"][0]["params"]["fallbackMode"] == "dynamic_ui"
+    _assert_runtime_metadata(
+        table["props"]["rowActions"][0]["params"],
+        trace_id="trace-query-001",
+        api_suffix="customer_detail",
+    )
+    assert stub_retriever.last_filters.model_dump() == {
+        "domains": [],
+        "envs": [],
+        "statuses": ["active"],
+        "tag_names": [],
+    }
+
+
+def test_api_query_global_template_first_switch_off_forces_dynamic_fallback(monkeypatch) -> None:
+    monkeypatch.setattr(api_query_routes.settings, "api_query_template_first_enabled", False)
+    entry = _make_entry()
+    stub_services = (
+        StubRetriever(entry),
+        StubExtractor(entry, {"pageNum": 1, "pageSize": 1}),
+        StubExecutor(
+            ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.SUCCESS,
+                data=[{"customerId": "C001", "customerName": "张三"}],
+                total=8,
+            )
+        ),
+        StubDynamicUI(),
+        StubSnapshotService(),
+    )
+    monkeypatch.setattr(api_query_routes, "_get_services", lambda: stub_services)
+
+    client = TestClient(create_test_app())
+    response = client.post(
+        "/api/v1/api-query",
+        json={"query": "查询张三客户"},
+        headers={"X-Trace-Id": "trace-query-002", "X-Interaction-Id": "ia-query-002"},
+    )
+
+    assert response.status_code == 200
+    table = response.json()["ui_spec"]["elements"]["report-table"]
+    row_action_params = table["props"]["rowActions"][0]["params"]
+    assert row_action_params["renderMode"] == "dynamic_ui"
+    assert row_action_params["fallbackMode"] == "dynamic_ui"
+    assert "templateCode" not in row_action_params
+
+
+def test_api_query_passes_env_and_tag_filters_to_retriever(monkeypatch) -> None:
+    entry = _make_entry()
+    stub_retriever = StubRetriever(entry)
+    stub_services = (
+        stub_retriever,
+        StubExtractor(entry, {"pageNum": 1}),
+        StubExecutor(
+            ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.SUCCESS,
+                data=[{"customerId": "C001", "customerName": "张三"}],
+                total=1,
+            )
+        ),
+        StubDynamicUI(),
+        StubSnapshotService(),
+    )
+    monkeypatch.setattr(api_query_routes, "_get_services", lambda: stub_services)
+
+    client = TestClient(create_test_app())
+    response = client.post(
+        "/api/v1/api-query",
+        json={
+            "query": "查询张三客户",
+            "envs": ["PROD", "prod", ""],
+            "tag_names": ["合同管理", "合同管理", " "],
+        },
+    )
+
+    assert response.status_code == 200
+    assert stub_retriever.last_filters.model_dump() == {
+        "domains": [],
+        "envs": ["prod"],
+        "statuses": ["active"],
+        "tag_names": ["合同管理"],
+    }
+
+
+def test_api_query_blocks_mutation_entry(monkeypatch) -> None:
+    """mutation 接口在 NL 模式下不再直接阻断，而是返回预填表单 UI。"""
+    entry = _make_entry(
+        id="customer_update", method="POST", operation_safety="mutation", path="/api/v1/customers/update",
+        param_schema={
+            "type": "object",
+            "properties": {
+                "customerId": {"type": "string", "title": "客户ID"},
+                "industry": {"type": "string", "title": "所属行业"},
+            },
+            "required": ["customerId"],
+        },
+        detail_hint=ApiCatalogDetailHint(enabled=False),
+    )
+    stub_services = (
+        StubRetriever(entry),
+        StubExtractor(entry, {"customerId": "C001"}, business_intents=["saveToServer"]),
+        StubExecutor(
+            ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.SUCCESS,
+                data={"ok": True},
+                total=1,
+            )
+        ),
+        StubDynamicUI(),
+        StubSnapshotService(),
+    )
+    monkeypatch.setattr(api_query_routes, "_get_services", lambda: stub_services)
+
+    client = TestClient(create_test_app())
+    response = client.post(
+        "/api/v1/api-query",
+        json={"query": "修改张三客户信息"},
+        headers={"X-Trace-Id": "trace-block-001"},
+    )
+
+    # NL 模式下 mutation 接口走表单快路，返回 200 + SKIPPED + form.enabled
+    assert response.status_code == 200
+    body = response.json()
+    assert body["execution_status"] == "SKIPPED"
+    assert body["error"] is None
+    form = body["ui_spec"]["elements"]["child_1"]
+    assert form["type"] == "PlannerForm"
+    _assert_runtime_metadata(form["props"], trace_id="trace-block-001", api_suffix="customer_update")
+    # execution_plan 包含 mutation 接口步骤，供前端确认后直接调用
+    assert body["execution_plan"]["steps"][0]["api_id"] == "customer_update"
+
+
+def test_api_query_allows_query_safe_post_entry(monkeypatch) -> None:
+    entry = _make_entry(id="customer_search", method="POST", operation_safety="query", path="/api/v1/customers/search")
+    stub_services = (
+        StubRetriever(entry),
+        StubExtractor(entry, {"customerName": "张三"}),
+        StubExecutor(
+            ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.SUCCESS,
+                data=[{"customerId": "C001", "customerName": "张三"}],
+                total=1,
+            )
+        ),
+        StubDynamicUI(),
+        StubSnapshotService(),
+    )
+    monkeypatch.setattr(api_query_routes, "_get_services", lambda: stub_services)
+
+    client = TestClient(create_test_app())
+    response = client.post(
+        "/api/v1/api-query",
+        json={"query": "按姓名查询张三客户"},
+        headers={"X-Trace-Id": "trace-query-post-001"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["execution_status"] == "SUCCESS"
+
+
+def test_api_query_attaches_snapshot_for_high_risk_write_intent(monkeypatch) -> None:
+    entry = _make_entry()
+    snapshot_service = StubSnapshotService(should_capture=True)
+    stub_services = (
+        StubRetriever(entry),
+        StubExtractor(entry, {"customerId": "C001"}, business_intents=["prepare_high_risk_change"]),
+        StubExecutor(
+            ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.SUCCESS,
+                data=[{"customerId": "C001", "customerName": "张三"}],
+                total=1,
+            )
+        ),
+        StubDynamicUI(),
+        snapshot_service,
+    )
+    monkeypatch.setattr(api_query_routes, "_get_services", lambda: stub_services)
+
+    client = TestClient(create_test_app())
+    response = client.post("/api/v1/api-query", json={"query": "准备修改高风险合同"})
+
+    assert response.status_code == 200
+    body = response.json()
+    _assert_api_query_response_keys(body)
+    assert body["execution_plan"]["steps"][0]["step_id"] == "step_customer_list"
+    assert snapshot_service.last_snapshot_payload is not None
+    assert snapshot_service.last_snapshot_payload["trace_id"] == body["trace_id"]
+    assert snapshot_service.last_snapshot_payload["metadata"]["api_id"] == "customer_list"
+
+
+def test_api_query_soft_degrades_when_route_query_fails(monkeypatch, caplog) -> None:
+    entry = _make_entry()
+    stub_services = (
+        StubRetriever(entry),
+        StubExtractor(
+            entry,
+            {"customerId": "C001"},
+            route_status="fallback",
+            route_error_code="routing_parse_failed",
+        ),
+        StubExecutor(
+            ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.SUCCESS,
+                data=[{"customerId": "C001", "customerName": "张三"}],
+                total=1,
+            )
+        ),
+        StubDynamicUI(),
+        StubSnapshotService(),
+    )
+    monkeypatch.setattr(api_query_routes, "_get_services", lambda: stub_services)
+
+    client = TestClient(create_test_app())
+    with caplog.at_level("INFO", logger=api_query_routes.logger.name):
+        response = client.post(
+            "/api/v1/api-query",
+            json={"query": "帮我处理那个事情", "conversation_id": "conv_degrade_001"},
+            headers={"X-Trace-Id": "trace-degrade-001", "X-Interaction-Id": "ia-degrade-001"},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    _assert_api_query_response_keys(body)
+    assert body["trace_id"] == "trace-degrade-001"
+    assert body["execution_status"] == "SKIPPED"
+    assert body["execution_plan"] is None
+    assert body["error"] == "抱歉，我没有完全理解您的意图，或系统中暂未开放相关查询能力，请尝试换种说法。"
+    root_id = body["ui_spec"]["root"]
+    assert body["ui_spec"]["elements"][root_id]["props"]["title"] == "未识别到可用业务域"
+    assert "interaction_id=ia-degrade-001" in caplog.text
+    assert "conversation_id=conv_degrade_001" in caplog.text
+    assert "phase=http_adapter" in caplog.text
+
+
+def test_runtime_metadata_endpoint_returns_contract(monkeypatch) -> None:
+    stub_catalog_service = StubUICatalogService()
+    monkeypatch.setattr(api_query_routes, "_get_ui_catalog_service", lambda: stub_catalog_service)
+
+    client = TestClient(create_test_app())
+    response = client.get("/api/v1/api-query/runtime-metadata")
+
+    assert response.status_code == 200
+    body = response.json()
+    action_codes = {item["code"] for item in body["ui_runtime"]["ui_actions"]}
+    assert action_codes == {"remoteQuery", "remoteMutation"}
+    assert "PlannerForm" in body["ui_runtime"]["components"]
+    template_codes = {item["code"] for item in body["template_scenarios"]}
+    assert template_codes == {"custom_template"}
+    assert body["ui_runtime"]["list"]["route_url"] == "/api/v1/api-query"
+    assert body["ui_runtime"]["detail"]["request"]["param_source"] == "queryParams"
+    assert body["ui_runtime"]["form"]["route_url"] is None
+    assert body["ui_runtime"]["form"]["ui_action"] == "remoteMutation"
+    assert stub_catalog_service.warmup_called is True
+
+
+def test_api_query_returns_frozen_runtime_when_renderer_guard_rejects_spec(monkeypatch) -> None:
+    entry = _make_entry()
+    stub_services = (
+        StubRetriever(entry),
+        StubExtractor(entry, {"pageNum": 1, "pageSize": 1}),
+        StubExecutor(
+            ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.SUCCESS,
+                data=[{"customerId": "C001", "customerName": "张三"}],
+                total=1,
+            )
+        ),
+        FrozenDynamicUI(),
+        StubSnapshotService(),
+    )
+    monkeypatch.setattr(api_query_routes, "_get_services", lambda: stub_services)
+
+    client = TestClient(create_test_app())
+    response = client.post("/api/v1/api-query", json={"query": "查询张三客户"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["execution_status"] == "SUCCESS"
+    root_id = body["ui_spec"]["root"]
+    notice = body["ui_spec"]["elements"]["child_1"]
+    assert body["ui_spec"]["elements"][root_id]["type"] == "PlannerCard"
+    assert notice["type"] == "PlannerNotice"
+    assert "已冻结当前操作视图" in notice["props"]["text"]
+
+
+def test_api_query_returns_generated_form_spec_for_write_intent(monkeypatch) -> None:
+    query_entry = _make_entry()
+    mutation_entry = _make_entry(
+        id="customer_update",
+        method="POST",
+        operation_safety="mutation",
+        path="/api/v1/customers/update",
+        detail_hint=ApiCatalogDetailHint(enabled=False),
+        pagination_hint=ApiCatalogPaginationHint(enabled=False),
+        template_hint=ApiCatalogTemplateHint(enabled=False),
+        param_schema={
+            "type": "object",
+            "properties": {
+                "customerId": {"type": "string"},
+                "industry": {"type": "string"},
+            },
+            "required": ["customerId", "industry"],
+        },
+    )
+    stub_services = (
+        StubRetriever(query_entry),
+        StubExtractor(query_entry, {"customerId": "C001"}, business_intents=["saveToServer"]),
+        StubExecutor(
+            ApiQueryExecutionResult(
+                status=ApiQueryExecutionStatus.SUCCESS,
+                data=[{"customerId": "C001", "customerName": "张三"}],
+                total=1,
+            )
+        ),
+        FormRuntimeDynamicUI(),
+        StubSnapshotService(),
+    )
+    monkeypatch.setattr(api_query_routes, "_get_services", lambda: stub_services)
+    monkeypatch.setattr(
+        api_query_routes,
+        "_get_registry_source",
+        lambda: StubRegistrySource({"customer_list": query_entry, "customer_update": mutation_entry}),
+    )
+
+    client = TestClient(create_test_app())
+    response = client.post(
+        "/api/v1/api-query",
+        json={"query": "把客户 C001 的行业改成医疗"},
+        headers={"X-Trace-Id": "trace-form-001"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    _assert_api_query_response_keys(body)
+    assert body["execution_status"] == "SUCCESS"
+    root = body["ui_spec"]["elements"][body["ui_spec"]["root"]]
+    assert root["type"] == "PlannerCard"
+    assert body["ui_spec"]["state"]["form"]["customerId"] == "C001"
+    assert body["ui_spec"]["state"]["form"]["industry"] == "medical"
+    assert body["ui_spec"]["elements"]["child_2"]["type"] == "PlannerSelect"
+    submit = body["ui_spec"]["elements"]["child_3"]["on"]["press"]["params"]
+    assert submit["api_id"] == "customer_update"
+    assert submit["body"]["industry"] == {"$bindState": "/form/industry"}

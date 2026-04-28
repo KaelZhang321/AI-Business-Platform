@@ -25,6 +25,7 @@ from pymilvus import (
 )
 
 from app.core.config import settings
+from app.core.model_source import resolve_model_source
 
 logger = logging.getLogger(__name__)
 
@@ -84,10 +85,28 @@ class SemanticCacheService:
         return collection
 
     def _get_embedder(self):
-        """复用 BGE-M3 Embedding 模型（懒加载）。"""
+        """复用 BGE-M3 Embedding 模型（懒加载）。
+
+        功能：
+            语义缓存和主检索链路必须使用同一份模型来源，否则缓存向量与查询向量分布漂移后，
+            命中率会无缘无故下降。这里统一走本地目录优先，保证离线部署下的向量空间稳定。
+        """
         if self._embedding_model is None:
             from flagembedding import BGEM3FlagModel
-            self._embedding_model = BGEM3FlagModel(settings.embedding_model_name, use_fp16=True)
+
+            model_source = resolve_model_source(
+                model_name=settings.embedding_model_name,
+                local_model_path=settings.embedding_model_path,
+            )
+            if model_source.source_kind == "local_path":
+                logger.info("Loading semantic cache embedding model from local path: %s", model_source.source)
+            elif model_source.configured_path:
+                logger.warning(
+                    "Configured EMBEDDING_MODEL_PATH is unavailable, fallback to EMBEDDING_MODEL_NAME: path=%s model=%s",
+                    model_source.configured_path,
+                    settings.embedding_model_name,
+                )
+            self._embedding_model = BGEM3FlagModel(model_source.source, use_fp16=True)
         return self._embedding_model
 
     def _embed(self, text: str) -> list[float]:

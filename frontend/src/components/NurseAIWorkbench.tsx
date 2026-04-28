@@ -20,6 +20,7 @@ import {
   Filter
 } from 'lucide-react';
 
+/** 护士病房护理任务模拟数据 */
 const WARD_TASKS = [
   { id: '1', patient: '张晓彤', bed: '01', task: '静脉输液', time: '10:30', status: '进行中', priority: '高' },
   { id: '2', patient: '李建国', bed: '05', task: '生命体征测量', time: '11:00', status: '待执行', priority: '中' },
@@ -27,19 +28,25 @@ const WARD_TASKS = [
   { id: '4', patient: '赵强', bed: '12', task: '口服药发放', time: '11:30', status: '待执行', priority: '低' },
 ];
 
+/** 患者体征异常预警模拟数据 */
 const VITAL_ALERTS = [
   { patient: '李建国', bed: '05', type: '心率', value: '112 bpm', time: '3分钟前', level: '警告' },
   { patient: '王芳', bed: '08', type: '体温', value: '38.5 ℃', time: '10分钟前', level: '注意' },
 ];
 
+/**
+ * 护士 AI 工作台视图组件：
+ * 主要面向护士群体，展示病区概况（在院/任务/高危患者统计）、实时体征预警、
+ * 护理任务清单及 AI 护理助手提醒和快捷操作入口。
+ */
 export function NurseAIWorkbench() {
   return (
-    <div className="h-full flex flex-col space-y-6">
+    <div className="h-full flex flex-col space-y-6 text-slate-900 dark:text-slate-100">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-2xl font-bold text-slate-900">护士AI工作台</h2>
-          <p className="text-sm text-slate-500">智能护理协作，守护患者安全</p>
+          <h2 className="text-2xl font-bold text-slate-900 dark:text-slate-100">护士AI工作台</h2>
+          <p className="text-sm text-slate-500 dark:text-slate-400">智能护理协作，守护患者安全</p>
         </div>
         <div className="flex items-center space-x-3">
           <div className="relative">
@@ -47,11 +54,11 @@ export function NurseAIWorkbench() {
             <input 
               type="text" 
               placeholder="搜索患者姓名/ID..." 
-              className="pl-9 pr-4 py-2 bg-white border border-slate-200 rounded-3xl text-sm focus:ring-2 focus:ring-brand outline-none w-64"
+              className="pl-9 pr-4 py-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-3xl text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:ring-2 focus:ring-brand outline-none w-64"
             />
           </div>
-          <button className="p-2 bg-white border border-slate-200 rounded-3xl hover:bg-slate-50">
-            <Filter className="w-4 h-4 text-slate-600" />
+          <button className="p-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-3xl hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors">
+            <Filter className="w-4 h-4 text-slate-600 dark:text-slate-300" />
           </button>
         </div>
       </div>
@@ -60,44 +67,44 @@ export function NurseAIWorkbench() {
         {/* Left Column: Ward Overview & Alerts */}
         <div className="xl:col-span-1 space-y-6">
           {/* Ward Stats */}
-          <div className="bg-white/60 backdrop-blur-xl rounded-3xl border border-white/80 p-6 grid grid-cols-2 gap-4 shadow-sm">
+          <div className="bg-white/60 dark:bg-slate-900/70 backdrop-blur-xl rounded-3xl border border-white/80 dark:border-slate-700 p-6 grid grid-cols-2 gap-4 shadow-sm dark:shadow-none">
             <div className="space-y-1">
-              <div className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">在院人数</div>
-              <div className="text-2xl font-bold text-slate-900">32</div>
+              <div className="text-[10px] text-slate-400 dark:text-slate-500 font-bold uppercase tracking-wider">在院人数</div>
+              <div className="text-2xl font-bold text-slate-900 dark:text-slate-100">32</div>
             </div>
             <div className="space-y-1">
-              <div className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">待办任务</div>
+              <div className="text-[10px] text-slate-400 dark:text-slate-500 font-bold uppercase tracking-wider">待办任务</div>
               <div className="text-2xl font-bold text-brand">12</div>
             </div>
             <div className="space-y-1">
-              <div className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">一级护理</div>
+              <div className="text-[10px] text-slate-400 dark:text-slate-500 font-bold uppercase tracking-wider">一级护理</div>
               <div className="text-2xl font-bold text-orange-500">5</div>
             </div>
             <div className="space-y-1">
-              <div className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">病危/重</div>
+              <div className="text-[10px] text-slate-400 dark:text-slate-500 font-bold uppercase tracking-wider">病危/重</div>
               <div className="text-2xl font-bold text-red-500">2</div>
             </div>
           </div>
 
           {/* Vital Alerts */}
-          <div className="bg-white/60 backdrop-blur-xl rounded-3xl border border-white/80 p-6 space-y-4 shadow-sm">
-            <h3 className="font-bold text-slate-900 flex items-center">
+          <div className="bg-white/60 dark:bg-slate-900/70 backdrop-blur-xl rounded-3xl border border-white/80 dark:border-slate-700 p-6 space-y-4 shadow-sm dark:shadow-none">
+            <h3 className="font-bold text-slate-900 dark:text-slate-100 flex items-center">
               <Zap className="w-5 h-5 mr-2 text-orange-500" />
               体征预警
             </h3>
             <div className="space-y-3">
               {VITAL_ALERTS.map((alert, i) => (
-                <div key={i} className="p-3 rounded-2xl bg-orange-50 border border-orange-100 space-y-2">
+                <div key={i} className="p-3 rounded-2xl bg-orange-50 dark:bg-orange-950/30 border border-orange-100 dark:border-orange-900/50 space-y-2">
                   <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold text-slate-900">{alert.patient} ({alert.bed}床)</span>
-                    <span className="text-[10px] text-orange-600 font-bold">{alert.level}</span>
+                    <span className="text-xs font-bold text-slate-900 dark:text-slate-100">{alert.patient} ({alert.bed}床)</span>
+                    <span className="text-[10px] text-orange-600 dark:text-orange-400 font-bold">{alert.level}</span>
                   </div>
                   <div className="flex items-center justify-between">
-                    <div className="flex items-center text-xs text-slate-600">
+                    <div className="flex items-center text-xs text-slate-600 dark:text-slate-300">
                       {alert.type === '心率' ? <Heart className="w-3 h-3 mr-1 text-red-500" /> : <Thermometer className="w-3 h-3 mr-1 text-orange-500" />}
                       {alert.type}: <span className="font-bold ml-1">{alert.value}</span>
                     </div>
-                    <span className="text-[10px] text-slate-400">{alert.time}</span>
+                    <span className="text-[10px] text-slate-400 dark:text-slate-500">{alert.time}</span>
                   </div>
                 </div>
               ))}
@@ -106,9 +113,9 @@ export function NurseAIWorkbench() {
         </div>
 
         {/* Middle Column: Task List & Schedule */}
-        <div className="xl:col-span-2 bg-white/60 backdrop-blur-xl rounded-3xl border border-white/80 p-6 flex flex-col shadow-sm">
+        <div className="xl:col-span-2 bg-white/60 dark:bg-slate-900/70 backdrop-blur-xl rounded-3xl border border-white/80 dark:border-slate-700 p-6 flex flex-col shadow-sm dark:shadow-none">
           <div className="flex items-center justify-between mb-6">
-            <h3 className="font-bold text-slate-900 flex items-center text-lg">
+            <h3 className="font-bold text-slate-900 dark:text-slate-100 flex items-center text-lg">
               <Clock className="w-6 h-6 mr-2 text-brand" />
               护理任务清单
             </h3>
@@ -124,31 +131,31 @@ export function NurseAIWorkbench() {
               <motion.div 
                 key={task.id}
                 whileHover={{ x: 4 }}
-                className="p-4 rounded-2xl border border-slate-100 hover:border-brand/30 hover:bg-brand/5 transition-all flex items-center justify-between group"
+                className="p-4 rounded-2xl border border-slate-100 dark:border-slate-700 hover:border-brand/30 hover:bg-brand/5 dark:hover:bg-brand/10 transition-all flex items-center justify-between group"
               >
                 <div className="flex items-center space-x-4">
                   <div className={`w-12 h-12 rounded-xl flex flex-col items-center justify-center font-bold ${
-                    task.priority === '高' ? 'bg-red-50 text-red-600' : 'bg-slate-50 text-slate-600'
+                    task.priority === '高' ? 'bg-red-50 dark:bg-red-950/30 text-red-600 dark:text-red-300' : 'bg-slate-50 dark:bg-slate-800 text-slate-600 dark:text-slate-300'
                   }`}>
                     <span className="text-[10px] opacity-60">床位</span>
                     <span className="text-lg leading-tight">{task.bed}</span>
                   </div>
                   <div>
                     <div className="flex items-center space-x-2">
-                      <span className="font-bold text-slate-900">{task.patient}</span>
+                      <span className="font-bold text-slate-900 dark:text-slate-100">{task.patient}</span>
                       <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
-                        task.priority === '高' ? 'bg-red-100 text-red-600' : 'bg-slate-100 text-slate-500'
+                        task.priority === '高' ? 'bg-red-100 dark:bg-red-950/30 text-red-600 dark:text-red-300' : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-300'
                       }`}>
                         {task.priority}优先级
                       </span>
                     </div>
-                    <div className="text-sm text-slate-600 mt-1">{task.task}</div>
+                    <div className="text-sm text-slate-600 dark:text-slate-300 mt-1">{task.task}</div>
                   </div>
                 </div>
                 <div className="text-right space-y-1">
-                  <div className="text-sm font-bold text-slate-900">{task.time}</div>
+                  <div className="text-sm font-bold text-slate-900 dark:text-slate-100">{task.time}</div>
                   <div className={`text-[10px] font-bold ${
-                    task.status === '进行中' ? 'text-brand' : 'text-slate-400'
+                    task.status === '进行中' ? 'text-brand' : 'text-slate-400 dark:text-slate-500'
                   }`}>{task.status}</div>
                 </div>
               </motion.div>
@@ -177,8 +184,8 @@ export function NurseAIWorkbench() {
           </div>
 
           {/* Quick Actions */}
-          <div className="bg-white/60 backdrop-blur-xl rounded-3xl border border-white/80 p-6 space-y-4 shadow-sm">
-            <h3 className="font-bold text-slate-900">快捷操作</h3>
+          <div className="bg-white/60 dark:bg-slate-900/70 backdrop-blur-xl rounded-3xl border border-white/80 dark:border-slate-700 p-6 space-y-4 shadow-sm dark:shadow-none">
+            <h3 className="font-bold text-slate-900 dark:text-slate-100">快捷操作</h3>
             <div className="grid grid-cols-2 gap-3">
               {[
                 { icon: CheckCircle2, label: '交接班', color: 'text-blue-500' },
@@ -186,9 +193,9 @@ export function NurseAIWorkbench() {
                 { icon: Droplets, label: '输液巡视', color: 'text-brand' },
                 { icon: User, label: '宣教推送', color: 'text-purple-500' },
               ].map((action, i) => (
-                <button key={i} className="flex flex-col items-center justify-center p-3 rounded-2xl border border-slate-100 hover:bg-slate-50 transition-colors space-y-2">
+                <button key={i} className="flex flex-col items-center justify-center p-3 rounded-2xl border border-slate-100 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors space-y-2">
                   <action.icon className={`w-5 h-5 ${action.color}`} />
-                  <span className="text-[10px] font-bold text-slate-600">{action.label}</span>
+                  <span className="text-[10px] font-bold text-slate-600 dark:text-slate-300">{action.label}</span>
                 </button>
               ))}
             </div>

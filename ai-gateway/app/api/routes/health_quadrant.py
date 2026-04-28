@@ -1,0 +1,194 @@
+"""体检/治疗四象限路由。"""
+
+from __future__ import annotations
+
+import logging
+import time
+from uuid import uuid4
+
+from fastapi import APIRouter, Depends, Request
+
+from app.api.dependencies import get_health_quadrant_service
+from app.core.error_codes import BusinessError, ErrorCode
+from app.models.schemas import (
+    HealthQuadrantConfirmRequest,
+    HealthQuadrantConfirmEnvelopeResponse,
+    HealthQuadrantConfirmResponse,
+    HealthQuadrantBucket,
+    HealthQuadrantQueryEnvelopeResponse,
+    HealthQuadrantRequest,
+    HealthQuadrantResponse,
+)
+from app.services.health_quadrant_service import HealthQuadrantService, HealthQuadrantServiceError
+
+router = APIRouter(prefix="/health-quadrant", tags=["健康四象限"])
+logger = logging.getLogger(__name__)
+
+
+def _raise_route_business_error(exc: HealthQuadrantServiceError) -> None:
+    """将服务层错误统一映射为可观测的业务错误码。
+
+    功能：
+        `/health-quadrant` 依赖多个外部系统（ODS、DW、LLM、MySQL），服务层抛出的
+        `HealthQuadrantServiceError` 语义较宽。路由层在这里做最小化分类，保证前端拿到
+        稳定错误码，同时保留错误文本用于定位。
+    """
+
+    message = str(exc)
+    if "quadrant_type" in message:
+        raise BusinessError(ErrorCode.BAD_REQUEST, message) from exc
+    if "triage_failed" in message or "safety_failed" in message:
+        raise BusinessError(ErrorCode.LLM_CALL_FAILED, message) from exc
+    if "match_failed" in message or "source" in message:
+        raise BusinessError(ErrorCode.EXTERNAL_SERVICE_ERROR, message) from exc
+    raise BusinessError(ErrorCode.INTERNAL_ERROR, message) from exc
+
+@router.post("", response_model=HealthQuadrantQueryEnvelopeResponse, summary="查询健康四象限（已确认优先）")
+async def build_health_quadrant(
+    request: HealthQuadrantRequest,
+    raw_request: Request,
+    service: HealthQuadrantService = Depends(get_health_quadrant_service),
+) -> HealthQuadrantQueryEnvelopeResponse:
+    """按 StudyID 和象限类型查询四象限。"""
+    trace_id = (raw_request.headers.get("X-Trace-Id") or raw_request.headers.get("X-Request-Id") or "").strip() or uuid4().hex
+    route_started_at = time.perf_counter()
+    # 查询接口只接受列表形态主诉；这里统一去重并排序，避免签名输入抖动。
+    logger.info(
+        "health quadrant route query received trace_id=%s study_id=%s quadrant_type=%s single_exam_count=%s complaint_len=%s",
+        trace_id,
+        request.study_id,
+        request.quadrant_type,
+        len(request.single_exam_items),
+        len(request.chief_complaint_text or ""),
+    )
+    try:
+        result = await service.query_quadrants(
+            sex=request.sex,
+            age=request.age,
+            study_id=request.study_id,
+            quadrant_type=request.quadrant_type,
+            single_exam_items=[item.model_dump(by_alias=True) for item in request.single_exam_items],
+            chief_complaint_text=request.chief_complaint_text,
+            trace_id=trace_id,
+        )
+        logger.info(
+            "health quadrant route query completed trace_id=%s study_id=%s quadrant_type=%s from_cache=%s quadrant_count=%s",
+            trace_id,
+            request.study_id,
+            request.quadrant_type,
+            bool(result.get("fromCache")),
+            len(result.get("quadrants", [])),
+        )
+        return HealthQuadrantQueryEnvelopeResponse(
+            code=0,
+            message="ok",
+            data=HealthQuadrantResponse(
+                quadrants=[
+                    HealthQuadrantBucket(
+                        q_code=bucket.get("q_code") or bucket.get("code") or "",
+                        q_name=bucket.get("q_name") or bucket.get("name") or "",
+                        abnormal_indicators=bucket["abnormal_indicators"],
+                        recommendation_plans=bucket["recommendation_plans"],
+                    )
+                    for bucket in result["quadrants"]
+                ],
+            ),
+        )
+    except HealthQuadrantServiceError as exc:
+        logger.warning(
+            "health quadrant route query failed trace_id=%s study_id=%s quadrant_type=%s error=%s",
+            trace_id,
+            request.study_id,
+            request.quadrant_type,
+            exc,
+        )
+        _raise_route_business_error(exc)
+    except Exception as exc:
+        logger.exception(
+            "health quadrant route query unexpected error trace_id=%s study_id=%s quadrant_type=%s",
+            trace_id,
+            request.study_id,
+            request.quadrant_type,
+        )
+        raise BusinessError(ErrorCode.INTERNAL_ERROR, "健康四象限查询失败") from exc
+    finally:
+        duration_ms = int((time.perf_counter() - route_started_at) * 1000)
+        logger.info(
+            "health quadrant stage duration stage=route.query.total duration_ms=%s trace_id=%s study_id=%s quadrant_type=%s",
+            duration_ms,
+            trace_id,
+            request.study_id,
+            request.quadrant_type,
+        )
+
+
+@router.post("/confirm", response_model=HealthQuadrantConfirmEnvelopeResponse, summary="确认并持久化四象限")
+async def confirm_health_quadrant(
+    request: HealthQuadrantConfirmRequest,
+    raw_request: Request,
+    service: HealthQuadrantService = Depends(get_health_quadrant_service),
+) -> HealthQuadrantConfirmEnvelopeResponse:
+    """保存前端确认后的四象限结果。"""
+
+    trace_id = (raw_request.headers.get("X-Trace-Id") or raw_request.headers.get("X-Request-Id") or "").strip() or uuid4().hex
+    route_started_at = time.perf_counter()
+    confirmed_by = (raw_request.headers.get("X-User-Id") or "").strip() or None
+    chief_complaint_text = request.chief_complaint_text if request.chief_complaint_text else ""
+    logger.info(
+        "health quadrant route confirm received trace_id=%s study_id=%s quadrant_type=%s single_exam_count=%s complaint_count=%s quadrant_count=%s confirmed_by=%s",
+        trace_id,
+        request.study_id,
+        request.quadrant_type,
+        len(request.single_exam_items),
+        len(chief_complaint_text),
+        len(request.quadrants),
+        confirmed_by,
+    )
+    try:
+        await service.confirm_quadrants(
+            study_id=request.study_id,
+            quadrant_type=request.quadrant_type,
+            single_exam_items=[item.model_dump(by_alias=True) for item in request.single_exam_items],
+            chief_complaint_text=chief_complaint_text,
+            quadrants=[bucket.model_dump(by_alias=False) for bucket in request.quadrants],
+            confirmed_by=confirmed_by,
+            trace_id=trace_id,
+        )
+        logger.info(
+            "health quadrant route confirm completed trace_id=%s study_id=%s quadrant_type=%s confirmed_by=%s",
+            trace_id,
+            request.study_id,
+            request.quadrant_type,
+            confirmed_by,
+        )
+        return HealthQuadrantConfirmEnvelopeResponse(
+            code=0,
+            message="ok",
+            data=HealthQuadrantConfirmResponse(success=True),
+        )
+    except HealthQuadrantServiceError as exc:
+        logger.warning(
+            "health quadrant route confirm failed trace_id=%s study_id=%s quadrant_type=%s error=%s",
+            trace_id,
+            request.study_id,
+            request.quadrant_type,
+            exc,
+        )
+        _raise_route_business_error(exc)
+    except Exception as exc:
+        logger.exception(
+            "health quadrant route confirm unexpected error trace_id=%s study_id=%s quadrant_type=%s",
+            trace_id,
+            request.study_id,
+            request.quadrant_type,
+        )
+        raise BusinessError(ErrorCode.INTERNAL_ERROR, "健康四象限确认失败") from exc
+    finally:
+        duration_ms = int((time.perf_counter() - route_started_at) * 1000)
+        logger.info(
+            "health quadrant stage duration stage=route.confirm.total duration_ms=%s trace_id=%s study_id=%s quadrant_type=%s",
+            duration_ms,
+            trace_id,
+            request.study_id,
+            request.quadrant_type,
+        )

@@ -28,7 +28,14 @@ RUN mvn package -DskipTests -B
 # ── 运行时镜像 ──────────────────────────────────────────
 FROM eclipse-temurin:17-jre-alpine AS runtime
 
+ENV TZ=Asia/Shanghai
+
 WORKDIR /app
+
+# 统一 JVM 容器时区，保证 Spring 日志时间与宿主机一致，便于链路排障。
+RUN apk add --no-cache tzdata && \
+    ln -snf /usr/share/zoneinfo/${TZ} /etc/localtime && \
+    echo "${TZ}" >/etc/timezone
 
 COPY --from=builder /build/target/*.jar app.jar
 

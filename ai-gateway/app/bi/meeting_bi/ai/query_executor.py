@@ -1,3 +1,9 @@
+"""会议 BI 垂直问数执行器。
+
+该模块把“问题改写 -> 域相关性判断 -> SQL 生成 -> 白名单校验 -> 执行 -> 结果回答”
+收敛在一个独立链路里，避免垂直业务规则污染平台通用问数逻辑。
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -34,12 +40,14 @@ _OUT_OF_SCOPE_ANSWER = (
 
 
 def _clean_sql(sql: str) -> str:
+    """剥离模型常见的 markdown 包裹和结尾分号。"""
     sql = re.sub(r"^```\w*\n?", "", sql.strip())
     sql = re.sub(r"\n?```$", "", sql)
     return sql.strip().rstrip(";")
 
 
 def _serialize_value(value):
+    """把数据库原生类型转换成可 JSON 序列化的安全值。"""
     if value is None:
         return None
     if isinstance(value, Decimal):
@@ -59,6 +67,7 @@ def _to_float(value) -> float:
 
 
 def _build_chart(columns: list[str], rows: list[dict]) -> BIChartConfig | None:
+    """基于查询结果自动推断一个轻量 BI 图表。"""
     if not rows or len(rows) < 2 or len(columns) < 2:
         return None
 
@@ -100,6 +109,7 @@ def _is_numeric(value: str) -> bool:
 
 
 def _rewrite_question(vn, question: str, conversation_id: str | None) -> str:
+    """结合最近一轮会话改写追问，提升指代类问题的 SQL 命中率。"""
     if not conversation_id:
         return question
     last_q = get_last_question(conversation_id)
@@ -115,6 +125,7 @@ def _rewrite_question(vn, question: str, conversation_id: str | None) -> str:
 
 
 def _build_history_prompt(conversation_id: str | None) -> str:
+    """构造回答阶段使用的最近会话摘要。"""
     if not conversation_id:
         return ""
     rounds = get_recent_rounds(conversation_id, n=2)
@@ -129,6 +140,7 @@ def _build_history_prompt(conversation_id: str | None) -> str:
 
 
 def _is_relevant_question(vn, question: str) -> bool:
+    """判断用户问题是否属于会议 BI 域。"""
     try:
         answer = vn.submit_prompt(_RELEVANCE_PROMPT.format(question=question))
         return "是" in answer[:10]
@@ -137,6 +149,7 @@ def _is_relevant_question(vn, question: str) -> bool:
 
 
 def _validate_allowed_tables(sql: str) -> None:
+    """确保 SQL 只访问会议 BI 白名单表。"""
     tables = {match.lower() for match in _TABLE_PATTERN.findall(sql)}
     disallowed = sorted(tables - _ALLOWED_TABLES)
     if disallowed:
@@ -144,7 +157,7 @@ def _validate_allowed_tables(sql: str) -> None:
 
 
 async def _execute_sql(sql: str) -> tuple[list[str], list[dict]]:
-    """使用 aiomysql 执行 SQL，返回 (columns, rows)。"""
+    """执行会议 BI SQL，并返回列信息与序列化后的行数据。"""
     pool = await get_meeting_pool()
     async with pool.acquire() as conn:
         async with conn.cursor(aiomysql.DictCursor) as cur:
@@ -158,11 +171,20 @@ async def _execute_sql(sql: str) -> tuple[list[str], list[dict]]:
 
 
 def _safe_rows(rows: list[dict]) -> list[dict]:
+    """把复杂类型收敛成前端更易消费的轻量值。"""
     return [{k: (str(v) if v is not None and not isinstance(v, (int, float)) else v) for k, v in row.items()} for row in rows]
 
 
 class MeetingBIQueryExecutor:
-    """会议 BI 专用问数执行器 — aiomysql + SSE stream 支持。"""
+    """会议 BI 专用问数执行器。
+
+    功能：
+        负责承载会议 BI 垂直知识、白名单安全和图表回答能力，与通用 Text2SQL 执行器解耦。
+
+    Edge Cases:
+        - 域外问题直接返回拒答文案，不走 SQL 生成
+        - SQL 生成成功后仍要经过只读与白名单双重校验
+    """
 
     async def query(
         self,
@@ -171,6 +193,16 @@ class MeetingBIQueryExecutor:
         conversation_id: str | None = None,
         context: dict | None = None,
     ) -> Text2SQLResponse:
+        """同步执行会议 BI 问数。
+
+        Args:
+            question: 用户自然语言问题。
+            conversation_id: 会话 ID，用于多轮追问改写。
+            context: 预留上下文字段，当前会议 BI 链路未使用。
+
+        Returns:
+            标准 `Text2SQLResponse`，包含回答、SQL、表格结果和可选图表。
+        """
         del context
         vn = await asyncio.to_thread(get_vanna)
         rewritten = _rewrite_question(vn, question, conversation_id)
@@ -192,6 +224,7 @@ class MeetingBIQueryExecutor:
             raise ValueError("会议 BI SQL 生成失败，请尝试换一种方式提问") from exc
 
         cleaned_sql = _clean_sql(sql or "")
+        # 先复用平台统一 SQL 安全闸门，再叠加会议 BI 白名单表限制。
         sanitized_sql = GenericQueryExecutor._sanitize_sql(cleaned_sql, settings.meeting_bi_max_rows)
         _validate_allowed_tables(sanitized_sql)
 
@@ -269,15 +302,15 @@ class MeetingBIQueryExecutor:
             yield _sse("error", {"message": "AI 服务暂时不可用，请稍后再试。"})
             return
 
-        # 上下文改写
+        # 1. 先做追问改写，避免“这个大区”“刚才那个指标”之类指代在 SQL 阶段丢失上下文。
         rewritten = _rewrite_question(vn, question, conversation_id)
 
-        # 意图判断
+        # 2. 域外问题尽早返回，避免无意义地生成 SQL。
         if not await asyncio.to_thread(_is_relevant_question, vn, rewritten):
             yield _sse("answer", {"answer": _OUT_OF_SCOPE_ANSWER})
             return
 
-        # 阶段 1: 生成 SQL
+        # 3. 生成 SQL 后仍要经过平台只读校验和会议 BI 白名单校验。
         try:
             sql = await asyncio.to_thread(vn.generate_sql, rewritten)
             if not sql:
@@ -296,7 +329,7 @@ class MeetingBIQueryExecutor:
 
         yield _sse("sql", {"sql": sanitized_sql})
 
-        # 阶段 2: 执行 SQL
+        # 4. SQL 执行与结果回传分离，便于前端先看到结构化数据，再等待图表和总结。
         try:
             columns, rows = await _execute_sql(sanitized_sql)
             safe = _safe_rows(rows)
@@ -307,13 +340,13 @@ class MeetingBIQueryExecutor:
 
         yield _sse("data", {"columns": columns, "rows": safe})
 
-        # 阶段 3: 生成并保存图表
+        # 5. 图表是增强项，失败不应影响表格与自然语言结果。
         chart = _build_chart(columns, rows)
         if chart:
             chart_id = await save_chart(chart)
             yield _sse("chart", {"chart": chart.model_dump(), "chart_id": chart_id})
 
-        # 阶段 4: 生成自然语言回答
+        # 6. 最后生成自然语言总结，确保回答基于已执行的真实结果而不是凭空生成。
         try:
             display_rows = rows[:30]
             history_prompt = _build_history_prompt(conversation_id)
