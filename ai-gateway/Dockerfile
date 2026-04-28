@@ -43,6 +43,7 @@ RUN printf 'torch==%s\n' "${TORCH_VERSION}" > /tmp/constraints.txt && \
       --extra-index-url "${TORCH_INDEX_URL}"
 
 COPY app ./app
+COPY resources ./resources
 
 # 依赖已在上一层安装完成，这里只注册当前项目包，避免重复触发依赖解析。
 RUN pip install --no-cache-dir --no-deps .
@@ -82,6 +83,7 @@ RUN if command -v dnf >/dev/null 2>&1; then \
 COPY --from=builder /opt/venv /opt/venv
 COPY pyproject.toml ./
 COPY app ./app
+COPY resources ./resources
 
 EXPOSE 8000
 
