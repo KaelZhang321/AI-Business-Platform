@@ -1038,7 +1038,7 @@ export const ConsultantAIWorkbench: React.FC<ConsultantAIWorkbenchProps> = ({
           availableActions: ['view_customer_profile', 'view_exam_report', 'generate_layout'],
         }),
       });
-      const aiResponseContent = response?.data ?? '';
+      const aiResponseContent = response;
       const assistantContent = normalizeAiResponseContent(aiResponseContent);
       const resultSummary = extractAiResultSummary(aiResponseContent, selectedCustomer.name);
       const finalAssistantContent = assistantContent || resultSummary;

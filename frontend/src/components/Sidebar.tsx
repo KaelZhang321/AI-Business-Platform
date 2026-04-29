@@ -297,6 +297,8 @@ export function Sidebar({
   const navigate = useNavigate();          // 路由导航
   /** 后端返回的员工菜单，接口异常时仅主菜单保持默认本地菜单 */
   const [navigationMenus, setNavigationMenus] = React.useState(() => splitNavigationMenus(NAVIGATION_ITEMS));
+  /** 防止重复点击退出按钮导致多次请求 */
+  const [isLoggingOut, setIsLoggingOut] = React.useState(false);
 
   /** 导航到指定页面 */
   const goToPage = React.useCallback((page: AppPage) => {
@@ -326,6 +328,22 @@ export function Sidebar({
       active = false;
     };
   }, []);
+
+  const handleLogout = React.useCallback(async () => {
+    if (isLoggingOut) {
+      return;
+    }
+
+    try {
+      setIsLoggingOut(true);
+      await homeApi.loginOut();
+    } catch (error) {
+      console.error('[Sidebar] 退出登录失败:', error);
+    } finally {
+      setIsLoggingOut(false);
+      onLogout();
+    }
+  }, [isLoggingOut, onLogout]);
 
   /** 渲染单个导航项（支持带子菜单的分组与普通条目） */
   const renderNavigationItem = (item: NavigationItemDefinition) => {
@@ -472,7 +490,13 @@ export function Sidebar({
             )}
           </div>
           {!isCollapsed && (
-            <button onClick={onLogout} className={`p-1.5 rounded-lg transition-colors ${isDarkMode ? 'text-slate-400 hover:bg-slate-700 hover:text-white' : 'text-slate-400 hover:bg-slate-200'}`}>
+            <button
+              onClick={() => {
+                void handleLogout();
+              }}
+              disabled={isLoggingOut}
+              className={`p-1.5 rounded-lg transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${isDarkMode ? 'text-slate-400 hover:bg-slate-700 hover:text-white' : 'text-slate-400 hover:bg-slate-200'}`}
+            >
               <LogOut className="w-4 h-4" />
             </button>
           )}

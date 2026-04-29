@@ -75,4 +75,15 @@ export const homeApi = {
     )
     return pickEmployeeMenus(response.data)
   },
+
+  /**
+   * 退出登录
+   * POST /api/v1/auth/loginOut
+   */
+  async loginOut() {
+    const response = await businessClient.post<unknown>(
+      '/api/v1/auth/loginOut',
+    )
+    return response.data
+  },
 }
