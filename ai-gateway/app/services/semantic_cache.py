@@ -10,11 +10,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
+import threading
 import time
 from dataclasses import dataclass
+from typing import Any, cast
 
 from pymilvus import (
     Collection,
@@ -49,6 +52,7 @@ class SemanticCacheService:
     def __init__(self) -> None:
         self._collection: Collection | None = None
         self._embedding_model = None
+        self._embedding_model_lock = threading.Lock()
 
     def _ensure_collection(self) -> Collection:
         """确保 semantic_cache Collection 存在，不存在则创建。"""
@@ -72,7 +76,7 @@ class SemanticCacheService:
                 description="语义缓存：存储 RAG 问答对的向量索引",
             )
             collection = Collection(name=self.COLLECTION_NAME, schema=schema)
-            collection.create_index(
+            _ = collection.create_index(
                 field_name="embedding",
                 index_params={"metric_type": "IP", "index_type": "IVF_FLAT", "params": {"nlist": 128}},
             )
@@ -92,21 +96,23 @@ class SemanticCacheService:
             命中率会无缘无故下降。这里统一走本地目录优先，保证离线部署下的向量空间稳定。
         """
         if self._embedding_model is None:
-            from flagembedding import BGEM3FlagModel
+            with self._embedding_model_lock:
+                if self._embedding_model is None:
+                    from FlagEmbedding import BGEM3FlagModel
 
-            model_source = resolve_model_source(
-                model_name=settings.embedding_model_name,
-                local_model_path=settings.embedding_model_path,
-            )
-            if model_source.source_kind == "local_path":
-                logger.info("Loading semantic cache embedding model from local path: %s", model_source.source)
-            elif model_source.configured_path:
-                logger.warning(
-                    "Configured EMBEDDING_MODEL_PATH is unavailable, fallback to EMBEDDING_MODEL_NAME: path=%s model=%s",
-                    model_source.configured_path,
-                    settings.embedding_model_name,
-                )
-            self._embedding_model = BGEM3FlagModel(model_source.source, use_fp16=True)
+                    model_source = resolve_model_source(
+                        model_name=settings.embedding_model_name,
+                        local_model_path=settings.embedding_model_path,
+                    )
+                    if model_source.source_kind == "local_path":
+                        logger.info("Loading semantic cache embedding model from local path: %s", model_source.source)
+                    elif model_source.configured_path:
+                        logger.warning(
+                            "Configured EMBEDDING_MODEL_PATH is unavailable, fallback to EMBEDDING_MODEL_NAME: path=%s model=%s",
+                            model_source.configured_path,
+                            settings.embedding_model_name,
+                        )
+                    self._embedding_model = BGEM3FlagModel(model_source.source, use_fp16=True)
         return self._embedding_model
 
     def _embed(self, text: str) -> list[float]:
@@ -117,6 +123,25 @@ class SemanticCacheService:
         if isinstance(result, dict):
             return result["dense_vecs"][0].tolist()
         return result[0].tolist()
+
+    async def _embed_async(self, text: str) -> list[float]:
+        return await asyncio.to_thread(self._embed, text)
+
+    @staticmethod
+    async def _collection_delete(collection: Collection, expr: str) -> None:
+        await asyncio.to_thread(collection.delete, expr=expr)
+
+    @staticmethod
+    async def _collection_num_entities(collection: Collection) -> int:
+        return int(await asyncio.to_thread(lambda: collection.num_entities))
+
+    @staticmethod
+    async def _collection_insert(collection: Collection, rows: list[list[Any]]) -> None:
+        await asyncio.to_thread(collection.insert, rows)
+
+    @staticmethod
+    async def _collection_flush(collection: Collection) -> None:
+        await asyncio.to_thread(collection.flush)
 
     @staticmethod
     def _question_hash(question: str) -> str:
@@ -133,15 +158,16 @@ class SemanticCacheService:
 
         try:
             collection = self._ensure_collection()
-            query_emb = self._embed(question)
+            query_emb = await self._embed_async(question)
 
-            results = collection.search(
+            results = cast(Any, await asyncio.to_thread(
+                collection.search,
                 data=[query_emb],
                 anns_field="embedding",
                 param={"metric_type": "IP", "params": {"nprobe": 10}},
                 limit=1,
                 output_fields=["answer", "sources_json", "ui_spec_json", "kb_version", "created_at"],
-            )
+            ))
 
             if not results or not results[0]:
                 return None
@@ -189,36 +215,39 @@ class SemanticCacheService:
 
         try:
             collection = self._ensure_collection()
-            query_emb = self._embed(question)
+            query_emb = await self._embed_async(question)
             q_hash = self._question_hash(question)
             now = int(time.time())
             cache_id = f"sc_{q_hash}_{now}"
 
             # 删除同一问题的旧缓存（基于 question_hash）
             try:
-                collection.delete(expr=f'question_hash == "{q_hash}"')
+                await self._collection_delete(collection, expr=f'question_hash == "{q_hash}"')
             except Exception:
                 pass
 
             # 容量管理：超过上限时删除最旧条目
-            if collection.num_entities >= settings.semantic_cache_max_size:
-                self._evict_oldest(collection)
+            if await self._collection_num_entities(collection) >= settings.semantic_cache_max_size:
+                await self._evict_oldest(collection)
 
             sources_json = json.dumps(sources, ensure_ascii=False)[:65000]
             ui_spec_json = json.dumps(ui_spec, ensure_ascii=False)[:65000] if ui_spec else ""
 
-            collection.insert([
-                [cache_id],
-                [q_hash],
-                [question[:2000]],
-                [query_emb],
-                [answer[:65000]],
-                [sources_json],
-                [ui_spec_json],
-                [kb_version],
-                [now],
-            ])
-            collection.flush()
+            await self._collection_insert(
+                collection,
+                [
+                    [cache_id],
+                    [q_hash],
+                    [question[:2000]],
+                    [query_emb],
+                    [answer[:65000]],
+                    [sources_json],
+                    [ui_spec_json],
+                    [kb_version],
+                    [now],
+                ],
+            )
+            await self._collection_flush(collection)
             logger.info("语义缓存已写入: question='%s'", question[:50])
 
         except Exception as exc:
@@ -253,19 +282,23 @@ class SemanticCacheService:
             return 0
 
     @staticmethod
-    def _evict_oldest(collection: Collection, batch: int = 100) -> None:
+    async def _evict_oldest(collection: Collection, batch: int = 100) -> None:
         """删除最旧的 batch 条缓存。"""
         try:
-            results = collection.query(
-                expr="created_at > 0",
-                output_fields=["id", "created_at"],
-                limit=batch,
+            results = cast(
+                Any,
+                await asyncio.to_thread(
+                    collection.query,
+                    expr="created_at > 0",
+                    output_fields=["id", "created_at"],
+                    limit=batch,
+                ),
             )
             if results:
                 results.sort(key=lambda r: r.get("created_at", 0))
                 ids = [r["id"] for r in results[:batch]]
                 if ids:
                     id_list = ", ".join(f'"{i}"' for i in ids)
-                    collection.delete(expr=f"id in [{id_list}]")
+                    await asyncio.to_thread(collection.delete, expr=f"id in [{id_list}]")
         except Exception as exc:
             logger.debug("语义缓存淘汰失败: %s", exc)

@@ -9,12 +9,12 @@ from statistics import mean
 from typing import Any
 
 from app.core.config import settings
-from app.models.schemas import (
+from app.models.schemas.knowledge import KnowledgeResult
+from app.models.schemas.api_query import (
     ApiQueryExecutionStatus,
     ApiQueryFormFieldRuntime,
     ApiQueryListFilterFieldRuntime,
     ApiQueryUIRuntime,
-    KnowledgeResult,
 )
 from app.services.api_query_request_schema_gate import build_request_schema_gated_fields
 from app.services.ui_catalog_service import UICatalogService
@@ -609,10 +609,7 @@ class DynamicUIService:
         custom_submit_payload = context.get("submit_payload")
         if isinstance(custom_submit_payload, dict):
             return custom_submit_payload
-        return {
-            field.submit_key: {"$bindState": field.state_path}
-            for field in runtime.form.fields
-        }
+        return {field.submit_key: {"$bindState": field.state_path} for field in runtime.form.fields}
 
     def _get_llm_service(self):
         """懒加载 LLMService 单例，避免规则模式也承担额外初始化成本。"""
@@ -1018,7 +1015,9 @@ class DynamicUIService:
                 },
             }
 
-        placeholder = f"请输入{field.name}" if field.value_type in {"string", "number", "boolean"} else f"请输入{field.name}"
+        placeholder = (
+            f"请输入{field.name}" if field.value_type in {"string", "number", "boolean"} else f"请输入{field.name}"
+        )
         return {
             "type": "PlannerInput",
             "props": {

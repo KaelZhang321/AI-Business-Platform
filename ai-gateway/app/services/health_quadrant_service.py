@@ -20,6 +20,7 @@ import aiomysql
 import httpx
 
 from app.core.config import settings
+from app.utils.text_utils import normalize_text_or_none as _normalize_text
 from app.services.health_quadrant_llm_service import HealthQuadrantLLMService
 from app.services.health_quadrant_mysql_pools import HealthQuadrantMySQLPools
 from app.services.health_quadrant_repository import HealthQuadrantRepository
@@ -88,9 +89,14 @@ class _TreatmentTriageItem:
     @property
     def dedupe_key(self) -> str:
         """用于同指标冲突裁决的稳定键。"""
+        return_text = ""
         if self.value_or_desc is None or len(self.value_or_desc.strip()) == 0 or self.value_or_desc in self.item_name:
-            return self.item_name
-        return f"{self.item_name}：{self.value_or_desc}"
+            return_text = self.item_name
+        else:
+            return_text = f"{self.item_name}：{self.value_or_desc}"
+        if re.search("^\d{1,2}分$", return_text):
+            return_text = "人体成分评分：" + return_text
+        return return_text
 
 
 @dataclass(frozen=True)
@@ -258,14 +264,23 @@ class HealthQuadrantService:
                 cached_status,
             )
             if cached:
+                cached_quadrants = _normalize_quadrants_payload(cached)
+                if _has_quadrant_cache_content(cached_quadrants):
+                    logger.info(
+                        "health quadrant query cache hit trace_id=%s study_id=%s quadrant_type=%s status=%s",
+                        normalized_trace_id,
+                        study_id,
+                        quadrant_type,
+                        cached_status,
+                    )
+                    return {"quadrants": cached_quadrants, "fromCache": True}
                 logger.info(
-                    "health quadrant query cache hit trace_id=%s study_id=%s quadrant_type=%s status=%s",
+                    "health quadrant query cache ignored trace_id=%s study_id=%s quadrant_type=%s status=%s reason=empty_quadrant_content",
                     normalized_trace_id,
                     study_id,
                     quadrant_type,
                     cached_status,
                 )
-                return {"quadrants": _normalize_quadrants_payload(cached), "fromCache": True}
 
             # 4) 缓存未命中时才进入实时计算分支，降低高并发下的跨库与 LLM 成本。
             compute_started_at = time.perf_counter()
@@ -722,6 +737,8 @@ class HealthQuadrantService:
                 one_item = _normalize_text(row.get("one_item_name"))
                 two_item = _normalize_text(row.get("two_item_name"))
                 abnormal_item = _normalize_text(row.get("abnormal_item"))
+                if re.search("^\d{1, 2}分$", abnormal_item) or re.search("人体成[份分]", one_item):
+                    abnormal_item = "人体成份检查：" + abnormal_item
                 category = _normalize_text(row.get("category_name"))
                 if not abnormal_item:
                     continue
@@ -1464,13 +1481,6 @@ def _normalize_single_exam_items(items: list[dict[str, Any]]) -> list[dict[str, 
     return normalized
 
 
-def _normalize_text(value: Any) -> str | None:
-    if value is None:
-        return None
-    text = str(value).strip()
-    return text or None
-
-
 def _safe_int(value: Any, *, default: int) -> int:
     """安全转换整数，避免脏数据把排序链路打断。"""
 
@@ -1866,6 +1876,15 @@ def _normalize_quadrants_payload(payload: dict[str, Any]) -> list[dict[str, Any]
             }
         )
     return normalized
+
+
+def _has_quadrant_cache_content(quadrants: list[dict[str, Any]]) -> bool:
+    """缓存四象限至少包含一条异常指标或推荐方案时才算业务命中。"""
+
+    return any(
+        bool(quadrant.get("abnormal_indicators")) or bool(quadrant.get("recommendation_plans"))
+        for quadrant in quadrants
+    )
 
 
 def json_loads_safe(raw: str) -> dict[str, Any] | list[Any] | None:

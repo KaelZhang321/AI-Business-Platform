@@ -14,7 +14,7 @@ from typing import Any
 
 import redis.asyncio as aioredis
 
-from app.core.config import settings
+from app.core.config import reveal_secret, settings
 from app.services.api_catalog.graph_models import (
     ApiCatalogSubgraphResult,
     GraphCacheHitResult,
@@ -42,7 +42,7 @@ class GraphCacheService:
         default_ttl_seconds: int | None = None,
         singleflight_ttl_seconds: int | None = None,
     ) -> None:
-        self._redis_url = redis_url or settings.redis_url
+        self._redis_url = redis_url or reveal_secret(settings.redis_url)
         self._enabled = settings.api_catalog_graph_cache_enabled if enabled is None else enabled
         self._default_ttl_seconds = default_ttl_seconds or settings.api_catalog_graph_cache_ttl_seconds
         self._singleflight_ttl_seconds = (

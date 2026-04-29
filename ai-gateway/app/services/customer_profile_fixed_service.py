@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree
 
-from app.models.schemas import (
+from app.models.schemas.api_query import (
     ApiQueryExecutionPlan,
     ApiQueryExecutionResult,
     ApiQueryExecutionStatus,
@@ -68,7 +68,6 @@ _PROFILE_KEYWORDS = (
     "客户概况",
     "客户总览",
     "客户全貌",
-
 )
 
 _EXCLUDED_SINGLE_TOPIC_KEYWORDS = (
@@ -115,7 +114,9 @@ _CANDIDATE_TABLE_FIELDS = (
 
 _CUSTOMER_NAME_PATTERNS = (
     re.compile(r"客户(?!信息|资料|档案|画像|详情|概况|总览|全貌)(?P<name>[\u4e00-\u9fa5A-Za-z0-9·]{2,20})"),
-    re.compile(r"(?:查询|查看|展示)(?P<name>[\u4e00-\u9fa5A-Za-z0-9·]{2,20})(?:的)?(?:客户|个人|健康|电子|完整|全部|详细)"),
+    re.compile(
+        r"(?:查询|查看|展示)(?P<name>[\u4e00-\u9fa5A-Za-z0-9·]{2,20})(?:的)?(?:客户|个人|健康|电子|完整|全部|详细)"
+    ),
 )
 _PHONE_PATTERN = re.compile(r"(?<!\d)1[3-9]\d{9}(?!\d)")
 _ID_CARD_PATTERN = re.compile(r"(?<![0-9A-Za-z])\d{17}[0-9Xx](?![0-9A-Za-z])")
@@ -321,7 +322,9 @@ class CustomerProfileFixedService:
                 plan=ApiQueryExecutionPlan(plan_id=_CUSTOMER_PROFILE_PLAN_ID, steps=plan_steps),
             )
 
-        section_results: list[tuple[CustomerProfileSection, ApiCatalogEntry, ApiQueryExecutionResult, dict[str, Any]]] = []
+        section_results: list[
+            tuple[CustomerProfileSection, ApiCatalogEntry, ApiQueryExecutionResult, dict[str, Any]]
+        ] = []
         for section in catalog.sections:
             entry = catalog.entries_by_id.get(section.api_id)
             if entry is None or entry.id == _CUSTOMER_LOOKUP_API_ID:
@@ -380,7 +383,9 @@ def detect_customer_profile_trigger(query: str) -> CustomerProfileTrigger | None
 
     explicit_customer_id = _CUSTOMER_ID_PATTERN.search(normalized_query)
     if explicit_customer_id:
-        return CustomerProfileTrigger(keyword=keyword, customer_value=explicit_customer_id.group("id"), identifier_type="customer_id")
+        return CustomerProfileTrigger(
+            keyword=keyword, customer_value=explicit_customer_id.group("id"), identifier_type="customer_id"
+        )
 
     id_card = _ID_CARD_PATTERN.search(normalized_query)
     if id_card:
@@ -822,7 +827,9 @@ def build_section_elements(
         资产分区是一个接口返回三块业务数据，因此拆成三张兄弟卡片，避免复合接口被挤在同一张大卡里。
     """
     if section.key == "asset_overview":
-        return build_asset_section_elements(section=section, entry=entry, result=result, params=params, trace_id=trace_id)
+        return build_asset_section_elements(
+            section=section, entry=entry, result=result, params=params, trace_id=trace_id
+        )
 
     if result.status == ApiQueryExecutionStatus.ERROR:
         content = build_error_info_grid(section, entry, result)
@@ -857,7 +864,11 @@ def build_asset_section_elements(
     让前端可以按业务块独立刷新、折叠或定位，而不是把复合接口压成一张巨型详情卡。
     """
     if result.status == ApiQueryExecutionStatus.ERROR:
-        return [build_section_card(section=section, entry=entry, result=result, children=[build_error_info_grid(section, entry, result)])]
+        return [
+            build_section_card(
+                section=section, entry=entry, result=result, children=[build_error_info_grid(section, entry, result)]
+            )
+        ]
 
     payload = first_result_row(result.data)
     summary = payload.get("summaryCard") if isinstance(payload.get("summaryCard"), dict) else {}
@@ -877,7 +888,8 @@ def build_asset_section_elements(
             "items": [
                 {"label": label_index.get(field, field), "value": stringify_value(value)}
                 for field, value in summary.items()
-            ] or [{"label": "提示", "value": "暂无数据"}],
+            ]
+            or [{"label": "提示", "value": "暂无数据"}],
             **runtime_props,
         },
     }
@@ -975,16 +987,17 @@ def build_detail_items(entry: ApiCatalogEntry, row: dict[str, Any]) -> list[dict
     fields = select_detail_fields(entry, row)
     if not fields:
         return [{"label": "提示", "value": "暂无数据"}]
-    return [
-        {"label": label_index.get(field, field), "value": stringify_value(row.get(field))}
-        for field in fields
-    ]
+    return [{"label": label_index.get(field, field), "value": stringify_value(row.get(field))} for field in fields]
 
 
 def select_detail_fields(entry: ApiCatalogEntry, row: dict[str, Any]) -> list[str]:
     """选择详情卡字段集合。"""
-    display_fields = [field for field in entry.detail_view_meta.display_fields if field not in entry.detail_view_meta.exclude_fields]
-    required_fields = [field for field in entry.detail_view_meta.required_fields if field not in entry.detail_view_meta.exclude_fields]
+    display_fields = [
+        field for field in entry.detail_view_meta.display_fields if field not in entry.detail_view_meta.exclude_fields
+    ]
+    required_fields = [
+        field for field in entry.detail_view_meta.required_fields if field not in entry.detail_view_meta.exclude_fields
+    ]
     ordered_fields = list(dict.fromkeys([*required_fields, *display_fields]))
     if ordered_fields:
         return ordered_fields
@@ -1043,10 +1056,7 @@ def build_table_element(
             "title": title,
             "bizFieldKey": biz_field_key,
             "apiId": api_id,
-            "columns": [
-                {"key": key, "title": label_index.get(key, key), "dataIndex": key}
-                for key in keys
-            ],
+            "columns": [{"key": key, "title": label_index.get(key, key), "dataIndex": key} for key in keys],
             "dataSource": rows,
             **runtime_props,
         },
@@ -1095,7 +1105,7 @@ def read_customer_value_by_source_path(row: dict[str, Any], source_path: str) ->
     path = source_path.strip()
     for prefix in ("$.", "$.data.", "$.data[*]."):
         if path.startswith(prefix):
-            path = path[len(prefix):]
+            path = path[len(prefix) :]
             break
     path = path.replace("[*]", "")
     current: Any = row
@@ -1278,7 +1288,11 @@ def _resolve_selected_customer_from_context(
 def _row_matches_trigger(row: dict[str, Any], trigger: CustomerProfileTrigger) -> bool:
     target = trigger.customer_value
     if trigger.identifier_type == "customer_id":
-        return target in {str(row.get("id") or ""), str(row.get("customerId") or ""), str(row.get("customerMasterId") or "")}
+        return target in {
+            str(row.get("id") or ""),
+            str(row.get("customerId") or ""),
+            str(row.get("customerMasterId") or ""),
+        }
     if trigger.identifier_type == "phone":
         return target in {str(row.get("phone") or ""), str(row.get("phoneObfuscated") or "")}
     if trigger.identifier_type == "id_card":

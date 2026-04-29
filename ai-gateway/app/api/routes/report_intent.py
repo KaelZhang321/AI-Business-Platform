@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends
 
 from app.api.dependencies import get_report_intent_service
 from app.core.error_codes import BusinessError, ErrorCode
-from app.models.schemas import (
+from app.models.schemas.report_intent import (
     ReportIntentDialogData,
     ReportIntentDialogEnvelopeResponse,
     ReportIntentDialogRequest,

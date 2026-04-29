@@ -14,7 +14,7 @@ from typing import Any, TypeVar
 import aiomysql
 
 from app.core.config import settings
-from app.models.schemas import (
+from app.models.schemas.catalog_governance import (
     ApiCatalogGovernanceRunResponse,
     SemanticCurationMode,
     SemanticCurationPhase,
@@ -207,10 +207,7 @@ class SemanticCurationRunRepository:
             return None
 
         selected_columns = [column for column in _RUN_KNOWN_COLUMNS if column in columns]
-        sql = (
-            f"SELECT {', '.join(selected_columns)} "
-            f"FROM {_RUN_TABLE} WHERE run_id = %s ORDER BY id DESC LIMIT 1"
-        )
+        sql = f"SELECT {', '.join(selected_columns)} FROM {_RUN_TABLE} WHERE run_id = %s ORDER BY id DESC LIMIT 1"
 
         try:
             pool = await self._get_pool()

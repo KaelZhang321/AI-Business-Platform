@@ -2,17 +2,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
+from typing import Any, cast
 
 from elasticsearch import AsyncElasticsearch
-from FlagEmbedding import BGEM3FlagModel, FlagReranker
 from neo4j import AsyncGraphDatabase
 from pymilvus import Collection, connections
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
-from app.core.config import settings
+from app.core.config import reveal_secret, settings
 from app.core.model_source import resolve_model_source
-from app.models.schemas import KnowledgeResult
+from app.models.schemas.knowledge import KnowledgeResult
 
 
 class RAGService:
@@ -22,8 +23,10 @@ class RAGService:
         self._milvus_collection: Collection | None = None
         self._es: AsyncElasticsearch | None = None
         self._neo4j = None
-        self._embedding_model: BGEM3FlagModel | None = None
-        self._reranker: FlagReranker | None = None
+        self._embedding_model = None
+        self._reranker = None
+        self._embedding_model_lock = threading.Lock()
+        self._reranker_lock = threading.Lock()
         self._clickhouse_engine: AsyncEngine | None = None
         self._logger = logging.getLogger(__name__)
 
@@ -38,7 +41,7 @@ class RAGService:
         if self._es is None:
             self._es = AsyncElasticsearch(
                 settings.elasticsearch_url,
-                basic_auth=(settings.elasticsearch_username, settings.elasticsearch_password),
+                basic_auth=(settings.elasticsearch_username, reveal_secret(settings.elasticsearch_password)),
             )
         return self._es
 
@@ -46,30 +49,38 @@ class RAGService:
         if self._neo4j is None:
             self._neo4j = AsyncGraphDatabase.driver(
                 settings.neo4j_uri,
-                auth=(settings.neo4j_user, settings.neo4j_password),
+                auth=(settings.neo4j_user, reveal_secret(settings.neo4j_password)),
             )
         return self._neo4j
 
-    def _embedder(self) -> BGEM3FlagModel:
+    def _embedder(self):
         if self._embedding_model is None:
-            model_source = resolve_model_source(
-                model_name=settings.embedding_model_name,
-                local_model_path=settings.embedding_model_path,
-            )
-            if model_source.source_kind == "local_path":
-                self._logger.info("Loading RAG embedding model from local path: %s", model_source.source)
-            elif model_source.configured_path:
-                self._logger.warning(
-                    "Configured EMBEDDING_MODEL_PATH is unavailable, fallback to EMBEDDING_MODEL_NAME: path=%s model=%s",
-                    model_source.configured_path,
-                    settings.embedding_model_name,
-                )
-            self._embedding_model = BGEM3FlagModel(model_source.source, use_fp16=True)
+            with self._embedding_model_lock:
+                if self._embedding_model is None:
+                    from FlagEmbedding import BGEM3FlagModel
+
+                    model_source = resolve_model_source(
+                        model_name=settings.embedding_model_name,
+                        local_model_path=settings.embedding_model_path,
+                    )
+                    if model_source.source_kind == "local_path":
+                        self._logger.info("Loading RAG embedding model from local path: %s", model_source.source)
+                    elif model_source.configured_path:
+                        self._logger.warning(
+                            "Configured EMBEDDING_MODEL_PATH is unavailable, fallback to EMBEDDING_MODEL_NAME: path=%s model=%s",
+                            model_source.configured_path,
+                            settings.embedding_model_name,
+                        )
+                    self._embedding_model = BGEM3FlagModel(model_source.source, use_fp16=True)
         return self._embedding_model
 
-    def _reranker_model(self) -> FlagReranker:
+    def _reranker_model(self):
         if self._reranker is None:
-            self._reranker = FlagReranker(settings.reranker_model_name, use_fp16=True)
+            with self._reranker_lock:
+                if self._reranker is None:
+                    from FlagEmbedding import FlagReranker
+
+                    self._reranker = FlagReranker(settings.reranker_model_name, use_fp16=True)
         return self._reranker
 
     def _clickhouse(self) -> AsyncEngine:
@@ -121,16 +132,17 @@ class RAGService:
     # --- search backends ----------------------------------------------
     async def _vector_search(self, query: str, doc_types: list[str] | None) -> list[KnowledgeResult]:
         embedder = self._embedder()
-        query_emb = embedder.encode([query])["dense_vecs"][0]
+        query_emb = (await asyncio.to_thread(embedder.encode, [query]))["dense_vecs"][0]
         collection = self._milvus()
-        results = collection.search(
+        results = cast(Any, await asyncio.to_thread(
+            collection.search,
             data=[query_emb],
             anns_field=settings.milvus_vector_field,
             param={"metric_type": "IP", "params": {"nprobe": 10}},
             limit=settings.milvus_search_limit,
             output_fields=settings.milvus_output_fields,
             expr=self._build_doc_type_expr(doc_types),
-        )
+        ))
         hits: list[KnowledgeResult] = []
         for hit in results[0]:
             field_data = hit.entity.get("_row_data", {})
@@ -177,7 +189,7 @@ class RAGService:
 
         # 1) 全文索引检索（通用知识）
         fulltext_cypher = """
-        CALL db.index.fulltext.queryNodes('knowledge_index', $query)
+        CALL db.index.fulltext.queryNodes('knowledge_index', $query_text)
         YIELD node, score
         RETURN labels(node)[0] AS label, node.name AS title, node.description AS content, score
         LIMIT 10
@@ -186,7 +198,7 @@ class RAGService:
         relation_cypher = """
         MATCH (n)
         WHERE any(lbl IN labels(n) WHERE lbl IN ['Disease','Medicine','Symptom','Examination'])
-          AND toLower(n.name) CONTAINS toLower($query)
+          AND toLower(n.name) CONTAINS toLower($query_text)
         OPTIONAL MATCH (n)-[r]->(m)
         RETURN n.name AS entity, labels(n)[0] AS entity_type,
                type(r) AS rel, m.name AS related, labels(m)[0] AS related_type,
@@ -196,7 +208,7 @@ class RAGService:
         try:
             async with driver.session() as session:
                 # 全文检索
-                result = await session.run(fulltext_cypher, query=query)
+                result = await session.run(fulltext_cypher, query_text=query)
                 async for rec in result:
                     records.append(
                         KnowledgeResult(
@@ -210,7 +222,7 @@ class RAGService:
                     )
 
                 # 实体关系
-                result2 = await session.run(relation_cypher, query=query)
+                result2 = await session.run(relation_cypher, query_text=query)
                 seen = set()
                 async for rec in result2:
                     entity = rec["entity"]
@@ -273,10 +285,10 @@ class RAGService:
 
     async def _rerank(self, query: str, results: list[KnowledgeResult], top_k: int) -> list[KnowledgeResult]:
         reranker = self._reranker_model()
-        pairs = [[query, doc.content] for doc in results[: settings.rag_rerank_limit]]
+        pairs = [(query, doc.content) for doc in results[: settings.rag_rerank_limit]]
         if not pairs:
             return []
-        scores = reranker.compute_score(pairs)
+        scores = await asyncio.to_thread(reranker.compute_score, pairs)
         reranked = list(zip(results[: settings.rag_rerank_limit], scores))
         reranked.sort(key=lambda item: item[1], reverse=True)
         final = []

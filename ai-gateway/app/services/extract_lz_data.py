@@ -22,10 +22,12 @@ import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 import pandas as pd
 import pymysql
+
+from app.core.mysql import build_business_mysql_conn_params
+from app.utils.text_utils import normalize_text as _normalize_text
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -60,8 +62,6 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.append(str(_PROJECT_ROOT))
 _load_project_env_file()
 
-from app.core.mysql import build_business_mysql_conn_params
-
 logger = logging.getLogger(__name__)
 
 _DOCS_DIR = _REPO_ROOT / "docs"
@@ -90,17 +90,6 @@ class ImportStats:
     mapping_source_rows: int = 0
     mapping_inserted: int = 0
     mapping_skipped: int = 0
-
-
-def _normalize_text(value: Any) -> str:
-    """标准化文本并过滤空值。"""
-
-    if value is None:
-        return ""
-    text = str(value).strip()
-    if not text or text.lower() == "nan":
-        return ""
-    return text
 
 
 def _detect_suitable_sex(project_name: str) -> str:

@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 
 import httpx
 
-from app.core.config import settings
+from app.core.config import reveal_secret, settings
 
 logger = logging.getLogger(__name__)
 
@@ -65,14 +65,15 @@ class ModelRouter:
                 priority=0,
             ),
         ]
-        if settings.openai_api_key:
+        openai_api_key = reveal_secret(settings.openai_api_key)
+        if openai_api_key:
             backends.append(
                 ModelBackend(
                     name="openai-api",
                     type="openai",
                     base_url=settings.openai_base_url or "https://api.openai.com",
                     model="gpt-4o-mini",
-                    api_key=settings.openai_api_key,
+                    api_key=openai_api_key,
                     priority=10,
                 )
             )

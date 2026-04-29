@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends
 from app.api.dependencies import get_text2sql_service
 from app.core.config import Settings
 from app.core.dependencies import get_settings
-from app.models.schemas import (
+from app.models.schemas.text2sql import (
     Text2SQLRequest,
     Text2SQLResponse,
     TrainRequest,

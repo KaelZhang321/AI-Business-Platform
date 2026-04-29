@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 import pytest
 
+from app.services.api_catalog.business_intents import BusinessIntentCatalogService, set_business_intent_catalog_service
 from app.models.schemas import (
     ApiQueryExecutionResult,
     ApiQueryExecutionStatus,
@@ -369,6 +370,13 @@ def _build_workflow(
         allowed_business_intent_codes_getter=lambda: {"none", "saveToServer", "deleteCustomer"},
         customer_profile_service=customer_profile_service,
     )
+
+
+@pytest.fixture(autouse=True)
+def api_query_workflow_intent_catalog_fixture():
+    set_business_intent_catalog_service(BusinessIntentCatalogService())
+    yield
+    set_business_intent_catalog_service(None)
 
 
 @pytest.mark.asyncio
@@ -1603,7 +1611,7 @@ async def test_workflow_predecessor_source_path_relative_or_legacy_root_both_sup
 
     assert response.execution_status == ApiQueryExecutionStatus.SUCCESS
     assert [item[0] for item in executor.calls] == ["customer_info_v1", "stored_plan_v1"]
-    assert executor.calls[-1][1]["encryptedIdCard"] == ["2512160009"]
+    assert executor.calls[-1][1]["encryptedIdCard"] == "2512160009"
 
 
 @pytest.mark.asyncio
@@ -1716,7 +1724,7 @@ async def test_workflow_multi_candidate_repairs_required_predecessor_binding_sem
     assert planner.build_calls == 1
     assert planner.validate_calls == 1
     assert [item[0] for item in executor.calls] == ["customer_info_v1", "stored_plan_v1"]
-    assert executor.calls[-1][1]["encryptedIdCard"] == ["2512160009"]
+    assert executor.calls[-1][1]["encryptedIdCard"] == "2512160009"
     assert response.error is None
     assert response.execution_plan is not None
     assert response.execution_plan.steps[1].params["encryptedIdCard"] == "$[step_customer_info_v1.data][*].idCard"

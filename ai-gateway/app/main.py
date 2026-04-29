@@ -15,16 +15,12 @@ from app.api.routes.api_query import router as api_query_router
 from app.api.routes.catalog_governance import router as catalog_governance_router
 from app.api.routes.health_quadrant import router as health_quadrant_router
 from app.api.routes.report_intent import router as report_intent_router
-from app.api.routes.smart_meal import (
-    get_smart_meal_package_recommend_service,
-    get_smart_meal_risk_service,
-    router as smart_meal_router,
-)
+from app.api.routes.smart_meal import router as smart_meal_router
 from app.api.routes.transcript_extract import router as transcript_extract_router
-from app.core.config import settings
+from app.core.config import reveal_secret, settings
 from app.core.resources import AppResources
 from app.core.error_codes import BusinessError, ErrorCode
-from app.models.schemas import HealthResponse
+from app.models.schemas.health import HealthResponse
 from app.services.api_catalog.business_intents import get_business_intent_catalog_service
 from app.services.identity_vault import IdentityVault
 
@@ -147,48 +143,69 @@ _service_status: dict[str, str] = {}
 _identity_vault = IdentityVault()
 
 
+def _verify_milvus_sync() -> tuple[str, str]:
+    from pymilvus import connections, utility
+
+    connections.connect(alias="default", host=settings.milvus_host, port=settings.milvus_port)
+    has = utility.has_collection(settings.milvus_collection)
+    return ("milvus", "ok" if has else "collection_missing")
+
+
+async def _verify_milvus() -> tuple[str, str]:
+    return await asyncio.to_thread(_verify_milvus_sync)
+
+
+async def _verify_elasticsearch() -> tuple[str, str, object | None]:
+    from elasticsearch import AsyncElasticsearch
+
+    client = AsyncElasticsearch(
+        settings.elasticsearch_url,
+        basic_auth=(settings.elasticsearch_username, reveal_secret(settings.elasticsearch_password)),
+    )
+    exists = await client.indices.exists(index=settings.elasticsearch_index)
+    status = "ok" if exists else "index_missing"
+    return ("elasticsearch", status, client)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     log_file_path = _configure_application_logging()
     logger.info("AI网关日志双写已启用, file=%s", log_file_path)
 
     # ── 启动时：LangSmith 初始化 ─────────────────────────
-    if settings.langsmith_tracing and settings.langsmith_api_key:
+    langsmith_api_key = reveal_secret(settings.langsmith_api_key)
+    if settings.langsmith_tracing and langsmith_api_key:
         os.environ["LANGCHAIN_TRACING_V2"] = "true"
-        os.environ["LANGCHAIN_API_KEY"] = settings.langsmith_api_key
+        os.environ["LANGCHAIN_API_KEY"] = langsmith_api_key
         os.environ["LANGCHAIN_PROJECT"] = settings.langsmith_project
         logger.info("LangSmith tracing 已启用, project=%s", settings.langsmith_project)
 
     # ── 启动时：轻量级连接验证 ──────────────────────────
     logger.info("AI网关启动中 — 验证外部服务连接 ...")
 
-    # 1) Milvus
-    try:
-        from pymilvus import connections, utility
-
-        connections.connect(alias="default", host=settings.milvus_host, port=settings.milvus_port)
-        has = utility.has_collection(settings.milvus_collection)
-        _service_status["milvus"] = "ok" if has else "collection_missing"
-        logger.info("Milvus 连接成功, collection '%s' 存在: %s", settings.milvus_collection, has)
-    except Exception as exc:
-        _service_status["milvus"] = f"error: {exc}"
-        logger.warning("Milvus 连接失败: %s", exc)
-
-    # 2) Elasticsearch
     es_client = None
-    try:
-        from elasticsearch import AsyncElasticsearch
+    connection_results = await asyncio.gather(
+        _verify_milvus(),
+        _verify_elasticsearch(),
+        return_exceptions=True,
+    )
+    milvus_result = connection_results[0]
+    es_result = connection_results[1]
 
-        es_client = AsyncElasticsearch(
-            settings.elasticsearch_url,
-            basic_auth=(settings.elasticsearch_username, settings.elasticsearch_password),
-        )
-        exists = await es_client.indices.exists(index=settings.elasticsearch_index)
-        _service_status["elasticsearch"] = "ok" if exists else "index_missing"
-        logger.info("Elasticsearch 连接成功, index '%s' 存在: %s", settings.elasticsearch_index, exists)
-    except Exception as exc:
-        _service_status["elasticsearch"] = f"error: {exc}"
-        logger.warning("Elasticsearch 连接失败: %s", exc)
+    if isinstance(milvus_result, Exception):
+        _service_status["milvus"] = f"error: {milvus_result}"
+        logger.warning("Milvus 连接失败: %s", milvus_result)
+    else:
+        _service_status[milvus_result[0]] = milvus_result[1]
+        logger.info("Milvus 连接成功, collection '%s' 状态: %s", settings.milvus_collection, milvus_result[1])
+
+    if isinstance(es_result, Exception):
+        _service_status["elasticsearch"] = f"error: {es_result}"
+        logger.warning("Elasticsearch 连接失败: %s", es_result)
+    else:
+        _, es_status, es_client = es_result
+        _service_status["elasticsearch"] = es_status
+        logger.info("Elasticsearch 连接成功, index '%s' 状态: %s", settings.elasticsearch_index, es_status)
 
     # # 3) Ollama (LLM) — 轻量 ping
     # ollama_client = httpx.AsyncClient(base_url=settings.ollama_base_url, timeout=5)
@@ -210,29 +227,23 @@ async def lifespan(app: FastAPI):
     app.state.resources = AppResources()
     await app.state.resources.start()
     app.state.rag_service = app.state.resources.rag_service
-    await get_business_intent_catalog_service().warmup()
-    # 健康四象限依赖三套数据库。启动期预热连接池可降低首个请求的冷启动时延。
-    try:
-        await app.state.resources.health_quadrant_service.warmup()
-        logger.info("HealthQuadrantService 连接池预热完成")
-    except Exception as exc:
-        logger.warning("HealthQuadrantService 连接池预热失败: %s", exc)
+    warmup_tasks: list[tuple[str, object]] = [
+        ("BusinessIntentCatalogService", get_business_intent_catalog_service().warmup()),
+    ]
+    if app.state.resources.health_quadrant_service is not None:
+        warmup_tasks.append(("HealthQuadrantService", app.state.resources.health_quadrant_service.warmup()))
+    if app.state.resources.smart_meal_risk_service is not None:
+        warmup_tasks.append(("SmartMealRiskService", app.state.resources.smart_meal_risk_service.warmup()))
+    if app.state.resources.smart_meal_package_recommend_service is not None:
+        warmup_tasks.append(("SmartMealPackageRecommendService", app.state.resources.smart_meal_package_recommend_service.warmup()))
 
-    # 智能订餐风险识别服务预热连接池，降低首请求延迟。
-    smart_meal_risk_service = get_smart_meal_risk_service()
-    try:
-        await smart_meal_risk_service.warmup()
-        logger.info("SmartMealRiskService 连接池预热完成")
-    except Exception as exc:
-        logger.warning("SmartMealRiskService 连接池预热失败: %s", exc)
-
-    # 智能订餐套餐推荐服务预热连接池，避免首个推荐请求触发建池抖动。
-    smart_meal_package_recommend_service = get_smart_meal_package_recommend_service()
-    try:
-        await smart_meal_package_recommend_service.warmup()
-        logger.info("SmartMealPackageRecommendService 连接池预热完成")
-    except Exception as exc:
-        logger.warning("SmartMealPackageRecommendService 连接池预热失败: %s", exc)
+    warmup_coroutines = [coro for _, coro in warmup_tasks]
+    warmup_results = await asyncio.gather(*warmup_coroutines, return_exceptions=True)
+    for (service_name, _), warmup_result in zip(warmup_tasks, warmup_results, strict=False):
+        if isinstance(warmup_result, Exception):
+            logger.warning("%s 预热失败: %s", service_name, warmup_result)
+        else:
+            logger.info("%s 预热完成", service_name)
 
     # ── 启动缓存失效监听器（S5-6 + S5-11 语义缓存联动）────
     cache_task = None
@@ -241,10 +252,8 @@ async def lifespan(app: FastAPI):
             set_semantic_cache_service,
             start_cache_invalidation_listener,
         )
-        from app.services.semantic_cache import SemanticCacheService
-
         if settings.semantic_cache_enabled:
-            semantic_cache = SemanticCacheService()
+            semantic_cache = app.state.resources.semantic_cache_service
             set_semantic_cache_service(semantic_cache)
             logger.info(
                 "语义缓存服务已初始化 (threshold=%.2f, ttl=%dh)",
@@ -267,15 +276,6 @@ async def lifespan(app: FastAPI):
         cache_task.cancel()
         logger.info("缓存失效监听器已取消")
 
-    # ChatWorkflow httpx 客户端
-    try:
-        from app.api.routes.chat import workflow as chat_workflow
-
-        await chat_workflow.close()
-        logger.info("ChatWorkflow HTTP 客户端已关闭")
-    except Exception as exc:
-        logger.warning("关闭 ChatWorkflow 失败: %s", exc)
-
     # AppResources 持有共享业务库连接池，必须先关闭上层服务，再统一释放底层 pool。
     resources = getattr(app.state, "resources", None)
     if isinstance(resources, AppResources):
@@ -284,20 +284,6 @@ async def lifespan(app: FastAPI):
             logger.info("AppResources 已关闭")
         except Exception as exc:
             logger.warning("关闭 AppResources 失败: %s", exc)
-
-    # 智能订餐风险识别服务资源
-    try:
-        await get_smart_meal_risk_service().close()
-        logger.info("SmartMealRiskService 已关闭")
-    except Exception as exc:
-        logger.warning("关闭 SmartMealRiskService 失败: %s", exc)
-
-    # 智能订餐套餐推荐服务资源
-    try:
-        await get_smart_meal_package_recommend_service().close()
-        logger.info("SmartMealPackageRecommendService 已关闭")
-    except Exception as exc:
-        logger.warning("关闭 SmartMealPackageRecommendService 失败: %s", exc)
 
     # Elasticsearch
     if es_client:
@@ -343,7 +329,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.cors_allow_origins,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -429,9 +415,9 @@ app.include_router(smart_meal_router, prefix="/api/v1")
 app.include_router(transcript_extract_router, prefix="/api/v1")
 
 # MCP Server 路由
-from app.mcp_server.server import mcp_server  # noqa: E402
+from app.mcp_server.server import create_mcp_http_app  # noqa: E402
 
-app.mount("/mcp", mcp_server.http_app())
+app.mount("/mcp", create_mcp_http_app())
 
 
 @app.get("/health", response_model=HealthResponse, tags=["系统"])
@@ -463,7 +449,8 @@ async def prometheus_middleware(request, call_next):
     response = await call_next(request)
     elapsed = time.perf_counter() - start
 
-    endpoint = request.url.path
+    route = request.scope.get("route")
+    endpoint = route.path if route and hasattr(route, "path") else request.url.path
     REQUEST_COUNT.labels(method=request.method, endpoint=endpoint, status=response.status_code).inc()
     REQUEST_LATENCY.labels(endpoint=endpoint).observe(elapsed)
     return response

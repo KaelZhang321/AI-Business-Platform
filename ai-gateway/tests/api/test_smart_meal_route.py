@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from app.api import dependencies as api_dependencies
 from app.api.routes import smart_meal as smart_meal_route
 
 
@@ -43,8 +44,9 @@ def create_test_app() -> FastAPI:
 
 
 def test_smart_meal_route_returns_envelope(monkeypatch) -> None:
-    monkeypatch.setattr(smart_meal_route, "_service", StubSmartMealRiskService())
-    client = TestClient(create_test_app())
+    app = create_test_app()
+    app.dependency_overrides[api_dependencies.get_smart_meal_risk_service] = lambda: StubSmartMealRiskService()
+    client = TestClient(app)
 
     response = client.post(
         "/api/v1/smart-meal/risk-identify",
@@ -70,3 +72,4 @@ def test_smart_meal_route_returns_envelope(monkeypatch) -> None:
             "source_dish": "蒜蓉西兰花",
         }
     ]
+    app.dependency_overrides.pop(api_dependencies.get_smart_meal_risk_service, None)
