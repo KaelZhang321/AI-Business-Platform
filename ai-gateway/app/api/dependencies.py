@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+from typing import TypeVar
+
 from fastapi import Depends, Request
 
 from app.core.resources import AppResources, get_app_resources
@@ -25,7 +27,10 @@ from app.services.transcript_extract_service import TranscriptExtractService
 from app.services.ui_catalog_service import UICatalogService
 
 
-def _require[T](value: T | None, name: str) -> T:
+T = TypeVar("T")
+
+
+def _require(value: T | None, name: str) -> T:
     if value is None:
         raise RuntimeError(f"{name} 尚未初始化")
     return value

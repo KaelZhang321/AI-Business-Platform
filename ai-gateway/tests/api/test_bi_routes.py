@@ -4,27 +4,31 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api.routes import bi as bi_routes
+from app.bi.meeting_bi.db.dependencies import get_bi_db_pool
 
 
 def create_test_app() -> FastAPI:
     app = FastAPI()
     app.include_router(bi_routes.router, prefix="/api/v1")
-    app.dependency_overrides[bi_routes.get_bi_db] = lambda: object()
+    app.dependency_overrides[get_bi_db_pool] = lambda: object()
     return app
 
 
 def test_kpi_overview_route_returns_summary(monkeypatch) -> None:
-    monkeypatch.setattr(
-        bi_routes,
-        "get_kpi_overview",
-        lambda db: {
+    async def fake_get_kpi_overview(db):
+        return {
             "registered_customers": {"label": "报名人数", "value": 128, "unit": "人", "prefix": ""},
             "arrived_customers": {"label": "到场人数", "value": 96, "unit": "人", "prefix": ""},
             "deal_amount": {"label": "成交金额", "value": 320.5, "unit": "万元", "prefix": ""},
             "consumed_budget": {"label": "消耗预算", "value": 80, "unit": "万元", "prefix": ""},
             "received_amount": {"label": "回款金额", "value": 210, "unit": "万元", "prefix": ""},
             "roi": {"label": "ROI", "value": 1.75, "unit": "", "prefix": ""},
-        },
+        }
+
+    monkeypatch.setattr(
+        bi_routes,
+        "get_kpi_overview",
+        fake_get_kpi_overview,
     )
     client = TestClient(create_test_app())
 
@@ -35,17 +39,20 @@ def test_kpi_overview_route_returns_summary(monkeypatch) -> None:
 
 
 def test_registration_chart_route_returns_chart_rows(monkeypatch) -> None:
-    monkeypatch.setattr(
-        bi_routes,
-        "get_region_level_chart",
-        lambda db: [
+    async def fake_get_region_level_chart(db):
+        return [
             {
                 "region": "华东",
                 "real_identity": "千万",
                 "register_count": 12,
                 "arrive_count": 10,
             }
-        ],
+        ]
+
+    monkeypatch.setattr(
+        bi_routes,
+        "get_region_level_chart",
+        fake_get_region_level_chart,
     )
     client = TestClient(create_test_app())
 
@@ -65,7 +72,7 @@ def test_registration_chart_route_returns_chart_rows(monkeypatch) -> None:
 def test_registration_detail_route_passes_filters(monkeypatch) -> None:
     observed: dict[str, object] = {}
 
-    def fake_get_registration_detail(db, region: str | None, level: str | None):
+    async def fake_get_registration_detail(db, region: str | None, level: str | None):
         observed["db"] = db
         observed["region"] = region
         observed["level"] = level

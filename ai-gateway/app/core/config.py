@@ -200,6 +200,9 @@ class Settings(BaseSettings):
     # RabbitMQ（缓存失效监听）
     rabbitmq_url: SecretStr = Field(default=SecretStr("amqp://admin:admin_dev@localhost:5672/"))
 
+    # MCP
+    mcp_api_key: SecretStr = Field(default=SecretStr(""))
+
     # CORS
     cors_allow_origins: list[str] = Field(default_factory=lambda: ["http://localhost:5173", "http://localhost"])
 

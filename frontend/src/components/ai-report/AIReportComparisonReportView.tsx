@@ -21,7 +21,7 @@ import {
   ClipboardList,
   X,
 } from 'lucide-react';
-import { aiReportApi } from '../../services/api/aiReportApi';
+import { aiQueryApi } from '../../services/api/aiQueryApi';
 import CardSwap, { Card, type CardSwapRef } from './CardSwap';
 import type { CustomerRecord } from './detailView/types';
 import { ReportHeader } from './reportview/ReportHeader';
@@ -785,30 +785,30 @@ export const AIReportComparisonReportView: React.FC<AIReportComparisonReportView
         focusedMetric: null,
         targetYear: null,
       };
-      const response = await aiReportApi.getComparisonChatRouteApi({
+      const response = await aiQueryApi.query({
         query: userMessage,
-        context: {
+        conversationId: 'ai-report-comparison',
+        context: aiQueryApi.buildContext('ai-report-comparison', {
+          module: 'exam_report',
           reportContext: buildAiContext(examRecords),
           availableMetrics: metrics.map((metric) => metric.name),
           availableYears: availableYearsDesc,
-          targetIds: AI_ROUTE_TARGET_IDS,
-        },
+          extra: { targetIds: AI_ROUTE_TARGET_IDS },
+        }),
       });
 
-      const result =
-        typeof response === 'string'
-          ? (JSON.parse(response) as {
-            reply?: unknown;
-            targetId?: unknown;
-            focusedMetric?: unknown;
-            targetYear?: unknown;
-          })
-          : (response as {
-            reply?: unknown;
-            targetId?: unknown;
-            focusedMetric?: unknown;
-            targetYear?: unknown;
-          });
+      const uiSpec = response.ui_spec as {
+        reply?: unknown;
+        targetId?: unknown;
+        focusedMetric?: unknown;
+        targetYear?: unknown;
+      } | undefined;
+      const result = uiSpec ?? {
+        reply: response.message,
+        targetId: null,
+        focusedMetric: null,
+        targetYear: null,
+      };
 
       reply = typeof result.reply === 'string' ? result.reply : '';
       routePayload = {

@@ -1,4 +1,6 @@
 import { apiClient } from '../api'
+import { aiQueryApi } from './aiQueryApi'
+import type { AiQueryResponse } from '../../types/aiQuery'
 import type { PatientExamCleanedResultResponse } from '../../types/patientExamCleanedResult'
 
 /** 后端统一响应包装 */
@@ -109,7 +111,9 @@ export const aiReportApi = {
    * POST /api/v1/api-query
    */
   async getComparisonChatRouteApi(params: ComparisonChatQueryInput) {
-    const response = await apiClient.post<ApiEnvelope<unknown>>('/api/v1/api-query', params)
-    return response.data?.data ?? response.data
+    return aiQueryApi.query({
+      query: params.query,
+      context: params.context as Record<string, unknown> | undefined,
+    }) as Promise<AiQueryResponse>
   },
 }

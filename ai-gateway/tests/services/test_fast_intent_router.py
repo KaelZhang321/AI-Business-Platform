@@ -2,9 +2,6 @@
 from __future__ import annotations
 
 import time
-from unittest.mock import patch
-
-import pytest
 
 from app.services.api_query_fast_intent_router import FastIntentRouter, FastRouteDecision
 

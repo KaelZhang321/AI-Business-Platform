@@ -6,13 +6,13 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app.api import dependencies as api_dependencies
-from app.models.schemas import ChatRequest, ChatResponse, IntentType
+from app.models.schemas import ChatResponse, IntentType
 
 
 @pytest.fixture()
