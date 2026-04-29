@@ -88,7 +88,7 @@ export function FunctionSquareView({ setCurrentPage }: FunctionSquareViewProps) 
                   {item.tag}
                 </div>
               </div>
-              <div className="p-5 space-y-2">
+              <div className="p-5 space-y-2 h-30">
                 <h4 className="text-base font-bold text-slate-900 dark:text-slate-100 group-hover:text-brand transition-colors line-clamp-1">{item.title}</h4>
                 <p className="text-xs text-slate-500 dark:text-slate-400 line-clamp-2 leading-relaxed">{item.desc}</p>
               </div>

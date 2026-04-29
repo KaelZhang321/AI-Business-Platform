@@ -8,6 +8,12 @@ export type SavedLayout = {
   name: string;
   /** 选中的卡片 ID 列表 */
   cards: string[];
+  /** 原始保存的布局 JSON */
+  cardJson?: string;
+  /** 布局类型：固定卡片布局 / 会话返回的结构化 Spec */
+  layoutType?: 'cards' | 'spec';
+  /** 会话返回的结构化 Spec 内容 */
+  specContent?: string | null;
   /** 关联的客户 ID（可选） */
   customerId?: string;
 };
@@ -62,4 +68,3 @@ export interface ConsultantAIWorkbenchProps {
   /** 设置导航参数回调 */
   setNavigationParams?: (params: Record<string, unknown>) => void;
 }
-

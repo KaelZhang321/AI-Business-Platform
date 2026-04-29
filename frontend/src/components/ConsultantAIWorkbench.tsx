@@ -287,6 +287,26 @@ function extractAiResultSummary(content: unknown, customerName: string): string 
   return `已为您生成 ${customerName} 的对话结果，请在 AI结果显示区查看。`;
 }
 
+function hasRenderableSpec(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length > 0);
+}
+
+/** 提取可直接交给 JSON Render 渲染的会话 Spec 内容 */
+function extractRenderableSpecContent(content: unknown): string | null {
+  const parsedObject = parseAiMessageObject(content);
+  if (!parsedObject) {
+    return null;
+  }
+
+  const normalized = normalizeAiMessageObject(parsedObject);
+  const spec = normalized.spec;
+  if (!hasRenderableSpec(spec)) {
+    return null;
+  }
+
+  return JSON.stringify(normalized);
+}
+
 /** 解析后端返回的卡片配置 JSON 为卡片 ID 数组 */
 function parseCardSchemaJsonToCards(raw: unknown, validCardIdSet: Set<string>): string[] {
   if (typeof raw !== 'string' || !raw.trim()) {
@@ -470,6 +490,7 @@ export const ConsultantAIWorkbench: React.FC<ConsultantAIWorkbenchProps> = ({
   const [isRightPanelOpen, setIsRightPanelOpen] = useState(false);
   const [isAssistantShrunk, setIsAssistantShrunk] = useState(false);
   const [aiResults, setAiResults] = useState<AIResultItem[]>([]);
+  const [latestAssistantMessage, setLatestAssistantMessage] = useState<string | null>(null);
   const [aiFloatingTip, setAiFloatingTip] = useState('');
   const constraintsRef = useRef<HTMLDivElement | null>(null);
 
@@ -627,7 +648,13 @@ export const ConsultantAIWorkbench: React.FC<ConsultantAIWorkbenchProps> = ({
 
     const customerLayoutsCount = customerLayoutsFromApi.length;
     const favoriteName = `AI结果显示区-默认布局${customerLayoutsCount + 1}`;
-    const cardJson = JSON.stringify(dashboardCards);
+    const currentSpecContent = !isLayoutViewEnabled ? latestAssistantSpecContent : null;
+    if (!currentSpecContent && dashboardCards.length === 0) {
+      setIsLayoutSaved(false);
+      return;
+    }
+
+    const cardJson = currentSpecContent || JSON.stringify(dashboardCards);
 
     try {
       const saved = await aiComponentViewApi.createCustomerCardCustomize({
@@ -639,7 +666,10 @@ export const ConsultantAIWorkbench: React.FC<ConsultantAIWorkbenchProps> = ({
       const newLayout: SavedLayout = {
         id: (saved?.id ?? Date.now()).toString(),
         name: saved?.favoriteName?.trim() || favoriteName,
-        cards: [...dashboardCards],
+        cards: currentSpecContent ? [] : [...dashboardCards],
+        cardJson,
+        layoutType: currentSpecContent ? 'spec' : 'cards',
+        specContent: currentSpecContent,
         customerId: selectedCustomer.id,
       };
 
@@ -676,10 +706,31 @@ export const ConsultantAIWorkbench: React.FC<ConsultantAIWorkbenchProps> = ({
 
   const handleApplyLayout = (id: string) => {
     const layout = customerLayoutsFromApi.find((item) => item.id === id);
-    if (layout) {
-      setDashboardCards(layout.cards);
-      setIsLayoutViewEnabled(true);
+    if (!layout) {
+      return;
     }
+
+    const specContent = layout.specContent || extractRenderableSpecContent(layout.cardJson);
+    if (specContent) {
+      setLatestAssistantMessage(specContent);
+      setAiResults((prev) => (
+        prev.length > 0
+          ? prev
+          : [
+            {
+              id: Date.now(),
+              type: 'AI对话结果',
+              title: 'AI对话结果',
+              content: '已应用保存的结构化布局。',
+            },
+          ]
+      ));
+      setIsLayoutViewEnabled(false);
+      return;
+    }
+
+    setDashboardCards(layout.cards);
+    setIsLayoutViewEnabled(true);
   };
 
   const handleDeleteLayout = async (id: string) => {
@@ -699,8 +750,11 @@ export const ConsultantAIWorkbench: React.FC<ConsultantAIWorkbenchProps> = ({
 
   const filteredCustomers = useMemo(() => customerPool, [customerPool]);
 
-  const [latestAssistantMessage, setLatestAssistantMessage] = useState<string | null>(null);
   const validCardIdSet = useMemo(() => new Set(AI_CARDS_DATA.map((item) => item.id)), []);
+  const latestAssistantSpecContent = useMemo(
+    () => extractRenderableSpecContent(latestAssistantMessage),
+    [latestAssistantMessage],
+  );
 
   const handleLoadMoreCustomers = () => {
     void fetchCustomerPage(customerPageNo + 1, true, searchTerm.trim());
@@ -734,12 +788,19 @@ export const ConsultantAIWorkbench: React.FC<ConsultantAIWorkbenchProps> = ({
       const list = await aiComponentViewApi.listCustomerCardCustomizesByCustomer({ customerIdCard });
       const dataList = Array.isArray(list) ? list : [];
 
-      const mapped: SavedLayout[] = dataList.map((item, index) => ({
-        id: String(item?.id ?? `${customer.id}-${Date.now()}-${index}`),
-        name: item?.favoriteName?.trim() || `接口布局${index + 1}`,
-        cards: parseCardSchemaJsonToCards(item?.cardJson, validCardIdSet),
-        customerId: customer.id,
-      }));
+      const mapped: SavedLayout[] = dataList.map((item, index) => {
+        const cardJson = item?.cardJson;
+        const specContent = extractRenderableSpecContent(cardJson);
+        return {
+          id: String(item?.id ?? `${customer.id}-${Date.now()}-${index}`),
+          name: item?.favoriteName?.trim() || `接口布局${index + 1}`,
+          cards: specContent ? [] : parseCardSchemaJsonToCards(cardJson, validCardIdSet),
+          cardJson,
+          layoutType: specContent ? 'spec' : 'cards',
+          specContent,
+          customerId: customer.id,
+        };
+      });
 
       setCustomerLayoutsFromApi(mapped);
     } catch (error) {
@@ -1025,7 +1086,7 @@ export const ConsultantAIWorkbench: React.FC<ConsultantAIWorkbenchProps> = ({
   return (
     <div className="relative flex h-full min-h-0 flex-col gap-6">
       <WorkbenchHeaderSection
-        hasCards={dashboardCards.length > 0}
+        hasCards={dashboardCards.length > 0 || Boolean(latestAssistantSpecContent)}
         isLayoutSaved={isLayoutSaved}
         onSaveLayout={handleSaveLayout}
         onOpenCustomerModal={() => setIsModalOpen(true)}
