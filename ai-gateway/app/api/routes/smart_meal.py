@@ -5,8 +5,9 @@ from __future__ import annotations
 import logging
 from uuid import uuid4
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 
+from app.api.dependencies import get_smart_meal_package_recommend_service, get_smart_meal_risk_service
 from app.core.error_codes import BusinessError, ErrorCode
 from app.models.schemas.smart_meal import (
     SmartMealPackageRecommendEnvelopeResponse,
@@ -23,26 +24,7 @@ from app.services.smart_meal_package_recommend_service import (
 from app.services.smart_meal_risk_service import SmartMealRiskService, SmartMealRiskServiceError
 
 router = APIRouter(prefix="/smart-meal", tags=["智能订餐"])
-_service = SmartMealRiskService()
-_package_recommend_service = SmartMealPackageRecommendService()
 logger = logging.getLogger(__name__)
-
-
-def get_smart_meal_risk_service() -> SmartMealRiskService:
-    """返回智能订餐服务单例。"""
-
-    return _service
-
-
-def get_smart_meal_package_recommend_service() -> SmartMealPackageRecommendService:
-    """返回智能订餐套餐推荐服务单例。
-
-    功能：
-        智能订餐业务统一挂在同一路由下；把推荐服务实例显式暴露给 `main.py`，
-        便于在应用生命周期中完成预热与释放，避免资源管理散落到路由函数内部。
-    """
-
-    return _package_recommend_service
 
 
 def _raise_route_error(exc: SmartMealRiskServiceError) -> None:
@@ -82,10 +64,11 @@ def _raise_package_recommend_route_error(exc: SmartMealPackageRecommendServiceEr
 async def identify_smart_meal_risk(
     request_body: SmartMealRiskIdentifyRequest,
     request: Request,
+    service: SmartMealRiskService = Depends(get_smart_meal_risk_service),
 ) -> SmartMealRiskIdentifyEnvelopeResponse:
     trace_id = (request.headers.get("X-Trace-Id") or request.headers.get("X-Request-Id") or "").strip() or uuid4().hex
     try:
-        risk_items = await _service.identify_risks(
+        risk_items = await service.identify_risks(
             id_card_no=request_body.id_card_no,
             campus_id=request_body.campus_id,
             sex=request_body.sex,
@@ -112,6 +95,7 @@ async def identify_smart_meal_risk(
 async def recommend_smart_meal_package(
     request_body: SmartMealPackageRecommendRequest,
     request: Request,
+    service: SmartMealPackageRecommendService = Depends(get_smart_meal_package_recommend_service),
 ) -> SmartMealPackageRecommendEnvelopeResponse:
     """推荐智能订餐套餐。
 
@@ -122,7 +106,7 @@ async def recommend_smart_meal_package(
 
     trace_id = (request.headers.get("X-Trace-Id") or request.headers.get("X-Request-Id") or "").strip() or uuid4().hex
     try:
-        recommendations = await _package_recommend_service.recommend_packages(
+        recommendations = await service.recommend_packages(
             id_card_no=request_body.id_card_no,
             campus_id=request_body.campus_id,
             meal_type=[item.value for item in request_body.meal_type],

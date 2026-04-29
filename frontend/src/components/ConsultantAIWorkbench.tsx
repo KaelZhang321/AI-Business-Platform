@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { KeyboardSensor, PointerSensor, type DragEndEvent, useSensor, useSensors } from '@dnd-kit/core';
 import { arrayMove, sortableKeyboardCoordinates } from '@dnd-kit/sortable';
 import { useNavigate } from 'react-router-dom';
-import { apiClient } from '../services/api';
+import { aiQueryApi } from '../services/api/aiQueryApi';
 import { aiReportApi } from '../services/api/aiReportApi';
 import {
   aiComponentViewApi,
@@ -961,8 +961,21 @@ export const ConsultantAIWorkbench: React.FC<ConsultantAIWorkbenchProps> = ({
     chatRequestPendingRef.current = true;
 
     try {
-      const response = await apiClient.post('/api/v1/api-query', { query });
-      const aiResponseContent = response.data?.data ?? response.data ?? '';
+      const response = await aiQueryApi.query({
+        query,
+        conversationId: `consultant-${selectedCustomer.id}`,
+        context: aiQueryApi.buildContext('consultant-ai', {
+          module: 'customer_profile',
+          selectedEntity: {
+            customerId: selectedCustomer.id,
+            customerName: selectedCustomer.name,
+            encryptedIdCard: selectedCustomer.encryptedIdCard,
+          },
+          visibleCards: dashboardCards.map((card) => card.id),
+          availableActions: ['view_customer_profile', 'view_exam_report', 'generate_layout'],
+        }),
+      });
+      const aiResponseContent = response.ui_spec ?? response.message ?? response.error ?? '';
       const assistantContent = normalizeAiResponseContent(aiResponseContent);
       const resultSummary = extractAiResultSummary(aiResponseContent, selectedCustomer.name);
       const finalAssistantContent = assistantContent || resultSummary;

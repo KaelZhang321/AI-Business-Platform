@@ -1,5 +1,22 @@
-from pydantic import Field
+from typing import Any
+
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings
+
+
+def reveal_secret(value: SecretStr | str | None) -> str:
+    """Return a plain string for runtime SDK/client configuration.
+
+    SecretStr keeps repr/model dumps safe, but DB drivers and SDKs need the
+    actual string. Tests may monkeypatch these settings with raw strings, so the
+    helper deliberately accepts both shapes.
+    """
+
+    if value is None:
+        return ""
+    if isinstance(value, SecretStr):
+        return value.get_secret_value()
+    return value
 
 
 class Settings(BaseSettings):
@@ -12,20 +29,20 @@ class Settings(BaseSettings):
     business_mysql_host: str = Field(default="localhost")
     business_mysql_port: int = Field(default=3306)
     business_mysql_user: str = Field(default="ai_platform")
-    business_mysql_password: str = Field(default="ai_platform_dev")
+    business_mysql_password: SecretStr = Field(default=SecretStr("ai_platform_dev"))
     business_mysql_database: str = Field(default="ai_platform_business")
 
     # Health Quadrant ODS MySQL
     health_quadrant_ods_mysql_host: str = Field(default="rm-2ze7k76808sos442l.mysql.rds.aliyuncs.com")
     health_quadrant_ods_mysql_port: int = Field(default=3306)
     health_quadrant_ods_mysql_user: str = Field(default="pro_platform")
-    health_quadrant_ods_mysql_password: str = Field(default="xxxxxxxxx")
+    health_quadrant_ods_mysql_password: SecretStr = Field(default=SecretStr(""))
     health_quadrant_ods_mysql_database: str = Field(default="dc_ods")
     health_quadrant_mysql_connect_timeout_seconds: float = Field(5.0, ge=0.1, le=60.0)
     dw_route_url: str = Field(default="http://127.0.0.1:8085/api/v1")
 
     # Redis
-    redis_url: str = "redis://:redis_dev@localhost:6379/0"
+    redis_url: SecretStr = Field(default=SecretStr("redis://:redis_dev@localhost:6379/0"))
 
     # Milvus
     milvus_host: str = "localhost"
@@ -38,7 +55,7 @@ class Settings(BaseSettings):
     # Elasticsearch
     elasticsearch_url: str = "http://localhost:9200"
     elasticsearch_username: str = "elastic"
-    elasticsearch_password: str = "elastic_dev"
+    elasticsearch_password: SecretStr = Field(default=SecretStr("elastic_dev"))
     elasticsearch_index: str = "knowledge_documents"
 
     # GraphRAG融合权重
@@ -52,8 +69,8 @@ class Settings(BaseSettings):
 
     # MinIO
     minio_endpoint: str = "localhost:9000"
-    minio_access_key: str = "minioadmin"
-    minio_secret_key: str = "minioadmin_dev"
+    minio_access_key: SecretStr = Field(default=SecretStr("minioadmin"))
+    minio_secret_key: SecretStr = Field(default=SecretStr("minioadmin_dev"))
 
     # ClickHouse
     clickhouse_url: str = "http://localhost:8123"
@@ -63,7 +80,7 @@ class Settings(BaseSettings):
     # Neo4j
     neo4j_uri: str = "neo4j://localhost:7687"
     neo4j_user: str = "neo4j"
-    neo4j_password: str = "neo4j"
+    neo4j_password: SecretStr = Field(default=SecretStr("neo4j"))
 
     # Embedding & Reranker
     embedding_model_name: str = "BAAI/bge-m3"
@@ -75,14 +92,16 @@ class Settings(BaseSettings):
     text2sql_default_database: str = "default"
     text2sql_timeout_seconds: int = 12
     text2sql_max_rows: int = 200
-    text2sql_api_key: str = ""          # ARK / OpenAI API Key（env: TEXT2SQL_API_KEY 或 ARK_API_KEY）
+    text2sql_api_key: SecretStr = Field(default=SecretStr(""))  # ARK / OpenAI API Key（env: TEXT2SQL_API_KEY 或 ARK_API_KEY）
     text2sql_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
     text2sql_model: str = "ep-20251108132803-xbb9f"
 
     # Meeting BI
     meeting_bi_enabled: bool = False
-    meeting_bi_database_url: str = "mysql+pymysql://root:root@localhost:3306/meeting_bi?charset=utf8mb4"
-    meeting_bi_api_key: str = ""
+    meeting_bi_database_url: SecretStr = Field(
+        default=SecretStr("mysql+pymysql://root:root@localhost:3306/meeting_bi?charset=utf8mb4")
+    )
+    meeting_bi_api_key: SecretStr = Field(default=SecretStr(""))
     meeting_bi_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
     meeting_bi_model: str = "deepseek-v3-2-251201"
     meeting_bi_max_rows: int = 200
@@ -104,7 +123,7 @@ class Settings(BaseSettings):
 
     # API Query 专用 LLM（Volcengine Ark）
     # 这一组配置只服务 `/api/v1/api-query`，避免把网关内其他问答/聊天链路强行绑到同一供应商。
-    ark_api_key: str = ""
+    ark_api_key: SecretStr = Field(default=SecretStr(""))
     ark_api_base: str = "https://ark.cn-beijing.volces.com/api/v3"
     ark_default_model: str = "doubao-1-5-pro-32k-250115"
 
@@ -165,21 +184,27 @@ class Settings(BaseSettings):
 
     # 身份金库
     identity_vault_enabled: bool = True
-    gateway_jwt_secret: str = ""
+    gateway_jwt_secret: SecretStr = Field(default=SecretStr(""))
 
     # 外部LLM API
-    openai_api_key: str = ""
+    openai_api_key: SecretStr = Field(default=SecretStr(""))
     openai_base_url: str = ""
     # 默认为 False：避免开发机/容器继承到脏代理变量后把模型请求错误转发到代理。
     model_router_trust_env: bool = False
 
     # LangSmith 可观测性
-    langsmith_api_key: str = ""
+    langsmith_api_key: SecretStr = Field(default=SecretStr(""))
     langsmith_project: str = "ai-platform"
     langsmith_tracing: bool = False
 
     # RabbitMQ（缓存失效监听）
-    rabbitmq_url: str = "amqp://admin:admin_dev@localhost:5672/"
+    rabbitmq_url: SecretStr = Field(default=SecretStr("amqp://admin:admin_dev@localhost:5672/"))
+
+    # MCP
+    mcp_api_key: SecretStr = Field(default=SecretStr(""))
+
+    # CORS
+    cors_allow_origins: list[str] = Field(default_factory=lambda: ["http://localhost:5173", "http://localhost"])
 
     # Feature Flags（本地模式，key=flag名, value=bool）
     feature_flags: dict[str, bool] = {
@@ -192,6 +217,18 @@ class Settings(BaseSettings):
     semantic_cache_similarity_threshold: float = 0.95
     semantic_cache_ttl_hours: int = 24
     semantic_cache_max_size: int = 10000
+
+    @field_validator("cors_allow_origins", mode="before")
+    @classmethod
+    def _parse_cors_allow_origins(cls, value: Any) -> Any:
+        if value is None or value == "":
+            return []
+        if isinstance(value, str):
+            text = value.strip()
+            if text.startswith("["):
+                return value
+            return [origin.strip() for origin in text.split(",") if origin.strip()]
+        return value
 
     model_config = {"env_file": ".env", "extra": "ignore"}
 

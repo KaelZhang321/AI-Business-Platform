@@ -8,6 +8,7 @@ import { Header } from './components/Header';
 import { ReceptionModal, CreateTaskModal } from './components/Modals';
 import { LoginPage } from './LoginPage';
 import { NOTICES } from './data/mockData';
+import { aiQueryApi } from './services/api/aiQueryApi';
 import { useAppStore } from './stores/useAppStore';
 import { getPageByPath, isKnownPath, PAGE_PATHS } from './navigation';
 import { renderAppPage } from './pageRegistry';
@@ -174,27 +175,30 @@ export function App() {
    * 后续可替换为真实聊天接口。
    * @param overrideText - 可选，如果传入则替代输入框内容
    */
-  const handleSendMessage = (overrideText?: string) => {
+  const handleSendMessage = async (overrideText?: string) => {
     const query = typeof overrideText === 'string' ? overrideText : chatInput;
     if (!query.trim()) return;
 
     setMessages((prev) => [...prev, createAppMessage('user', query)]);
     setChatInput('');
 
-    // 这里仍然保留演示用的假数据回复，后续可以替换成真实聊天接口。
-    setTimeout(() => {
-      let response = '已为您汇总相关数据。';
-      if (query.includes('王先生') && query.includes('库存')) {
-        response = '📊 **数据简报**\n王先生（ID: VIP-8821）在客户云仓当前剩余：\n- 极品燕窝：2盒\n- 定制营养素：5瓶\n\n最近一次出库时间为 2026-03-10。';
-      } else if (query.includes('空闲司机') || query.includes('派车') || query.includes('专车司机')) {
-        response = '🚗 **运力简报**\n当前周边 3 公里内空闲司机：\n1. 张师傅 (京A·88***) - 距 1.2km\n2. 李师傅 (京A·66***) - 距 2.5km\n\n[点击一键派单至张师傅]';
-      } else if (query.includes('效能报告')) {
-        response = '📈 **效能简报**\n本周高端客户接待效能：\n- 客户满意度：99.2%\n- 平均等待时长：4.5分钟 (达标)\n- 异常派单率：0.1%\n\n报告已生成，[点击预览完整报告]';
-      } else if (query.includes('红头文件')) {
-        response = '🛡️ **政策速递**\n为您找到最新文件：《2026年度第一季度合规审查红头文件》\n核心内容：强调数据隐私保护，严禁跨权限导出老客户CRM数据。\n\n[点击查看文件详情]';
-      }
-      setMessages((prev) => [...prev, createAppMessage('ai', response)]);
-    }, 1000);
+    try {
+      const response = await aiQueryApi.query({
+        query,
+        conversationId: 'dashboard-assistant',
+        context: aiQueryApi.buildContext('dashboard', {
+          module: activeTab,
+          availableActions: ['query_inventory', 'query_dispatch', 'query_report', 'query_policy'],
+          extra: { currentPage },
+        }),
+      });
+
+      const responseText = response.message || response.error || '已为您汇总相关数据。';
+      setMessages((prev) => [...prev, createAppMessage('ai', responseText)]);
+    } catch (error) {
+      console.error('[App] AI query error:', error);
+      setMessages((prev) => [...prev, createAppMessage('ai', '抱歉，当前无法完成智能查询，请稍后重试。')]);
+    }
   };
 
   if (isAuthBootstrapping) {

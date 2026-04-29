@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import logging
+import time
+from collections import OrderedDict
 
 from app.core.config import settings
 from app.models.schemas.common import (
@@ -83,9 +85,19 @@ class IntentClassifier:
         SubIntentType.TASK_APPROVE: ["审批", "审核", "批准", "驳回"],
     }
 
-    def __init__(self, llm_service: LLMService | None = None, confidence_threshold: float | None = None):
+    def __init__(
+        self,
+        llm_service: LLMService | None = None,
+        confidence_threshold: float | None = None,
+        *,
+        cache_ttl_seconds: int = 300,
+        cache_max_size: int = 512,
+    ):
         self._llm = llm_service or LLMService()
         self._threshold = confidence_threshold or settings.intent_confidence_threshold
+        self._cache_ttl_seconds = cache_ttl_seconds
+        self._cache_max_size = cache_max_size
+        self._cache: OrderedDict[str, tuple[float, IntentResult]] = OrderedDict()
         self._logger = logging.getLogger(__name__)
 
     async def classify(self, message: str, context: dict | None = None) -> IntentResult:
@@ -101,10 +113,37 @@ class IntentClassifier:
         Edge Cases:
             - LLM 分类失败时，不中断请求，而是立即转入关键词兜底
         """
+        keyword_result = self._keyword_fast_path(message)
+        if keyword_result:
+            keyword_result.confidence = 0.8
+            return keyword_result
+
+        cache_key = self._cache_key(message, context)
+        cached = self._get_cached(cache_key)
+        if cached:
+            return cached
+
         result = await self._llm_intent(message, context)
         if result:
+            self._set_cached(cache_key, result)
             return result
         return self._keyword_fallback(message)
+
+    def _keyword_fast_path(self, message: str) -> IntentResult | None:
+        """Return only when keywords unambiguously point to one primary intent."""
+
+        matched_intents = [
+            candidate for candidate, keywords in self.KEYWORD_RULES.items() if any(kw in message for kw in keywords)
+        ]
+        if len(matched_intents) != 1:
+            return None
+
+        intent = matched_intents[0]
+        matched_sub_intents = [
+            candidate for candidate, keywords in self.SUB_INTENT_KEYWORDS.items() if any(kw in message for kw in keywords)
+        ]
+        sub_intent = matched_sub_intents[0] if len(matched_sub_intents) == 1 else SubIntentType.GENERAL
+        return IntentResult(intent=intent, sub_intent=sub_intent, confidence=0.8)
 
     async def _llm_intent(self, message: str, context: dict | None) -> IntentResult | None:
         """使用 LLM 做高精度意图识别。
@@ -165,6 +204,28 @@ class IntentClassifier:
                 break
 
         return IntentResult(intent=intent, sub_intent=sub_intent, confidence=0.5)
+
+    def _get_cached(self, cache_key: str) -> IntentResult | None:
+        item = self._cache.get(cache_key)
+        if not item:
+            return None
+        created_at, result = item
+        if time.monotonic() - created_at > self._cache_ttl_seconds:
+            self._cache.pop(cache_key, None)
+            return None
+        self._cache.move_to_end(cache_key)
+        return result
+
+    def _set_cached(self, cache_key: str, result: IntentResult) -> None:
+        self._cache[cache_key] = (time.monotonic(), result)
+        self._cache.move_to_end(cache_key)
+        while len(self._cache) > self._cache_max_size:
+            self._cache.popitem(last=False)
+
+    @staticmethod
+    def _cache_key(message: str, context: dict | None) -> str:
+        payload = {"message": message.strip().lower(), "context": context or {}}
+        return json.dumps(payload, ensure_ascii=False, sort_keys=True)
 
     @staticmethod
     def _match_intent(value: str) -> IntentType | None:

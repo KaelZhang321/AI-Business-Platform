@@ -18,7 +18,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 import aiomysql
 
-from app.core.config import settings
+from app.core.config import reveal_secret, settings
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +52,7 @@ async def get_meeting_pool() -> aiomysql.Pool:
     async with _pool_lock:
         if _meeting_pool is not None:
             return _meeting_pool
-        conn_params = _parse_db_url(settings.meeting_bi_database_url)
+        conn_params = _parse_db_url(reveal_secret(settings.meeting_bi_database_url))
         logger.info(
             "Creating aiomysql pool for meeting_bi: host=%s db=%s",
             conn_params["host"],

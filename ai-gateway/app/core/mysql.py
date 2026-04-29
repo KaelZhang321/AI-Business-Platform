@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import aiomysql
 
-from app.core.config import settings
+from app.core.config import reveal_secret, settings
 
 
 def build_business_mysql_conn_params(*, include_connect_timeout: bool = True) -> dict[str, str | int | float]:
@@ -11,12 +11,26 @@ def build_business_mysql_conn_params(*, include_connect_timeout: bool = True) ->
         "host": settings.business_mysql_host,
         "port": settings.business_mysql_port,
         "user": settings.business_mysql_user,
-        "password": settings.business_mysql_password,
+        "password": reveal_secret(settings.business_mysql_password),
         "db": settings.business_mysql_database,
         "charset": "utf8mb4",
     }
     if include_connect_timeout:
         conn_params["connect_timeout"] = settings.api_catalog_mysql_connect_timeout_seconds
+    return conn_params
+
+
+def _pool_conn_params(params: dict[str, str | int | float]) -> dict[str, str | int]:
+    conn_params: dict[str, str | int] = {
+        "host": str(params["host"]),
+        "port": int(params["port"]),
+        "user": str(params["user"]),
+        "password": str(params["password"]),
+        "db": str(params["db"]),
+        "charset": str(params["charset"]),
+    }
+    if "connect_timeout" in params:
+        conn_params["connect_timeout"] = int(params["connect_timeout"])
     return conn_params
 
 
@@ -46,10 +60,17 @@ async def create_business_mysql_pool(
         和连接策略强行揉成一套。
     """
 
+    conn_params = _pool_conn_params(build_business_mysql_conn_params(include_connect_timeout=include_connect_timeout))
     return await aiomysql.create_pool(
         minsize=minsize,
         maxsize=maxsize,
-        **build_business_mysql_conn_params(include_connect_timeout=include_connect_timeout),
+        host=str(conn_params["host"]),
+        port=int(conn_params["port"]),
+        user=str(conn_params["user"]),
+        password=str(conn_params["password"]),
+        db=str(conn_params["db"]),
+        charset=str(conn_params["charset"]),
+        connect_timeout=int(conn_params["connect_timeout"]) if "connect_timeout" in conn_params else None,
     )
 
 
@@ -90,7 +111,7 @@ def build_health_quadrant_ods_mysql_conn_params(*, include_connect_timeout: bool
         host=settings.health_quadrant_ods_mysql_host,
         port=settings.health_quadrant_ods_mysql_port,
         user=settings.health_quadrant_ods_mysql_user,
-        password=settings.health_quadrant_ods_mysql_password,
+        password=reveal_secret(settings.health_quadrant_ods_mysql_password),
         database=settings.health_quadrant_ods_mysql_database,
         connect_timeout_seconds=settings.health_quadrant_mysql_connect_timeout_seconds,
         include_connect_timeout=include_connect_timeout,

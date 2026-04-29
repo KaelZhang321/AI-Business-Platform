@@ -13,11 +13,8 @@ from pathlib import Path
 
 import aiomysql
 
-from app.core.config import settings
-from app.models.schemas.text2sql import (
-    QueryDomain,
-    Text2SQLResponse,
-)
+from app.core.config import reveal_secret, settings
+from app.models.schemas import QueryDomain, Text2SQLResponse
 from app.services.dynamic_ui_service import DynamicUIService
 
 logger = logging.getLogger(__name__)
@@ -26,7 +23,6 @@ _SQL_WRITE_OPERATORS = re.compile(
     r"\b(insert|update|delete|drop|alter|create|grant|revoke|truncate|call|merge)\b",
     re.IGNORECASE,
 )
-
 
 class GenericQueryExecutor:
     """平台通用问数执行器。
@@ -57,7 +53,7 @@ class GenericQueryExecutor:
                     Milvus_VectorStore.__init__(self, config=config)
                     OpenAI_Chat.__init__(self, config=config)
 
-            api_key = settings.text2sql_api_key
+            api_key = reveal_secret(settings.text2sql_api_key)
             if not api_key:
                 raise RuntimeError("Text2SQL 未配置 API Key，请设置 TEXT2SQL_API_KEY 或 ARK_API_KEY")
 

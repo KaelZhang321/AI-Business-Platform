@@ -15,14 +15,18 @@
 from __future__ import annotations
 
 import logging
+import inspect
 from typing import Annotated, Any
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from app.api.dependencies import get_api_catalog_registry_source, get_ui_catalog_service
-from app.models.schemas.api_query import (
+from app.api.dependencies import get_app_resource_container
+from app.core.config import settings
+from app.core.resources import AppResources
+from app.models.schemas import (
+    ApiCatalogIndexJobResponse,
     ApiQueryDetailRequestRuntime,
     ApiQueryDetailRuntime,
     ApiQueryDetailSourceRuntime,
@@ -36,20 +40,11 @@ from app.models.schemas.api_query import (
     ApiQueryRuntimeMetadataResponse,
     ApiQueryUIRuntime,
 )
-from app.models.schemas.catalog_governance import ApiCatalogIndexJobResponse
-from app.core.config import settings
-from app.services.api_catalog.business_intents import get_business_intent_catalog_service
-from app.services.api_catalog.dag_planner import ApiDagPlanner
-from app.services.api_catalog.executor import ApiExecutor
-from app.services.api_catalog.hybrid_retriever import ApiCatalogHybridRetriever
 from app.services.api_catalog.index_job_service import (
     ApiCatalogIndexJobService,
     ApiCatalogIndexJobStartError,
 )
-from app.services.api_catalog.param_extractor import ApiParamExtractor
 from app.services.api_catalog.registry_source import ApiCatalogRegistrySource
-from app.services.api_catalog.retriever import ApiCatalogRetriever
-from app.services.api_query_llm_service import ApiQueryLLMService
 from app.services.api_query_response_builder import ApiQueryResponseBuilder
 from app.services.api_query_workflow import ApiQueryWorkflow
 from app.services.dynamic_ui_service import DynamicUIService
@@ -61,114 +56,149 @@ from app.services.workflows.types import WorkflowRunContext, WorkflowTraceContex
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api-query", tags=["API Query"])
 
-_retriever: ApiCatalogRetriever | None = None
-_extractor: ApiParamExtractor | None = None
-_executor: ApiExecutor | None = None
-_planner: ApiDagPlanner | None = None
-_dynamic_ui: DynamicUIService | None = None
-_snapshot_service: UISnapshotService | None = None
-_api_query_llm: ApiQueryLLMService | None = None
-_workflow: ApiQueryWorkflow | None = None
 _catalog_index_job_service: ApiCatalogIndexJobService | None = None
+_workflow: ApiQueryWorkflow | None = None
+_api_query_llm = None
+_retriever = None
+_extractor = None
+_executor = None
+_planner = None
+_dynamic_ui = None
+_snapshot_service = None
 _bearer = HTTPBearer(auto_error=False)
 
 
-def _get_services(
-    *,
-    ui_catalog_service: UICatalogService,
-) -> tuple[ApiCatalogRetriever, ApiParamExtractor, ApiExecutor, DynamicUIService, UISnapshotService]:
-    """获取 `/api-query` 所需的进程级单例依赖。"""
-
-    global _retriever, _extractor, _executor, _dynamic_ui, _snapshot_service
-    if _retriever is None:
-        # 本期开关：关闭图谱时直接走纯向量召回，避免进入 Neo4j 相关分支。
-        if settings.api_catalog_graph_enabled or settings.api_catalog_graph_validation_enabled:
-            _retriever = ApiCatalogHybridRetriever()
-            logger.info(
-                "api_query retriever mode=hybrid graph_enabled=%s graph_validation_enabled=%s",
-                settings.api_catalog_graph_enabled,
-                settings.api_catalog_graph_validation_enabled,
-            )
-        else:
-            _retriever = ApiCatalogRetriever()
-            logger.info(
-                "api_query retriever mode=plain graph_enabled=%s graph_validation_enabled=%s",
-                settings.api_catalog_graph_enabled,
-                settings.api_catalog_graph_validation_enabled,
-            )
-    if _extractor is None:
-        _extractor = ApiParamExtractor(llm_service=_get_api_query_llm_service())
-    if _executor is None:
-        _executor = ApiExecutor()
-    current_catalog_service = getattr(_dynamic_ui, "_catalog_service", None)
-    if _dynamic_ui is None or current_catalog_service is not ui_catalog_service:
-        _dynamic_ui = DynamicUIService(
-            catalog_service=ui_catalog_service,
-            llm_service=_get_api_query_llm_service(),
-        )
-    if _snapshot_service is None:
-        _snapshot_service = UISnapshotService()
-    return _retriever, _extractor, _executor, _dynamic_ui, _snapshot_service
+def _get_ui_catalog_service(resources: AppResources = Depends(get_app_resource_container)) -> UICatalogService:
+    if _route_ui_catalog_service_override is not None:
+        return _route_ui_catalog_service_override()
+    if resources.ui_catalog_service is None:
+        raise RuntimeError("UICatalogService 尚未初始化")
+    return resources.ui_catalog_service
 
 
-def _get_api_query_llm_service() -> ApiQueryLLMService:
-    """获取 `/api-query` 共享的 LLM 单例。"""
+def _get_registry_source(resources: AppResources = Depends(get_app_resource_container)) -> ApiCatalogRegistrySource:
+    if _route_registry_source_override is not None:
+        return _route_registry_source_override()
+    if resources.api_catalog_registry_source is None:
+        raise RuntimeError("ApiCatalogRegistrySource 尚未初始化")
+    return resources.api_catalog_registry_source
 
+
+_route_services_override = None
+_route_planner_override = None
+_route_workflow_override = None
+_route_ui_catalog_service_override = None
+_route_registry_source_override = None
+
+
+def _invoke_helper_with_optional_resources(helper, resources: AppResources | None = None):
+    if resources is not None:
+        try:
+            return helper(resources)
+        except TypeError:
+            return helper()
+    return helper()
+
+
+def _get_api_query_llm_service(resources: AppResources | None = None):
     global _api_query_llm
+    if resources is not None and getattr(resources, "api_query_llm_service", None) is not None:
+        return resources.api_query_llm_service
     if _api_query_llm is None:
+        from app.services.api_query_llm_service import ApiQueryLLMService
+
         _api_query_llm = ApiQueryLLMService()
     return _api_query_llm
 
 
-def _get_planner() -> ApiDagPlanner:
-    """获取第三阶段 Planner 单例。"""
+def _get_services(resources: AppResources | None = None, ui_catalog_service: UICatalogService | None = None):
+    global _retriever, _extractor, _executor, _dynamic_ui, _snapshot_service
+    if _route_services_override is not None:
+        return _route_services_override()
+    if resources is not None:
+        if resources.api_catalog_retriever is None or resources.api_param_extractor is None or resources.api_executor is None:
+            raise RuntimeError("api-query services 尚未初始化")
+        dynamic_ui = resources.dynamic_ui_service or DynamicUIService(catalog_service=ui_catalog_service or _get_ui_catalog_service(resources))
+        snapshot_service = resources.ui_snapshot_service or UISnapshotService()
+        return (resources.api_catalog_retriever, resources.api_param_extractor, resources.api_executor, dynamic_ui, snapshot_service)
 
+    if _retriever is None:
+        from app.services.api_catalog.hybrid_retriever import ApiCatalogHybridRetriever
+        from app.services.api_catalog.retriever import ApiCatalogRetriever
+
+        _retriever = ApiCatalogHybridRetriever() if settings.api_catalog_graph_enabled or settings.api_catalog_graph_validation_enabled else ApiCatalogRetriever()
+    if _extractor is None:
+        from app.services.api_catalog.param_extractor import ApiParamExtractor
+
+        _extractor = ApiParamExtractor(llm_service=_get_api_query_llm_service())
+    if _executor is None:
+        from app.services.api_catalog.executor import ApiExecutor
+
+        _executor = ApiExecutor()
+    if _dynamic_ui is None:
+        _dynamic_ui = DynamicUIService(catalog_service=ui_catalog_service or UICatalogService(), llm_service=_get_api_query_llm_service())
+    if _snapshot_service is None:
+        _snapshot_service = UISnapshotService()
+    return (_retriever, _extractor, _executor, _dynamic_ui, _snapshot_service)
+
+
+def _get_planner(resources: AppResources | None = None):
     global _planner
+    if _route_planner_override is not None:
+        return _route_planner_override()
+    if resources is not None and getattr(resources, "api_dag_planner", None) is not None:
+        return resources.api_dag_planner
     if _planner is None:
-        _planner = ApiDagPlanner(llm_service=_get_api_query_llm_service())
+        from app.services.api_catalog.dag_planner import ApiDagPlanner
+
+        _planner = ApiDagPlanner(llm_service=_get_api_query_llm_service(resources))
     return _planner
 
 
-def _get_response_builder(
-    *,
-    ui_catalog_service: UICatalogService,
-    registry_source: ApiCatalogRegistrySource,
-) -> ApiQueryResponseBuilder:
-    """获取响应收口器。
-
-    功能：
-        这里继续保持“按次装配、不额外缓存”的策略，保证测试 monkeypatch 与热重载场景
-        拿到的永远是当前依赖视角。
-    """
-
-    _, _, _, dynamic_ui, snapshot_service = _get_services(ui_catalog_service=ui_catalog_service)
+def _get_response_builder(resources: AppResources) -> ApiQueryResponseBuilder:
+    dynamic_ui = resources.dynamic_ui_service or DynamicUIService(catalog_service=_get_ui_catalog_service(resources))
+    snapshot_service = resources.ui_snapshot_service or UISnapshotService()
     return ApiQueryResponseBuilder(
         dynamic_ui=dynamic_ui,
         snapshot_service=snapshot_service,
-        ui_catalog_service=ui_catalog_service,
-        registry_source=registry_source,
+        ui_catalog_service=_get_ui_catalog_service(resources),
+        registry_source=_get_registry_source(resources),
     )
 
 
-def _build_workflow(
-    *,
-    ui_catalog_service: UICatalogService,
-    registry_source: ApiCatalogRegistrySource,
-    allowed_business_intent_codes_getter: callable,
-) -> ApiQueryWorkflow:
-    """获取 `/api-query` 外层工作流单例。"""
-
+def _get_workflow(resources: AppResources = Depends(get_app_resource_container)) -> ApiQueryWorkflow:
     global _workflow
+    if _route_workflow_override is not None:
+        return _route_workflow_override()
+    route_services_getter = globals().get("_get_services")
+    route_planner_getter = globals().get("_get_planner")
+    if callable(route_services_getter) and callable(route_planner_getter):
+        return ApiQueryWorkflow(
+            services_getter=lambda: _invoke_helper_with_optional_resources(route_services_getter, resources),
+            planner_getter=lambda: _invoke_helper_with_optional_resources(route_planner_getter, resources),
+            response_builder_getter=lambda: _get_response_builder(resources),
+            registry_source_getter=lambda: _route_registry_source_override() if _route_registry_source_override is not None else _get_registry_source(resources),
+            allowed_business_intent_codes_getter=lambda: (
+                resources.business_intent_catalog_service.get_allowed_codes()
+                if resources.business_intent_catalog_service is not None
+                else {"none"}
+            ),
+            customer_profile_service=resources.customer_profile_service,
+        )
+    if resources.api_query_workflow is not None:
+        return resources.api_query_workflow
     if _workflow is None:
         _workflow = ApiQueryWorkflow(
-            services_getter=lambda: _get_services(ui_catalog_service=ui_catalog_service),
-            planner_getter=lambda: _get_planner(),
-            response_builder_getter=lambda: _get_response_builder(
-                ui_catalog_service=ui_catalog_service,
-                registry_source=registry_source,
+            services_getter=lambda: _get_services(resources),
+            planner_getter=lambda: _get_planner(resources),
+            response_builder_getter=lambda: _get_response_builder(resources),
+            registry_source_getter=lambda: _get_registry_source(resources),
+            allowed_business_intent_codes_getter=lambda: (
+                resources.business_intent_catalog_service.get_allowed_codes()
+                if resources.business_intent_catalog_service is not None
+                else {"none"}
             ),
-            registry_source_getter=lambda: registry_source,
-            allowed_business_intent_codes_getter=allowed_business_intent_codes_getter,
+            customer_profile_service=resources.customer_profile_service,
         )
     return _workflow
 
@@ -193,8 +223,9 @@ async def api_query(
     request_body: ApiQueryRequest,
     request: Request,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
-    ui_catalog_service: UICatalogService = Depends(get_ui_catalog_service),
-    registry_source: ApiCatalogRegistrySource = Depends(get_api_catalog_registry_source),
+    ui_catalog_service: UICatalogService = Depends(_get_ui_catalog_service),
+    registry_source: ApiCatalogRegistrySource = Depends(_get_registry_source),
+    workflow: ApiQueryWorkflow = Depends(_get_workflow),
 ) -> ApiQueryResponse:
     """调用 `/api-query` 外层工作流。
 
@@ -245,11 +276,7 @@ async def api_query(
             payload={"query_length": len(request_body.query)},
         ),
     )
-    return await _build_workflow(
-        ui_catalog_service=ui_catalog_service,
-        registry_source=registry_source,
-        allowed_business_intent_codes_getter=lambda: get_business_intent_catalog_service().get_allowed_codes(),
-    ).run(
+    return await workflow.run(
         request_body,
         trace_id=trace_id,
         interaction_id=interaction_id,
@@ -261,7 +288,7 @@ async def api_query(
 
 @router.get("/runtime-metadata", response_model=ApiQueryRuntimeMetadataResponse, summary="获取 api_query 运行时元数据")
 async def get_runtime_metadata(
-    catalog_service: UICatalogService = Depends(get_ui_catalog_service),
+    catalog_service: UICatalogService = Depends(_get_ui_catalog_service),
 ) -> ApiQueryRuntimeMetadataResponse:
     """返回前端运行时所需的 UI 目录与模板场景。
 

@@ -11,7 +11,7 @@ import logging
 
 import aio_pika
 
-from app.core.config import settings
+from app.core.config import reveal_secret, settings
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +58,7 @@ async def start_cache_invalidation_listener() -> None:
 
     for attempt in range(max_retries + 1):
         try:
-            connection = await aio_pika.connect_robust(settings.rabbitmq_url)
+            connection = await aio_pika.connect_robust(reveal_secret(settings.rabbitmq_url))
             channel = await connection.channel()
             queue = await channel.declare_queue("cache.invalidation", durable=True)
 

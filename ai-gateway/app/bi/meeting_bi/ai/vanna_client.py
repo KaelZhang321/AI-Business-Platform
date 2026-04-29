@@ -35,7 +35,7 @@ _ensure_sqlite_compat()
 from vanna.chromadb import ChromaDB_VectorStore  # noqa: E402
 
 from app.bi.meeting_bi.ai.training_data import BUSINESS_DOCS, QA_PAIRS, TABLES  # noqa: E402
-from app.core.config import settings  # noqa: E402
+from app.core.config import reveal_secret, settings  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -120,7 +120,7 @@ class MeetingBIVanna(ChromaDB_VectorStore):
     def __init__(self, config=None):
         super().__init__(config=config)
         self._llm_client = OpenAI(
-            api_key=settings.meeting_bi_api_key,
+            api_key=reveal_secret(settings.meeting_bi_api_key),
             base_url=settings.meeting_bi_base_url,
         )
 
@@ -180,13 +180,13 @@ def get_vanna() -> MeetingBIVanna:
     with _lock:
         if _vn is not None:
             return _vn
-        if not settings.meeting_bi_api_key:
+        if not reveal_secret(settings.meeting_bi_api_key):
             raise RuntimeError("Meeting BI 未配置 API Key，请设置 meeting_bi_api_key")
 
         _CHROMA_PATH.mkdir(parents=True, exist_ok=True)
         logger.info("Initializing Meeting BI Vanna client (chroma_path=%s)", _CHROMA_PATH)
         _vn = MeetingBIVanna(config={"model": "meeting-bi", "path": str(_CHROMA_PATH)})
-        _vn.connect_to_mysql(**_parse_mysql_url(settings.meeting_bi_database_url))
+        _vn.connect_to_mysql(**_parse_mysql_url(reveal_secret(settings.meeting_bi_database_url)))
         _train(_vn)
         return _vn
 

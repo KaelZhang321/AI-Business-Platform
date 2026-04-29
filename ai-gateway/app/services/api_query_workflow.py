@@ -18,6 +18,7 @@ from app.models.schemas.api_query import (
 from app.services.api_catalog.dag_executor import ApiDagExecutor
 from app.services.api_catalog.dag_planner import ApiDagPlanner, DagPlanValidationError, build_single_step_plan
 from app.services.api_catalog.executor import ApiExecutor
+from app.services.api_query_fast_intent_router import FastIntentRouter
 from app.services.api_catalog.param_extractor import ApiParamExtractor
 from app.services.api_catalog.registry_source import ApiCatalogRegistrySource
 from app.services.api_catalog.retriever import ApiCatalogRetriever
@@ -112,6 +113,7 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
         registry_source_getter: Callable[[], ApiCatalogRegistrySource],
         allowed_business_intent_codes_getter: Callable[[], set[str]],
         customer_profile_service: CustomerProfileFixedService | None = None,
+        fast_intent_router: FastIntentRouter | None = None,
     ) -> None:
         super().__init__()
         self._services_getter = services_getter
@@ -120,6 +122,7 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
         self._registry_source_getter = registry_source_getter
         self._allowed_business_intent_codes_getter = allowed_business_intent_codes_getter
         self._customer_profile_service = customer_profile_service or CustomerProfileFixedService()
+        self._fast_intent_router = fast_intent_router or FastIntentRouter()
         self._runtime_contexts: dict[str, ApiQueryRuntimeContext] = {}
 
     @property
@@ -360,6 +363,22 @@ class ApiQueryWorkflow(BaseStateGraphWorkflow[ApiQueryState]):
         runtime_context = self._get_runtime_context(state)
         request_body = _require_request_body(runtime_context)
         assert request_body.query is not None
+
+        fast_route_decision = self._fast_intent_router.route(request_body.query, None)
+        if fast_route_decision.matched and fast_route_decision.should_skip_llm_route:
+            route_hint = ApiQueryRoutingResult(
+                query_domains=list(fast_route_decision.query_domains),
+                business_intents=list(fast_route_decision.business_intents),
+                reasoning=fast_route_decision.reason,
+                route_status="ok",
+            )
+            runtime_context.route_hint = route_hint
+            self._log_routing_intent_summary(state, route_hint)
+            return {
+                "route_hint_summary": summarize_route_hint(route_hint),
+                "query_domains_hint": list(route_hint.query_domains),
+                "business_intent_codes": list(route_hint.business_intents),
+            }
 
         route_hint = await self._get_extractor().route_query(
             request_body.query,
