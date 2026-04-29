@@ -323,9 +323,7 @@ body::after {
   background: transparent !important;
 }
 
-:where(.css-dev-only-do-not-override-1t2537o).ant-table-wrapper .ant-table-cell-fix {
-  background: transparent !important;
-}
+
 
 .registration-matrix-table .ant-table-tbody>tr:hover>td.ant-table-cell-fix-left,
 .registration-matrix-table .ant-table-tbody>tr:hover>td.ant-table-cell-fix-left-last,
@@ -340,6 +338,10 @@ body::after {
 
 .ant-pagination .ant-pagination-item-active a {
   color: var(--accent-cyan) !important;
+}
+
+.ant-table-cell.ant-table-wrapper .ant-table-cell-fix {
+  background: transparent !important;
 }
 
 /* Modal 样式增强 */

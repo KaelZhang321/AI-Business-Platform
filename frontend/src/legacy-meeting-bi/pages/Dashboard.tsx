@@ -31,7 +31,7 @@ import aiIcon from '../styles/AI.png'
 import eventLogo from '../styles/logo.png'
 
 const matrixColumns = [
-  { title: '大区', dataIndex: 'region', key: 'region', fixed: 'left' as const, width: 80 },
+  { title: '大区', dataIndex: 'region', key: 'region', width: 80 },
   { title: '千万(报)', dataIndex: 'qianwan_register', key: 'qianwan_register', width: 82 },
   { title: '千万(到)', dataIndex: 'qianwan_arrive', key: 'qianwan_arrive', width: 82 },
   { title: '百万(报)', dataIndex: 'baiwan_register', key: 'baiwan_register', width: 82 },
