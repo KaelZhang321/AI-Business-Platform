@@ -12,7 +12,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from app.models.schemas import ApiQueryExecutionPlan, ApiQueryExecutionResult, ApiQueryPlanStep
+from app.models.schemas.api_query import (
+    ApiQueryExecutionPlan,
+    ApiQueryExecutionResult,
+    ApiQueryPlanStep,
+)
 from app.services.api_catalog.schema import ApiCatalogEntry
 
 

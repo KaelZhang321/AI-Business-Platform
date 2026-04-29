@@ -11,7 +11,7 @@ import re
 from collections import defaultdict
 from typing import Any
 
-from app.models.schemas import SemanticCurationPhase
+from app.models.schemas.catalog_governance import SemanticCurationPhase
 from app.services.api_catalog.graph_models import SemanticGovernanceSnapshot
 from app.services.api_catalog.schema import ApiCatalogEntry, ApiCatalogFieldProfile
 from app.services.api_catalog.schema_utils import (
@@ -169,7 +169,9 @@ class SemanticGovernanceProposalService:
                     emitted_alias_keys.add(alias_key)
                     batch.alias_proposals.append(alias_proposal)
 
-                for value_proposal in _extract_value_map_proposals(profile=profile, semantic_key=dict_proposal.semantic_key):
+                for value_proposal in _extract_value_map_proposals(
+                    profile=profile, semantic_key=dict_proposal.semantic_key
+                ):
                     value_key = _value_dedup_key(value_proposal)
                     if value_key in emitted_value_keys:
                         continue
@@ -265,7 +267,9 @@ def _build_dict_proposal(
     if category != "business":
         graph_role = "none"
     is_graph_enabled = category == "business"
-    risk_level = "high" if is_identifier or (is_graph_enabled and graph_role in {"identifier", "locator", "bridge"}) else "low"
+    risk_level = (
+        "high" if is_identifier or (is_graph_enabled and graph_role in {"identifier", "locator", "bridge"}) else "low"
+    )
 
     confidence = _infer_confidence(category=category, phase=phase, profile=profile)
     default_domain_code = entry.domain or "generic"
@@ -329,7 +333,9 @@ def _build_alias_extension_proposal(
     )
 
 
-def _extract_value_map_proposals(*, profile: ApiCatalogFieldProfile, semantic_key: str) -> list[SemanticValueMapProposal]:
+def _extract_value_map_proposals(
+    *, profile: ApiCatalogFieldProfile, semantic_key: str
+) -> list[SemanticValueMapProposal]:
     """从字段描述中提取枚举值映射提案。"""
 
     if not profile.raw_description:
@@ -575,9 +581,13 @@ def _fallback_response_profiles(entry: ApiCatalogEntry) -> list[ApiCatalogFieldP
                 direction="response",
                 location="response",
                 field_name=field_name,
-                json_path=f"{entry.response_data_path}[].{field_name}" if array_mode else f"{entry.response_data_path}.{field_name}",
+                json_path=f"{entry.response_data_path}[].{field_name}"
+                if array_mode
+                else f"{entry.response_data_path}.{field_name}",
                 raw_field_type=describe_schema_type(field_schema),
-                raw_description=extract_schema_description(field_schema, fallback_label=entry.field_labels.get(field_name)),
+                raw_description=extract_schema_description(
+                    field_schema, fallback_label=entry.field_labels.get(field_name)
+                ),
                 required=False,
                 array_mode=array_mode or schema_is_array(field_schema),
             )

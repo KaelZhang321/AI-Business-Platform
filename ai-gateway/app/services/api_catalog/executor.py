@@ -26,7 +26,10 @@ from typing import Any
 import httpx
 
 from app.core.config import settings
-from app.models.schemas import ApiQueryExecutionResult, ApiQueryExecutionStatus
+from app.models.schemas.api_query import (
+    ApiQueryExecutionResult,
+    ApiQueryExecutionStatus,
+)
 from app.services.api_catalog.schema import ApiCatalogEntry
 
 logger = logging.getLogger(__name__)
@@ -614,7 +617,11 @@ def _derive_default_allow_methods(entry: ApiCatalogEntry, executor_type: str) ->
         而要结合目录项语义做最小放行。
     """
     if executor_type == "runtime_invoke":
-        return {entry.method} if entry.method in _QUERY_ALLOWED_EXECUTOR_METHODS else set(_DEFAULT_ALLOWED_EXECUTOR_METHODS)
+        return (
+            {entry.method}
+            if entry.method in _QUERY_ALLOWED_EXECUTOR_METHODS
+            else set(_DEFAULT_ALLOWED_EXECUTOR_METHODS)
+        )
     if entry.operation_safety == "query" and entry.method in _QUERY_ALLOWED_EXECUTOR_METHODS:
         return {entry.method}
     return set(_DEFAULT_ALLOWED_EXECUTOR_METHODS)
@@ -755,11 +762,7 @@ def _normalize_allowed_methods(allow_methods: Collection[str] | None) -> set[str
     else:
         raw_methods = allow_methods or _DEFAULT_ALLOWED_EXECUTOR_METHODS
 
-    normalized_methods = {
-        method.strip().upper()
-        for method in raw_methods
-        if method and method.strip()
-    }
+    normalized_methods = {method.strip().upper() for method in raw_methods if method and method.strip()}
     return normalized_methods or set(_DEFAULT_ALLOWED_EXECUTOR_METHODS)
 
 

@@ -6,11 +6,13 @@
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.orm import Session
 from sse_starlette.sse import EventSourceResponse
 
-from app.bi.meeting_bi.db.dependencies import get_bi_db
+import aiomysql
+
+from app.bi.meeting_bi.db.dependencies import get_bi_db_pool
 from app.bi.meeting_bi.schemas.ai_query import MeetingBIQueryRequest, MeetingBIQueryResponse
+from app.bi.meeting_bi.schemas.common import BIChartConfig
 from app.bi.meeting_bi.services.chart_store import get_chart
 
 try:
@@ -50,98 +52,98 @@ router = APIRouter()
 
 
 @router.get("/bi/kpi/overview", response_model=KpiOverview, tags=["会议BI"])
-def kpi_overview(db: Session = Depends(get_bi_db)):
-    return get_kpi_overview(db)
+async def kpi_overview(db: aiomysql.Pool = Depends(get_bi_db_pool)):
+    return await get_kpi_overview(db)
 
 
 @router.get("/bi/registration/chart", response_model=list[RegionLevelCount], tags=["会议BI"])
-def registration_chart(db: Session = Depends(get_bi_db)):
-    return get_region_level_chart(db)
+async def registration_chart(db: aiomysql.Pool = Depends(get_bi_db_pool)):
+    return await get_region_level_chart(db)
 
 
 @router.get("/bi/registration/matrix", response_model=list[MatrixRow], tags=["会议BI"])
-def registration_matrix(db: Session = Depends(get_bi_db)):
-    return get_matrix_table(db)
+async def registration_matrix(db: aiomysql.Pool = Depends(get_bi_db_pool)):
+    return await get_matrix_table(db)
 
 
 @router.get("/bi/registration/detail", response_model=list[RegistrationDetail], tags=["会议BI"])
-def registration_detail(
+async def registration_detail(
     region: str | None = Query(None),
     level: str | None = Query(None),
-    db: Session = Depends(get_bi_db),
+    db: aiomysql.Pool = Depends(get_bi_db_pool),
 ):
-    return get_registration_detail(db, region, level)
+    return await get_registration_detail(db, region, level)
 
 
 @router.get("/bi/customer/profile", response_model=CustomerProfile, tags=["会议BI"])
-def customer_profile(db: Session = Depends(get_bi_db)):
-    return get_customer_profile(db)
+async def customer_profile(db: aiomysql.Pool = Depends(get_bi_db_pool)):
+    return await get_customer_profile(db)
 
 
 @router.get("/bi/source/distribution", response_model=list[SourceCount], tags=["会议BI"])
-def source_distribution(db: Session = Depends(get_bi_db)):
-    return get_source_distribution(db)
+async def source_distribution(db: aiomysql.Pool = Depends(get_bi_db_pool)):
+    return await get_source_distribution(db)
 
 
 @router.get("/bi/source/target-arrival", response_model=list[TargetArrival], tags=["会议BI"])
-def source_target_arrival(db: Session = Depends(get_bi_db)):
-    return get_target_arrival(db)
+async def source_target_arrival(db: aiomysql.Pool = Depends(get_bi_db_pool)):
+    return await get_target_arrival(db)
 
 
 @router.get("/bi/source/target-detail", response_model=list[TargetCustomerDetail], tags=["会议BI"])
-def source_target_detail(region: str | None = Query(None), db: Session = Depends(get_bi_db)):
-    return get_target_customer_detail(db, region)
+async def source_target_detail(region: str | None = Query(None), db: aiomysql.Pool = Depends(get_bi_db_pool)):
+    return await get_target_customer_detail(db, region)
 
 
 @router.get("/bi/operations/kpi", response_model=OperationsKpi, tags=["会议BI"])
-def operations_kpi(
+async def operations_kpi(
     date_from: str | None = Query(None),
     date_to: str | None = Query(None),
-    db: Session = Depends(get_bi_db),
+    db: aiomysql.Pool = Depends(get_bi_db_pool),
 ):
-    return get_operations_kpi(db, date_from, date_to)
+    return await get_operations_kpi(db, date_from, date_to)
 
 
 @router.get("/bi/operations/trend", response_model=list[TrendPoint], tags=["会议BI"])
-def operations_trend(
+async def operations_trend(
     scene: str | None = Query(None),
-    db: Session = Depends(get_bi_db)
+    db: aiomysql.Pool = Depends(get_bi_db_pool)
 ):
-    return get_trend_data(db, scene)
+    return await get_trend_data(db, scene)
 
 
 @router.get("/bi/achievement/chart", response_model=list[AchievementBar], tags=["会议BI"])
-def achievement_chart(db: Session = Depends(get_bi_db)):
-    return get_achievement_chart(db)
+async def achievement_chart(db: aiomysql.Pool = Depends(get_bi_db_pool)):
+    return await get_achievement_chart(db)
 
 
 @router.get("/bi/achievement/table", response_model=list[AchievementRow], tags=["会议BI"])
-def achievement_table(db: Session = Depends(get_bi_db)):
-    return get_achievement_table(db)
+async def achievement_table(db: aiomysql.Pool = Depends(get_bi_db_pool)):
+    return await get_achievement_table(db)
 
 
 @router.get("/bi/achievement/detail", response_model=list[AchievementDetail], tags=["会议BI"])
-def achievement_detail(region: str | None = Query(None), db: Session = Depends(get_bi_db)):
-    return get_achievement_detail(db, region)
+async def achievement_detail(region: str | None = Query(None), db: aiomysql.Pool = Depends(get_bi_db_pool)):
+    return await get_achievement_detail(db, region)
 
 
 @router.get("/bi/progress/ranking", response_model=ProgressSummary, tags=["会议BI"])
-def progress_ranking(db: Session = Depends(get_bi_db)):
-    return get_progress(db)
+async def progress_ranking(db: aiomysql.Pool = Depends(get_bi_db_pool)):
+    return await get_progress(db)
 
 
 @router.get("/bi/proposal/overview", response_model=list[ProposalRow], tags=["会议BI"])
-def proposal_overview(db: Session = Depends(get_bi_db)):
-    return get_proposal_overview(db)
+async def proposal_overview(db: aiomysql.Pool = Depends(get_bi_db_pool)):
+    return await get_proposal_overview(db)
 
 
 @router.get("/bi/proposal/detail", response_model=list[ProposalDetail], tags=["会议BI"])
-def proposal_detail(
+async def proposal_detail(
     region: str | None = Query(None),
     proposal_type: str | None = Query(None),
-    db: Session = Depends(get_bi_db),
+    db: aiomysql.Pool = Depends(get_bi_db_pool),
 ):
-    return get_proposal_detail(db, region, proposal_type)
+    return await get_proposal_detail(db, region, proposal_type)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -151,6 +153,8 @@ def proposal_detail(
 @router.post("/bi/ai/query", response_model=MeetingBIQueryResponse, tags=["会议BI-AI"])
 async def bi_ai_query(req: MeetingBIQueryRequest):
     """执行会议 BI 自然语言问数并同步返回完整结果。"""
+    if MeetingBIQueryExecutor is None:
+        raise HTTPException(status_code=503, detail="Meeting BI AI executor unavailable")
     executor = MeetingBIQueryExecutor()
     result = await executor.query(req.question, conversation_id=req.conversation_id)
     return MeetingBIQueryResponse(
@@ -158,13 +162,15 @@ async def bi_ai_query(req: MeetingBIQueryRequest):
         answer=result.answer or "",
         columns=list(result.results[0].keys()) if result.results else [],
         rows=result.results,
-        chart=result.chart_spec,
+        chart=BIChartConfig(**result.chart_spec) if isinstance(result.chart_spec, dict) else result.chart_spec,
     )
 
 
 @router.post("/bi/ai/query/stream", tags=["会议BI-AI"])
 async def bi_ai_query_stream(req: MeetingBIQueryRequest):
     """以 SSE 方式流式返回会议 BI 问数过程。"""
+    if MeetingBIQueryExecutor is None:
+        raise HTTPException(status_code=503, detail="Meeting BI AI executor unavailable")
     executor = MeetingBIQueryExecutor()
     return EventSourceResponse(
         executor.stream(req.question, conversation_id=req.conversation_id)

@@ -3,7 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.models.schemas import ApiQueryUIAction, ApiQueryUIRuntime
+from app.models.schemas.api_query import (
+    ApiQueryUIAction,
+    ApiQueryUIRuntime,
+)
 from app.services.api_query_request_schema_gate import build_runtime_invoke_api
 from app.services.ui_catalog_service import UICatalogService
 from app.utils.state_path_utils import state_path_exists
@@ -457,7 +460,9 @@ def _extract_required_fields(schema: dict[str, Any]) -> list[str]:
     return [str(item) for item in required if isinstance(item, str) and item]
 
 
-def _build_request_field_whitelist(runtime: ApiQueryUIRuntime | None) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+def _build_request_field_whitelist(
+    runtime: ApiQueryUIRuntime | None,
+) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
     """从 runtime 中提取按接口聚合的 request_schema 字段白名单。"""
 
     whitelist_by_api_id: dict[str, set[str]] = {}
@@ -466,11 +471,7 @@ def _build_request_field_whitelist(runtime: ApiQueryUIRuntime | None) -> tuple[d
     def register(api_id: str | None, fields: list[str] | None) -> None:
         if not isinstance(api_id, str) or not api_id.strip() or fields is None:
             return
-        normalized_fields = {
-            field_name
-            for field_name in fields
-            if isinstance(field_name, str) and field_name.strip()
-        }
+        normalized_fields = {field_name for field_name in fields if isinstance(field_name, str) and field_name.strip()}
         # 同一个 api_id 可能同时承载列表与详情上下文。这里必须做并集，
         # 避免后注册分支覆盖先注册分支，导致合法字段被误判为不在白名单内。
         if api_id in whitelist_by_api_id:

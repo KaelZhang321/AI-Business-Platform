@@ -13,7 +13,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from app.models.schemas import (
+from app.models.schemas.catalog_governance import (
     ApiCatalogColdStartGovernanceRequest,
     ApiCatalogGovernanceJobResponse,
     ApiCatalogGovernanceJobStatus,
@@ -143,7 +143,11 @@ class ApiCatalogGovernanceJobService:
         target_api_filter = set(request.api_ids)
         domain_filter = set(request.domains)
         target_api_ids = _normalize_api_ids(
-            [entry.id for entry in entries if _cold_start_entry_matches(entry, api_filter=target_api_filter, domain_filter=domain_filter)]
+            [
+                entry.id
+                for entry in entries
+                if _cold_start_entry_matches(entry, api_filter=target_api_filter, domain_filter=domain_filter)
+            ]
         )
         if not target_api_ids:
             now = self._clock()

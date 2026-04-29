@@ -18,7 +18,7 @@ except ImportError:  # pragma: no cover - not installed in test env
     aioredis = None  # type: ignore[assignment]
 
 from app.bi.meeting_bi.schemas.common import BIChartConfig
-from app.core.config import settings
+from app.core.config import reveal_secret, settings
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +32,7 @@ def _make_key(chart_id: str) -> str:
 
 def _get_redis() -> aioredis.Redis:
     """每次调用返回一个连接（使用连接池，由 redis.asyncio 自动管理）。"""
-    return aioredis.from_url(settings.redis_url, decode_responses=True)
+    return aioredis.from_url(reveal_secret(settings.redis_url), decode_responses=True)
 
 
 async def save_chart(chart: BIChartConfig) -> str:

@@ -7,18 +7,33 @@
 
 from __future__ import annotations
 
+from typing import TypeVar
+
 from fastapi import Depends, Request
 
 from app.core.resources import AppResources, get_app_resources
 from app.services.api_catalog.governance_job_service import ApiCatalogGovernanceJobService
 from app.services.api_catalog.registry_source import ApiCatalogRegistrySource
+from app.services.api_query_workflow import ApiQueryWorkflow
+from app.services.chat_workflow import ChatWorkflow
 from app.services.api_catalog.semantic_curation_run_repository import SemanticCurationRunRepository
 from app.services.api_catalog.semantic_governance_publication_service import SemanticGovernancePublicationService
 from app.services.health_quadrant_service import HealthQuadrantService
 from app.services.report_intent_service import ReportIntentService
+from app.services.smart_meal_package_recommend_service import SmartMealPackageRecommendService
+from app.services.smart_meal_risk_service import SmartMealRiskService
 from app.services.text2sql_service import Text2SQLService
 from app.services.transcript_extract_service import TranscriptExtractService
 from app.services.ui_catalog_service import UICatalogService
+
+
+T = TypeVar("T")
+
+
+def _require(value: T | None, name: str) -> T:
+    if value is None:
+        raise RuntimeError(f"{name} 尚未初始化")
+    return value
 
 
 def get_app_resource_container(request: Request) -> AppResources:
@@ -35,7 +50,7 @@ def get_app_resource_container(request: Request) -> AppResources:
 def get_text2sql_service(resources: AppResources = Depends(get_app_resource_container)) -> Text2SQLService:
     """返回共享 Text2SQL 服务。"""
 
-    return resources.text2sql_service
+    return _require(resources.text2sql_service, "Text2SQLService")
 
 
 def get_transcript_extract_service(
@@ -43,7 +58,7 @@ def get_transcript_extract_service(
 ) -> TranscriptExtractService:
     """返回共享 transcript 抽取服务。"""
 
-    return resources.transcript_extract_service
+    return _require(resources.transcript_extract_service, "TranscriptExtractService")
 
 
 def get_health_quadrant_service(
@@ -51,13 +66,13 @@ def get_health_quadrant_service(
 ) -> HealthQuadrantService:
     """返回共享健康四象限服务。"""
 
-    return resources.health_quadrant_service
+    return _require(resources.health_quadrant_service, "HealthQuadrantService")
 
 
 def get_ui_catalog_service(resources: AppResources = Depends(get_app_resource_container)) -> UICatalogService:
     """返回共享 UI 目录服务。"""
 
-    return resources.ui_catalog_service
+    return _require(resources.ui_catalog_service, "UICatalogService")
 
 
 def get_api_catalog_registry_source(
@@ -65,7 +80,7 @@ def get_api_catalog_registry_source(
 ) -> ApiCatalogRegistrySource:
     """返回共享 API Catalog 注册表访问器。"""
 
-    return resources.api_catalog_registry_source
+    return _require(resources.api_catalog_registry_source, "ApiCatalogRegistrySource")
 
 
 def get_governance_job_service(
@@ -73,7 +88,7 @@ def get_governance_job_service(
 ) -> ApiCatalogGovernanceJobService:
     """返回共享治理任务服务。"""
 
-    return resources.api_catalog_governance_job_service
+    return _require(resources.api_catalog_governance_job_service, "ApiCatalogGovernanceJobService")
 
 
 def get_curation_run_repository(
@@ -81,7 +96,7 @@ def get_curation_run_repository(
 ) -> SemanticCurationRunRepository:
     """返回共享治理 run 仓储。"""
 
-    return resources.semantic_curation_run_repository
+    return _require(resources.semantic_curation_run_repository, "SemanticCurationRunRepository")
 
 
 def get_publication_service(
@@ -89,7 +104,7 @@ def get_publication_service(
 ) -> SemanticGovernancePublicationService:
     """返回共享治理发布服务。"""
 
-    return resources.semantic_governance_publication_service
+    return _require(resources.semantic_governance_publication_service, "SemanticGovernancePublicationService")
 
 
 def get_report_intent_service(
@@ -97,4 +112,24 @@ def get_report_intent_service(
 ) -> ReportIntentService:
     """返回共享报告意图识别服务。"""
 
-    return resources.report_intent_service
+    return _require(resources.report_intent_service, "ReportIntentService")
+
+
+def get_chat_workflow(resources: AppResources = Depends(get_app_resource_container)) -> ChatWorkflow:
+    return _require(resources.chat_workflow, "ChatWorkflow")
+
+
+def get_smart_meal_risk_service(
+    resources: AppResources = Depends(get_app_resource_container),
+) -> SmartMealRiskService:
+    return _require(resources.smart_meal_risk_service, "SmartMealRiskService")
+
+
+def get_smart_meal_package_recommend_service(
+    resources: AppResources = Depends(get_app_resource_container),
+) -> SmartMealPackageRecommendService:
+    return _require(resources.smart_meal_package_recommend_service, "SmartMealPackageRecommendService")
+
+
+def get_api_query_workflow(resources: AppResources = Depends(get_app_resource_container)) -> ApiQueryWorkflow:
+    return _require(resources.api_query_workflow, "ApiQueryWorkflow")

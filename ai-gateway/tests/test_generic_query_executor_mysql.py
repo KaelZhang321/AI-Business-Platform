@@ -60,5 +60,5 @@ async def test_create_business_mysql_pool_uses_shared_business_conn_params(monke
         "password": "ai_platform_dev",
         "db": "ai_platform_business",
         "charset": "utf8mb4",
-        "connect_timeout": 7.5,
+        "connect_timeout": 7,
     }

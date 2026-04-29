@@ -24,6 +24,9 @@ from typing import Any
 import pandas as pd
 import pymysql
 
+from app.core.mysql import build_business_mysql_conn_params
+from app.utils.text_utils import normalize_text as _normalize_text
+
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _DOCS_FILE = _REPO_ROOT / "docs" / "167项目手册.xlsx"
@@ -61,8 +64,6 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.append(str(_PROJECT_ROOT))
 _load_project_env_file()
 
-from app.core.mysql import build_business_mysql_conn_params
-
 logger = logging.getLogger(__name__)
 
 
@@ -76,17 +77,6 @@ class ImportStats:
     inserted_rows: int = 0
     updated_rows: int = 0
     unchanged_rows: int = 0
-
-
-def _normalize_text(value: Any) -> str:
-    """标准化文本并把空值统一为 `\"\"`。"""
-
-    if value is None:
-        return ""
-    text = str(value).strip()
-    if not text or text.lower() == "nan":
-        return ""
-    return text
 
 
 def _normalize_int(value: Any) -> int | None:

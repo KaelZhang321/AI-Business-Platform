@@ -20,7 +20,7 @@ from typing import Any
 
 from neo4j import AsyncDriver, AsyncGraphDatabase, AsyncManagedTransaction
 
-from app.core.config import settings
+from app.core.config import reveal_secret, settings
 from app.services.api_catalog.graph_models import (
     ApiCatalogSubgraphResult,
     GraphFieldPath,
@@ -289,7 +289,7 @@ class Neo4jGraphRepository(GraphRepository):
     ) -> None:
         self._uri = uri or settings.neo4j_uri
         self._user = user or settings.neo4j_user
-        self._password = password or settings.neo4j_password
+        self._password = password or reveal_secret(settings.neo4j_password)
         self._enabled = settings.api_catalog_graph_enabled if enabled is None else enabled
         self._driver: AsyncDriver | None = None
 

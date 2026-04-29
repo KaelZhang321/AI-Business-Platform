@@ -20,6 +20,7 @@ import aiomysql
 import httpx
 
 from app.core.config import settings
+from app.utils.text_utils import normalize_scalar_text as _normalize_text
 from app.services.health_quadrant_mysql_pools import HealthQuadrantMySQLPools
 from app.services.smart_meal_llm_service import SmartMealLLMService
 from app.utils.json_utils import parse_dirty_json_object, summarize_log_text
@@ -127,11 +128,16 @@ class SmartMealPackageRecommendService:
         2. 候选套餐被硬过滤清空时，返回空结果而非业务异常。
     """
 
-    def __init__(self, *, mysql_pools: HealthQuadrantMySQLPools | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        mysql_pools: HealthQuadrantMySQLPools | None = None,
+        llm_service: SmartMealLLMService | None = None,
+    ) -> None:
         self._mysql_pools = mysql_pools or HealthQuadrantMySQLPools(minsize=1, maxsize=3)
         self._owned_mysql_pools = mysql_pools is None
         self._http_client: httpx.AsyncClient | None = None
-        self._llm_service = SmartMealLLMService()
+        self._llm_service = llm_service or SmartMealLLMService()
 
     async def warmup(self) -> None:
         """预热连接池。
@@ -148,7 +154,6 @@ class SmartMealPackageRecommendService:
         if self._http_client is not None:
             await self._http_client.aclose()
             self._http_client = None
-        await self._llm_service.close()
         if self._owned_mysql_pools:
             await self._mysql_pools.close()
 
@@ -965,16 +970,6 @@ def _parse_score(value: Any) -> float | None:
         return float(text)
     except ValueError:
         return None
-
-
-def _normalize_text(value: Any) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, str):
-        return value.strip()
-    if isinstance(value, (int, float)):
-        return str(value).strip()
-    return ""
 
 
 def _parse_datetime(value: Any) -> datetime | None:

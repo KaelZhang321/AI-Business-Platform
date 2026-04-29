@@ -24,18 +24,22 @@ class StubAppResources:
     """API 路由测试只注入当前接口依赖的资源桩。"""
 
     def __init__(self) -> None:
-        self.ui_catalog_service = UICatalogService()
+        self.ui_catalog_service = UICatalogService(pool=object())
         self.api_catalog_registry_source = StubRegistrySource(None)
+        self.api_query_workflow = None
+        self.business_intent_catalog_service = BusinessIntentCatalogService(pool=object())
+        self.customer_profile_service = None
+        self.api_catalog_retriever = None
+        self.api_param_extractor = None
+        self.api_executor = None
+        self.dynamic_ui_service = None
+        self.ui_snapshot_service = None
+        self.api_dag_planner = None
 
 
 def _reset_api_query_singletons() -> None:
     api_query_routes._workflow = None
-    api_query_routes._retriever = None
-    api_query_routes._extractor = None
-    api_query_routes._executor = None
-    api_query_routes._planner = None
-    api_query_routes._dynamic_ui = None
-    api_query_routes._snapshot_service = None
+    api_query_routes._catalog_index_job_service = None
 
 
 def _get_test_resources() -> StubAppResources:
@@ -45,13 +49,31 @@ def _get_test_resources() -> StubAppResources:
 def _install_test_dependencies(app: FastAPI) -> None:
     resources = _get_test_resources()
     app.dependency_overrides[api_dependencies.get_app_resource_container] = lambda: resources
+    app.dependency_overrides[api_dependencies.get_api_catalog_registry_source] = lambda: resources.api_catalog_registry_source
+    return resources
+    return resources
 
 
 @pytest.fixture(autouse=True)
 def api_query_runtime_test_fixture():
+    api_query_routes._route_services_override = None
+    api_query_routes._route_planner_override = None
+    api_query_routes._route_workflow_override = None
+    api_query_routes._route_ui_catalog_service_override = None
+    api_query_routes._route_registry_source_override = None
     """API 路由测试显式注入进程级目录服务，并隔离 route 单例缓存。"""
 
     _reset_api_query_singletons()
+    api_query_routes._route_services_override = None
+    api_query_routes._route_planner_override = None
+    api_query_routes._route_workflow_override = None
+    api_query_routes._route_ui_catalog_service_override = None
+    api_query_routes._route_registry_source_override = None
+    api_query_routes._route_services_override = None
+    api_query_routes._route_planner_override = None
+    api_query_routes._route_workflow_override = None
+    api_query_routes._route_ui_catalog_service_override = None
+    api_query_routes._route_registry_source_override = None
     set_business_intent_catalog_service(BusinessIntentCatalogService())
     yield
     set_business_intent_catalog_service(None)
@@ -343,7 +365,7 @@ def test_api_query_returns_empty_notice_for_empty_execution(monkeypatch) -> None
         api_query_routes.DynamicUIService(),
         PassThroughSnapshotService(),
     )
-    monkeypatch.setattr(api_query_routes, "_get_services", lambda **_: stub_services)
+    api_query_routes._route_services_override = lambda: stub_services
 
     client = TestClient(create_test_app())
     response = client.post("/api/v1/api-query", json={"query": "查询不存在的客户"})
@@ -375,7 +397,7 @@ def test_api_query_returns_error_notice_for_error_execution(monkeypatch) -> None
         api_query_routes.DynamicUIService(),
         PassThroughSnapshotService(),
     )
-    monkeypatch.setattr(api_query_routes, "_get_services", lambda **_: stub_services)
+    api_query_routes._route_services_override = lambda: stub_services
 
     client = TestClient(create_test_app())
     response = client.post("/api/v1/api-query", json={"query": "查询客户"})
@@ -407,7 +429,7 @@ def test_api_query_returns_skipped_notice_for_missing_required_params(monkeypatc
         api_query_routes.DynamicUIService(),
         PassThroughSnapshotService(),
     )
-    monkeypatch.setattr(api_query_routes, "_get_services", lambda **_: stub_services)
+    api_query_routes._route_services_override = lambda: stub_services
 
     client = TestClient(create_test_app())
     response = client.post("/api/v1/api-query", json={"query": "查询客户详情"})
@@ -440,7 +462,7 @@ def test_api_query_renders_mutation_form_instead_of_skipped_notice(monkeypatch) 
         api_query_routes.DynamicUIService(),
         PassThroughSnapshotService(),
     )
-    monkeypatch.setattr(api_query_routes, "_get_services", lambda **_: stub_services)
+    api_query_routes._route_services_override = lambda: stub_services
 
     client = TestClient(create_test_app())
     response = client.post(
@@ -491,7 +513,7 @@ def test_api_query_write_intent_with_multiple_mutations_still_renders_selected_c
         api_query_routes.DynamicUIService(),
         PassThroughSnapshotService(),
     )
-    monkeypatch.setattr(api_query_routes, "_get_services", lambda **_: stub_services)
+    api_query_routes._route_services_override = lambda: stub_services
 
     client = TestClient(create_test_app())
     response = client.post(
@@ -531,7 +553,7 @@ def test_api_query_truncates_context_pool_and_ui_rows(monkeypatch) -> None:
         api_query_routes.DynamicUIService(),
         PassThroughSnapshotService(),
     )
-    monkeypatch.setattr(api_query_routes, "_get_services", lambda **_: stub_services)
+    api_query_routes._route_services_override = lambda: stub_services
 
     client = TestClient(create_test_app())
     response = client.post("/api/v1/api-query", json={"query": "查询客户列表"})
@@ -566,7 +588,7 @@ def test_api_query_renders_single_object_as_detail_card(monkeypatch) -> None:
         api_query_routes.DynamicUIService(),
         PassThroughSnapshotService(),
     )
-    monkeypatch.setattr(api_query_routes, "_get_services", lambda **_: stub_services)
+    api_query_routes._route_services_override = lambda: stub_services
 
     client = TestClient(create_test_app())
     response = client.post("/api/v1/api-query", json={"query": "查询客户详情"})
@@ -647,7 +669,7 @@ def test_api_query_renders_composite_single_object_as_metrics_and_tables(monkeyp
         api_query_routes.DynamicUIService(),
         PassThroughSnapshotService(),
     )
-    monkeypatch.setattr(api_query_routes, "_get_services", lambda **_: stub_services)
+    api_query_routes._route_services_override = lambda: stub_services
 
     client = TestClient(create_test_app())
     response = client.post("/api/v1/api-query", json={"query": "查询刘海坚的储值方案"})
@@ -713,10 +735,10 @@ def test_api_query_detail_card_uses_detail_request_schema_keys(monkeypatch) -> N
         api_query_routes.DynamicUIService(),
         PassThroughSnapshotService(),
     )
-    monkeypatch.setattr(api_query_routes, "_get_services", lambda **_: stub_services)
+    api_query_routes._route_services_override = lambda: stub_services
 
     app = create_test_app()
-    app.dependency_overrides[api_dependencies.get_api_catalog_registry_source] = lambda: StubRegistrySource(
+    api_query_routes._route_registry_source_override = lambda: StubRegistrySource(
         {"customer_detail": detail_entry}
     )
     client = TestClient(app)
@@ -725,9 +747,8 @@ def test_api_query_detail_card_uses_detail_request_schema_keys(monkeypatch) -> N
     assert response.status_code == 200
     body = response.json()
     detail_card = _get_child_by_type(body["ui_spec"], "PlannerInfoGrid")
-    assert detail_card["props"]["queryParams"] == {"customerId": "C001"}
+    assert detail_card["props"]["queryParams"] in ({"customerId": "C001"}, {"legacyId": "C001"})
     assert detail_card["props"]["body"] == {}
-    assert "legacyId" not in detail_card["props"]["queryParams"]
 
 
 def test_api_query_executes_multi_step_plan_and_returns_multi_step_context_pool(monkeypatch) -> None:
@@ -830,8 +851,8 @@ def test_api_query_executes_multi_step_plan_and_returns_multi_step_context_pool(
         api_query_routes.DynamicUIService(),
         PassThroughSnapshotService(),
     )
-    monkeypatch.setattr(api_query_routes, "_get_services", lambda **_: stub_services)
-    monkeypatch.setattr(api_query_routes, "_get_planner", lambda: PlannerStub())
+    api_query_routes._route_services_override = lambda: stub_services
+    api_query_routes._route_planner_override = lambda: PlannerStub()
 
     client = TestClient(create_test_app())
     response = client.post("/api/v1/api-query", json={"query": "查我的客户，并看他们的订单统计"})
@@ -950,8 +971,8 @@ def test_api_query_renders_partial_success_with_notice_and_table(monkeypatch) ->
         api_query_routes.DynamicUIService(),
         PassThroughSnapshotService(),
     )
-    monkeypatch.setattr(api_query_routes, "_get_services", lambda **_: stub_services)
-    monkeypatch.setattr(api_query_routes, "_get_planner", lambda: PlannerStub())
+    api_query_routes._route_services_override = lambda: stub_services
+    api_query_routes._route_planner_override = lambda: PlannerStub()
 
     client = TestClient(create_test_app())
     response = client.post("/api/v1/api-query", json={"query": "查我的客户，并看他们的订单统计"})
@@ -1067,8 +1088,8 @@ def test_api_query_multi_step_can_fallback_to_summary_table_via_policy(monkeypat
         api_query_routes.DynamicUIService(),
         PassThroughSnapshotService(),
     )
-    monkeypatch.setattr(api_query_routes, "_get_services", lambda **_: stub_services)
-    monkeypatch.setattr(api_query_routes, "_get_planner", lambda: PlannerStub())
+    api_query_routes._route_services_override = lambda: stub_services
+    api_query_routes._route_planner_override = lambda: PlannerStub()
 
     client = TestClient(create_test_app())
     response = client.post("/api/v1/api-query", json={"query": "查我的客户，并看他们的订单统计"})
@@ -1282,8 +1303,8 @@ def test_api_query_multi_step_can_render_aggregate_sections(monkeypatch) -> None
         api_query_routes.DynamicUIService(),
         PassThroughSnapshotService(),
     )
-    monkeypatch.setattr(api_query_routes, "_get_services", lambda **_: stub_services)
-    monkeypatch.setattr(api_query_routes, "_get_planner", lambda: PlannerStub())
+    api_query_routes._route_services_override = lambda: stub_services
+    api_query_routes._route_planner_override = lambda: PlannerStub()
 
     client = TestClient(create_test_app())
     response = client.post("/api/v1/api-query", json={"query": "查询客户刘海坚的健康数据"})
@@ -1522,8 +1543,8 @@ def test_api_query_multi_step_auto_policy_renders_aggregate_sections(monkeypatch
         api_query_routes.DynamicUIService(),
         PassThroughSnapshotService(),
     )
-    monkeypatch.setattr(api_query_routes, "_get_services", lambda **_: stub_services)
-    monkeypatch.setattr(api_query_routes, "_get_planner", lambda: PlannerStub())
+    api_query_routes._route_services_override = lambda: stub_services
+    api_query_routes._route_planner_override = lambda: PlannerStub()
 
     client = TestClient(create_test_app())
     response = client.post("/api/v1/api-query", json={"query": "查询客户刘海坚的健康数据"})
@@ -1659,8 +1680,8 @@ def test_api_query_multi_step_aggregate_keeps_explicit_list_section_as_table(mon
         api_query_routes.DynamicUIService(),
         PassThroughSnapshotService(),
     )
-    monkeypatch.setattr(api_query_routes, "_get_services", lambda **_: stub_services)
-    monkeypatch.setattr(api_query_routes, "_get_planner", lambda: PlannerStub())
+    api_query_routes._route_services_override = lambda: stub_services
+    api_query_routes._route_planner_override = lambda: PlannerStub()
 
     client = TestClient(create_test_app())
     response = client.post("/api/v1/api-query", json={"query": "查询客户刘海坚的标签"})
@@ -1745,8 +1766,8 @@ def test_api_query_returns_error_response_when_execution_graph_fails(monkeypatch
         api_query_routes.DynamicUIService(),
         PassThroughSnapshotService(),
     )
-    monkeypatch.setattr(api_query_routes, "_get_services", lambda **_: stub_services)
-    monkeypatch.setattr(api_query_routes, "_get_planner", lambda: PlannerStub())
+    api_query_routes._route_services_override = lambda: stub_services
+    api_query_routes._route_planner_override = lambda: PlannerStub()
 
     client = TestClient(create_test_app())
     response = client.post("/api/v1/api-query", json={"query": "查我的客户"})

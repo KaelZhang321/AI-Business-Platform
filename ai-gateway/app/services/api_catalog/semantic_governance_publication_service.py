@@ -11,7 +11,10 @@ from datetime import UTC, datetime
 import aiomysql
 
 from app.core.config import settings
-from app.models.schemas import ApiCatalogGovernanceRunResponse, SemanticCurationRunStatus
+from app.models.schemas.catalog_governance import (
+    ApiCatalogGovernanceRunResponse,
+    SemanticCurationRunStatus,
+)
 from app.services.api_catalog.semantic_curation_run_repository import (
     SemanticCurationRunRepository,
     SemanticCurationRunRepositoryError,

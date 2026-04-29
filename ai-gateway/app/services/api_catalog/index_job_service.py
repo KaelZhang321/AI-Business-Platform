@@ -19,7 +19,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
-from app.models.schemas import ApiCatalogIndexJobResponse, ApiCatalogIndexJobStatus
+from app.models.schemas.catalog_governance import (
+    ApiCatalogIndexJobResponse,
+    ApiCatalogIndexJobStatus,
+)
 
 _MAX_OUTPUT_TAIL_CHARS = 4000
 
@@ -250,4 +253,3 @@ def _decode_output_tail(output: bytes | None) -> str:
     if not output:
         return ""
     return output.decode("utf-8", errors="replace")[-_MAX_OUTPUT_TAIL_CHARS:]
-

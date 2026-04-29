@@ -1,52 +1,55 @@
-from sqlalchemy import text
-from sqlalchemy.orm import Session
+import aiomysql
 
 from app.bi.meeting_bi.schemas.kpi import KpiItem, KpiOverview
 
 TOTAL_BUDGET = 600  # 单位：万
 
 
-def get_kpi_overview(db: Session) -> KpiOverview:
-    row = db.execute(
-        text(
-            """
-            SELECT COUNT(DISTINCT customer_unique_id) AS cnt FROM meeting_registration
-            WHERE real_identity IS NOT NULL
-              AND real_identity NOT LIKE '%市场%'
-              AND real_identity NOT LIKE '%陪同%'
-            """
-        )
-    ).mappings().first()
-    registered = int(row["cnt"] or 0)
+async def _fetch_one(pool: aiomysql.Pool, sql: str) -> dict:
+    async with pool.acquire() as conn:
+        async with conn.cursor(aiomysql.DictCursor) as cur:
+            await cur.execute(sql)
+            return await cur.fetchone() or {}
 
-    row = db.execute(
-        text(
-            """
-            SELECT COUNT(DISTINCT customer_unique_id) AS cnt
-            FROM meeting_registration
-            WHERE sign_in_status = '已签到'
-              AND real_identity IS NOT NULL
-              AND real_identity NOT LIKE '%市场%'
-              AND real_identity NOT LIKE '%陪同%'
-            """
-        )
-    ).mappings().first()
-    arrived = int(row["cnt"] or 0)
 
-    row = db.execute(
-        text(
-            """
-            SELECT
-              COALESCE(SUM(new_deal_amount), 0) AS deal,
-              COALESCE(SUM(consumed_amount), 0) AS consumed,
-              COALESCE(SUM(received_amount), 0) AS received
-            FROM meeting_transaction_details
-            """
-        )
-    ).mappings().first()
-    deal = float(row["deal"] or 0) / 10000
-    consumed = float(row["consumed"] or 0) / 10000
-    received = float(row["received"] or 0) / 10000
+async def get_kpi_overview(pool: aiomysql.Pool) -> KpiOverview:
+    row = await _fetch_one(
+        pool,
+        """
+        SELECT COUNT(DISTINCT customer_unique_id) AS cnt FROM meeting_registration
+        WHERE real_identity IS NOT NULL
+          AND real_identity NOT LIKE '%市场%'
+          AND real_identity NOT LIKE '%陪同%'
+        """,
+    )
+    registered = int(row.get("cnt") or 0)
+
+    row = await _fetch_one(
+        pool,
+        """
+        SELECT COUNT(DISTINCT customer_unique_id) AS cnt
+        FROM meeting_registration
+        WHERE sign_in_status = '已签到'
+          AND real_identity IS NOT NULL
+          AND real_identity NOT LIKE '%市场%'
+          AND real_identity NOT LIKE '%陪同%'
+        """,
+    )
+    arrived = int(row.get("cnt") or 0)
+
+    row = await _fetch_one(
+        pool,
+        """
+        SELECT
+          COALESCE(SUM(new_deal_amount), 0) AS deal,
+          COALESCE(SUM(consumed_amount), 0) AS consumed,
+          COALESCE(SUM(received_amount), 0) AS received
+        FROM meeting_transaction_details
+        """,
+    )
+    deal = float(row.get("deal") or 0) / 10000
+    consumed = float(row.get("consumed") or 0) / 10000
+    received = float(row.get("received") or 0) / 10000
     roi = round(TOTAL_BUDGET / (deal * 0.4), 4) if deal else 0
 
     return KpiOverview(

@@ -19,7 +19,7 @@ import logging
 from typing import Any
 
 from app.core.config import settings
-from app.models.schemas import ApiQueryRoutingResult
+from app.models.schemas.api_query import ApiQueryRoutingResult
 from app.services.api_catalog.business_intents import (
     NOOP_BUSINESS_INTENT,
     normalize_business_intent_code,
@@ -524,8 +524,6 @@ def _build_route_and_extract_prompt(
 
 输出格式：
 {{"selected_api_id":"...","query_domains":["crm"],"business_intents":["none"],"is_multi_domain":false,"reasoning":"...","params":{{}}}}"""
-
-
 
 
 def _validate_params(params: dict[str, Any], entry: ApiCatalogEntry) -> dict[str, Any]:

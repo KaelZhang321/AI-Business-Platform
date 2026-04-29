@@ -6,7 +6,7 @@ import logging
 
 from app.core.config import settings
 from app.core.error_codes import BusinessError, ErrorCode
-from app.models.schemas import TranscriptExtractData
+from app.models.schemas.transcript_extract import TranscriptExtractData
 from app.services.model_router import ModelRouter
 from app.services.model_runtime_config_service import get_model_runtime_config_service
 from app.services.prompt_template_repository import (

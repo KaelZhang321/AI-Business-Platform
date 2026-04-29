@@ -5,7 +5,7 @@ from typing import Any, Literal, TypedDict
 
 from pydantic import BaseModel, Field
 
-from app.models.schemas import (
+from app.models.schemas.api_query import (
     ApiQueryExecutionPlan,
     ApiQueryExecutionStatus,
     ApiQueryRequest,
