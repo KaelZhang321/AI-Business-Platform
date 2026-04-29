@@ -19,6 +19,8 @@ import { MainContentPanel } from './consultant-ai-workbench/modules/MainContentP
 import { WorkbenchHeaderSection } from './consultant-ai-workbench/modules/WorkbenchHeaderSection';
 import { AI_CARDS_DATA } from './AICards';
 import localStructuredFallbackRaw from './json-render/aa.txt?raw';
+import { aiQueryApi } from '../services/api/aiQueryApi';
+
 import type {
   AIResultItem,
   ChatHistoryItem,
@@ -1022,8 +1024,21 @@ export const ConsultantAIWorkbench: React.FC<ConsultantAIWorkbenchProps> = ({
     chatRequestPendingRef.current = true;
 
     try {
-      const response = await apiClient.post('/api/v1/api-query', { query });
-      const aiResponseContent = response.data?.data ?? response.data ?? '';
+      const response = await aiQueryApi.query({
+        query,
+        conversationId: `consultant-${selectedCustomer.id}`,
+        context: aiQueryApi.buildContext('consultant-ai', {
+          module: 'customer_profile',
+          selectedEntity: {
+            customerId: selectedCustomer.id,
+            customerName: selectedCustomer.name,
+            encryptedIdCard: selectedCustomer.encryptedIdCard,
+          },
+          visibleCards: dashboardCards.map((card) => card.id),
+          availableActions: ['view_customer_profile', 'view_exam_report', 'generate_layout'],
+        }),
+      });
+      const aiResponseContent = response?.data ?? '';
       const assistantContent = normalizeAiResponseContent(aiResponseContent);
       const resultSummary = extractAiResultSummary(aiResponseContent, selectedCustomer.name);
       const finalAssistantContent = assistantContent || resultSummary;

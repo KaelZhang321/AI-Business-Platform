@@ -40,6 +40,8 @@ interface DictOption {
 
 const dictCache = new Map<string, DictOption[]>();
 const EMPTY_ROWS: any[] = [];
+const PLANNER_TABLE_ROW_KEY = '__plannerTableRowKey';
+const PLANNER_TABLE_RAW_RECORD = '__plannerTableRawRecord';
 
 const uiTokens = {
   cardShell:
@@ -124,6 +126,38 @@ function formatDisplayValue(value: unknown) {
     return '-';
   }
   return String(value);
+}
+
+function buildPlannerTableRowKey(record: unknown, index: number) {
+  if (record && typeof record === 'object' && !Array.isArray(record)) {
+    const row = record as Record<string, unknown>;
+    const idLikeKey = row.id ?? row.uid ?? row.key;
+    if (idLikeKey !== null && idLikeKey !== undefined && String(idLikeKey).trim() !== '') {
+      return String(idLikeKey);
+    }
+    return `${JSON.stringify(record)}__${index}`;
+  }
+
+  return `${String(record)}__${index}`;
+}
+
+function attachPlannerTableRowKeys(rows: any[]) {
+  return rows.map((row, index) => {
+    const rowKey = buildPlannerTableRowKey(row, index);
+    if (row && typeof row === 'object' && !Array.isArray(row)) {
+      return {
+        ...row,
+        [PLANNER_TABLE_ROW_KEY]: rowKey,
+        [PLANNER_TABLE_RAW_RECORD]: row,
+      };
+    }
+
+    return {
+      value: row,
+      [PLANNER_TABLE_ROW_KEY]: rowKey,
+      [PLANNER_TABLE_RAW_RECORD]: row,
+    };
+  });
 }
 
 function isFormActionNode(node: ReactNode): boolean {
@@ -491,7 +525,7 @@ export const AssistantRenderer = createRenderer(assistantCatalog, {
       bizFieldKey
     } = element.props;
 
-    const normalizedRows = useMemo(() => {
+    const sourceRows = useMemo(() => {
       if (Array.isArray(rows)) {
         return rows;
       }
@@ -500,6 +534,7 @@ export const AssistantRenderer = createRenderer(assistantCatalog, {
       }
       return EMPTY_ROWS;
     }, [rows, dataSource]);
+    const normalizedRows = useMemo(() => attachPlannerTableRowKeys(sourceRows), [sourceRows]);
 
     const [data, setData] = useState<any[]>(normalizedRows);
     const [total, setTotal] = useState(typeof staticTotal === 'number' ? staticTotal : normalizedRows.length);
@@ -572,7 +607,7 @@ export const AssistantRenderer = createRenderer(assistantCatalog, {
             res.data?.pages !== undefined;
           const totalCount = rawTotalCount ?? nextRows.length;
 
-          setData(nextRows);
+          setData(attachPlannerTableRowKeys(nextRows));
           setHasPaginationMeta(hasServerPagination || typeof staticTotal === 'number');
           setTotal(typeof totalCount === 'number' ? totalCount : Number(totalCount) || 0);
           setLoading(false);
@@ -615,7 +650,7 @@ export const AssistantRenderer = createRenderer(assistantCatalog, {
           resData?.pageNum !== undefined ||
           resData?.data?.pages !== undefined ||
           resData?.pages !== undefined;
-        setData(Array.isArray(records) ? records : []);
+        setData(attachPlannerTableRowKeys(Array.isArray(records) ? records : []));
         setHasPaginationMeta(hasServerPagination || typeof staticTotal === 'number');
         setTotal(typeof totalCount === 'number' ? totalCount : 0);
       };
@@ -637,7 +672,7 @@ export const AssistantRenderer = createRenderer(assistantCatalog, {
                   key={idx}
                   type="button"
                   className="text-brand text-[11px] font-bold transition-colors hover:text-brand-dark hover:underline"
-                  onClick={() => emit(action.type || 'remoteQuery', { record, action })}
+                  onClick={() => emit(action.type || 'remoteQuery', { record: record?.[PLANNER_TABLE_RAW_RECORD] ?? record, action })}
                 >
                   {action.label}
                 </button>
@@ -667,7 +702,7 @@ export const AssistantRenderer = createRenderer(assistantCatalog, {
           dataSource={data}
           columns={tableColumns}
           loading={loading}
-          rowKey={(record: any) => record.id || record.uid || JSON.stringify(record)}
+          rowKey={(record: any) => record?.[PLANNER_TABLE_ROW_KEY] || record?.id || record?.uid || JSON.stringify(record)}
           pagination={tablePagination}
           scroll={hasPaginationMeta ? { x: 'max-content' } : { x: 'max-content', y: 420 }}
           className={uiTokens.tableClassName}
