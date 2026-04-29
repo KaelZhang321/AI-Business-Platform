@@ -133,3 +133,10 @@ def get_smart_meal_package_recommend_service(
 
 def get_api_query_workflow(resources: AppResources = Depends(get_app_resource_container)) -> ApiQueryWorkflow:
     return _require(resources.api_query_workflow, "ApiQueryWorkflow")
+
+
+# app/api/dependencies.py
+from app.services.deal_workflow import DealWorkflow
+
+def get_deal_workflow() -> DealWorkflow:
+    return DealWorkflow()

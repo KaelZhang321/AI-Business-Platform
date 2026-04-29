@@ -10,7 +10,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api.routes import bi, chat, knowledge, query
+from app.api.routes import bi, chat, deal, knowledge, query
 from app.api.routes.api_query import router as api_query_router
 from app.api.routes.catalog_governance import router as catalog_governance_router
 from app.api.routes.health_quadrant import router as health_quadrant_router
@@ -406,6 +406,7 @@ def _error_code_to_http_status(ec: ErrorCode) -> int:
 app.include_router(chat.router, prefix="/api/v1", tags=["对话"])
 app.include_router(knowledge.router, prefix="/api/v1", tags=["知识库"])
 app.include_router(query.router, prefix="/api/v1", tags=["数据查询"])
+app.include_router(deal.router, prefix="/api/v1", tags=["Deal测试"])
 app.include_router(bi.router, prefix="/api/v1")
 app.include_router(api_query_router, prefix="/api/v1")
 app.include_router(catalog_governance_router, prefix="/api/v1")
@@ -459,3 +460,5 @@ async def prometheus_middleware(request, call_next):
 @app.get("/metrics", tags=["系统"])
 async def metrics():
     return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+
