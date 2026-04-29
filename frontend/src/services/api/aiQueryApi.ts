@@ -24,7 +24,7 @@ export async function query(request: AiQueryRequest): Promise<AiQueryResponse> {
     };
 
     const response = await apiClient.post(AI_QUERY_ENDPOINT, payload);
-    return response.data;
+    return response.data?.data ?? response.data;
 }
 
 /**

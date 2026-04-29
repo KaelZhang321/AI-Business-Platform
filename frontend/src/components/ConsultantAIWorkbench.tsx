@@ -289,6 +289,19 @@ function extractAiResultSummary(content: unknown, customerName: string): string 
   return `已为您生成 ${customerName} 的对话结果，请在 AI结果显示区查看。`;
 }
 
+function hasExplicitEmptySpec(content: unknown): boolean {
+  if (!content || typeof content !== 'object' || Array.isArray(content)) {
+    return false;
+  }
+
+  const record = normalizeAiMessageObject(content as Record<string, unknown>);
+  if (!Object.prototype.hasOwnProperty.call(record, 'spec') && !Object.prototype.hasOwnProperty.call(record, 'ui_spec')) {
+    return false;
+  }
+
+  return !hasRenderableSpec(record.spec);
+}
+
 function hasRenderableSpec(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length > 0);
 }
@@ -1039,6 +1052,7 @@ export const ConsultantAIWorkbench: React.FC<ConsultantAIWorkbenchProps> = ({
         }),
       });
       const aiResponseContent = response;
+      const isEmptySpecResponse = hasExplicitEmptySpec(aiResponseContent);
       const assistantContent = normalizeAiResponseContent(aiResponseContent);
       const resultSummary = extractAiResultSummary(aiResponseContent, selectedCustomer.name);
       const finalAssistantContent = assistantContent || resultSummary;
@@ -1051,14 +1065,14 @@ export const ConsultantAIWorkbench: React.FC<ConsultantAIWorkbenchProps> = ({
           id: Date.now(),
           type: 'AI对话结果',
           title: 'AI对话结果',
-          content: resultSummary,
+          content: isEmptySpecResponse ? '未匹配到可展示的结构化数据。' : resultSummary,
         },
         ...prev,
       ]);
 
       setChatHistory((prev) => [
         ...prev,
-        { role: 'assistant', content: '已根据指令生成结构化卡片方案，请在旁侧查阅。' },
+        { role: 'assistant', content: isEmptySpecResponse ? '未匹配到数据，请尝试调整问题后重新发起。' : '已根据指令生成结构化卡片方案，请在旁侧查阅。' },
       ]);
     } catch (error) {
       console.error('[ConsultantAIWorkbench] API Query error:', error);
