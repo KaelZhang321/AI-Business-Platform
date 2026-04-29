@@ -63,6 +63,4 @@ htmlcov/
 .claude
 .planning/*
 .omx/
-.omc/
-.zread/
 .agents/
