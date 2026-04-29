@@ -53,6 +53,13 @@ dev = [
 requires = ["setuptools>=75.0"]
 build-backend = "setuptools.build_meta"
 
+[tool.setuptools.packages.find]
+# 显式收敛为 app 包，避免 flat-layout 下把 resources 误识别为顶层包导致构建失败。
+where = ["."]
+include = ["app*"]
+exclude = ["resources*", "tests*", "docs*"]
+namespaces = false
+
 [tool.ruff]
 target-version = "py311"
 line-length = 120
