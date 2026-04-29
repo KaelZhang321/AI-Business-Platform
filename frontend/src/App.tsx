@@ -285,7 +285,7 @@ export function App() {
           >
             <div className="pointer-events-none absolute left-0 top-0 -z-10 h-[500px] w-full bg-gradient-to-br from-brand-light/40 via-brand-light/20 to-transparent dark:from-brand/12 dark:via-brand/5 dark:to-transparent"></div>
 
-            <div className="max-w-[1720px] mx-auto space-y-6 h-full">
+            <div className="flex-1 mx-auto space-y-6 h-full">
               {renderAppPage(currentPage, {
                 navigateToPage: (page: AppPage) => navigate(PAGE_PATHS[page]),
                 isDarkMode,
