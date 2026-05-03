@@ -1761,7 +1761,7 @@ export const AIReportComparisonReportView: React.FC<AIReportComparisonReportView
                   <div className="flex h-6 w-6 items-center justify-center rounded-lg bg-brand text-white">
                     <Bot className="h-4 w-4" />
                   </div>
-                  <div className="text-xs font-bold text-slate-700 dark:text-slate-200">AI 实时咨询1</div>
+                  <div className="text-xs font-bold text-slate-700 dark:text-slate-200">AI 实时咨询</div>
                 </div>
                 {focusedMetricName ? (
                   <button type="button" onClick={() => setFocusedMetricName(null)} className="text-[10px] font-bold text-brand hover:underline">
