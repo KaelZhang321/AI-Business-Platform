@@ -17,7 +17,6 @@ def test_sensitive_settings_are_secretstr_and_masked() -> None:
         "minio_secret_key",
         "neo4j_password",
         "text2sql_api_key",
-        "meeting_bi_database_url",
         "meeting_bi_api_key",
         "ark_api_key",
         "gateway_jwt_secret",

@@ -32,6 +32,9 @@ ENV_VARS=(
     "-e TZ=Asia/Shanghai"
 )
 
+ENV_FILE_TEMPLATE=".env.example"
+ENV_FILE_TARGET=".env"
+
 # 数据卷挂载 (加入日志和本地宿主机的大模型缓存映射)
 VOLUMES=(
     "-v /data/app/ai-platform/ai-gateway/logs:/app/logs"
@@ -61,6 +64,102 @@ log_error() {
 }
 
 # ==================== 主要功能函数 ====================
+
+# 生成部署使用的 .env 文件
+prepare_env_file() {
+    log_info "准备环境变量文件 ${ENV_FILE_TARGET}..."
+    if [ ! -f "${ENV_FILE_TEMPLATE}" ]; then
+        log_error "缺少 ${ENV_FILE_TEMPLATE}，无法继续部署"
+        exit 1
+    fi
+    cp "${ENV_FILE_TEMPLATE}" "${ENV_FILE_TARGET}"
+}
+
+# 覆写模板中的同名变量（仅当宿主环境变量非空）
+inject_runtime_env_overrides() {
+    log_info "注入运行时环境变量到 ${ENV_FILE_TARGET}..."
+
+    while IFS= read -r raw_line || [ -n "${raw_line}" ]; do
+        # 保留首尾空白剔除后的内容用于判定
+        line="$(echo "${raw_line}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+
+        # 忽略注释、空行、非法 key=value 行
+        [ -z "${line}" ] && continue
+        [[ "${line}" == \#* ]] && continue
+        [[ "${line}" != *=* ]] && continue
+        [[ "${line}" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || continue
+
+        key="${line%%=*}"
+        runtime_value="${!key-}"
+        [ -z "${runtime_value}" ] && continue
+
+        log_info "  覆写变量: ${key}"
+        escaped_value="$(printf '%s' "${runtime_value}" | sed 's/[&|]/\\&/g')"
+        if grep -q "^${key}=" "${ENV_FILE_TARGET}"; then
+            sed -i.bak "s|^${key}=.*|${key}=${escaped_value}|" "${ENV_FILE_TARGET}"
+        else
+            echo "${key}=${runtime_value}" >> "${ENV_FILE_TARGET}"
+        fi
+    done < "${ENV_FILE_TEMPLATE}"
+
+    rm -f "${ENV_FILE_TARGET}.bak"
+}
+
+# 对模板定义的必填键执行空值 fail-fast 校验（不使用显式占位符规则）
+validate_required_envs() {
+    log_info "校验必填环境变量（空值 fail-fast）..."
+    local missing_required=0
+    local optional_block=0
+
+    while IFS= read -r raw_line || [ -n "${raw_line}" ]; do
+        line="$(echo "${raw_line}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+        if [ -z "${line}" ]; then
+            # 空行默认结束“可选区块”
+            optional_block=0
+            continue
+        fi
+        if [[ "${line}" == \#* ]]; then
+            # 允许通过注释声明后续变量为可选
+            if echo "${line}" | grep -Eiq '可选|optional'; then
+                optional_block=1
+            fi
+            continue
+        fi
+        [[ "${line}" != *=* ]] && continue
+        [[ "${line}" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || continue
+
+        key="${line%%=*}"
+        template_value="${line#*=}"
+        local is_required=0
+
+        # 必填定义来源于 .env.example：
+        # 1) 行内显式 # REQUIRED 标记；
+        # 2) 非可选区块中的空值键（KEY=）
+        if echo "${raw_line}" | grep -Eiq '#.*required'; then
+            is_required=1
+        elif [ "${optional_block}" -eq 0 ] && [ -z "${template_value}" ]; then
+            is_required=1
+        fi
+
+        if [ "${is_required}" -eq 0 ]; then
+            continue
+        fi
+
+        current_line="$(grep -m1 "^${key}=" "${ENV_FILE_TARGET}" || true)"
+        current_value="${current_line#*=}"
+        trimmed_current_value="$(echo "${current_value}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+
+        if [ -z "${current_line}" ] || [ -z "${trimmed_current_value}" ]; then
+            log_error "必填环境变量未配置完成: ${key}"
+            missing_required=1
+        fi
+    done < "${ENV_FILE_TEMPLATE}"
+
+    if [ "${missing_required}" -ne 0 ]; then
+        log_error "检测到必填环境变量为空，部署终止"
+        exit 1
+    fi
+}
 
 # 检查 Docker 是否运行
 check_docker() {
@@ -129,6 +228,7 @@ start_container() {
         --name ${CONTAINER_NAME} \
         --restart=always \
         -p ${HOST_PORT}:${CONTAINER_PORT} \
+        --env-file ${ENV_FILE_TARGET} \
         ${NETWORK} \
         ${ENV_VARS[@]} \
         ${VOLUMES[@]} \
@@ -195,16 +295,21 @@ main() {
     # 3. 拉取新镜像
     pull_image
     
-    # 4. 启动新容器
+    # 4. 准备并注入环境变量
+    prepare_env_file
+    inject_runtime_env_overrides
+    validate_required_envs
+
+    # 5. 启动新容器
     start_container
     
-    # 5. 清理旧镜像（可选，放在启动完成后避免误删基础层）
+    # 6. 清理旧镜像（可选，放在启动完成后避免误删基础层）
     cleanup_old_images
     
-    # 6. 健康检查
+    # 7. 健康检查
     health_check
     
-    # 7. 显示容器信息
+    # 8. 显示容器信息
     show_container_info
     
     log_info "========== 部署完成 =========="

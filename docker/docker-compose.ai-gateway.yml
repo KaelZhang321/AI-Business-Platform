@@ -9,8 +9,10 @@ services:
       args:
         BASE_IMAGE: alibaba-cloud-linux-3-registry.cn-hangzhou.cr.aliyuncs.com/alinux3/python:3.11.1
         PIP_INDEX_URL: https://mirrors.aliyun.com/pypi/simple/
-        TORCH_VERSION: "2.4.1+cpu"
-        TORCH_INDEX_URL: https://download.pytorch.org/whl/cpu
+        # CPU 默认：TORCH_VERSION=2.4.1+cpu, TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu
+        # GPU 示例：TORCH_VERSION=2.4.1+cu121, TORCH_INDEX_URL=https://download.pytorch.org/whl/cu121
+        TORCH_VERSION: ${TORCH_VERSION:-2.4.1+cpu}
+        TORCH_INDEX_URL: ${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cpu}
     env_file:
       - path: ../ai-gateway/.env
         required: false
