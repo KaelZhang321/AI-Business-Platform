@@ -232,5 +232,9 @@ class Settings(BaseSettings):
 
     model_config = {"env_file": ".env", "extra": "ignore"}
 
+    dify_base_url: str = "https://dify.kaibol.net/v1"
+    dify_api_key: str = ""
+    ai_platform_base_url: str = "https://beta-ai-platform.kaibol.net/ai-platform/api/v1"
+
 
 settings = Settings()

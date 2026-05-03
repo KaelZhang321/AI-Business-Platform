@@ -23,6 +23,7 @@ from app.core.error_codes import BusinessError, ErrorCode
 from app.models.schemas.health import HealthResponse
 from app.services.api_catalog.business_intents import get_business_intent_catalog_service
 from app.services.identity_vault import IdentityVault
+from python2sql import app as python2sql_app
 
 logger = logging.getLogger(__name__)
 
@@ -419,7 +420,7 @@ app.include_router(transcript_extract_router, prefix="/api/v1")
 from app.mcp_server.server import create_mcp_http_app  # noqa: E402
 
 app.mount("/mcp", create_mcp_http_app())
-
+app.mount("/python2sql", python2sql_app)
 
 @app.get("/health", response_model=HealthResponse, tags=["系统"])
 async def health_check():

@@ -5,20 +5,39 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 
-class DealRequest(BaseModel):
-    """Deal测试入口请求模型。"""
+class HealthQuadrantInput(BaseModel):
+    sex: str = Field(..., description="性别")
+    age: int = Field(..., description="年龄")
+    study_id: str = Field(..., description="体检 study_id")
+    quadrant_type: str = Field("treatment", description="象限类型")
+    chief_complaint_text: str = Field("", description="主诉")
 
+
+class CustomerProfileInput(BaseModel):
+    idCard: str = Field(..., description="加密身份证")
+
+
+class CustomerPackageInput(BaseModel):
+    idCard: str = Field(..., description="加密身份证")
+    pageNo: int = 1
+    pageSize: int = 10
+    source: str = "ERP"
+
+
+class DealRequest(BaseModel):
     message: str = Field(..., description="用户输入消息")
-    deal_id: str | None = Field(None, description="Deal ID，空则新建或测试")
     user_id: str = Field(..., description="用户ID")
-    context: dict[str, Any] | None = Field(None, description="上下文信息")
-    stream: bool = Field(True, description="是否开启SSE流式返回")
+    deal_id: str | None = None
+    context: dict[str, Any] | None = None
+    stream: bool = False
+
+    health_quadrant: HealthQuadrantInput | None = None
+    customer_profile: CustomerProfileInput | None = None
+    customer_package: CustomerPackageInput | None = None
 
 
 class DealResponse(BaseModel):
-    """Deal测试入口响应模型。"""
-
-    deal_id: str | None = Field(None, description="Deal ID")
-    content: str = Field(..., description="返回内容")
-    result: dict[str, Any] | None = Field(None, description="Deal处理结果")
-    sources: list[dict[str, Any]] = Field(default_factory=list, description="引用来源")
+    deal_id: str | None = None
+    content: str
+    result: dict[str, Any] | None = None
+    sources: list[dict[str, Any]] = Field(default_factory=list)

@@ -11,6 +11,7 @@ from typing import TypeVar
 
 from fastapi import Depends, Request
 
+from app.core.dependencies import get_settings
 from app.core.resources import AppResources, get_app_resources
 from app.services.api_catalog.governance_job_service import ApiCatalogGovernanceJobService
 from app.services.api_catalog.registry_source import ApiCatalogRegistrySource
@@ -136,7 +137,11 @@ def get_api_query_workflow(resources: AppResources = Depends(get_app_resource_co
 
 
 # app/api/dependencies.py
+from app.core.dependencies import get_settings
+from app.core.config import Settings
 from app.services.deal_workflow import DealWorkflow
 
-def get_deal_workflow() -> DealWorkflow:
-    return DealWorkflow()
+def get_deal_workflow(
+    settings: Settings = Depends(get_settings),
+) -> DealWorkflow:
+    return DealWorkflow(settings=settings)
