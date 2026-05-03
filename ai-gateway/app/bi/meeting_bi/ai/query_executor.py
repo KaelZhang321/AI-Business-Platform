@@ -19,7 +19,6 @@ import aiomysql
 from app.bi.meeting_bi.ai.context_store import QARound, get_last_question, get_recent_rounds, save_round
 from app.bi.meeting_bi.ai.training_data import TABLES
 from app.bi.meeting_bi.ai.vanna_client import get_vanna
-from app.bi.meeting_bi.db.async_session import get_meeting_pool
 from app.bi.meeting_bi.schemas.common import BIChartConfig
 from app.bi.meeting_bi.services.chart_store import save_chart
 from app.core.config import settings
@@ -166,9 +165,8 @@ def _validate_allowed_tables(sql: str) -> None:
         raise ValueError(f"检测到非会议 BI 白名单表：{', '.join(disallowed)}")
 
 
-async def _execute_sql(sql: str) -> tuple[list[str], list[dict]]:
+async def _execute_sql(pool: aiomysql.Pool, sql: str) -> tuple[list[str], list[dict]]:
     """执行会议 BI SQL，并返回列信息与序列化后的行数据。"""
-    pool = await get_meeting_pool()
     async with pool.acquire() as conn:
         async with conn.cursor(aiomysql.DictCursor) as cur:
             await asyncio.wait_for(cur.execute(sql), timeout=settings.meeting_bi_max_rows or 30)
@@ -198,6 +196,9 @@ class MeetingBIQueryExecutor:
         - 域外问题直接返回拒答文案，不走 SQL 生成
         - SQL 生成成功后仍要经过只读与白名单双重校验
     """
+
+    def __init__(self, *, pool: aiomysql.Pool) -> None:
+        self._pool = pool
 
     async def query(
         self,
@@ -242,7 +243,7 @@ class MeetingBIQueryExecutor:
         _validate_allowed_tables(sanitized_sql)
 
         try:
-            columns, rows = await _execute_sql(sanitized_sql)
+            columns, rows = await _execute_sql(self._pool, sanitized_sql)
         except Exception as exc:  # pragma: no cover - runtime safety
             logger.error("Meeting BI SQL execution failed: %s\nSQL: %s", exc, sanitized_sql)
             raise ValueError("会议 BI 查询执行失败，请稍后重试") from exc
@@ -344,7 +345,7 @@ class MeetingBIQueryExecutor:
 
         # 4. SQL 执行与结果回传分离，便于前端先看到结构化数据，再等待图表和总结。
         try:
-            columns, rows = await _execute_sql(sanitized_sql)
+            columns, rows = await _execute_sql(self._pool, sanitized_sql)
             safe = _safe_rows(rows)
         except Exception as exc:
             logger.error("Meeting BI SQL execution failed: %s\nSQL: %s", exc, sanitized_sql)

@@ -3,14 +3,14 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from app.api.dependencies import get_business_mysql_pool
 from app.api.routes import bi as bi_routes
-from app.bi.meeting_bi.db.dependencies import get_bi_db_pool
 
 
 def create_test_app() -> FastAPI:
     app = FastAPI()
     app.include_router(bi_routes.router, prefix="/api/v1")
-    app.dependency_overrides[get_bi_db_pool] = lambda: object()
+    app.dependency_overrides[get_business_mysql_pool] = lambda: object()
     return app
 
 
@@ -132,6 +132,9 @@ def test_bi_ai_query_returns_response(monkeypatch) -> None:
     )
 
     class FakeExecutor:
+        def __init__(self, *, pool=None):
+            self.pool = pool
+
         async def query(self, question, *, conversation_id=None, context=None):
             return fake_result
 
@@ -154,6 +157,9 @@ def test_bi_ai_query_stream_returns_sse(monkeypatch) -> None:
     import json
 
     class FakeExecutor:
+        def __init__(self, *, pool=None):
+            self.pool = pool
+
         async def stream(self, question, *, conversation_id=None):
             yield {"event": "answer", "data": json.dumps({"answer": "ok"}, ensure_ascii=False)}
 

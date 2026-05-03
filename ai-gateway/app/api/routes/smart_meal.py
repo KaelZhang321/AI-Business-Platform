@@ -31,6 +31,8 @@ def _raise_route_error(exc: SmartMealRiskServiceError) -> None:
     """风险识别路由错误映射。"""
 
     message = str(exc)
+    if "bad_request" in message:
+        raise BusinessError(ErrorCode.BAD_REQUEST, message) from exc
     if "package_not_found" in message:
         raise BusinessError(ErrorCode.BAD_REQUEST, message) from exc
     if "external_timeout" in message:
@@ -71,11 +73,13 @@ async def identify_smart_meal_risk(
         risk_items = await service.identify_risks(
             id_card_no=request_body.id_card_no,
             campus_id=request_body.campus_id,
-            sex=request_body.sex,
-            age=request_body.age,
-            meal_type=[item.value for item in request_body.meal_type],
-            reservation_date=request_body.reservation_date,
-            package_code=request_body.package_code,
+            meal_snapshot=[
+                {
+                    "dish_code": item.dish_code,
+                    "dish_name": item.dish_name,
+                }
+                for item in request_body.meal_snapshot
+            ],
             trace_id=trace_id,
         )
         return SmartMealRiskIdentifyEnvelopeResponse(

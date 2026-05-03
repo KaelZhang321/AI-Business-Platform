@@ -147,7 +147,6 @@ class AppResources:
         )
         self.smart_meal_llm_service = SmartMealLLMService()
         self.smart_meal_risk_service = SmartMealRiskService(
-            llm_service=self.smart_meal_llm_service,
             mysql_pools=self.health_quadrant_mysql_pools,
         )
         self.smart_meal_package_recommend_service = SmartMealPackageRecommendService(

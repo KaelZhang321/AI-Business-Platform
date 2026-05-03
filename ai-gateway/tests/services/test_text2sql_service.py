@@ -36,7 +36,8 @@ class StubGenericExecutor:
 
 
 class StubMeetingExecutor:
-    def __init__(self) -> None:
+    def __init__(self, pool=None) -> None:
+        self.pool = pool
         self.calls: list[dict] = []
 
     async def query(
@@ -170,3 +171,24 @@ async def test_query_rejects_meeting_bi_when_feature_disabled(
             "查看会议报名人数",
             domain=QueryDomain.MEETING_BI,
         )
+
+
+def test_get_meeting_executor_requires_pool_injection() -> None:
+    service = Text2SQLService(generic_pool=None)
+
+    with pytest.raises(RuntimeError, match="业务库连接池未注入"):
+        service._get_meeting_bi_executor()
+
+
+def test_get_meeting_executor_injects_shared_pool(monkeypatch: pytest.MonkeyPatch) -> None:
+    shared_pool = object()
+    service = Text2SQLService(generic_pool=shared_pool)
+
+    import app.bi.meeting_bi.ai.query_executor as query_executor_module
+
+    monkeypatch.setattr(query_executor_module, "MeetingBIQueryExecutor", StubMeetingExecutor)
+
+    executor = service._get_meeting_bi_executor()
+
+    assert isinstance(executor, StubMeetingExecutor)
+    assert executor.pool is shared_pool
