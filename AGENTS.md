@@ -30,7 +30,7 @@
 <!-- gitnexus:start -->
 # GitNexus MCP
 
-This project is indexed by GitNexus as **AI-Business-Platform** (5114 symbols, 14467 relationships, 300 execution flows).
+This project is indexed by GitNexus as **AI-Business-Platform** (5911 symbols, 17363 relationships, 300 execution flows).
 
 ## Always Start Here
 
