@@ -98,9 +98,6 @@ class Settings(BaseSettings):
 
     # Meeting BI
     meeting_bi_enabled: bool = False
-    meeting_bi_database_url: SecretStr = Field(
-        default=SecretStr("mysql+pymysql://root:root@localhost:3306/meeting_bi?charset=utf8mb4")
-    )
     meeting_bi_api_key: SecretStr = Field(default=SecretStr(""))
     meeting_bi_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
     meeting_bi_model: str = "deepseek-v3-2-251201"

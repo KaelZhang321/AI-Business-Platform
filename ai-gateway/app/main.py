@@ -309,14 +309,6 @@ async def lifespan(app: FastAPI):
     # except Exception as exc:
     #     logger.warning("关闭 Ollama HTTP 客户端失败: %s", exc)
 
-    # Meeting BI aiomysql 连接池
-    try:
-        from app.bi.meeting_bi.db.async_session import close_meeting_pool
-
-        await close_meeting_pool()
-    except Exception as exc:
-        logger.warning("关闭 Meeting BI 连接池失败: %s", exc)
-
     logger.info("AI网关已关闭")
 
 

@@ -36,6 +36,7 @@ from vanna.chromadb import ChromaDB_VectorStore  # noqa: E402
 
 from app.bi.meeting_bi.ai.training_data import BUSINESS_DOCS, QA_PAIRS, TABLES  # noqa: E402
 from app.core.config import reveal_secret, settings  # noqa: E402
+from app.core.mysql import build_business_mysql_conn_params  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +107,19 @@ def _parse_mysql_url(url: str) -> dict[str, str | int]:
         "password": unquote(parsed.password or ""),
         "port": parsed.port or 3306,
         "charset": _first("charset", "utf8mb4"),
+    }
+
+
+def _build_business_mysql_vanna_params() -> dict[str, str | int]:
+    """从 BUSINESS_MYSQL_* 生成 Vanna 连接参数。"""
+    conn = build_business_mysql_conn_params(include_connect_timeout=False)
+    return {
+        "host": str(conn["host"]),
+        "dbname": str(conn["db"]),
+        "user": str(conn["user"]),
+        "password": str(conn["password"]),
+        "port": int(conn["port"]),
+        "charset": str(conn["charset"]),
     }
 
 
@@ -186,7 +200,7 @@ def get_vanna() -> MeetingBIVanna:
         _CHROMA_PATH.mkdir(parents=True, exist_ok=True)
         logger.info("Initializing Meeting BI Vanna client (chroma_path=%s)", _CHROMA_PATH)
         _vn = MeetingBIVanna(config={"model": "meeting-bi", "path": str(_CHROMA_PATH)})
-        _vn.connect_to_mysql(**_parse_mysql_url(reveal_secret(settings.meeting_bi_database_url)))
+        _vn.connect_to_mysql(**_build_business_mysql_vanna_params())
         _train(_vn)
         return _vn
 
