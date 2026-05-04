@@ -30,11 +30,20 @@ class DealWorkflow:
                     request.health_quadrant.model_dump(),
                 )
 
+            profile_body = None
+
             if request.customer_profile:
+                profile_body = request.customer_profile.model_dump()
+            elif request.customer_package:
+                profile_body = {
+                    "idCard": request.customer_package.idCard
+                }
+
+            if profile_body:
                 result["customer_profile"] = await self._call_runtime_endpoint(
                     client,
                     endpoint_id="93c5ae184119efb7f010a382536451de",
-                    body=request.customer_profile.model_dump(),
+                    body=profile_body,
                 )
 
             if request.customer_package:
@@ -43,6 +52,8 @@ class DealWorkflow:
                     endpoint_id="a26040a548a406a0e99dea8239d8ac29",
                     body=request.customer_package.model_dump(),
                 )
+
+            result = self._stringify_quadrants(result)
 
             dify_result = await self._call_dify(client, request, result)
             result["dify"] = dify_result
@@ -88,6 +99,18 @@ class DealWorkflow:
         )
 
         return answer.strip()
+
+
+    def _stringify_quadrants(self, obj: Any) -> Any:
+        if isinstance(obj, dict):
+            for key, value in list(obj.items()):
+                if key == "quadrants" and isinstance(value, list):
+                    obj[key] = json.dumps(value, ensure_ascii=False)
+                else:
+                    obj[key] = self._stringify_quadrants(value)
+        elif isinstance(obj, list):
+            return [self._stringify_quadrants(item) for item in obj]
+        return obj
 
     async def _call_health_quadrant(
         self,
