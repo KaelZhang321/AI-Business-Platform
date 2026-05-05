@@ -1,8 +1,8 @@
 // 功能广场视图：展示推荐模块、全部功能以及导航跳转入口。
-import React from 'react';
+import React, { useMemo, useState } from 'react';
 import { motion } from 'motion/react';
 import { message } from 'antd';
-import { Search, ChevronRight } from 'lucide-react';
+import { Search } from 'lucide-react';
 import { FUNCTION_MODULES } from '../data/mockData';
 import type { AppPage } from '../navigation';
 
@@ -14,10 +14,14 @@ interface FunctionSquareViewProps {
 
 /** 功能广场视图组件：展示最新上线、推荐功能和全部功能模块 */
 export function FunctionSquareView({ setCurrentPage }: FunctionSquareViewProps) {
+  const [searchKeyword, setSearchKeyword] = useState('');
+
   /** 功能名称 → 页面标识的映射表（用于点击跳转） */
   const FEATURE_PAGE_MAP: Record<string, AppPage> = {
     'AI报告对比': 'ai-report-comparison',
     'AI四象限健康评估': 'ai-four-quadrant',
+    'AI消耗规划': 'consumption-management',
+    'AI实时录制': 'ai-real-time-recording',
   };
 
   /** 点击模块卡片时跳转到对应页面 */
@@ -30,6 +34,37 @@ export function FunctionSquareView({ setCurrentPage }: FunctionSquareViewProps) 
 
     message.info('功能暂未上线，敬请期待！');
   };
+
+  const normalizedKeyword = searchKeyword.trim().toLowerCase();
+
+  const matchModule = (item: { title?: string; desc?: string; tag?: string }) => {
+    if (!normalizedKeyword) {
+      return true;
+    }
+
+    const title = item.title?.toLowerCase() ?? '';
+    const desc = item.desc?.toLowerCase() ?? '';
+    const tag = item.tag?.toLowerCase() ?? '';
+
+    return title.includes(normalizedKeyword) || desc.includes(normalizedKeyword) || tag.includes(normalizedKeyword);
+  };
+
+  const filteredLatest = useMemo(
+    () => FUNCTION_MODULES.latest.filter(matchModule),
+    [normalizedKeyword],
+  );
+
+  const filteredRecommended = useMemo(
+    () => FUNCTION_MODULES.recommended.filter(matchModule),
+    [normalizedKeyword],
+  );
+
+  const filteredAll = useMemo(
+    () => FUNCTION_MODULES.all.filter(matchModule),
+    [normalizedKeyword],
+  );
+
+  const hasSearchResult = filteredLatest.length > 0 || filteredRecommended.length > 0 || filteredAll.length > 0;
 
   return (
     <div className="space-y-10 pb-12 text-slate-900 dark:text-slate-100">
@@ -47,14 +82,22 @@ export function FunctionSquareView({ setCurrentPage }: FunctionSquareViewProps) 
             <input
               type="text"
               placeholder="搜索功能、应用或解决方案..."
+              value={searchKeyword}
+              onChange={(event) => setSearchKeyword(event.target.value)}
               className="w-full pl-12 pr-4 py-4 bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-700 rounded-2xl shadow-xl shadow-brand/5 dark:shadow-none focus:ring-2 focus:ring-brand outline-none text-slate-800 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 text-lg transition-all"
             />
           </div>
         </div>
       </section>
 
+      {normalizedKeyword && !hasSearchResult ? (
+        <div className="rounded-2xl border border-dashed border-slate-200 bg-white/70 px-6 py-10 text-center text-sm text-slate-500 dark:border-slate-700 dark:bg-slate-900/40 dark:text-slate-400">
+          未找到与“{searchKeyword.trim()}”匹配的功能，请尝试其他关键词。
+        </div>
+      ) : null}
+
       {/* Latest Features Section */}
-      <section className="space-y-6">
+      <section className={`space-y-6 ${normalizedKeyword && filteredLatest.length === 0 ? 'hidden' : ''}`}>
         <div className="flex items-center justify-between px-2">
           <div>
             <h3 className="text-xl font-bold text-slate-900 dark:text-slate-100">最新上新功能</h3>
@@ -66,7 +109,7 @@ export function FunctionSquareView({ setCurrentPage }: FunctionSquareViewProps) 
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-          {FUNCTION_MODULES.latest.map((item, idx) => (
+          {filteredLatest.map((item, idx) => (
             <motion.button
               type="button"
               key={item.id}
@@ -98,7 +141,7 @@ export function FunctionSquareView({ setCurrentPage }: FunctionSquareViewProps) 
       </section>
 
       {/* AI Recommended Section */}
-      <section className="space-y-6">
+      <section className={`space-y-6 ${normalizedKeyword && filteredRecommended.length === 0 ? 'hidden' : ''}`}>
         <div className="flex items-center justify-between px-2">
           <div>
             <h3 className="text-xl font-bold text-slate-900 dark:text-slate-100 flex items-center">
@@ -112,7 +155,7 @@ export function FunctionSquareView({ setCurrentPage }: FunctionSquareViewProps) 
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {FUNCTION_MODULES.recommended.map((item, idx) => (
+          {filteredRecommended.map((item, idx) => (
             <motion.button
               type="button"
               key={item.id}
@@ -139,7 +182,7 @@ export function FunctionSquareView({ setCurrentPage }: FunctionSquareViewProps) 
       </section>
 
       {/* All Features Section */}
-      <section className="space-y-6">
+      <section className={`space-y-6 ${normalizedKeyword && filteredAll.length === 0 ? 'hidden' : ''}`}>
         <div className="flex items-center justify-between px-2">
           <div>
             <h3 className="text-xl font-bold text-slate-900 dark:text-slate-100">全部功能</h3>
@@ -151,7 +194,7 @@ export function FunctionSquareView({ setCurrentPage }: FunctionSquareViewProps) 
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {FUNCTION_MODULES.all.map((item, idx) => (
+          {filteredAll.map((item, idx) => (
             <motion.button
               type="button"
               key={item.id}

@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
+import { useLocation } from 'react-router-dom';
 import type { AppPage } from '../../navigation';
 import { AIReportComparisonReportView } from './AIReportComparisonReportView';
 import { CustomerResults } from './detailView/CustomerResults';
@@ -20,11 +21,17 @@ interface AIReportComparisonDetailViewProps {
   setIsDarkMode: (value: boolean) => void;
 }
 
+type ComparisonRouteState = {
+  selectedCustomer?: CustomerRecord | null;
+  source?: string;
+};
+
 export const AIReportComparisonDetailView: React.FC<AIReportComparisonDetailViewProps> = ({
   setCurrentPage,
   isDarkMode,
   setIsDarkMode,
 }) => {
+  const location = useLocation();
   const [searchTerm, setSearchTerm] = useState('');
   const [activeStat, setActiveStat] = useState(0);
   const [selectedCustomer, setSelectedCustomer] = useState<CustomerRecord | null>(null);
@@ -36,6 +43,43 @@ export const AIReportComparisonDetailView: React.FC<AIReportComparisonDetailView
   const [loadError, setLoadError] = useState<string | null>(null);
   const [currentPageNo, setCurrentPageNo] = useState(1);
   const [hasMoreCustomers, setHasMoreCustomers] = useState(true);
+  const routeState = (location.state ?? null) as ComparisonRouteState | null;
+
+  const customerFromRoute = useMemo<CustomerRecord | null>(() => {
+    const stateCustomer = routeState?.selectedCustomer;
+    if (stateCustomer && typeof stateCustomer === 'object') {
+      return stateCustomer;
+    }
+
+    const searchParams = new URLSearchParams(location.search);
+    const customerId = searchParams.get('customerId')?.trim() || '';
+    const customerName = searchParams.get('customerName')?.trim() || '';
+    const encryptedIdCard = searchParams.get('encryptedIdCard')?.trim() || '';
+
+    if (!customerId && !customerName && !encryptedIdCard) {
+      return null;
+    }
+
+    return {
+      id: customerId || encryptedIdCard || customerName || 'route-customer',
+      customerId: customerId || undefined,
+      name: customerName || '客户',
+      gender: '未知',
+      age: 0,
+      lastCheckDate: '暂无',
+      aiJudgment: '持续观察',
+      keyAbnormal: '待补充',
+      encryptedIdCard: encryptedIdCard || null,
+      idCardObfuscated: null,
+      encryptedPhone: null,
+      phoneObfuscated: null,
+      typeName: null,
+      storeName: null,
+      mainTeacherName: null,
+      subTeacherName: null,
+      latestExamDate: null,
+    };
+  }, [location.search, routeState]);
 
   const resolveAiJudgment = (latestExamDate?: string | null) => {
     if (!latestExamDate) return '优先复查';
@@ -230,8 +274,29 @@ export const AIReportComparisonDetailView: React.FC<AIReportComparisonDetailView
     fetchStats();
   }, []);
 
+  useEffect(() => {
+    if (!customerFromRoute) {
+      return;
+    }
+
+    setSelectedCustomer((prev) => {
+      if (prev?.id === customerFromRoute.id && prev?.encryptedIdCard === customerFromRoute.encryptedIdCard) {
+        return prev;
+      }
+      return customerFromRoute;
+    });
+
+    if (customerFromRoute.name && customerFromRoute.name !== '客户') {
+      setSearchTerm(customerFromRoute.name);
+    }
+  }, [customerFromRoute]);
+
   // 搜索词变化时请求客户列表
   useEffect(() => {
+    if (customerFromRoute) {
+      return;
+    }
+
     const timer = window.setTimeout(() => {
       fetchCustomers(1, false, searchTerm);
     }, 300);
@@ -240,7 +305,7 @@ export const AIReportComparisonDetailView: React.FC<AIReportComparisonDetailView
       window.clearTimeout(timer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchTerm]);
+  }, [customerFromRoute, searchTerm]);
 
   const handleLoadMoreCustomers = () => {
     fetchCustomers(currentPageNo + 1, true, searchTerm);

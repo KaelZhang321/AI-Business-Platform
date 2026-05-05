@@ -6,6 +6,7 @@ export type AppPage =
   | 'function-square'
   | 'ai-report-comparison'
   | 'ai-four-quadrant'
+  | 'ai-real-time-recording'
   | 'ai-component-management'
   | 'ui-builder'
   | 'meeting-bi'
@@ -75,6 +76,11 @@ export const PAGE_DEFINITIONS: Record<AppPage, PageDefinition> = {
   'ai-four-quadrant': {
     path: '/ai-four-quadrant',
     title: 'AI四象限健康评估',
+    implemented: true,
+  },
+  'ai-real-time-recording': {
+    path: '/ai-real-time-recording',
+    title: 'AI实时录制',
     implemented: true,
   },
   'ai-component-management': {

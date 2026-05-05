@@ -244,7 +244,7 @@ export const FUNCTION_MODULES = {
     { id: 15, title: 'AI四象限健康评估', desc: '多维数据建模，通过四象限分析法直观评估患者健康风险等级', icon: 'https://images.unsplash.com/photo-1505751172876-fa1923c5c528?auto=format&fit=crop&q=80&w=1200&h=800', tag: '评估' },
     { id: 7, title: 'AI报告对比', desc: '秒级解读复杂检验报告，将专业术语转化为易懂的健康建议', icon: 'https://images.unsplash.com/photo-1579154204601-01588f351e67?auto=format&fit=crop&q=80&w=1200&h=800', tag: '智能解读' },
     { id: 3, title: 'AI消耗规划', desc: '智能预测医疗耗材使用趋势，优化库存周转，降低院内物流成本', icon: 'https://images.unsplash.com/photo-1519494026892-80bbd2d6fd0d?auto=format&fit=crop&q=80&w=400&h=200', tag: '运营管理' },
-    { id: 18, title: 'AI方案推荐', desc: '基于海量临床案例库，智能匹配并推荐最优治疗方案，辅助医生科学决策', icon: 'https://images.unsplash.com/photo-1581091226825-a6a2a5aee158?auto=format&fit=crop&q=80&w=400&h=200', tag: '精准医疗' },
+    { id: 18, title: 'AI实时录制', desc: '实时录制并智能分析诊疗过程，自动提取关键信息并生成结构化数据', icon: 'https://images.unsplash.com/photo-1584432810601-6c7f27d2362b?auto=format&fit=crop&q=80&w=400&h=200', tag: '智能录制' },
   ],
   /** 推荐模块 */
   recommended: [

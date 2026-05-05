@@ -26,6 +26,7 @@
     "@vitejs/plugin-react": "^5.0.4",
     "antd": "^6.3.4",
     "axios": "^1.7.0",
+    "border-beam": "^1.0.1",
     "dayjs": "^1.11.20",
     "dotenv": "^17.2.3",
     "echarts": "^6.0.0",

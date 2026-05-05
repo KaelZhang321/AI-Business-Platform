@@ -1146,10 +1146,44 @@ export const ConsultantAIWorkbench: React.FC<ConsultantAIWorkbenchProps> = ({
           onDeleteLayout={handleDeleteLayout}
           onOpenCustomerModal={() => setIsModalOpen(true)}
           onNavigateToComparison={() => {
-            if (setNavigationParams && selectedCustomer) {
-              setNavigationParams({ customerId: selectedCustomer.id });
+            if (!selectedCustomer) {
+              return;
             }
-            setCurrentPage('ai-report-comparison');
+            const customerId = String(selectedCustomer.id ?? '').trim();
+            const customerName = typeof selectedCustomer.name === 'string' ? selectedCustomer.name.trim() : '';
+            const encryptedIdCard = typeof selectedCustomer.encryptedIdCard === 'string'
+              ? selectedCustomer.encryptedIdCard.trim()
+              : '';
+
+            if (setNavigationParams) {
+              setNavigationParams({
+                customerId,
+                customerName,
+                encryptedIdCard,
+              });
+            }
+
+            const searchParams = new URLSearchParams();
+            if (customerId) {
+              searchParams.set('customerId', customerId);
+            }
+            if (customerName) {
+              searchParams.set('customerName', customerName);
+            }
+            if (encryptedIdCard) {
+              searchParams.set('encryptedIdCard', encryptedIdCard);
+            }
+
+            const targetPath = searchParams.toString()
+              ? `${PAGE_PATHS['ai-report-comparison']}?${searchParams.toString()}`
+              : PAGE_PATHS['ai-report-comparison'];
+
+            navigate(targetPath, {
+              state: {
+                selectedCustomer,
+                source: 'consultant-ai-workbench',
+              },
+            });
           }}
           onNavigateToFourQuadrant={() => {
             const customerName = typeof selectedCustomer?.name === 'string' ? selectedCustomer.name.trim() : '';
