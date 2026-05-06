@@ -7,6 +7,7 @@ import {
   type RoleCardConfig,
 } from '../../services/api/aiComponentViewApi';
 import {
+  AppointmentInfoCard,
   AssetCard,
   BasicHealthDataCard,
   ConsultationRecordsCard,
@@ -22,6 +23,7 @@ import {
   PhysicalExamStatusCard,
   PrecautionsCard,
   PsychologyEmotionCard,
+  RemainingFundsCard,
   RemarksCard,
 } from './cards';
 import { initialCards, initialLayouts } from './config';
@@ -507,7 +509,9 @@ export const AIComponentManagementView: React.FC<AIComponentManagementViewProps>
 
   const renderCardContent = (card: CardConfig, onEdit?: () => void) => {
     switch (card.type) {
+      case 'appointment-info': return <AppointmentInfoCard title={card.title} onEdit={onEdit} />;
       // case 'asset-info': return <AssetCard title={card.title} onEdit={onEdit} />;
+      case 'remaining-funds': return <RemainingFundsCard title={card.title} onEdit={onEdit} />;
       case 'identity-contact': return <IdentityContactCard title={card.title} onEdit={onEdit} />;
       case 'basic-health-data': return <BasicHealthDataCard title={card.title} onEdit={onEdit} />;
       case 'health-status-medical-history': return <HealthStatusMedicalHistoryCard title={card.title} onEdit={onEdit} />;

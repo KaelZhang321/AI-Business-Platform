@@ -127,6 +127,18 @@ const AIFourQuadrantView = lazy(async () => {
   return { default: module.AIFourQuadrantView };
 });
 
+/** AI 实时录制页 */
+const AIRealtimeRecordingView = lazy(async () => {
+  const module = await import('./components/ai-real-time-recording/AIRealtimeRecordingView');
+  return { default: module.AIRealtimeRecordingView };
+});
+
+/** 健康方案评估编辑页 */
+const HealthPlanEvaluationEditPage = lazy(async () => {
+  const module = await import('./components/transactionPlanning/HealthPlanEvaluationEditPage');
+  return { default: module.HealthPlanEvaluationEditPage };
+});
+
 /** 页面加载中的验证动画（Suspense fallback） */
 function PageLoadingFallback() {
   return (
@@ -163,6 +175,16 @@ const PAGE_RENDERERS: Partial<Record<AppPage, PageRenderer>> = {
       isDarkMode={isDarkMode}
       setIsDarkMode={setIsDarkMode}
     />
+  ),
+  'ai-real-time-recording': ({ navigateToPage, isDarkMode, setIsDarkMode }) => (
+    <AIRealtimeRecordingView
+      setCurrentPage={navigateToPage}
+      isDarkMode={isDarkMode}
+      setIsDarkMode={setIsDarkMode}
+    />
+  ),
+  'consumption-management': ({ navigateToPage }) => (
+    <HealthPlanEvaluationEditPage onBack={() => navigateToPage('function-square')} />
   ),
   'ui-builder': () => <UiBuilderPage />,
   'meeting-bi': () => <MeetingBiView />,

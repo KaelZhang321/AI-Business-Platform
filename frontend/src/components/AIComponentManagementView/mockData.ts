@@ -181,6 +181,44 @@ export const executionDate = {
   lastUpdateDate: '2024-04-12',
 };
 
+export const appointmentInfo = [
+  {
+    type: '见诊（权威专家预约-到院见诊）',
+    date: '2026-01-01',
+    expert: '鲁红标（实际见诊专家请参考分诊实际提交）',
+    items: '',
+    supplements: [
+      { label: '目前关心问题', value: '血糖' },
+      { label: '客户病史', value: '糖尿病' },
+      { label: '客户治疗史', value: '无' },
+      { label: '现则需', value: '抗衰老' },
+    ],
+  },
+  {
+    type: '治疗',
+    date: '2026-01-02',
+    expert: '',
+    items: '骨质疏松-调理；肝胆双益',
+    supplements: [],
+  },
+];
+
+export const remainingFundsInfo = {
+  projects: [
+    { name: '产品项目金', available: '50,000', planned: '10,000', icon: 'Package' },
+    { name: '抗衰项目金', available: '120,000', planned: '30,000', icon: 'Heart' },
+    { name: '医美四大抗衰', available: '80,000', planned: '20,000', icon: 'Sparkles' },
+    { name: '能量调理项目金', available: '60,000', planned: '15,000', icon: 'Zap' },
+    { name: '渠道项目金', available: '200,000', planned: '50,000', icon: 'Network' },
+    { name: '体检套餐项目金', available: '30,000', planned: '5,000', icon: 'ClipboardList' },
+    { name: '体检项目金', available: '40,000', planned: '10,000', icon: 'Stethoscope' },
+    { name: '医疗项目金', available: '150,000', planned: '40,000', icon: 'Activity' },
+    { name: '医美项目金', available: '90,000', planned: '25,000', icon: 'Star' },
+    { name: '脂肪项目金', available: '70,000', planned: '20,000', icon: 'Flame' },
+    { name: '钻石湾康养项目金', available: '300,000', planned: '100,000', icon: 'Gem' },
+  ],
+};
+
 export const assetInfo = {
   totalBalance: '2,053,540',
   availableBalance: '2,043,360',

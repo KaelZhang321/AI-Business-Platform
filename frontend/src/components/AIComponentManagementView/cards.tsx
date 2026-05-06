@@ -4,26 +4,33 @@ import {
   AlertTriangle,
   Calendar,
   CheckCircle2,
+  ClipboardList,
   Clock,
   Coffee,
   Edit,
   FileText,
+  Flame,
   Gem,
   Heart,
   Link as LinkIcon,
   MessageSquare,
   Moon,
+  Network,
   Package,
   ShieldCheck,
   ShoppingBag,
+  Sparkles,
   Star,
+  Stethoscope,
   Target,
   TrendingUp,
   Unlock,
   Utensils,
   Wallet,
+  Zap,
 } from 'lucide-react';
 import {
+  appointmentInfo,
   assetInfo,
   basicHealthData,
   consultationRecords,
@@ -39,6 +46,7 @@ import {
   physicalExamStatus,
   precautions,
   psychologyEmotion,
+  remainingFundsInfo,
   remarks,
 } from './mockData';
 
@@ -451,6 +459,20 @@ const normalizeEducationRecords = (value: unknown): NormalizedEducationRecord[] 
 
 type PrecautionsFormData = typeof precautions;
 
+type AppointmentSupplement = {
+  label?: unknown;
+  value?: unknown;
+};
+
+type AppointmentRecord = {
+  id: string;
+  type: unknown;
+  date: unknown;
+  expert: unknown;
+  items: unknown;
+  supplements: AppointmentSupplement[];
+};
+
 const EMPTY_PRECAUTIONS_FORM: PrecautionsFormData = {
   consumptionHabits: '',
   mostCareAbout: '',
@@ -517,6 +539,77 @@ const buildPrecautionsFormData = (
       fallback.communicationTaboos,
     ),
   };
+};
+
+const normalizeAppointmentRecords = (value: unknown): AppointmentRecord[] => {
+  const sourceRows: unknown[] = Array.isArray(value)
+    ? value
+    : isEmptyValue(value)
+      ? []
+      : [value];
+
+  return sourceRows
+    .map((item, index) => {
+      const record = toObjectRecord(item);
+      const supplementsRaw = record.supplements ?? record.extraInfoList ?? record.extraInfo ?? record.tags;
+      const supplementsSource = Array.isArray(supplementsRaw)
+        ? supplementsRaw
+        : isEmptyValue(supplementsRaw)
+          ? []
+          : [supplementsRaw];
+
+      return {
+        id: toDisplayText(record.id ?? record.pkId ?? record.appointmentId ?? index + 1),
+        type: record.type ?? record.appointmentType ?? record.bookingType ?? record.typeName,
+        date: record.date ?? record.appointmentDate ?? record.bookingDate ?? record.scheduleDate,
+        expert: record.expert ?? record.expertName ?? record.doctorName ?? record.responsibleExpert,
+        items: record.items ?? record.appointmentItems ?? record.itemNames ?? record.projectNames,
+        supplements: supplementsSource.map((supplement) => {
+          const supplementRecord = toObjectRecord(supplement);
+          return {
+            label: supplementRecord.label ?? supplementRecord.name ?? supplementRecord.key ?? supplementRecord.title,
+            value: supplementRecord.value ?? supplementRecord.content ?? supplementRecord.text ?? supplementRecord.desc,
+          };
+        }),
+      };
+    })
+    .filter((item) => Boolean(item.id));
+};
+
+const getProjectIcon = (iconName: unknown) => {
+  const icons: Record<string, React.ComponentType<{ className?: string }>> = {
+    Package,
+    Heart,
+    Sparkles,
+    Zap,
+    Network,
+    ClipboardList,
+    Stethoscope,
+    Activity,
+    Star,
+    Flame,
+    Gem,
+  };
+  const resolvedName = typeof iconName === 'string' ? iconName : '';
+  const IconComponent = icons[resolvedName] || Wallet;
+  return <IconComponent className="w-5 h-5 flex-shrink-0" />;
+};
+
+const getProjectConfig = (idx: number) => {
+  const configs = [
+    { fill: 'bg-blue-500', text: 'text-blue-600 dark:text-blue-400', iconBg: 'bg-blue-50 dark:bg-blue-900/40 text-blue-500 dark:text-blue-400' },
+    { fill: 'bg-emerald-500', text: 'text-emerald-600 dark:text-emerald-400', iconBg: 'bg-emerald-50 dark:bg-emerald-900/40 text-emerald-500 dark:text-emerald-400' },
+    { fill: 'bg-amber-500', text: 'text-amber-600 dark:text-amber-400', iconBg: 'bg-amber-50 dark:bg-amber-900/40 text-amber-500 dark:text-amber-400' },
+    { fill: 'bg-purple-500', text: 'text-purple-600 dark:text-purple-400', iconBg: 'bg-purple-50 dark:bg-purple-900/40 text-purple-500 dark:text-purple-400' },
+    { fill: 'bg-pink-500', text: 'text-pink-600 dark:text-pink-400', iconBg: 'bg-pink-50 dark:bg-pink-900/40 text-pink-500 dark:text-pink-400' },
+    { fill: 'bg-cyan-500', text: 'text-cyan-600 dark:text-cyan-400', iconBg: 'bg-cyan-50 dark:bg-cyan-900/40 text-cyan-500 dark:text-cyan-400' },
+    { fill: 'bg-indigo-500', text: 'text-indigo-600 dark:text-indigo-400', iconBg: 'bg-indigo-50 dark:bg-indigo-900/40 text-indigo-500 dark:text-indigo-400' },
+    { fill: 'bg-rose-500', text: 'text-rose-600 dark:text-rose-400', iconBg: 'bg-rose-50 dark:bg-rose-900/40 text-rose-500 dark:text-rose-400' },
+    { fill: 'bg-orange-500', text: 'text-orange-600 dark:text-orange-400', iconBg: 'bg-orange-50 dark:bg-orange-900/40 text-orange-500 dark:text-orange-400' },
+    { fill: 'bg-teal-500', text: 'text-teal-600 dark:text-teal-400', iconBg: 'bg-teal-50 dark:bg-teal-900/40 text-teal-500 dark:text-teal-400' },
+    { fill: 'bg-fuchsia-500', text: 'text-fuchsia-600 dark:text-fuchsia-400', iconBg: 'bg-fuchsia-50 dark:bg-fuchsia-900/40 text-fuchsia-500 dark:text-fuchsia-400' },
+  ];
+  return configs[idx % configs.length];
 };
 
 const RuntimeState = ({ status, error }: { status: CardRuntimeStatus; error?: string }) => {
@@ -708,6 +801,107 @@ export const AssetCard = ({ title = "客户资产概览", hideHeader = false, on
           <div className="text-xs text-slate-500 dark:text-slate-400 relative z-10">当前可用的医疗项目总数</div>
         </div>
       </div>
+    </InnerCardWrapper>
+  );
+};
+
+export const RemainingFundsCard = ({
+  title = "客户剩余项目金概览",
+  hideHeader = false,
+  onEdit,
+  context = 'management',
+  runtimeData,
+  runtimeStatus,
+  runtimeError,
+}: CardRuntimeProps) => {
+  const projectRows = useMemo(() => {
+    if (context !== 'workbench' || (runtimeStatus ?? 'loading') !== 'ready') {
+      return remainingFundsInfo.projects;
+    }
+
+    const payload = pickRuntimeResultObject(runtimeData);
+    const runtimeRowsRaw = pickValueByCandidates(payload, [
+      'projects',
+      'projectFunds',
+      'projectFundList',
+      'remainingFundProjects',
+      'remainingFunds.projects',
+      'fundDetails',
+      'items',
+      'list',
+      'rows',
+      'data',
+      'result',
+    ]);
+
+    const runtimeRows = Array.isArray(runtimeRowsRaw) ? runtimeRowsRaw : [];
+    if (runtimeRows.length === 0) {
+      return [];
+    }
+
+    return runtimeRows.map((item, index) => {
+      const record = toObjectRecord(item);
+      return {
+        name: toDisplayText(
+          record.name ?? record.projectName ?? record.fundName ?? record.itemName ?? record.title,
+        ),
+        available: toDisplayText(
+          record.available ?? record.availableAmount ?? record.availableBalance ?? record.remainingAmount,
+        ),
+        planned: toDisplayText(
+          record.planned ?? record.plannedAmount ?? record.allocatedAmount ?? record.usedAmount,
+        ),
+        icon: toDisplayText(record.icon ?? record.iconName ?? remainingFundsInfo.projects[index % remainingFundsInfo.projects.length]?.icon ?? 'Wallet'),
+      };
+    });
+  }, [context, runtimeData, runtimeStatus]);
+
+  return (
+    <InnerCardWrapper title={title} onEdit={onEdit} hideHeader={hideHeader} showEdit={context === 'management'} context={context} runtimeData={runtimeData} runtimeStatus={runtimeStatus} runtimeError={runtimeError}>
+      {projectRows.length === 0 ? (
+        <div className="py-10 text-center text-sm text-slate-500 dark:text-slate-400">暂无数据</div>
+      ) : (
+        <div className="grid grid-cols-[repeat(auto-fit,minmax(260px,1fr))] gap-5">
+          {projectRows.map((proj, idx) => {
+            const conf = getProjectConfig(idx);
+            const plannedNum = Number(String(proj.planned).replace(/,/g, '')) || 0;
+            const availableNum = Number(String(proj.available).replace(/,/g, '')) || 0;
+            const totalNum = plannedNum + availableNum;
+            const progressPercent = totalNum > 0 ? (plannedNum / totalNum) * 100 : 0;
+
+            return (
+              <div key={`${proj.name}-${idx}`} className="relative overflow-hidden bg-white dark:bg-slate-800/80 p-5 rounded-2xl border border-slate-200/80 dark:border-slate-700/80 group hover:shadow-lg transition-all flex flex-col justify-between min-h-[140px]">
+                <div className="flex items-center space-x-3 mb-4">
+                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${conf.iconBg}`}>
+                    {getProjectIcon(proj.icon)}
+                  </div>
+                  <div className="text-sm font-bold text-slate-800 dark:text-slate-200">{proj.name}</div>
+                </div>
+
+                <div className="mt-auto flex flex-col space-y-3">
+                  <div className="flex justify-between items-end">
+                    <div className="flex flex-col">
+                      <span className="text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">已规划</span>
+                      <span className="text-xl font-bold text-slate-900 dark:text-slate-100">¥{proj.planned}</span>
+                    </div>
+                    <div className="flex flex-col items-end">
+                      <span className="text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">剩余可规划</span>
+                      <span className={`text-sm font-bold ${conf.text}`}>¥{proj.available}</span>
+                    </div>
+                  </div>
+
+                  <div className="w-full h-2 bg-slate-100 dark:bg-slate-700/80 rounded-full overflow-hidden">
+                    <div
+                      className={`h-full rounded-full transition-all duration-1000 ease-out ${conf.fill}`}
+                      style={{ width: `${progressPercent}%` }}
+                    />
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </InnerCardWrapper>
   );
 };
@@ -1418,6 +1612,104 @@ export const ExecutionDateCard = ({ title = "负责人及执行日期", hideHead
           </div>
         </div>
       </div>
+    </InnerCardWrapper>
+  );
+};
+
+export const AppointmentInfoCard = ({
+  title = "预约信息",
+  hideHeader = false,
+  onEdit,
+  context = 'management',
+  runtimeData,
+  runtimeStatus,
+  runtimeError,
+}: CardRuntimeProps) => {
+  const appointmentRows = useMemo(() => {
+    if (context !== 'workbench' || (runtimeStatus ?? 'loading') !== 'ready') {
+      return appointmentInfo.map((record, index) => ({
+        id: String(index + 1),
+        type: record.type,
+        date: record.date,
+        expert: record.expert,
+        items: record.items,
+        supplements: record.supplements,
+      }));
+    }
+
+    const payload = pickRuntimeResultObject(runtimeData);
+    const runtimeRowsRaw = pickValueByCandidates(payload, [
+      'appointments',
+      'appointmentInfo',
+      'appointmentList',
+      'bookingList',
+      'reservationList',
+      'records',
+      'rows',
+      'list',
+      'items',
+      'data',
+      'result',
+    ]);
+    return normalizeAppointmentRecords(runtimeRowsRaw);
+  }, [context, runtimeData, runtimeStatus]);
+
+  return (
+    <InnerCardWrapper title={title} onEdit={onEdit} hideHeader={hideHeader} showEdit={context === 'management'} context={context} runtimeData={runtimeData} runtimeStatus={runtimeStatus} runtimeError={runtimeError}>
+      {appointmentRows.length === 0 ? (
+        <div className="py-10 text-center text-sm text-slate-500 dark:text-slate-400">暂无数据</div>
+      ) : (
+        <div className="flex flex-col space-y-6 flex-1 mb-4">
+          {appointmentRows.map((appointment, index) => (
+            <div key={appointment.id || String(index)} className="flex flex-col space-y-3 relative">
+              {index > 0 && <div className="absolute -top-3 left-0 right-0 h-px bg-slate-100 dark:bg-slate-800" />}
+
+              <div className="flex items-center">
+                <span className="text-[13px] text-slate-500 dark:text-slate-400 w-20 shrink-0">预约类型：</span>
+                <span className="text-[13px] font-medium text-slate-800 dark:text-slate-200">{toDisplayText(appointment.type)}</span>
+              </div>
+
+              <div className="flex items-center">
+                <span className="text-[13px] text-slate-500 dark:text-slate-400 w-20 shrink-0">预约日期：</span>
+                <span className="text-[13px] font-medium text-slate-800 dark:text-slate-200">{toDisplayText(appointment.date)}</span>
+              </div>
+
+              {!isEmptyValue(appointment.expert) && (
+                <div className="flex items-center">
+                  <span className="text-[13px] text-slate-500 dark:text-slate-400 w-20 shrink-0">预约专家：</span>
+                  <span className="text-[13px] font-medium text-slate-800 dark:text-slate-200">{toDisplayText(appointment.expert)}</span>
+                </div>
+              )}
+
+              {!isEmptyValue(appointment.items) && (
+                <div className="flex items-center">
+                  <span className="text-[13px] text-slate-500 dark:text-slate-400 w-20 shrink-0">预约项目：</span>
+                  <span className="text-[13px] font-medium text-slate-800 dark:text-slate-200">{toDisplayText(appointment.items)}</span>
+                </div>
+              )}
+
+              {appointment.supplements.length > 0 && (
+                <div className="flex items-start mt-1">
+                  <span className="text-[13px] text-slate-500 dark:text-slate-400 w-20 shrink-0 pt-1">补充信息：</span>
+                  <div className="flex flex-wrap gap-2">
+                    {appointment.supplements.map((supplement, supplementIndex) => {
+                      const label = toDisplayText(supplement.label);
+                      const value = toDisplayText(supplement.value);
+                      return (
+                        <div key={`${appointment.id}-${supplementIndex}`} className="flex items-center px-2 py-1 bg-blue-50 dark:bg-blue-900/30 rounded-md text-[13px]">
+                          <span className="text-blue-500 dark:text-blue-400 font-medium">{label}</span>
+                          <span className="mx-1.5 text-blue-300 dark:text-blue-600">|</span>
+                          <span className="text-blue-600 dark:text-blue-300">{value}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
     </InnerCardWrapper>
   );
 };

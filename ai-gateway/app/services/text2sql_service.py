@@ -116,5 +116,7 @@ class Text2SQLService:
         if self._meeting_bi_executor is None:
             from app.bi.meeting_bi.ai.query_executor import MeetingBIQueryExecutor
 
-            self._meeting_bi_executor = MeetingBIQueryExecutor()
+            if self._generic_pool is None:
+                raise RuntimeError("业务库连接池未注入，无法创建 Meeting BI 执行器。")
+            self._meeting_bi_executor = MeetingBIQueryExecutor(pool=self._generic_pool)
         return self._meeting_bi_executor

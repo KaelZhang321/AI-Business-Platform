@@ -39,6 +39,8 @@ export function AssistantMessageContent({ content }: AssistantMessageContentProp
    *   - hasSpec : 是否存在有效的 Spec
    */
   const { text, spec, hasSpec } = useJsonRenderMessage(parts);
+  const trimmedText = text.trim();
+  const shouldShowEmptyState = !hasSpec && !trimmedText;
 
   /**
    * 从 Spec 中提取初始 state 传给 AssistantRenderer。
@@ -136,6 +138,13 @@ export function AssistantMessageContent({ content }: AssistantMessageContentProp
             state={initialState}
             onAction={handleAction}
           />
+        </div>
+      )}
+
+      {shouldShowEmptyState && (
+        <div className="mt-3 rounded-2xl border border-dashed border-slate-200 bg-slate-50/70 px-6 py-10 text-center dark:border-slate-700 dark:bg-slate-800/40">
+          <div className="text-sm font-semibold text-slate-700 dark:text-slate-200">未匹配到数据</div>
+          <div className="mt-2 text-xs text-slate-500 dark:text-slate-400">当前问题暂无可展示的结构化结果，请尝试调整提问方式。</div>
         </div>
       )}
     </>

@@ -1,7 +1,9 @@
 import type { CardConfig, LayoutMap } from './types';
 
 export const initialCards: CardConfig[] = [
+  { id: 'appointment-info', title: '预约信息', type: 'appointment-info' },
   // { id: 'asset-info', title: '客户资产概览', type: 'asset-info' },
+  { id: 'remaining-funds', title: '客户剩余项目金概览', type: 'remaining-funds' },
   { id: 'identity-contact', title: '身份与联系信息', type: 'identity-contact' },
   { id: 'basic-health-data', title: '健康基础数据', type: 'basic-health-data' },
   { id: 'health-status-medical-history', title: '健康状况与医疗史', type: 'health-status-medical-history' },
@@ -20,9 +22,9 @@ export const initialCards: CardConfig[] = [
 ];
 
 export const initialLayouts: LayoutMap = {
-  doctor: ['identity-contact', 'basic-health-data', 'health-status-medical-history', 'physical-exam-status', 'consultation-records'],
-  consultant: ['identity-contact', 'asset-info', 'health-goals', 'psychology-emotion', 'customer-relations'],
-  sales: ['identity-contact', 'asset-info', 'consumption-ability', 'education-records', 'precautions'],
+  doctor: ['appointment-info', 'identity-contact', 'basic-health-data', 'health-status-medical-history', 'physical-exam-status', 'consultation-records'],
+  consultant: ['appointment-info', 'identity-contact', 'asset-info', 'remaining-funds', 'health-goals', 'psychology-emotion', 'customer-relations'],
+  sales: ['appointment-info', 'identity-contact', 'asset-info', 'remaining-funds', 'consumption-ability', 'education-records', 'precautions'],
 };
 
 export const initialCategories = ['客户基本信息', '团队信息', '资产与服务'];

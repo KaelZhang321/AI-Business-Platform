@@ -3,7 +3,11 @@ from __future__ import annotations
 import sys
 from types import ModuleType
 
-from app.bi.meeting_bi.ai.vanna_client import _ensure_sqlite_compat, _parse_mysql_url
+from app.bi.meeting_bi.ai.vanna_client import (
+    _build_business_mysql_vanna_params,
+    _ensure_sqlite_compat,
+    _parse_mysql_url,
+)
 
 
 def test_parse_mysql_url_decodes_credentials_and_scalar_charset() -> None:
@@ -20,6 +24,25 @@ def test_parse_mysql_url_decodes_credentials_and_scalar_charset() -> None:
         "user": "stat_dev_251029",
         "password": "8uI%K&$oybe@nCHB",
         "port": 3306,
+        "charset": "utf8mb4",
+    }
+
+
+def test_build_business_mysql_vanna_params_reads_business_mysql_settings(monkeypatch) -> None:
+    monkeypatch.setattr("app.core.mysql.settings.business_mysql_host", "business-mysql")
+    monkeypatch.setattr("app.core.mysql.settings.business_mysql_port", 3307)
+    monkeypatch.setattr("app.core.mysql.settings.business_mysql_user", "biz_user")
+    monkeypatch.setattr("app.core.mysql.settings.business_mysql_password", "biz_pass")
+    monkeypatch.setattr("app.core.mysql.settings.business_mysql_database", "biz_db")
+
+    parsed = _build_business_mysql_vanna_params()
+
+    assert parsed == {
+        "host": "business-mysql",
+        "dbname": "biz_db",
+        "user": "biz_user",
+        "password": "biz_pass",
+        "port": 3307,
         "charset": "utf8mb4",
     }
 

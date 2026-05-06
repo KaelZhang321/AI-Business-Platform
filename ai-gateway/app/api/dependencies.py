@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import TypeVar
 
+import aiomysql
 from fastapi import Depends, Request
 
 from app.core.dependencies import get_settings
@@ -46,6 +47,12 @@ def get_app_resource_container(request: Request) -> AppResources:
     """
 
     return get_app_resources(request.app)
+
+
+def get_business_mysql_pool(resources: AppResources = Depends(get_app_resource_container)) -> aiomysql.Pool:
+    """返回应用级共享业务 MySQL 连接池。"""
+
+    return _require(resources.business_mysql_pool, "BusinessMySQLPool")
 
 
 def get_text2sql_service(resources: AppResources = Depends(get_app_resource_container)) -> Text2SQLService:

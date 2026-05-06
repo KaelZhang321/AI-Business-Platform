@@ -4,6 +4,7 @@ import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { Maximize2, Trash2 } from 'lucide-react';
 import {
+  AppointmentInfoCard,
   AssetCard,
   IdentityContactCard,
   BasicHealthDataCard,
@@ -19,7 +20,8 @@ import {
   PrecautionsCard,
   ConsultationRecordsCard,
   RemarksCard,
-  ExecutionDateCard
+  ExecutionDateCard,
+  RemainingFundsCard,
 } from './AIComponentManagementView';
 
 /** 可拖拽排序的卡片容器组件：支持拖拽排序、放大预览和删除操作 */
@@ -260,7 +262,9 @@ export const CardAction = () => (
 /** AI 卡片注册表：定义所有可用的业务卡片配置（id、标题、渲染组件、占位宽度） */
 export const AI_CARDS_DATA = [
   // Management Cards
+  { id: 'appointment-info', title: '预约信息', component: (props: any) => <AppointmentInfoCard {...props} hideHeader={true} context="workbench" />, colSpan: 6 },
   // { id: 'asset', title: '客户资产概览', component: (props: any) => <AssetCard {...props} hideHeader={true} context="workbench" />, colSpan: 4 },
+  { id: 'remaining-funds', title: '客户剩余项目金概览', component: (props: any) => <RemainingFundsCard {...props} hideHeader={true} context="workbench" />, colSpan: 12 },
   { id: 'identity-contact', title: '身份与联系信息', component: (props: any) => <IdentityContactCard {...props} hideHeader={true} context="workbench" />, colSpan: 4 },
   { id: 'basic-health-data', title: '健康基础数据', component: (props: any) => <BasicHealthDataCard {...props} hideHeader={true} context="workbench" />, colSpan: 4 },
   { id: 'health-status-medical-history', title: '健康状况与医疗史', component: (props: any) => <HealthStatusMedicalHistoryCard {...props} hideHeader={true} context="workbench" />, colSpan: 4 },

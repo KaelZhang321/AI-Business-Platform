@@ -6,6 +6,7 @@ import { CardWorkbenchTab } from './components/CardWorkbenchTab'
 import { EndpointRoleTab } from './components/EndpointRoleTab'
 import { FlowLogTab } from './components/FlowLogTab'
 import { JsonRenderPlaygroundTab } from './components/JsonRenderPlaygroundTab'
+import { LowCodeBuilderTab } from './components/LowCodeBuilderTab'
 import { OverviewTab } from './components/OverviewTab'
 import { SemanticFieldTab } from './components/SemanticFieldTab'
 import { SourceCenterTab } from './components/SourceCenterTab'
@@ -1297,6 +1298,11 @@ export function UiBuilderPage() {
             key: 'rule-engine',
             label: '规则引擎',
             children: <RuleEngineTab />,
+          },
+          {
+            key: 'lowcode-builder',
+            label: '低代码搭建器',
+            children: <LowCodeBuilderTab />,
           },
           {
             key: 'json-render-playground',
