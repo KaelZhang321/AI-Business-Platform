@@ -33,29 +33,35 @@ class DealWorkflow:
             profile_body = None
 
             if request.customer_profile:
-                profile_body = request.customer_profile.model_dump()
+                profile_body = {"idCardEncrypt": request.customer_profile.idCard}
             elif request.customer_package:
-                profile_body = {
-                    "idCard": request.customer_package.idCard
-                }
+                profile_body = {"idCardEncrypt": request.customer_package.idCard}
 
             if profile_body:
                 result["customer_profile"] = await self._call_runtime_endpoint(
                     client,
-                    endpoint_id="93c5ae184119efb7f010a382536451de",
+                    endpoint_id="7173bc383fcc141bbde5882c248537df",
                     body=profile_body,
                 )
 
             if request.customer_package:
                 result["customer_package"] = await self._call_runtime_endpoint(
                     client,
-                    endpoint_id="a26040a548a406a0e99dea8239d8ac29",
+                    endpoint_id="67c8be82e3400d689ac9896708378f4b",
                     body=request.customer_package.model_dump(),
                 )
 
-            result = self._stringify_quadrants(result)
+            if request.customer_plan:
+                result["customer_plan"] = await self._call_runtime_endpoint(
+                    client,
+                    endpoint_id="76f31502cac0258c5a1bf8fd219446de",
+                    body=request.customer_plan.model_dump(),
+                )
 
-            dify_result = await self._call_dify(client, request, result)
+            result = self._stringify_quadrants(result)
+            dify_upstream_result = self._build_dify_upstream_result(result)
+
+            dify_result = await self._call_dify(client, request, dify_upstream_result)
             result["dify"] = dify_result
 
         raw_answer = dify_result.get("answer") or ""
@@ -100,7 +106,6 @@ class DealWorkflow:
 
         return answer.strip()
 
-
     def _stringify_quadrants(self, obj: Any) -> Any:
         if isinstance(obj, dict):
             for key, value in list(obj.items()):
@@ -111,6 +116,72 @@ class DealWorkflow:
         elif isinstance(obj, list):
             return [self._stringify_quadrants(item) for item in obj]
         return obj
+
+    def _build_dify_upstream_result(self, result: dict[str, Any]) -> dict[str, Any]:
+        dify_result = dict(result)
+        special_record = self._extract_customer_special_record(result.get("customer_profile"))
+        if special_record:
+            dify_result["customer_profile"] = {"specialRecord": special_record}
+        plan_result = self._extract_customer_plan_result(result.get("customer_plan"))
+        if plan_result is not None:
+            dify_result["customer_plan"] = plan_result
+        return dify_result
+
+    def _extract_customer_special_record(self, customer_profile_result: Any) -> str | None:
+        if not isinstance(customer_profile_result, dict):
+            return None
+
+        data = customer_profile_result.get("data")
+        if not isinstance(data, dict):
+            return None
+
+        records = data.get("result")
+        if not isinstance(records, list) or not records:
+            return None
+
+        first_record = records[0]
+        if not isinstance(first_record, dict):
+            return None
+
+        special_record = first_record.get("specialRecord")
+        if special_record in (None, ""):
+            return None
+        return str(special_record)
+
+    def _extract_customer_plan_result(self, customer_plan_result: Any) -> Any:
+        if not isinstance(customer_plan_result, dict):
+            return customer_plan_result
+
+        data = customer_plan_result.get("data")
+        if not isinstance(data, dict):
+            return customer_plan_result
+
+        result = data.get("result")
+        if not isinstance(result, dict):
+            return data
+
+        treatment_names: list[str] = []
+        seen: set[str] = set()
+        for list_key in ("prePlanList", "originalVisitPlanList"):
+            items = result.get(list_key)
+            if not isinstance(items, list):
+                continue
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+
+                plan_type = str(item.get("planType") or "").strip()
+                plan_type_code = str(item.get("planTypeCode") or "").strip()
+                if plan_type != "治疗" and plan_type_code != "treat":
+                    continue
+
+                name = str(item.get("fmaterialName") or "").strip()
+                if not name or name in seen:
+                    continue
+                seen.add(name)
+                treatment_names.append(name)
+
+        return {"treatmentPlanMaterialNames": treatment_names}
 
     async def _call_health_quadrant(
         self,
@@ -177,6 +248,7 @@ class DealWorkflow:
             "inputs": {
                 "deal_id": request.deal_id or "",
                 "context": json.dumps(request.context or {}, ensure_ascii=False),
+                "user_preferences": json.dumps(request.user_preferences or {}, ensure_ascii=False),
                 "upstream_result": json.dumps(upstream_result or {}, ensure_ascii=False),
             },
             "query": request.message,
@@ -189,7 +261,7 @@ class DealWorkflow:
         print("DIFY_URL:", url)
         print("===== DIFY INPUT START =====")
         print(json.dumps(payload, ensure_ascii=False, indent=2))
-        print("===== DIFY INPUT END =====")        
+        print("===== DIFY INPUT END =====")
         print("DIFY_STATUS:", resp.status_code)
         print("DIFY_BODY:", resp.text)
 
