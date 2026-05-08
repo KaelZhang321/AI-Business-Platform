@@ -1,0 +1,316 @@
+# AI Gateway — 业务接口 RAG 目录
+#
+# 本文件定义了可用于自然语言检索的业务接口条目。
+# 每条记录会被 embedding 后写入 Milvus `api_catalog` collection。
+#
+# 更新接口目录后，执行以下命令重建索引：
+#   python -m app.services.api_catalog.indexer
+# 或调用管理端 API：
+#   POST /api/v1/api-query/catalog/index
+#
+# 字段说明：
+#   id              - 接口唯一标识（不要修改，修改会产生重复向量）
+#   description     - 接口自然语言描述（最重要，决定召回质量）
+#   example_queries - 用户可能的提问方式（扩充召回率）
+#   tags            - 接口标签（领域分类）
+#   method          - HTTP 方法
+#   path            - 相对于 business-server 的接口路径
+#   auth_required   - 是否需要用户 Token
+#   param_schema    - 接口参数 JSON Schema（供 LLM 参数提取使用）
+#   response_data_path - 响应 JSON 中数据所在路径（.分隔）
+#   field_labels    - 字段名中文映射（响应规范化用）
+#   ui_hint         - 渲染 UI 的偏好类型：table/card/metric/list/chart
+
+apis:
+
+  # ── 客户管理 ─────────────────────────────────────────────────────────────
+
+  - id: biz_customer_list_v1
+    description: 查询当前登录用户名下的客户列表，支持按客户姓名和状态过滤，返回分页结果
+    domain: crm
+    env: shared
+    status: active
+    tag_name: customer_management
+    example_queries:
+      - 查询我名下的所有客户信息
+      - 显示我的客户列表
+      - 我名下有哪些客户
+      - 查看我负责的客户
+      - 我的客户有几个
+    tags: [客户, CRM, 列表, 查询]
+    business_intents: [query_business_data]
+    method: GET
+    path: /api/customer/list
+    auth_required: true
+    security_rules:
+      read_only: true
+      auth_scope: customer.read
+    param_schema:
+      type: object
+      properties:
+        pageNum:  { type: integer, default: 1,  description: 页码 }
+        pageSize: { type: integer, default: 20, description: 每页数量 }
+        name:     { type: string,               description: 客户姓名，模糊匹配 }
+        status:   { type: string, enum: [active, inactive], description: 客户状态 }
+      required: []
+    response_data_path: data.list
+    field_labels:
+      customerId: 客户ID
+      customerName: 客户姓名
+      phone: 手机号
+      status: 状态
+      createTime: 创建时间
+      assignedSales: 负责销售
+    ui_hint: table
+    detail_hint:
+      enabled: true
+      api_id: biz_customer_detail_v1
+      identifier_field: customerId
+      query_param: customerId
+      ui_action: remoteQuery
+      template_code: customer_detail_template
+      fallback_mode: dynamic_ui
+    pagination_hint:
+      enabled: true
+      api_id: biz_customer_list_v1
+      page_param: pageNum
+      page_size_param: pageSize
+      ui_action: remoteQuery
+      mutation_target: report-table.props.dataSource
+    template_hint:
+      enabled: true
+      template_code: customer_list_template
+      render_mode: java_template
+      fallback_mode: dynamic_ui
+
+  - id: biz_customer_detail_v1
+    description: 查询指定客户的详细信息，包含联系方式、跟进记录和历史订单
+    domain: crm
+    env: shared
+    status: active
+    tag_name: customer_management
+    example_queries:
+      - 查看客户详情
+      - 某客户的详细资料
+      - 这个客户的信息
+    tags: [客户, CRM, 详情]
+    business_intents: [query_business_data, query_detail_data]
+    method: GET
+    path: /api/customer/detail
+    auth_required: true
+    security_rules:
+      read_only: true
+      auth_scope: customer.read
+    param_schema:
+      type: object
+      properties:
+        customerId: { type: integer, description: 客户ID }
+      required: [customerId]
+    response_data_path: data
+    field_labels:
+      customerId: 客户ID
+      customerName: 客户姓名
+      phone: 手机号
+      email: 邮箱
+      address: 地址
+      createTime: 创建时间
+      lastFollowUp: 最近跟进时间
+    ui_hint: card
+    template_hint:
+      enabled: true
+      template_code: customer_detail_template
+      render_mode: java_template
+      fallback_mode: dynamic_ui
+
+  # ── 订单管理 ─────────────────────────────────────────────────────────────
+
+  - id: biz_order_list_v1
+    description: 查询当前用户的订单列表，支持按时间范围、状态、客户名过滤
+    domain: order
+    env: shared
+    status: active
+    tag_name: order_management
+    example_queries:
+      - 查询我的订单
+      - 最近的订单列表
+      - 查看所有待处理订单
+      - 本月订单有哪些
+      - 显示未完成的订单
+    tags: [订单, 查询, 列表]
+    business_intents: [query_business_data]
+    method: GET
+    path: /api/order/list
+    auth_required: true
+    security_rules:
+      read_only: true
+      auth_scope: order.read
+    param_schema:
+      type: object
+      properties:
+        pageNum:   { type: integer, default: 1 }
+        pageSize:  { type: integer, default: 20 }
+        startDate: { type: string, description: 开始日期 YYYY-MM-DD }
+        endDate:   { type: string, description: 结束日期 YYYY-MM-DD }
+        status:    { type: string, enum: [pending, processing, completed, cancelled], description: 订单状态 }
+        customerName: { type: string, description: 客户名称模糊匹配 }
+      required: []
+    response_data_path: data.list
+    field_labels:
+      orderId: 订单号
+      customerName: 客户名称
+      orderAmount: 订单金额
+      status: 状态
+      createTime: 下单时间
+      deliveryDate: 交货日期
+    ui_hint: table
+    pagination_hint:
+      enabled: true
+      api_id: biz_order_list_v1
+      page_param: pageNum
+      page_size_param: pageSize
+      ui_action: remoteQuery
+      mutation_target: report-table.props.dataSource
+    template_hint:
+      enabled: true
+      template_code: order_list_template
+      render_mode: java_template
+      fallback_mode: dynamic_ui
+
+  - id: biz_order_summary_v1
+    description: 查询当前用户的订单汇总统计，包含总金额、订单数、完成率、退款率等关键指标
+    domain: order
+    env: shared
+    status: active
+    tag_name: order_summary
+    example_queries:
+      - 我的订单汇总
+      - 最近的成交统计
+      - 本月销售总额是多少
+      - 订单统计数据
+      - 我的业绩概览
+    tags: [订单, 统计, 汇总, 业绩]
+    business_intents: [query_business_data]
+    method: GET
+    path: /api/order/summary
+    auth_required: true
+    security_rules:
+      read_only: true
+      auth_scope: order.read
+    param_schema:
+      type: object
+      properties:
+        startDate: { type: string, description: 开始日期 YYYY-MM-DD }
+        endDate:   { type: string, description: 结束日期 YYYY-MM-DD }
+      required: []
+    response_data_path: data
+    field_labels:
+      totalAmount: 总金额
+      orderCount: 订单数
+      completedCount: 已完成
+      completionRate: 完成率
+      refundRate: 退款率
+      avgOrderAmount: 平均客单价
+    ui_hint: metric
+    template_hint:
+      enabled: true
+      template_code: order_summary_template
+      render_mode: java_template
+      fallback_mode: dynamic_ui
+
+  # ── 待办事项 ─────────────────────────────────────────────────────────────
+
+  - id: biz_todo_list_v1
+    description: 查询当前用户的待办任务列表，包含跟进提醒、审批待处理、客户回访等
+    domain: task
+    env: shared
+    status: active
+    tag_name: todo_management
+    example_queries:
+      - 我的待办事项
+      - 今天有哪些任务
+      - 需要处理的事情
+      - 最近的提醒
+      - 我的工作清单
+    tags: [待办, 任务, 提醒]
+    business_intents: [query_business_data]
+    method: GET
+    path: /api/todo/list
+    auth_required: true
+    security_rules:
+      read_only: true
+      auth_scope: todo.read
+    param_schema:
+      type: object
+      properties:
+        pageNum:  { type: integer, default: 1 }
+        pageSize: { type: integer, default: 20 }
+        status:   { type: string, enum: [pending, done], description: 待办状态 }
+        priority: { type: string, enum: [high, normal, low], description: 优先级 }
+      required: []
+    response_data_path: data.list
+    field_labels:
+      todoId: 待办ID
+      title: 待办标题
+      description: 描述
+      priority: 优先级
+      status: 状态
+      dueDate: 截止时间
+      relatedCustomer: 关联客户
+    ui_hint: list
+    pagination_hint:
+      enabled: true
+      api_id: biz_todo_list_v1
+      page_param: pageNum
+      page_size_param: pageSize
+      ui_action: remoteQuery
+      mutation_target: report-table.props.dataSource
+
+  # ── 报表统计 ─────────────────────────────────────────────────────────────
+
+  - id: biz_performance_report_v1
+    description: 查询当前用户或团队的销售业绩报表，包含销售额、客户数、转化率趋势图
+    domain: report
+    env: shared
+    status: active
+    tag_name: performance_report
+    example_queries:
+      - 查看我的业绩报表
+      - 销售趋势分析
+      - 最近三个月的业绩
+      - 团队销售数据
+      - 我的销售曲线
+    tags: [报表, 业绩, 趋势, 统计]
+    business_intents: [query_business_data]
+    method: GET
+    path: /api/report/performance
+    auth_required: true
+    security_rules:
+      read_only: true
+      auth_scope: report.read
+    param_schema:
+      type: object
+      properties:
+        startDate:   { type: string, description: 开始日期 YYYY-MM-DD }
+        endDate:     { type: string, description: 结束日期 YYYY-MM-DD }
+        granularity: { type: string, enum: [day, week, month], description: 统计粒度 }
+      required: []
+    response_data_path: data.trends
+    field_labels:
+      date: 日期
+      salesAmount: 销售额
+      customerCount: 新增客户
+      conversionRate: 转化率
+      orderCount: 订单数
+    ui_hint: chart
+    pagination_hint:
+      enabled: true
+      api_id: biz_performance_report_v1
+      page_param: pageNum
+      page_size_param: pageSize
+      ui_action: remoteQuery
+      mutation_target: report-table.props.dataSource
+    template_hint:
+      enabled: true
+      template_code: performance_report_template
+      render_mode: java_template
+      fallback_mode: dynamic_ui

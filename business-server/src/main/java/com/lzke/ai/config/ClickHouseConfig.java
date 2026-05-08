@@ -1,25 +1,33 @@
 package com.lzke.ai.config;
 
-import com.zaxxer.hikari.HikariConfig;
-import com.zaxxer.hikari.HikariDataSource;
-import lombok.Getter;
-import lombok.Setter;
+import javax.sql.DataSource;
+
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.jdbc.core.JdbcTemplate;
 
-import javax.sql.DataSource;
+import com.zaxxer.hikari.HikariConfig;
+import com.zaxxer.hikari.HikariDataSource;
+
+import lombok.Getter;
+import lombok.Setter;
 
 @Getter
 @Setter
 @Configuration
+@ConditionalOnProperty(prefix = "app.clickhouse", name = "enabled", havingValue = "true", matchIfMissing = true)
 @ConfigurationProperties(prefix = "app.clickhouse")
 public class ClickHouseConfig {
 
-    private String url = "jdbc:clickhouse://localhost:8123/ai_platform_logs";
-    private String username = "default";
-    private String password = "";
+	@Value("${app.clickhouse.url:jdbc:clickhouse://localhost:8123/ai_platform_logs}")
+    private String url;
+	@Value("${app.clickhouse.username:default}")
+    private String username;
+	@Value("${app.clickhouse.password:}")
+    private String password;
 
     @Bean(name = "clickHouseDataSource")
     public DataSource clickHouseDataSource() {

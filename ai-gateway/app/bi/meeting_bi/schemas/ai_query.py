@@ -3,7 +3,7 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 from app.bi.meeting_bi.schemas.common import BIChartConfig, BIQueryResult
-from app.models.schemas import QueryDomain
+from app.models.schemas.text2sql import QueryDomain
 
 
 class MeetingBIQueryRequest(BaseModel):

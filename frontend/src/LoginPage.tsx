@@ -28,8 +28,11 @@ export function LoginPage({ onIamLogin }: LoginPageProps) {
     setErrorMsg(null);
     const IAM_AUTH_URL = import.meta.env.VITE_IAM_AUTH_URL || 'https://beta-crm.ssss818.com/iam/';
     const CLIENT_ID = import.meta.env.VITE_IAM_CLIENT_ID || 'AI-RND-WORKFLOW';
-    // 明确告诉 IAM 授权后回调到当前组件挂载的路由（通常是 /login）
-    const REDIRECT_URI = window.location.origin + '/login';
+    // 明确告诉 IAM 授权后回调到当前组件挂载的路由
+    // 本地开发模式去根目录，线上带上 /ai-platform 子路径配置
+    const basePath = import.meta.env.DEV ? '' : '/ai-platform';
+    console.log('basePathbasePath', basePath)
+    const REDIRECT_URI = window.location.origin + basePath + '/login';
     const targetUrl = `${IAM_AUTH_URL}?appCode=${CLIENT_ID}&redirectUrl=${encodeURIComponent(REDIRECT_URI)}&response_type=code`;
     window.location.href = targetUrl;
   };
@@ -41,31 +44,29 @@ export function LoginPage({ onIamLogin }: LoginPageProps) {
     const errorCode = params.get('error');
     const token = localStorage.getItem('ai_platform_token')
 
-    if (!token) {
 
-      if (errorCode) {
-        setErrorMsg(`统一认证返回错误: ${errorCode}`);
+    if (errorCode) {
+      setErrorMsg(`统一认证返回错误: ${errorCode}`);
+      setIsLoading(false);
+      return;
+    }
+
+    if (code && onIamLogin) {
+      // 👇 在这里拦截，如果已经发过一次请求就不继续发送
+      if (hasRequestedRef.current) return;
+      hasRequestedRef.current = true; // 马上锁住
+      // 执行系统登录流程
+      onIamLogin(code).catch((err) => {
+        const message = err instanceof Error ? err.message : '授权码解析与系统登录失败';
+        setErrorMsg(message);
         setIsLoading(false);
-        return;
-      }
+      });
+      return;
+    }
 
-      if (code && onIamLogin) {
-        // 👇 在这里拦截，如果已经发过一次请求就不继续发送
-        if (hasRequestedRef.current) return;
-        hasRequestedRef.current = true; // 马上锁住
-        // 执行系统登录流程
-        onIamLogin(code).catch((err) => {
-          const message = err instanceof Error ? err.message : '授权码解析与系统登录失败';
-          setErrorMsg(message);
-          setIsLoading(false);
-        });
-        return;
-      }
-
-      if (!code) {
-        // 若参数里没有 code ，并且在登录页内，说明触发了未登录拦截，那么直接自动去 IAM 系统登录
-        handleIamRedirect();
-      }
+    if (!code) {
+      // 若参数里没有 code ，并且在登录页内，说明触发了未登录拦截，那么直接自动去 IAM 系统登录
+      handleIamRedirect();
     }
   }, [onIamLogin]);
 

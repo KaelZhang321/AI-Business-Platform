@@ -2,6 +2,7 @@ package com.lzke.ai.service;
 
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
@@ -17,11 +18,17 @@ public class AnalyticsService {
 
     private final JdbcTemplate clickHouseJdbc;
 
-    public AnalyticsService(@Qualifier("clickHouseJdbcTemplate") JdbcTemplate clickHouseJdbc) {
-        this.clickHouseJdbc = clickHouseJdbc;
+    public AnalyticsService(@Qualifier("clickHouseJdbcTemplate") ObjectProvider<JdbcTemplate> clickHouseJdbcProvider) {
+        this.clickHouseJdbc = clickHouseJdbcProvider.getIfAvailable();
+        if (this.clickHouseJdbc == null) {
+            log.info("ClickHouse analytics is disabled or unavailable; audit analytics endpoints will return empty results.");
+        }
     }
 
     public List<Map<String, Object>> statsByIntent(String startDate, String endDate) {
+        if (clickHouseJdbc == null) {
+            return List.of();
+        }
         String sql = """
                 SELECT intent, count() AS total, avg(latency_ms) AS avg_latency,
                        sum(input_tokens) AS total_input_tokens, sum(output_tokens) AS total_output_tokens
@@ -34,6 +41,9 @@ public class AnalyticsService {
     }
 
     public List<Map<String, Object>> statsByModel(String startDate, String endDate) {
+        if (clickHouseJdbc == null) {
+            return List.of();
+        }
         String sql = """
                 SELECT model, count() AS total, avg(latency_ms) AS avg_latency,
                        sum(input_tokens + output_tokens) AS total_tokens
@@ -46,6 +56,9 @@ public class AnalyticsService {
     }
 
     public List<Map<String, Object>> statsByHour(String date) {
+        if (clickHouseJdbc == null) {
+            return List.of();
+        }
         String sql = """
                 SELECT toHour(created_at) AS hour, count() AS total, avg(latency_ms) AS avg_latency
                 FROM audit_logs
@@ -57,6 +70,9 @@ public class AnalyticsService {
     }
 
     public void insertAuditLog(Map<String, Object> logData) {
+        if (clickHouseJdbc == null) {
+            return;
+        }
         String sql = """
                 INSERT INTO audit_logs (trace_id, user_id, intent, model, input_tokens, output_tokens, latency_ms, status, created_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, now())

@@ -31,10 +31,11 @@ def _ensure_sqlite_compat() -> None:
 
 _ensure_sqlite_compat()
 
-from vanna.chromadb import ChromaDB_VectorStore
+# 必须在 sqlite 兼容补丁之后再导入 Chroma/Vanna，否则容器会在 import 阶段直接失败。
+from vanna.chromadb import ChromaDB_VectorStore  # noqa: E402
 
-from app.bi.meeting_bi.ai.training_data import BUSINESS_DOCS, QA_PAIRS, TABLES
-from app.core.config import settings
+from app.bi.meeting_bi.ai.training_data import BUSINESS_DOCS, QA_PAIRS, TABLES  # noqa: E402
+from app.core.config import settings  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +88,7 @@ _BUSINESS_RULES = """
 
 
 def _parse_mysql_url(url: str) -> dict[str, str | int]:
+    """解析会议 BI 数据库连接串，适配 Vanna 的 MySQL 连接参数格式。"""
     cleaned = url.replace("mysql+pymysql://", "mysql://").replace("mysql+aiomysql://", "mysql://")
     parsed = urlparse(cleaned)
     params = parse_qs(parsed.query)
@@ -108,7 +110,12 @@ def _parse_mysql_url(url: str) -> dict[str, str | int]:
 
 
 class MeetingBIVanna(ChromaDB_VectorStore):
-    """使用 ChromaDB 做向量存储，兼容 OpenAI 接口 LLM 做 SQL 生成。"""
+    """会议 BI 专属 Vanna 客户端。
+
+    功能：
+        复用 Chroma 作为本地向量记忆，同时通过 OpenAI-compatible 接口生成 SQL，
+        并在 Prompt 层追加会议 BI 业务规则。
+    """
 
     def __init__(self, config=None):
         super().__init__(config=config)
@@ -142,6 +149,7 @@ class MeetingBIVanna(ChromaDB_VectorStore):
         return response.choices[0].message.content or ""
 
     def get_sql_prompt(self, initial_prompt, question, question_sql_list, ddl_list, doc_list, **kwargs):
+        """在默认 SQL Prompt 上追加会议 BI 业务硬规则。"""
         prompt = super().get_sql_prompt(
             initial_prompt=initial_prompt,
             question=question,
@@ -156,6 +164,15 @@ class MeetingBIVanna(ChromaDB_VectorStore):
 
 
 def get_vanna() -> MeetingBIVanna:
+    """获取会议 BI Vanna 单例。
+
+    功能：
+        避免每次查询都重新初始化 Chroma、本地训练数据和数据库连接。
+
+    Edge Cases:
+        - 未配置 API Key 时直接失败，避免进入半初始化状态
+        - 首次初始化时自动补齐训练数据
+    """
     global _vn
     if _vn is not None:
         return _vn
@@ -175,6 +192,7 @@ def get_vanna() -> MeetingBIVanna:
 
 
 def _train(vn: MeetingBIVanna) -> None:
+    """向会议 BI Vanna 注入结构、文档和问答样本。"""
     for table in TABLES:
         try:
             result = vn.run_sql(f"SHOW CREATE TABLE {table}")

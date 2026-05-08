@@ -1,13 +1,15 @@
 package com.lzke.ai.config;
 
-import lombok.Getter;
-import lombok.Setter;
-import org.springframework.boot.context.properties.ConfigurationProperties;
-
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
+
+import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.stereotype.Component;
+
+import lombok.Getter;
+import lombok.Setter;
 
 /**
  * Feature Flag 配置属性 — 支持 Nacos 动态刷新。
@@ -24,6 +26,7 @@ import java.util.Set;
  *         enabled: false
  * </pre>
  */
+@Component
 @Getter
 @Setter
 @ConfigurationProperties(prefix = "app.feature-flags")

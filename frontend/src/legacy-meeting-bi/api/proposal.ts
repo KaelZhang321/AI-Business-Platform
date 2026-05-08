@@ -1,4 +1,4 @@
-import client, { type ApiResponse } from './client'
+import { apiClient as client, unwrapApiResponse, type ApiResponse } from './client';
 
 export interface ProposalRow {
   proposal_type: string
@@ -15,10 +15,10 @@ export interface ProposalCrossRow {
 }
 
 export const fetchProposalOverview = () =>
-  client.get<ApiResponse<ProposalRow[]>>('/v1/proposal/overview').then(r => r.data.data)
+  client.get<ApiResponse<ProposalRow[]>>('/api/v1/bi/proposal/overview').then(r => unwrapApiResponse<ProposalRow[]>(r.data, []))
 
 export const fetchProposalCrossTable = () =>
-  client.get<ApiResponse<ProposalCrossRow[]>>('/v1/proposal/cross-table').then(r => r.data.data)
+  client.get<ApiResponse<ProposalCrossRow[]>>('/api/v1/bi/proposal/cross-table').then(r => unwrapApiResponse<ProposalCrossRow[]>(r.data, []))
 
 export interface ProposalDetailRow {
   customer_name: string | null
@@ -30,4 +30,4 @@ export interface ProposalDetailRow {
 }
 
 export const fetchProposalDetail = (region?: string, proposal_type?: string) =>
-  client.get<ApiResponse<ProposalDetailRow[]>>('/v1/proposal/detail', { params: { region, proposal_type } }).then(r => r.data.data)
+  client.get<ApiResponse<ProposalDetailRow[]>>('/api/v1/bi/proposal/detail', { params: { region, proposal_type } }).then(r => unwrapApiResponse<ProposalDetailRow[]>(r.data, []))

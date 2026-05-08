@@ -3,13 +3,19 @@ import React from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { X, CheckSquare, UserCheck, HeartPulse, Briefcase, MessageSquareText, Sparkles, FileText, Users, Clock, CalendarClock, Paperclip, Plus } from 'lucide-react';
 
+/** 到院接待弹窗组件属性 */
 interface ReceptionModalProps {
+  /** 弹窗是否可见 */
   isOpen: boolean;
+  /** 关闭弹窗回调 */
   onClose: () => void;
+  /** 接待表单数据 */
   form: { name: string; serial: string; details: string };
+  /** 更新表单数据 */
   setForm: (form: any) => void;
 }
 
+/** 到院接待弹窗组件：办理客户签到、登记与房间分配，包含 AI 智能分析建议 */
 export function ReceptionModal({ isOpen, onClose, form, setForm }: ReceptionModalProps) {
   return (
     <AnimatePresence>
@@ -24,19 +30,19 @@ export function ReceptionModal({ isOpen, onClose, form, setForm }: ReceptionModa
             initial={{ scale: 0.95, opacity: 0, y: 20 }}
             animate={{ scale: 1, opacity: 1, y: 0 }}
             exit={{ scale: 0.95, opacity: 0, y: 20 }}
-            className="bg-white rounded-3xl shadow-2xl w-full max-w-5xl overflow-hidden flex flex-col"
+            className="bg-white dark:bg-slate-900 rounded-3xl shadow-2xl dark:shadow-none w-full max-w-5xl overflow-hidden flex flex-col"
           >
-            <div className="flex items-center justify-between p-6 border-b border-slate-100">
-              <h2 className="text-xl font-bold text-slate-800">客户到院接待</h2>
-              <button onClick={onClose} className="p-2 hover:bg-slate-100 rounded-full transition-colors text-slate-400 hover:text-slate-600">
+            <div className="flex items-center justify-between p-6 border-b border-slate-100 dark:border-slate-700">
+              <h2 className="text-xl font-bold text-slate-800 dark:text-slate-100">客户到院接待</h2>
+              <button onClick={onClose} className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full transition-colors text-slate-400 hover:text-slate-600 dark:hover:text-slate-200">
                 <X className="w-5 h-5" />
               </button>
             </div>
 
             <div className="p-8 overflow-y-auto max-h-[80vh]">
-              <div className="bg-gradient-to-r from-[#F0F4FF] to-[#F8FAFC] rounded-2xl p-6 flex items-center justify-between border border-blue-50">
+              <div className="bg-gradient-to-r from-[#F0F4FF] to-[#F8FAFC] dark:from-slate-900 dark:to-slate-800 rounded-2xl p-6 flex items-center justify-between border border-blue-50 dark:border-slate-700">
                 <div>
-                  <h3 className="text-xl font-bold text-blue-900 mb-1">客户到院接待</h3>
+                  <h3 className="text-xl font-bold text-blue-900 dark:text-blue-200 mb-1">客户到院接待</h3>
                   <p className="text-sm text-brand font-medium">办理客户签到、到院登记与房间分配</p>
                 </div>
                 <div className="bg-brand-light text-brand border border-brand-border rounded-full px-3 py-1.5 flex items-center text-sm font-medium shadow-sm">
@@ -46,45 +52,45 @@ export function ReceptionModal({ isOpen, onClose, form, setForm }: ReceptionModa
               </div>
 
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-6">
-                <div className="border border-slate-100 rounded-2xl p-6 bg-white shadow-sm">
+                <div className="border border-slate-100 dark:border-slate-700 rounded-2xl p-6 bg-white dark:bg-slate-900 shadow-sm dark:shadow-none">
                   <div className="grid grid-cols-2 gap-4 mb-6">
                     <div>
-                      <label className="block text-xs font-bold text-slate-400 mb-2">客户姓名</label>
+                      <label className="block text-xs font-bold text-slate-400 dark:text-slate-500 mb-2">客户姓名</label>
                       <input 
                         type="text" 
                         value={form.name}
                         onChange={(e) => setForm({...form, name: e.target.value})}
-                        className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm font-bold text-slate-800 focus:bg-white focus:border-brand focus:ring-2 focus:ring-brand/20 outline-none transition-all"
+                        className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-sm font-bold text-slate-800 dark:text-slate-100 focus:bg-white dark:focus:bg-slate-900 focus:border-brand focus:ring-2 focus:ring-brand/20 outline-none transition-all"
                       />
                     </div>
                     <div>
-                      <label className="block text-xs font-bold text-slate-400 mb-2">流水单号</label>
+                      <label className="block text-xs font-bold text-slate-400 dark:text-slate-500 mb-2">流水单号</label>
                       <input 
                         type="text" 
                         value={form.serial}
                         onChange={(e) => setForm({...form, serial: e.target.value})}
-                        className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm font-mono text-slate-600 focus:bg-white focus:border-brand focus:ring-2 focus:ring-brand/20 outline-none transition-all"
+                        className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-sm font-mono text-slate-600 dark:text-slate-300 focus:bg-white dark:focus:bg-slate-900 focus:border-brand focus:ring-2 focus:ring-brand/20 outline-none transition-all"
                       />
                     </div>
                   </div>
                   <div>
-                    <label className="block text-xs font-bold text-slate-400 mb-2">业务处理细节</label>
+                    <label className="block text-xs font-bold text-slate-400 dark:text-slate-500 mb-2">业务处理细节</label>
                     <textarea 
                       value={form.details}
                       onChange={(e) => setForm({...form, details: e.target.value})}
                       rows={6}
-                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm text-slate-700 focus:bg-white focus:border-brand focus:ring-2 focus:ring-brand/20 outline-none transition-all resize-none"
+                      className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-sm text-slate-700 dark:text-slate-200 focus:bg-white dark:focus:bg-slate-900 focus:border-brand focus:ring-2 focus:ring-brand/20 outline-none transition-all resize-none"
                     ></textarea>
                   </div>
                 </div>
 
-                <div className="border border-slate-100 rounded-2xl p-6 bg-slate-50/50 shadow-inner flex flex-col">
+                <div className="border border-slate-100 dark:border-slate-700 rounded-2xl p-6 bg-slate-50/50 dark:bg-slate-800/50 shadow-inner dark:shadow-none flex flex-col">
                   <div className="flex items-center mb-6">
                     <MessageSquareText className="w-5 h-5 text-brand mr-2" />
                     <h3 className="text-base font-bold text-brand">AI 智能分析建议</h3>
                   </div>
                   
-                  <div className="flex-1 border border-brand-border rounded-xl p-5 bg-white shadow-sm overflow-y-auto">
+                  <div className="flex-1 border border-brand-border rounded-xl p-5 bg-white dark:bg-slate-900 shadow-sm dark:shadow-none overflow-y-auto">
                     {form.name.includes('张三') ? (
                       <div className="space-y-4">
                         <div className="flex items-start">
@@ -92,8 +98,8 @@ export function ReceptionModal({ isOpen, onClose, form, setForm }: ReceptionModa
                             <UserCheck className="w-4 h-4 text-brand" />
                           </div>
                           <div>
-                            <h4 className="text-sm font-bold text-slate-800 mb-1">VIP 客户识别</h4>
-                            <p className="text-xs text-slate-600 leading-relaxed">
+                            <h4 className="text-sm font-bold text-slate-800 dark:text-slate-100 mb-1">VIP 客户识别</h4>
+                            <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
                               该客户为 A 级 VIP。历史偏好：<span className="font-semibold text-brand">独立静音休息室</span>、<span className="font-semibold text-brand">无糖绿茶</span>。建议优先安排 302 专属房间。
                             </p>
                           </div>
@@ -103,8 +109,8 @@ export function ReceptionModal({ isOpen, onClose, form, setForm }: ReceptionModa
                             <HeartPulse className="w-4 h-4 text-orange-600" />
                           </div>
                           <div>
-                            <h4 className="text-sm font-bold text-slate-800 mb-1">健康档案预警</h4>
-                            <p className="text-xs text-slate-600 leading-relaxed">
+                            <h4 className="text-sm font-bold text-slate-800 dark:text-slate-100 mb-1">健康档案预警</h4>
+                            <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
                               客户有轻度高血压史。今日体检方案中包含<span className="font-semibold text-orange-600">心血管深度筛查</span>，请提醒护士在抽血前再次确认血压状态。
                             </p>
                           </div>
@@ -114,15 +120,15 @@ export function ReceptionModal({ isOpen, onClose, form, setForm }: ReceptionModa
                             <Briefcase className="w-4 h-4 text-brand" />
                           </div>
                           <div>
-                            <h4 className="text-sm font-bold text-slate-800 mb-1">关联业务提醒</h4>
-                            <p className="text-xs text-slate-600 leading-relaxed">
+                            <h4 className="text-sm font-bold text-slate-800 dark:text-slate-100 mb-1">关联业务提醒</h4>
+                            <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
                               客户上周咨询了“抗衰老基因检测”项目，当前尚未成单。建议在体检报告解读环节，由专属顾问适时引入该项目介绍。
                             </p>
                           </div>
                         </div>
                       </div>
                     ) : (
-                      <div className="h-full flex flex-col items-center justify-center text-slate-400">
+                      <div className="h-full flex flex-col items-center justify-center text-slate-400 dark:text-slate-500">
                         <Sparkles className="w-8 h-8 mb-3 opacity-50" />
                         <p className="text-sm italic text-center">
                           输入客户信息后，AI 将自动检索画像<br/>并生成个性化接待建议
@@ -134,8 +140,8 @@ export function ReceptionModal({ isOpen, onClose, form, setForm }: ReceptionModa
               </div>
             </div>
 
-            <div className="flex justify-end space-x-4 p-6 border-t border-slate-100 bg-slate-50/80">
-              <button onClick={onClose} className="px-6 py-2.5 rounded-xl border border-slate-200 bg-white text-slate-600 font-bold hover:bg-slate-50 hover:text-slate-800 transition-colors shadow-sm">
+            <div className="flex justify-end space-x-4 p-6 border-t border-slate-100 dark:border-slate-700 bg-slate-50/80 dark:bg-slate-800/70">
+              <button onClick={onClose} className="px-6 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 font-bold hover:bg-slate-50 dark:hover:bg-slate-800 hover:text-slate-800 dark:hover:text-slate-100 transition-colors shadow-sm dark:shadow-none">
                 关 闭
               </button>
               <button onClick={onClose} className="px-6 py-2.5 rounded-xl bg-brand text-white font-bold hover:bg-brand-hover transition-colors shadow-md shadow-brand/20">
@@ -149,11 +155,15 @@ export function ReceptionModal({ isOpen, onClose, form, setForm }: ReceptionModa
   );
 }
 
+/** 新建任务弹窗组件属性 */
 interface CreateTaskModalProps {
+  /** 弹窗是否可见 */
   isOpen: boolean;
+  /** 关闭弹窗回调 */
   onClose: () => void;
 }
 
+/** 新建任务弹窗组件：填写任务名称、详情、参与人、时间和附件 */
 export function CreateTaskModal({ isOpen, onClose }: CreateTaskModalProps) {
   return (
     <AnimatePresence>
@@ -170,51 +180,51 @@ export function CreateTaskModal({ isOpen, onClose }: CreateTaskModalProps) {
             initial={{ scale: 0.9, opacity: 0, y: 20 }}
             animate={{ scale: 1, opacity: 1, y: 0 }}
             exit={{ scale: 0.9, opacity: 0, y: 20 }}
-            className="relative w-full max-w-2xl bg-white rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]"
+            className="relative w-full max-w-2xl bg-white dark:bg-slate-900 rounded-3xl shadow-2xl dark:shadow-none overflow-hidden flex flex-col max-h-[90vh]"
           >
-            <div className="px-8 py-6 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
+            <div className="px-8 py-6 border-b border-slate-100 dark:border-slate-700 flex items-center justify-between bg-slate-50/50 dark:bg-slate-800/50">
               <div className="flex items-center space-x-3">
                 <div className="w-10 h-10 rounded-xl bg-blue-500 flex items-center justify-center shadow-lg shadow-blue-500/20">
                   <Plus className="w-6 h-6 text-white" />
                 </div>
                 <div>
-                  <h2 className="text-xl font-bold text-slate-800">新建任务</h2>
-                  <p className="text-xs text-slate-400">请填写任务详细信息以创建新任务</p>
+                  <h2 className="text-xl font-bold text-slate-800 dark:text-slate-100">新建任务</h2>
+                  <p className="text-xs text-slate-400 dark:text-slate-500">请填写任务详细信息以创建新任务</p>
                 </div>
               </div>
-              <button onClick={onClose} className="p-2 hover:bg-slate-100 rounded-full transition-colors">
-                <X className="w-6 h-6 text-slate-400" />
+              <button onClick={onClose} className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full transition-colors">
+                <X className="w-6 h-6 text-slate-400 dark:text-slate-500" />
               </button>
             </div>
 
             <div className="flex-1 overflow-y-auto p-8 custom-scrollbar">
               <form className="space-y-6">
                 <div className="space-y-2">
-                  <label className="text-sm font-bold text-slate-700 flex items-center">
+                  <label className="text-sm font-bold text-slate-700 dark:text-slate-200 flex items-center">
                     <FileText className="w-4 h-4 mr-2 text-blue-500" />
                     任务名称
                   </label>
                   <input 
                     type="text" 
                     placeholder="请输入任务名称..."
-                    className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all text-sm"
+                    className="w-full px-4 py-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all text-sm"
                   />
                 </div>
 
                 <div className="space-y-2">
-                  <label className="text-sm font-bold text-slate-700 flex items-center">
+                  <label className="text-sm font-bold text-slate-700 dark:text-slate-200 flex items-center">
                     <MessageSquareText className="w-4 h-4 mr-2 text-blue-500" />
                     任务详情
                   </label>
                   <textarea 
                     rows={4}
                     placeholder="请描述任务的具体内容和要求..."
-                    className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all text-sm resize-none"
+                    className="w-full px-4 py-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all text-sm resize-none"
                   ></textarea>
                 </div>
 
                 <div className="space-y-2">
-                  <label className="text-sm font-bold text-slate-700 flex items-center">
+                  <label className="text-sm font-bold text-slate-700 dark:text-slate-200 flex items-center">
                     <Users className="w-4 h-4 mr-2 text-blue-500" />
                     参与任务
                   </label>
@@ -223,7 +233,7 @@ export function CreateTaskModal({ isOpen, onClose }: CreateTaskModalProps) {
                       <button 
                         key={i}
                         type="button"
-                        className="px-3 py-1.5 rounded-full border border-slate-200 text-xs font-medium text-slate-600 hover:bg-brand-light hover:border-brand-border hover:text-brand transition-all flex items-center"
+                        className="px-3 py-1.5 rounded-full border border-slate-200 dark:border-slate-700 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-brand-light dark:hover:bg-brand/10 hover:border-brand-border hover:text-brand transition-all flex items-center"
                       >
                         <div className="w-5 h-5 rounded-full bg-slate-200 mr-2 overflow-hidden">
                           <img src={`https://i.pravatar.cc/150?u=${i+20}`} alt="" className="w-full h-full object-cover" />
@@ -231,7 +241,7 @@ export function CreateTaskModal({ isOpen, onClose }: CreateTaskModalProps) {
                         {name}
                       </button>
                     ))}
-                    <button type="button" className="w-8 h-8 rounded-full border-2 border-dashed border-slate-200 flex items-center justify-center text-slate-400 hover:border-brand-border hover:text-brand transition-all">
+                    <button type="button" className="w-8 h-8 rounded-full border-2 border-dashed border-slate-200 dark:border-slate-700 flex items-center justify-center text-slate-400 dark:text-slate-500 hover:border-brand-border hover:text-brand transition-all">
                       <Plus className="w-4 h-4" />
                     </button>
                   </div>
@@ -239,45 +249,45 @@ export function CreateTaskModal({ isOpen, onClose }: CreateTaskModalProps) {
 
                 <div className="grid grid-cols-2 gap-6">
                   <div className="space-y-2">
-                    <label className="text-sm font-bold text-slate-700 flex items-center">
+                    <label className="text-sm font-bold text-slate-700 dark:text-slate-200 flex items-center">
                       <Clock className="w-4 h-4 mr-2 text-blue-500" />
                       计划开始
                     </label>
                     <input 
                       type="datetime-local" 
-                      className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all text-sm"
+                      className="w-full px-4 py-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all text-sm"
                     />
                   </div>
                   <div className="space-y-2">
-                    <label className="text-sm font-bold text-slate-700 flex items-center">
+                    <label className="text-sm font-bold text-slate-700 dark:text-slate-200 flex items-center">
                       <CalendarClock className="w-4 h-4 mr-2 text-blue-500" />
                       完成时间
                     </label>
                     <input 
                       type="datetime-local" 
-                      className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all text-sm"
+                      className="w-full px-4 py-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all text-sm"
                     />
                   </div>
                 </div>
 
                 <div className="space-y-2">
-                  <label className="text-sm font-bold text-slate-700 flex items-center">
+                  <label className="text-sm font-bold text-slate-700 dark:text-slate-200 flex items-center">
                     <Paperclip className="w-4 h-4 mr-2 text-blue-500" />
                     上传附件
                   </label>
-                  <div className="border-2 border-dashed border-slate-200 rounded-2xl p-8 flex flex-col items-center justify-center hover:bg-slate-50 transition-colors cursor-pointer group">
-                    <div className="w-12 h-12 rounded-full bg-slate-100 flex items-center justify-center mb-3 group-hover:bg-blue-50 transition-colors">
-                      <Plus className="w-6 h-6 text-slate-400 group-hover:text-blue-500" />
+                  <div className="border-2 border-dashed border-slate-200 dark:border-slate-700 rounded-2xl p-8 flex flex-col items-center justify-center hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors cursor-pointer group">
+                    <div className="w-12 h-12 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center mb-3 group-hover:bg-blue-50 dark:group-hover:bg-blue-950/30 transition-colors">
+                      <Plus className="w-6 h-6 text-slate-400 dark:text-slate-500 group-hover:text-blue-500" />
                     </div>
-                    <span className="text-sm font-medium text-slate-500">点击或拖拽文件到此处上传</span>
-                    <p className="text-xs text-slate-400 mt-1">支持 PDF, Word, Excel, 图片等格式</p>
+                    <span className="text-sm font-medium text-slate-500 dark:text-slate-300">点击或拖拽文件到此处上传</span>
+                    <p className="text-xs text-slate-400 dark:text-slate-500 mt-1">支持 PDF, Word, Excel, 图片等格式</p>
                   </div>
                 </div>
               </form>
             </div>
 
-            <div className="px-8 py-6 border-t border-slate-100 flex items-center justify-end space-x-4 bg-slate-50/50">
-              <button onClick={onClose} className="px-6 py-2.5 rounded-xl text-sm font-bold text-slate-500 hover:bg-slate-100 transition-colors">
+            <div className="px-8 py-6 border-t border-slate-100 dark:border-slate-700 flex items-center justify-end space-x-4 bg-slate-50/50 dark:bg-slate-800/50">
+              <button onClick={onClose} className="px-6 py-2.5 rounded-xl text-sm font-bold text-slate-500 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors">
                 取消
               </button>
               <button onClick={onClose} className="px-8 py-2.5 rounded-xl text-sm font-bold text-white bg-brand hover:bg-brand-hover shadow-lg shadow-brand/30 transition-all active:scale-95">

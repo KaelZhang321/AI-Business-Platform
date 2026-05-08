@@ -3,21 +3,33 @@ import React from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Sparkles, Send, MessageSquare, X } from 'lucide-react';
 
+/** AI 助手聊天消息结构 */
 interface Message {
+  /** 消息唯一 ID */
   id: string;
+  /** 消息角色*/
   role: 'ai' | 'user';
+  /** 消息文本 */
   content: string;
 }
 
+/** AI 助手面板组件属性 */
 interface AIAssistantProps {
+  /** 对话消息列表 */
   messages: Message[];
+  /** 聊天输入框内容 */
   chatInput: string;
+  /** 设置聊天输入 */
   setChatInput: (val: string) => void;
+  /** 发送消息回调 */
   handleSendMessage: (overrideText?: string) => void;
+  /** 悬浮助手是否展开 */
   isAIOpen: boolean;
+  /** 设置助手展开状态 */
   setIsAIOpen: (val: boolean) => void;
 }
 
+/** AI 助手面板组件：展示对话消息、推荐问题和悬浮聊天入口 */
 export function AIAssistant({
   messages,
   chatInput,
@@ -26,6 +38,7 @@ export function AIAssistant({
   isAIOpen,
   setIsAIOpen
 }: AIAssistantProps) {
+  /** 推荐问题快捷入口列表 */
   const suggestedPrompts = [
     { id: 'inventory', text: '帮我查询王先生在云仓的剩余库存', tag: '客户云仓' },
     { id: 'drivers', text: '今天下午3点到5点，有哪些空闲的专车司机？', tag: '约车调度' },
@@ -33,11 +46,12 @@ export function AIAssistant({
     { id: 'policy', text: '查看最新的合规审查红头文件', tag: '政策中心' },
   ] as const;
 
+  /** 渲染消息内容：支持标题行、普通文本和按钮行的分行解析 */
   const renderMessageContent = (content: string) => {
     return content.split('\n').map((line) => (
       <React.Fragment key={`${content}-${line}`}>
         {line.startsWith('📊') || line.startsWith('🚗') ? (
-          <strong className="block mb-2 text-slate-900 text-base font-bold">{line}</strong>
+          <strong className="block mb-2 text-slate-900 dark:text-slate-100 text-base font-bold">{line}</strong>
         ) : line.includes('[点击一键派单') ? (
           <button
             type="button"
@@ -52,9 +66,10 @@ export function AIAssistant({
     ));
   };
 
+  /** 推荐问题列表子组件（支持紧凑和展开两种模式） */
   const SuggestedQuestions = ({ isSmall = false }: { isSmall?: boolean }) => (
-    <div className={`${isSmall ? 'shrink-0 pt-3 border-t border-slate-200/60' : 'flex-1 overflow-y-auto pr-2 custom-scrollbar'}`}>
-      <p className={`font-medium text-slate-500 mb-4 ${isSmall ? 'text-xs mb-2' : 'text-sm'}`}>
+    <div className={`${isSmall ? 'shrink-0 pt-3 border-t border-slate-200/60 dark:border-slate-700' : 'flex-1 overflow-y-auto pr-2 custom-scrollbar'}`}>
+      <p className={`font-medium text-slate-500 dark:text-slate-400 mb-4 ${isSmall ? 'text-xs mb-2' : 'text-sm'}`}>
         {isSmall ? '猜您想问' : '您可以尝试问我以下问题'}
       </p>
       <div className={`${isSmall ? 'flex flex-wrap gap-2' : 'flex flex-col space-y-3'}`}>
@@ -64,21 +79,22 @@ export function AIAssistant({
             type="button"
             onClick={() => handleSendMessage(prompt.text)}
             className={`${isSmall
-                ? 'bg-white border border-slate-200 hover:border-brand-border text-slate-600 hover:text-brand text-xs px-3 py-1.5 rounded-full transition-colors truncate max-w-[200px]'
-                : 'bg-white hover:bg-brand-light/50 cursor-pointer p-5 rounded-2xl transition-all shadow-sm flex flex-col space-y-3 border border-transparent hover:border-brand-border text-left'
+                ? 'bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 hover:border-brand-border text-slate-600 dark:text-slate-300 hover:text-brand text-xs px-3 py-1.5 rounded-full transition-colors truncate max-w-[200px]'
+                : 'bg-white dark:bg-slate-900 hover:bg-brand-light/50 dark:hover:bg-brand/10 cursor-pointer p-5 rounded-2xl transition-all shadow-sm dark:shadow-none flex flex-col space-y-3 border border-transparent dark:border-slate-700 hover:border-brand-border text-left'
               }`}
             title={prompt.text}
           >
-            <span className={`${isSmall ? '' : 'text-sm font-bold text-slate-700'}`}>
+            <span className={`${isSmall ? '' : 'text-sm font-bold text-slate-700 dark:text-slate-200'}`}>
               {isSmall ? prompt.text : `"${prompt.text}"`}
             </span>
-            {!isSmall && <span className="text-xs text-slate-400">{prompt.tag}</span>}
+            {!isSmall && <span className="text-xs text-slate-400 dark:text-slate-500">{prompt.tag}</span>}
           </button>
         ))}
       </div>
     </div>
   );
 
+  /** 聊天输入框子组件（带渐变发光边框动画） */
   const ChatInput = ({ isFloating = false }: { isFloating?: boolean }) => (
     <div className={`relative group w-full shrink-0 ${isFloating ? '' : 'mb-6'}`}>
       <motion.div
@@ -101,17 +117,17 @@ export function AIAssistant({
         transition={{ duration: 4, repeat: Infinity, ease: 'linear' }}
       />
 
-      <div className="relative bg-white rounded-full m-[1.5px] flex items-center shadow-sm border border-slate-100">
+      <div className="relative bg-white dark:bg-slate-900 rounded-full m-[1.5px] flex items-center shadow-sm dark:shadow-none border border-slate-100 dark:border-slate-700">
         <input
           type="text"
           value={chatInput}
           onChange={(e) => setChatInput(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
           placeholder="请告诉我需要协助的事情..."
-          className={`w-full bg-transparent rounded-full pl-6 pr-28 py-4 text-sm focus:outline-none text-slate-800 placeholder:text-slate-400 relative z-10 ${isFloating ? 'py-3.5' : ''}`}
+          className={`w-full bg-transparent rounded-full pl-6 pr-28 py-4 text-sm focus:outline-none text-slate-800 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 relative z-10 ${isFloating ? 'py-3.5' : ''}`}
         />
         <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center space-x-3 z-10">
-          <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">{chatInput.length}/100</span>
+          <span className="text-[10px] text-slate-400 dark:text-slate-500 font-bold uppercase tracking-wider">{chatInput.length}/100</span>
           <button
             type="button"
             onClick={() => chatInput.trim() && handleSendMessage()}
@@ -128,7 +144,7 @@ export function AIAssistant({
 
   return (
     <div>
-      <section className="xl:col-span-1 flex flex-col bg-slate-50/80 backdrop-blur-xl border border-white/60 rounded-3xl p-6 shadow-[0_8px_30px_rgb(0,0,0,0.02)] h-[600px]">
+      <section className="xl:col-span-1 flex flex-col bg-slate-50/80 dark:bg-slate-900/70 backdrop-blur-xl border border-white/60 dark:border-slate-700 rounded-3xl p-6 shadow-[0_8px_30px_rgb(0,0,0,0.02)] dark:shadow-none h-[600px]">
         {messages.length <= 1 && <ChatInput />}
 
         <div className="w-full flex-1 flex flex-col min-h-0">
@@ -138,13 +154,13 @@ export function AIAssistant({
                 {messages.slice(1).map((msg) => (
                   <div key={msg.id} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                     {msg.role === 'ai' && (
-                      <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center shrink-0 mr-2">
+                      <div className="w-8 h-8 rounded-full bg-blue-100 dark:bg-blue-900/30 flex items-center justify-center shrink-0 mr-2">
                         <Sparkles className="w-4 h-4 text-brand" />
                       </div>
                     )}
                     <div className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm leading-relaxed shadow-sm ${msg.role === 'user'
                         ? 'bg-blue-500 text-white rounded-tr-sm'
-                        : 'bg-white border border-slate-100 text-slate-700 rounded-tl-sm'
+                        : 'bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-700 text-slate-700 dark:text-slate-200 rounded-tl-sm'
                       }`}>
                       {renderMessageContent(msg.content)}
                     </div>
@@ -169,7 +185,7 @@ export function AIAssistant({
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={{ opacity: 0, y: 20, scale: 0.95 }}
               transition={{ duration: 0.2 }}
-              className="bg-white w-[400px] h-[550px] rounded-3xl shadow-2xl border border-slate-200/60 mb-4 flex flex-col overflow-hidden"
+              className="bg-white dark:bg-slate-900 w-[400px] h-[550px] rounded-3xl shadow-2xl dark:shadow-none border border-slate-200/60 dark:border-slate-700 mb-4 flex flex-col overflow-hidden"
             >
               <div className="h-16 bg-gradient-to-r from-brand to-brand-hover px-5 flex items-center justify-between shrink-0 relative overflow-hidden">
                 <div className="absolute top-0 right-0 w-32 h-32 bg-white/10 rounded-full blur-2xl -mr-10 -mt-10"></div>
@@ -191,7 +207,7 @@ export function AIAssistant({
                 </button>
               </div>
 
-              <div className="flex-1 overflow-y-auto p-5 space-y-5 bg-slate-50/50">
+              <div className="flex-1 overflow-y-auto p-5 space-y-5 bg-slate-50/50 dark:bg-slate-950/40">
                 {messages.map((msg) => (
                   <div key={msg.id} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                     {msg.role === 'ai' && (
@@ -201,7 +217,7 @@ export function AIAssistant({
                     )}
                     <div className={`max-w-[80%] rounded-2xl px-4 py-3 text-sm leading-relaxed shadow-sm ${msg.role === 'user'
                         ? 'bg-gradient-to-br from-cyan-500 to-blue-600 text-white rounded-tr-sm'
-                        : 'bg-white border border-slate-100 text-slate-700 rounded-tl-sm'
+                        : 'bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-700 text-slate-700 dark:text-slate-200 rounded-tl-sm'
                       }`}>
                       {renderMessageContent(msg.content)}
                     </div>
@@ -209,7 +225,7 @@ export function AIAssistant({
                 ))}
               </div>
 
-              <div className="p-4 bg-white border-t border-slate-100 shrink-0">
+              <div className="p-4 bg-white dark:bg-slate-900 border-t border-slate-100 dark:border-slate-700 shrink-0">
                 <div className="relative flex items-center">
                   <input
                     type="text"
@@ -217,7 +233,7 @@ export function AIAssistant({
                     onChange={(e) => setChatInput(e.target.value)}
                     onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
                     placeholder="询问跨系统数据或SOP..."
-                    className="w-full bg-slate-100/80 border-transparent rounded-2xl pl-4 pr-12 py-3.5 text-sm focus:bg-white focus:border-brand focus:ring-4 focus:ring-brand/10 transition-all outline-none"
+                    className="w-full bg-slate-100/80 dark:bg-slate-800 border border-transparent dark:border-slate-700 rounded-2xl pl-4 pr-12 py-3.5 text-sm text-slate-900 dark:text-slate-100 focus:bg-white dark:focus:bg-slate-900 focus:border-brand focus:ring-4 focus:ring-brand/10 transition-all outline-none"
                   />
                   <button
                     type="button"

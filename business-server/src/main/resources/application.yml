@@ -6,9 +6,8 @@ spring:
     name: ai-business-server
   # profiles.active 由启动参数指定：-Dspring.profiles.active=dev
   # 本地开发默认在 IDE 或命令行中传入 --spring.profiles.active=dev
-
-  datasource:
-    driver-class-name: com.mysql.cj.jdbc.Driver
+  profiles:
+    active: local
 
   data:
     redis:
@@ -23,7 +22,6 @@ mybatis-plus:
   mapper-locations: classpath:mapper/*.xml
   configuration:
     map-underscore-to-camel-case: true
-    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
   global-config:
     db-config:
       id-type: assign_uuid

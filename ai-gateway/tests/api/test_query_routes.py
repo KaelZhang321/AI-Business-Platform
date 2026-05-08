@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from app.api.dependencies import get_text2sql_service
 from app.api.routes import query as query_routes
 from app.models.schemas import QueryDomain, Text2SQLResponse
 
@@ -42,10 +43,11 @@ def create_test_app() -> FastAPI:
     return app
 
 
-def test_text2sql_route_passes_explicit_domain(monkeypatch) -> None:
+def test_text2sql_route_passes_explicit_domain() -> None:
     stub = StubText2SQLService()
-    monkeypatch.setattr(query_routes, "text2sql_service", stub)
-    client = TestClient(create_test_app())
+    app = create_test_app()
+    app.dependency_overrides[get_text2sql_service] = lambda: stub
+    client = TestClient(app)
 
     response = client.post(
         "/api/v1/query/text2sql",
@@ -67,3 +69,4 @@ def test_text2sql_route_passes_explicit_domain(monkeypatch) -> None:
             "conversation_id": "conv-route",
         }
     ]
+    app.dependency_overrides.clear()

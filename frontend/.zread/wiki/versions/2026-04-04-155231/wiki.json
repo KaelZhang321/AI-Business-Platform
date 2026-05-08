@@ -1,0 +1,299 @@
+{
+  "id": "2026-04-04-155231",
+  "generated_at": "2026-04-04T07:52:31.194575Z",
+  "language": "zh",
+  "pages": [
+    {
+      "slug": "1-xiang-mu-gai-lan",
+      "title": "项目概览",
+      "file": "1-xiang-mu-gai-lan.md",
+      "section": "快速开始",
+      "level": "Beginner"
+    },
+    {
+      "slug": "2-huan-jing-pei-zhi-yu-ben-di-yun-xing",
+      "title": "环境配置与本地运行",
+      "file": "2-huan-jing-pei-zhi-yu-ben-di-yun-xing.md",
+      "section": "快速开始",
+      "level": "Beginner"
+    },
+    {
+      "slug": "3-xiang-mu-jie-gou-dao-hang",
+      "title": "项目结构导航",
+      "file": "3-xiang-mu-jie-gou-dao-hang.md",
+      "section": "快速开始",
+      "level": "Beginner"
+    },
+    {
+      "slug": "4-ji-zhu-zhan-yu-he-xin-yi-lai",
+      "title": "技术栈与核心依赖",
+      "file": "4-ji-zhu-zhan-yu-he-xin-yi-lai.md",
+      "section": "快速开始",
+      "level": "Intermediate"
+    },
+    {
+      "slug": "5-jwt-ren-zheng-yu-hui-hua-hui-fu-ji-zhi",
+      "title": "JWT 认证与会话恢复机制",
+      "file": "5-jwt-ren-zheng-yu-hui-hua-hui-fu-ji-zhi.md",
+      "section": "架构深度解析",
+      "group": "认证与状态管理",
+      "level": "Intermediate"
+    },
+    {
+      "slug": "6-sso-dan-dian-deng-lu-ji-cheng",
+      "title": "SSO 单点登录集成",
+      "file": "6-sso-dan-dian-deng-lu-ji-cheng.md",
+      "section": "架构深度解析",
+      "group": "认证与状态管理",
+      "level": "Intermediate"
+    },
+    {
+      "slug": "7-zustand-quan-ju-zhuang-tai-guan-li",
+      "title": "Zustand 全局状态管理",
+      "file": "7-zustand-quan-ju-zhuang-tai-guan-li.md",
+      "section": "架构深度解析",
+      "group": "认证与状态管理",
+      "level": "Intermediate"
+    },
+    {
+      "slug": "8-lei-xing-an-quan-de-lu-you-jia-gou",
+      "title": "类型安全的路由架构",
+      "file": "8-lei-xing-an-quan-de-lu-you-jia-gou.md",
+      "section": "架构深度解析",
+      "group": "路由与导航系统",
+      "level": "Intermediate"
+    },
+    {
+      "slug": "9-ye-mian-zhu-ce-biao-yu-lan-jia-zai-ce-lue",
+      "title": "页面注册表与懒加载策略",
+      "file": "9-ye-mian-zhu-ce-biao-yu-lan-jia-zai-ce-lue.md",
+      "section": "架构深度解析",
+      "group": "路由与导航系统",
+      "level": "Intermediate"
+    },
+    {
+      "slug": "10-dong-tai-dao-hang-shu-ju-yuan",
+      "title": "动态导航数据源",
+      "file": "10-dong-tai-dao-hang-shu-ju-yuan.md",
+      "section": "架构深度解析",
+      "group": "路由与导航系统",
+      "level": "Intermediate"
+    },
+    {
+      "slug": "11-axios-ke-hu-duan-feng-zhuang-yu-lan-jie-qi",
+      "title": "Axios 客户端封装与拦截器",
+      "file": "11-axios-ke-hu-duan-feng-zhuang-yu-lan-jie-qi.md",
+      "section": "架构深度解析",
+      "group": "接口层设计",
+      "level": "Advanced"
+    },
+    {
+      "slug": "12-zi-dong-token-shua-xin-ji-zhi",
+      "title": "自动 Token 刷新机制",
+      "file": "12-zi-dong-token-shua-xin-ji-zhi.md",
+      "section": "架构深度解析",
+      "group": "接口层设计",
+      "level": "Advanced"
+    },
+    {
+      "slug": "13-api-dai-li-pei-zhi",
+      "title": "API 代理配置",
+      "file": "13-api-dai-li-pei-zhi.md",
+      "section": "架构深度解析",
+      "group": "接口层设计",
+      "level": "Intermediate"
+    },
+    {
+      "slug": "14-yi-liao-ai-gong-zuo-tai",
+      "title": "医疗 AI 工作台",
+      "file": "14-yi-liao-ai-gong-zuo-tai.md",
+      "section": "核心业务模块",
+      "group": "AI 工作台系列",
+      "level": "Intermediate"
+    },
+    {
+      "slug": "15-gu-wen-ai-gong-zuo-tai",
+      "title": "顾问 AI 工作台",
+      "file": "15-gu-wen-ai-gong-zuo-tai.md",
+      "section": "核心业务模块",
+      "group": "AI 工作台系列",
+      "level": "Intermediate"
+    },
+    {
+      "slug": "16-hu-shi-ai-gong-zuo-tai",
+      "title": "护士 AI 工作台",
+      "file": "16-hu-shi-ai-gong-zuo-tai.md",
+      "section": "核心业务模块",
+      "group": "AI 工作台系列",
+      "level": "Intermediate"
+    },
+    {
+      "slug": "17-jian-kang-guan-jia-ai",
+      "title": "健康管家 AI",
+      "file": "17-jian-kang-guan-jia-ai.md",
+      "section": "核心业务模块",
+      "group": "AI 工作台系列",
+      "level": "Intermediate"
+    },
+    {
+      "slug": "18-yi-biao-pan-yu-ren-wu-guan-li",
+      "title": "仪表盘与任务管理",
+      "file": "18-yi-biao-pan-yu-ren-wu-guan-li.md",
+      "section": "核心业务模块",
+      "group": "业务功能模块",
+      "level": "Intermediate"
+    },
+    {
+      "slug": "19-gong-neng-yan-chang-yu-dao-hang",
+      "title": "功能广场与导航",
+      "file": "19-gong-neng-yan-chang-yu-dao-hang.md",
+      "section": "核心业务模块",
+      "group": "业务功能模块",
+      "level": "Intermediate"
+    },
+    {
+      "slug": "20-ai-fu-zhu-zhen-duan",
+      "title": "AI 辅助诊断",
+      "file": "20-ai-fu-zhu-zhen-duan.md",
+      "section": "核心业务模块",
+      "group": "业务功能模块",
+      "level": "Intermediate"
+    },
+    {
+      "slug": "21-hui-yi-bi-fen-xi-xi-tong",
+      "title": "会议 BI 分析系统",
+      "file": "21-hui-yi-bi-fen-xi-xi-tong.md",
+      "section": "核心业务模块",
+      "group": "业务功能模块",
+      "level": "Advanced"
+    },
+    {
+      "slug": "22-zu-jian-mu-lu-jie-gou-yu-ming-ming-yue-ding",
+      "title": "组件目录结构与命名约定",
+      "file": "22-zu-jian-mu-lu-jie-gou-yu-ming-ming-yue-ding.md",
+      "section": "开发指南",
+      "group": "组件开发规范",
+      "level": "Beginner"
+    },
+    {
+      "slug": "23-tong-yong-zu-jian-yu-ye-wu-zu-jian",
+      "title": "通用组件与业务组件",
+      "file": "23-tong-yong-zu-jian-yu-ye-wu-zu-jian.md",
+      "section": "开发指南",
+      "group": "组件开发规范",
+      "level": "Intermediate"
+    },
+    {
+      "slug": "24-mo-tai-kuang-yu-jiao-hu-zu-jian",
+      "title": "模态框与交互组件",
+      "file": "24-mo-tai-kuang-yu-jiao-hu-zu-jian.md",
+      "section": "开发指南",
+      "group": "组件开发规范",
+      "level": "Intermediate"
+    },
+    {
+      "slug": "25-tailwind-css-pei-zhi",
+      "title": "Tailwind CSS 配置",
+      "file": "25-tailwind-css-pei-zhi.md",
+      "section": "开发指南",
+      "group": "样式与主题",
+      "level": "Beginner"
+    },
+    {
+      "slug": "26-an-se-mo-shi-yu-zhu-ti-qie-huan",
+      "title": "暗色模式与主题切换",
+      "file": "26-an-se-mo-shi-yu-zhu-ti-qie-huan.md",
+      "section": "开发指南",
+      "group": "样式与主题",
+      "level": "Intermediate"
+    },
+    {
+      "slug": "27-xiang-ying-shi-she-ji-shi-jian",
+      "title": "响应式设计实践",
+      "file": "27-xiang-ying-shi-she-ji-shi-jian.md",
+      "section": "开发指南",
+      "group": "样式与主题",
+      "level": "Intermediate"
+    },
+    {
+      "slug": "28-mock-shu-ju-yu-lei-xing-ding-yi",
+      "title": "Mock 数据与类型定义",
+      "file": "28-mock-shu-ju-yu-lei-xing-ding-yi.md",
+      "section": "开发指南",
+      "group": "数据管理",
+      "level": "Intermediate"
+    },
+    {
+      "slug": "29-react-query-shu-ju-huan-cun",
+      "title": "React Query 数据缓存",
+      "file": "29-react-query-shu-ju-huan-cun.md",
+      "section": "开发指南",
+      "group": "数据管理",
+      "level": "Advanced"
+    },
+    {
+      "slug": "30-dai-ma-fen-ge-yu-lan-jia-zai",
+      "title": "代码分割与懒加载",
+      "file": "30-dai-ma-fen-ge-yu-lan-jia-zai.md",
+      "section": "高级特性",
+      "group": "性能优化",
+      "level": "Advanced"
+    },
+    {
+      "slug": "31-da-bao-you-hua-ce-lue",
+      "title": "打包优化策略",
+      "file": "31-da-bao-you-hua-ce-lue.md",
+      "section": "高级特性",
+      "group": "性能优化",
+      "level": "Advanced"
+    },
+    {
+      "slug": "32-docker-rong-qi-hua-bu-shu",
+      "title": "Docker 容器化部署",
+      "file": "32-docker-rong-qi-hua-bu-shu.md",
+      "section": "高级特性",
+      "group": "部署与运维",
+      "level": "Intermediate"
+    },
+    {
+      "slug": "33-duo-huan-jing-pei-zhi-guan-li",
+      "title": "多环境配置管理",
+      "file": "33-duo-huan-jing-pei-zhi-guan-li.md",
+      "section": "高级特性",
+      "group": "部署与运维",
+      "level": "Intermediate"
+    },
+    {
+      "slug": "34-nginx-pei-zhi-yu-sheng-chan-huan-jing-you-hua",
+      "title": "Nginx 配置与生产环境优化",
+      "file": "34-nginx-pei-zhi-yu-sheng-chan-huan-jing-you-hua.md",
+      "section": "高级特性",
+      "group": "部署与运维",
+      "level": "Advanced"
+    },
+    {
+      "slug": "35-ui-builder-ke-shi-hua-gou-jian-qi",
+      "title": "UI Builder 可视化构建器",
+      "file": "35-ui-builder-ke-shi-hua-gou-jian-qi.md",
+      "section": "高级特性",
+      "group": "扩展功能",
+      "level": "Advanced"
+    },
+    {
+      "slug": "36-legacy-hui-yi-bi-ji-cheng",
+      "title": "Legacy 会议 BI 集成",
+      "file": "36-legacy-hui-yi-bi-ji-cheng.md",
+      "section": "高级特性",
+      "group": "扩展功能",
+      "level": "Advanced"
+    },
+    {
+      "slug": "37-google-genai-ji-cheng",
+      "title": "Google GenAI 集成",
+      "file": "37-google-genai-ji-cheng.md",
+      "section": "高级特性",
+      "group": "扩展功能",
+      "level": "Intermediate"
+    }
+  ]
+}

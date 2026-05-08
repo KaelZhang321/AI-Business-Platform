@@ -3,15 +3,18 @@ import React from 'react';
 import { Layers } from 'lucide-react';
 import { SYSTEMS } from '../data/mockData';
 
+/** 常用功能区组件属性 */
 interface CommonFunctionsProps {
+  /** 打开到院接待弹窗的回调 */
   setIsReceptionModalOpen: (open: boolean) => void;
 }
 
+/** 常用功能区组件：展示首页中的快捷入口与业务系统按钮 */
 export function CommonFunctions({ setIsReceptionModalOpen }: CommonFunctionsProps) {
   return (
-    <section className="xl:col-span-2 bg-white/40 backdrop-blur-xl border border-white/60 rounded-[32px] p-6 shadow-[0_8px_30px_rgb(0,0,0,0.02)] flex flex-col">
+    <section className="xl:col-span-2 bg-white/40 dark:bg-slate-900/70 backdrop-blur-xl border border-white/60 dark:border-slate-700 rounded-[32px] p-6 shadow-[0_8px_30px_rgb(0,0,0,0.02)] dark:shadow-none flex flex-col">
       <div className="flex items-center justify-between mb-6">
-        <h2 className="text-lg font-bold text-slate-900 flex items-center">
+        <h2 className="text-lg font-bold text-slate-900 dark:text-slate-100 flex items-center">
           <Layers className="w-5 h-5 mr-2 text-brand" />
           常用功能
         </h2>
@@ -37,11 +40,11 @@ export function CommonFunctions({ setIsReceptionModalOpen }: CommonFunctionsProp
             }`}>
               <div className={`w-[48px] h-[48px] rounded-2xl flex items-center justify-center mb-3 transition-all duration-300 relative ${
                 isActive 
-                  ? 'bg-white shadow-sm' 
-                  : 'bg-white shadow-[0_8px_24px_-6px_rgba(0,0,0,0.06)] group-hover:shadow-[0_12px_28px_-6px_rgba(0,0,0,0.12)]'
+                  ? 'bg-white dark:bg-slate-900 shadow-sm dark:shadow-none' 
+                  : 'bg-white dark:bg-slate-900 shadow-[0_8px_24px_-6px_rgba(0,0,0,0.06)] dark:shadow-none group-hover:shadow-[0_12px_28px_-6px_rgba(0,0,0,0.12)] dark:group-hover:shadow-none'
               }`}>
                 {sys.count > 0 && (
-                  <span className="absolute -top-1.5 -right-1.5 bg-gradient-to-r from-[#D54941] to-red-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full shadow-md z-20 border-2 border-white">
+                  <span className="absolute -top-1.5 -right-1.5 bg-gradient-to-r from-[#D54941] to-red-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full shadow-md z-20 border-2 border-white dark:border-slate-900">
                     {sys.count}
                   </span>
                 )}
@@ -51,7 +54,7 @@ export function CommonFunctions({ setIsReceptionModalOpen }: CommonFunctionsProp
                 />
               </div>
               <span className={`text-sm font-bold text-center whitespace-nowrap transition-colors ${
-                isActive ? 'text-white' : 'text-slate-600 group-hover:text-slate-900'
+                isActive ? 'text-white' : 'text-slate-600 dark:text-slate-300 group-hover:text-slate-900 dark:group-hover:text-slate-100'
               }`}>
                 {sys.name}
               </span>

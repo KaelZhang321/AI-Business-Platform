@@ -6,16 +6,25 @@ import {
 } from 'lucide-react';
 import { Work, Todo } from '../types';
 
+/** 工作卡片区组件属性 */
 interface WorkSectionProps {
+  /** 当前活动页签 */
   activeTab: 'work' | 'todo' | 'risk';
+  /** 切换页签 */
   setActiveTab: (tab: 'work' | 'todo' | 'risk') => void;
+  /** 工作项数据 */
   works: Work[];
+  /** 待办事项数据 */
   todos: Todo[];
+  /** 当前选中任务 ID */
   selectedTaskId: number | null;
+  /** 设置选中任务 */
   setSelectedTaskId: (id: number | null) => void;
+  /** 打开创建任务弹窗 */
   setIsCreateModalOpen: (val: boolean) => void;
 }
 
+/** 工作卡片区组件：以卡片形式呈现工作项或待办项的概览信息 */
 export function WorkSection({ 
   activeTab, 
   setActiveTab, 

@@ -1,11 +1,11 @@
 package com.lzke.ai.exception;
 
-import com.lzke.ai.interfaces.dto.ApiResponse;
-import jakarta.servlet.http.HttpServletRequest;
-import lombok.extern.slf4j.Slf4j;
+import java.util.stream.Collectors;
+
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.stereotype.Component;
 import org.springframework.validation.FieldError;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -16,13 +16,17 @@ import org.springframework.web.multipart.MaxUploadSizeExceededException;
 import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 
-import java.util.stream.Collectors;
+import com.lzke.ai.interfaces.dto.ApiResponse;
+
+import jakarta.servlet.http.HttpServletRequest;
+import lombok.extern.slf4j.Slf4j;
 
 /**
  * 全局异常处理器 — 统一将异常转为 ApiResponse 格式返回。
  */
 @Slf4j
 @RestControllerAdvice
+@Component("aiGlobalExceptionHandler")
 public class GlobalExceptionHandler {
 
     // ── 业务异常 ─────────────────────────────────────────────
